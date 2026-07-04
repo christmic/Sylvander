@@ -15,7 +15,7 @@
 //!
 //! ## Quickstart
 //!
-//! ```ignore
+//! ```no_run
 //! use sylvander_llm_anthropic::prelude::*;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,24 +23,24 @@
 //!     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
 //!     .build()?;
 //!
-//! let msg = client
-//!     .messages()
-//!     .create(
-//!         CreateMessageRequest::builder()
-//!             .model(ModelId::ClaudeSonnet5)
-//!             .max_tokens(1024)
-//!             .messages(vec![MessageParam::user("Hello, Claude")])
-//!             .build()?,
-//!     )
-//!     .await?;
-//! println!("{}", msg.content[0].text()); // panics if first block is not text
+//! let request = CreateMessageRequest::builder()
+//!     .model(ModelId::ClaudeSonnet5)
+//!     .max_tokens(1024)
+//!     .messages(vec![MessageParam::user("Hello, Claude")])
+//!     .build()
+//!     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+//!
+//! let msg = client.messages().create(&request).await?;
+//! if let Some(text) = msg.content[0].text() {
+//!     println!("{text}");
+//! }
 //! # Ok(())
 //! # }
 //! ```
 //!
 //! ## Streaming
 //!
-//! ```ignore
+//! ```no_run
 //! use futures_util::StreamExt;
 //! use sylvander_llm_anthropic::prelude::*;
 //!
@@ -48,24 +48,26 @@
 //! # let client = AnthropicClient::builder()
 //! #     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
 //! #     .build()?;
-//! let mut stream = client
-//!     .messages()
-//!     .stream(
-//!         CreateMessageRequest::builder()
-//!             .model(ModelId::ClaudeSonnet5)
-//!             .max_tokens(1024)
-//!             .messages(vec![MessageParam::user("Stream me a story")])
-//!             .build()?,
-//!     )
-//!     .await?;
+//! let request = CreateMessageRequest::builder()
+//!     .model(ModelId::ClaudeSonnet5)
+//!     .max_tokens(1024)
+//!     .messages(vec![MessageParam::user("Stream me a story")])
+//!     .build()
+//!     .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+//!
+//! let mut stream = client.messages().stream(&request).await?;
 //!
 //! while let Some(event) = stream.next().await {
-//!     match event? {
-//!         StreamEvent::ContentBlockDelta { delta: ContentDelta::TextDelta(t), .. } => {
-//!             print!("{}", t.text);
-//!         }
-//!         StreamEvent::MessageStop => break,
-//!         _ => {}
+//!     let event = event?;
+//!     if let RawStreamEvent::ContentBlockDelta {
+//!         delta: ContentDelta::TextDelta { text },
+//!         ..
+//!     } = &event
+//!     {
+//!         print!("{text}");
+//!     }
+//!     if matches!(event, RawStreamEvent::MessageStop) {
+//!         break;
 //!     }
 //! }
 //! # Ok(())
@@ -83,10 +85,10 @@ pub mod prelude {
     pub use crate::api::model_registry::{ModelCapabilities, ModelId, ModelInfo};
     pub use crate::api::request::{CreateMessageRequest, CreateMessageRequestBuilder};
     pub use crate::api::types::{
-        CacheControl, CacheTtl, ContentBlock, Effort, ImageBlock, InputSchema, JsonOutputFormat,
-        Message, MessageKind, MessageParam, MessageRole, MessageTokensCount, OutputConfig,
-        RichToolResultBlock, StopReason, SystemPrompt, SystemTextBlock, TextBlock, ThinkingBlock,
-        ThinkingConfig, Tool, ToolChoice, ToolResultBlock, ToolUseBlock, Usage, UserContent,
-        UserContentBlock,
+        CacheControl, CacheTtl, ContentBlock, ContentDelta, Effort, ImageBlock, InputSchema,
+        JsonOutputFormat, Message, MessageKind, MessageParam, MessageRole, MessageTokensCount,
+        OutputConfig, RawStreamEvent, RichToolResultBlock, StopReason, SystemPrompt,
+        SystemTextBlock, TextBlock, ThinkingBlock, ThinkingConfig, Tool, ToolChoice,
+        ToolResultBlock, ToolUseBlock, Usage, UserContent, UserContentBlock,
     };
 }
