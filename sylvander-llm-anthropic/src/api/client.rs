@@ -77,6 +77,9 @@ impl AnthropicClient {
 
     /// Build the standard headers for a request. Used internally by
     /// [`MessagesApi`] and exposed for testing.
+    ///
+    /// Does **not** include per-request beta headers — see
+    /// [`Self::build_request_headers`] for that.
     #[must_use]
     pub fn build_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -91,6 +94,41 @@ impl AnthropicClient {
         );
         if !self.inner.beta_headers.is_empty() {
             let combined = self.inner.beta_headers.join(", ");
+            if let Ok(v) = HeaderValue::from_str(&combined) {
+                headers.insert("anthropic-beta", v);
+            }
+        }
+        headers
+    }
+
+    /// Build headers for a specific request, including per-request beta
+    /// headers derived from the request fields:
+    ///
+    /// - `extended-thinking-2025-01-01` when `thinking` is set
+    /// - `structured-outputs-2025-06-01` when `output_config` is set
+    ///
+    /// Always includes the client-level `beta_header(...)` extras and
+    /// the base headers.
+    #[must_use]
+    pub fn build_request_headers(
+        &self,
+        request: &super::request::CreateMessageRequest,
+    ) -> HeaderMap {
+        let mut headers = self.build_headers();
+        let mut extras: Vec<&str> = self
+            .inner
+            .beta_headers
+            .iter()
+            .map(String::as_str)
+            .collect();
+        if request.thinking.is_some() {
+            extras.push("extended-thinking-2025-01-01");
+        }
+        if request.output_config.is_some() {
+            extras.push("structured-outputs-2025-06-01");
+        }
+        if !extras.is_empty() {
+            let combined = extras.join(", ");
             if let Ok(v) = HeaderValue::from_str(&combined) {
                 headers.insert("anthropic-beta", v);
             }
@@ -295,6 +333,100 @@ mod tests {
             .expect("build should succeed");
         let headers = client.build_headers();
         assert_eq!(headers.get("anthropic-beta").unwrap(), "a, b");
+    }
+
+    #[test]
+    fn build_request_headers_adds_thinking_beta() {
+        use super::super::model_registry::ModelId;
+        use super::super::request::CreateMessageRequest;
+        use super::super::types::MessageParam;
+
+        let client = AnthropicClient::builder()
+            .api_key("sk-test")
+            .build()
+            .expect("build should succeed");
+        let req = CreateMessageRequest::builder()
+            .model(ModelId::ClaudeSonnet5)
+            .max_tokens(2048)
+            .messages(vec![MessageParam::user("Hi")])
+            .thinking(1024)
+            .build()
+            .unwrap();
+
+        let headers = client.build_request_headers(&req);
+        let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert!(beta.contains("extended-thinking-2025-01-01"));
+        assert!(!beta.contains("structured-outputs"));
+    }
+
+    #[test]
+    fn build_request_headers_adds_structured_output_beta() {
+        use super::super::model_registry::ModelId;
+        use super::super::request::CreateMessageRequest;
+        use super::super::types::{MessageParam, OutputConfig};
+
+        let client = AnthropicClient::builder()
+            .api_key("sk-test")
+            .build()
+            .expect("build should succeed");
+        let req = CreateMessageRequest::builder()
+            .model(ModelId::ClaudeSonnet5)
+            .max_tokens(1024)
+            .messages(vec![MessageParam::user("Hi")])
+            .output_config(OutputConfig::default())
+            .build()
+            .unwrap();
+
+        let headers = client.build_request_headers(&req);
+        let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert!(beta.contains("structured-outputs-2025-06-01"));
+        assert!(!beta.contains("extended-thinking"));
+    }
+
+    #[test]
+    fn build_request_headers_combines_client_and_request_betas() {
+        use super::super::model_registry::ModelId;
+        use super::super::request::CreateMessageRequest;
+        use super::super::types::MessageParam;
+
+        let client = AnthropicClient::builder()
+            .api_key("sk-test")
+            .beta_header("prompt-caching-2024-07-31")
+            .build()
+            .expect("build should succeed");
+        let req = CreateMessageRequest::builder()
+            .model(ModelId::ClaudeSonnet5)
+            .max_tokens(2048)
+            .messages(vec![MessageParam::user("Hi")])
+            .thinking(1024)
+            .build()
+            .unwrap();
+
+        let headers = client.build_request_headers(&req);
+        let beta = headers.get("anthropic-beta").unwrap().to_str().unwrap();
+        assert!(beta.contains("prompt-caching-2024-07-31"));
+        assert!(beta.contains("extended-thinking-2025-01-01"));
+    }
+
+    #[test]
+    fn build_request_headers_no_betas_when_request_plain() {
+        use super::super::model_registry::ModelId;
+        use super::super::request::CreateMessageRequest;
+        use super::super::types::MessageParam;
+
+        let client = AnthropicClient::builder()
+            .api_key("sk-test")
+            .build()
+            .expect("build should succeed");
+        let req = CreateMessageRequest::builder()
+            .model(ModelId::ClaudeSonnet5)
+            .max_tokens(1024)
+            .messages(vec![MessageParam::user("Hi")])
+            .build()
+            .unwrap();
+
+        let headers = client.build_request_headers(&req);
+        assert!(headers.get("anthropic-beta").is_none());
     }
 
     #[test]

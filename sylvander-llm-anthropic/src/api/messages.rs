@@ -47,7 +47,7 @@ impl<'a> MessagesApi<'a> {
             .client
             .http()
             .post(url)
-            .headers(self.client.build_headers())
+            .headers(self.client.build_request_headers(request))
             .json(request)
             .send()
             .await?;
@@ -94,7 +94,7 @@ impl<'a> MessagesApi<'a> {
             .client
             .http()
             .post(url)
-            .headers(self.client.build_headers())
+            .headers(self.client.build_request_headers(request))
             .json(&body)
             .send()
             .await?;
@@ -145,7 +145,7 @@ impl<'a> MessagesApi<'a> {
             .client
             .http()
             .post(url)
-            .headers(self.client.build_headers())
+            .headers(self.client.build_request_headers(request))
             .json(request)
             .send()
             .await?;
