@@ -99,22 +99,27 @@ async fn count_tokens_400_api_error() {
         .await;
 
     let client = mock_client(&server);
-    let result = client.messages().count_tokens(&minimal_request()).await;
-    match result {
-        Err(AnthropicError::Api {
+    let err = client
+        .messages()
+        .count_tokens(&minimal_request())
+        .await
+        .expect_err("count_tokens should fail");
+    match &err {
+        AnthropicError::Api {
             status,
             error_type,
             error_message,
             request_id,
-        }) => {
-            assert_eq!(status, 400);
+        } => {
+            assert_eq!(*status, 400);
             assert_eq!(error_type, "invalid_request_error");
             assert_eq!(error_message, "model is required");
             assert_eq!(request_id.as_deref(), Some("req_xyz"));
-            assert!(!result.as_ref().unwrap_err().is_retryable());
         }
         other => panic!("expected Api error, got {other:?}"),
     }
+    assert!(!err.is_retryable());
+    assert_eq!(err.status(), Some(400));
 }
 
 #[tokio::test]
