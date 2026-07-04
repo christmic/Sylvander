@@ -12,4 +12,5 @@
 //! - [`response`] — `Message` response type and tokens count
 //! - [`types`] — wire-format types (blocks, tools, content, etc.)
 
+pub mod error;
 pub mod types;
