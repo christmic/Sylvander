@@ -1,12 +1,12 @@
 //! Messages API surface — `POST /v1/messages` and `POST /v1/messages/count_tokens`.
-//!
-//! Streaming (`stream()`) lands in C8.
 
 use reqwest::Url;
 use serde::Deserialize;
+use serde_json::json;
 
 use crate::api::client::AnthropicClient;
 use crate::api::error::AnthropicError;
+use crate::api::message_stream::MessageStream;
 use crate::api::request::CreateMessageRequest;
 use crate::api::types::{Message, MessageTokensCount};
 
@@ -61,6 +61,63 @@ impl<'a> MessagesApi<'a> {
 
         let message: Message = serde_json::from_slice(&bytes)?;
         Ok(message)
+    }
+
+    /// Send a message generation request and return a streaming response
+    /// as a [`MessageStream`]. The stream yields raw [`crate::api::types::RawStreamEvent`]s.
+    /// Call [`MessageStream::final_message`] after the stream completes
+    /// to get the assembled [`Message`].
+    ///
+    /// # Errors
+    /// - [`AnthropicError::Validation`] if the request fails client-side
+    ///   validation
+    /// - [`AnthropicError::Api`] for 4xx/5xx responses (caught before
+    ///   the stream is constructed)
+    /// - [`AnthropicError::Http`] for transport failures
+    pub async fn stream(
+        &self,
+        request: &CreateMessageRequest,
+    ) -> Result<MessageStream, AnthropicError> {
+        request.validate()?;
+
+        let url = self
+            .client
+            .base_url()
+            .join("v1/messages")
+            .map_err(|e| AnthropicError::Validation(format!("invalid URL: {e}")))?;
+
+        // Serialize the request with `stream: true` appended.
+        let mut body = serde_json::to_value(request)?;
+        body["stream"] = json!(true);
+
+        let response = self
+            .client
+            .http()
+            .post(url)
+            .headers(self.client.build_headers())
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let bytes = response.bytes().await?;
+            return Err(parse_api_error(status.as_u16(), &bytes));
+        }
+
+        // Verify the response is an event stream.
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.starts_with("text/event-stream") {
+            return Err(AnthropicError::Validation(format!(
+                "expected text/event-stream response, got {content_type}"
+            )));
+        }
+
+        Ok(MessageStream::new(response))
     }
 
     /// Estimate the number of input tokens for a request without sending
