@@ -16,4 +16,5 @@ pub mod client;
 pub mod error;
 pub mod messages;
 pub mod model_registry;
+pub mod request;
 pub mod types;
