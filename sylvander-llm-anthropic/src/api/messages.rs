@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::api::client::AnthropicClient;
 use crate::api::error::AnthropicError;
 use crate::api::request::CreateMessageRequest;
-use crate::api::types::MessageTokensCount;
+use crate::api::types::{Message, MessageTokensCount};
 
 /// Bound handle to the Messages API. Returned by
 /// [`AnthropicClient::messages`] and borrows the client for `'a`.
@@ -21,6 +21,46 @@ impl<'a> MessagesApi<'a> {
     /// this via [`AnthropicClient::messages`].
     pub(crate) fn new(client: &'a AnthropicClient) -> Self {
         Self { client }
+    }
+
+    /// Send a message generation request (non-streaming) and return the
+    /// assembled [`Message`].
+    ///
+    /// # Errors
+    /// - [`AnthropicError::Validation`] if the request fails client-side
+    ///   validation
+    /// - [`AnthropicError::Api`] for 4xx/5xx responses
+    /// - [`AnthropicError::Http`] for transport failures
+    pub async fn create(
+        &self,
+        request: &CreateMessageRequest,
+    ) -> Result<Message, AnthropicError> {
+        request.validate()?;
+
+        let url = self
+            .client
+            .base_url()
+            .join("v1/messages")
+            .map_err(|e| AnthropicError::Validation(format!("invalid URL: {e}")))?;
+
+        let response = self
+            .client
+            .http()
+            .post(url)
+            .headers(self.client.build_headers())
+            .json(request)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let bytes = response.bytes().await?;
+
+        if !status.is_success() {
+            return Err(parse_api_error(status.as_u16(), &bytes));
+        }
+
+        let message: Message = serde_json::from_slice(&bytes)?;
+        Ok(message)
     }
 
     /// Estimate the number of input tokens for a request without sending
