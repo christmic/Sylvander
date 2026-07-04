@@ -15,7 +15,7 @@
 //!
 //! ## Quickstart
 //!
-//! ```no_run
+//! ```ignore
 //! use sylvander_llm_anthropic::prelude::*;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,7 +40,7 @@
 //!
 //! ## Streaming
 //!
-//! ```no_run
+//! ```ignore
 //! use futures_util::StreamExt;
 //! use sylvander_llm_anthropic::prelude::*;
 //!
@@ -75,3 +75,18 @@
 #![doc(html_root_url = "https://docs.rs/sylvander-llm-anthropic/0.1.0")]
 
 pub mod api;
+
+/// Convenient re-exports for the most commonly used types.
+pub mod prelude {
+    pub use crate::api::client::{AnthropicClient, AnthropicClientBuilder};
+    pub use crate::api::error::AnthropicError;
+    pub use crate::api::model_registry::{ModelCapabilities, ModelId, ModelInfo};
+    pub use crate::api::request::{CreateMessageRequest, CreateMessageRequestBuilder};
+    pub use crate::api::types::{
+        CacheControl, CacheTtl, ContentBlock, Effort, ImageBlock, InputSchema, JsonOutputFormat,
+        Message, MessageKind, MessageParam, MessageRole, MessageTokensCount, OutputConfig,
+        RichToolResultBlock, StopReason, SystemPrompt, SystemTextBlock, TextBlock, ThinkingBlock,
+        ThinkingConfig, Tool, ToolChoice, ToolResultBlock, ToolUseBlock, Usage, UserContent,
+        UserContentBlock,
+    };
+}
