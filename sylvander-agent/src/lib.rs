@@ -103,5 +103,7 @@ pub mod prelude {
         SimpleWindowCompressor,
     };
     pub use crate::error::AgentLoopError;
+    pub use crate::event::AgentEvent;
+    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, AgentRun};
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
 }
