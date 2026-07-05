@@ -4,6 +4,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::api::batches::BatchesApi;
 use crate::api::client::AnthropicClient;
 use crate::api::error::AnthropicError;
 use crate::api::message_stream::MessageStream;
@@ -21,6 +22,13 @@ impl<'a> MessagesApi<'a> {
     /// this via [`AnthropicClient::messages`].
     pub(crate) fn new(client: &'a AnthropicClient) -> Self {
         Self { client }
+    }
+
+    /// Access the Message Batches API (create / retrieve / list /
+    /// cancel).
+    #[must_use]
+    pub fn batches(&self) -> BatchesApi<'_> {
+        BatchesApi::new(self.client)
     }
 
     /// Send a message generation request (non-streaming) and return the
@@ -170,7 +178,7 @@ impl<'a> MessagesApi<'a> {
 }
 
 /// Parse an Anthropic API error response body into [`AnthropicError::Api`].
-fn parse_api_error(status: u16, bytes: &[u8]) -> AnthropicError {
+pub(crate) fn parse_api_error(status: u16, bytes: &[u8]) -> AnthropicError {
     #[derive(Deserialize)]
     struct ApiErrorBody {
         #[serde(default)]
