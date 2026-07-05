@@ -98,5 +98,5 @@ pub mod tool;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
-    // Filled in as modules are implemented (A2-A8)
+    pub use crate::error::AgentLoopError;
 }
