@@ -1,9 +1,10 @@
 //! `AgentEvent` — the reactive event stream emitted by [`AgentLoop`].
 //!
-//! Two consumption modes:
-//!
-//! - **`run()` + callback** — pass an `on_event` callback to the builder
-//! - **`run_stream()`** — returns `impl Stream<Item = AgentEvent>`
+//! The agent loop has a single core API — [`AgentLoop::run_stream`] —
+//! that drives the iteration and yields events. [`AgentLoop::run`] is
+//! a thin wrapper that consumes the stream and returns an
+//! [`crate::AgentRun`]. [`AgentLoop::run_with_events`] is a wrapper
+//! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:
 //! `IterationStart → TextChunk* / ThinkingChunk* → ToolCallStart →
@@ -13,9 +14,12 @@ use serde_json::Value as JsonValue;
 
 use sylvander_llm_anthropic::api::types::{Message, Usage};
 
-/// Events emitted by the agent loop. Used by both `on_event` callbacks
-/// and `run_stream()`.
-#[derive(Debug, Clone)]
+use crate::error::AgentLoopError;
+
+/// Events emitted by the agent loop. All consumption paths
+/// (`run()`, `run_with_events()`, `run_stream()`) consume the same
+/// underlying stream — there is one source of truth for the iteration.
+#[derive(Debug)]
 pub enum AgentEvent {
     /// A new iteration is starting (LLM call about to fire).
     IterationStart {
@@ -73,8 +77,6 @@ pub enum AgentEvent {
     /// or hit `max_iterations` without `end_turn`).
     Done(Message),
 
-    /// The loop terminated with an error. Wrapped as a string for
-    /// `Clone` support (callers needing the variant can use
-    /// `AgentLoopError` directly from `run()`).
-    Error(String),
+    /// The loop terminated with an error.
+    Error(AgentLoopError),
 }
