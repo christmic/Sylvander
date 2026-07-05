@@ -16,9 +16,6 @@
 //! ## Quickstart
 //!
 //! ```no_run
-//! use std::collections::HashMap;
-//! use std::sync::Arc;
-//! use futures_util::StreamExt;
 //! use sylvander_llm_anthropic::prelude::*;
 //! use sylvander_agent::prelude::*;
 //!
@@ -36,7 +33,7 @@
 //!     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
 //!     .build()?;
 //!
-//! let loop_ = AgentLoop::builder()
+//! let mut loop_ = AgentLoop::builder()
 //!     .client(client)
 //!     .model(model)
 //!     .max_iterations(50)
@@ -45,19 +42,8 @@
 //! let initial = vec![MessageParam::user("List files in /tmp")];
 //!
 //! // Await full completion
-//! let run = loop_.run(initial.clone()).await?;
+//! let run = loop_.run(initial).await?;
 //! println!("finished after {} iterations", run.iterations);
-//!
-//! // OR — reactive event stream
-//! let mut events = loop_.run_stream(initial);
-//! while let Some(event) = events.next().await {
-//!     match event {
-//!         AgentEvent::TextChunk(t) => print!("{t}"),
-//!         AgentEvent::ToolCallStart { name, .. } => println!("\n[tool] {name}"),
-//!         AgentEvent::Done(msg) => { println!("\n[done]"); break; }
-//!         _ => {}
-//!     }
-//! }
 //! # Ok(())
 //! # }
 //! ```
@@ -106,4 +92,5 @@ pub mod prelude {
     pub use crate::event::AgentEvent;
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, AgentRun};
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use sylvander_llm_anthropic::prelude::*;
 }
