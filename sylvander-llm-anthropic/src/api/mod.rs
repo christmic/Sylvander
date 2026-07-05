@@ -13,6 +13,7 @@
 //! - [`types`] — wire-format types (blocks, tools, content, etc.)
 
 pub mod batches;
+pub mod blocking;
 pub mod client;
 pub mod error;
 pub mod message_stream;
