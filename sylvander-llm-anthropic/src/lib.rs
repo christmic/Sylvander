@@ -24,7 +24,7 @@
 //!     .build()?;
 //!
 //! let request = CreateMessageRequest::builder()
-//!     .model(ModelId::ClaudeSonnet5)
+//!     .model("claude-sonnet-5-20260601")
 //!     .max_tokens(1024)
 //!     .messages(vec![MessageParam::user("Hello, Claude")])
 //!     .build()
@@ -49,7 +49,7 @@
 //! #     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
 //! #     .build()?;
 //! let request = CreateMessageRequest::builder()
-//!     .model(ModelId::ClaudeSonnet5)
+//!     .model("claude-sonnet-5-20260601")
 //!     .max_tokens(1024)
 //!     .messages(vec![MessageParam::user("Stream me a story")])
 //!     .build()
@@ -82,7 +82,7 @@ pub mod api;
 pub mod prelude {
     pub use crate::api::client::{AnthropicClient, AnthropicClientBuilder};
     pub use crate::api::error::AnthropicError;
-    pub use crate::api::model_registry::{ModelCapabilities, ModelId, ModelInfo};
+    pub use crate::api::model::{ModelCapabilities, ModelInfo, ModelInfoBuilder};
     pub use crate::api::request::{CreateMessageRequest, CreateMessageRequestBuilder};
     pub use crate::api::types::{
         CacheControl, CacheTtl, ContentBlock, ContentDelta, Effort, ImageBlock, InputSchema,

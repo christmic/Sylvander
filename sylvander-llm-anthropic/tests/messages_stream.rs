@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use serde_json::json;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
-use sylvander_llm_anthropic::api::model_registry::ModelId;
+// ModelId removed; pass model string directly
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::{ContentDelta, ContentBlock, MessageParam, RawStreamEvent, StopReason};
 use wiremock::matchers::{header, method, path};
@@ -20,7 +20,7 @@ fn mock_client(server: &MockServer) -> AnthropicClient {
 
 fn minimal_request() -> CreateMessageRequest {
     CreateMessageRequest::builder()
-        .model(ModelId::ClaudeSonnet5)
+        .model("claude-sonnet-5-20260601")
         .max_tokens(1024)
         .messages(vec![MessageParam::user("Tell me a story")])
         .build()

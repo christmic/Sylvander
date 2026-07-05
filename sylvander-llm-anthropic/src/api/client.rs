@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn build_request_headers_adds_thinking_beta() {
-        use super::super::model_registry::ModelId;
+        // ModelId removed; pass model string directly
         use super::super::request::CreateMessageRequest;
         use super::super::types::MessageParam;
 
@@ -346,7 +346,7 @@ mod tests {
             .build()
             .expect("build should succeed");
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(2048)
             .messages(vec![MessageParam::user("Hi")])
             .thinking(1024)
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn build_request_headers_adds_structured_output_beta() {
-        use super::super::model_registry::ModelId;
+        // ModelId removed; pass model string directly
         use super::super::request::CreateMessageRequest;
         use super::super::types::{MessageParam, OutputConfig};
 
@@ -370,7 +370,7 @@ mod tests {
             .build()
             .expect("build should succeed");
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Hi")])
             .output_config(OutputConfig::default())
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn build_request_headers_combines_client_and_request_betas() {
-        use super::super::model_registry::ModelId;
+        // ModelId removed; pass model string directly
         use super::super::request::CreateMessageRequest;
         use super::super::types::MessageParam;
 
@@ -395,7 +395,7 @@ mod tests {
             .build()
             .expect("build should succeed");
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(2048)
             .messages(vec![MessageParam::user("Hi")])
             .thinking(1024)
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn build_request_headers_no_betas_when_request_plain() {
-        use super::super::model_registry::ModelId;
+        // ModelId removed; pass model string directly
         use super::super::request::CreateMessageRequest;
         use super::super::types::MessageParam;
 
@@ -419,7 +419,7 @@ mod tests {
             .build()
             .expect("build should succeed");
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Hi")])
             .build()
