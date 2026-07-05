@@ -99,4 +99,5 @@ pub mod tool;
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
     pub use crate::error::AgentLoopError;
+    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
 }
