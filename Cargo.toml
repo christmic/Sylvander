@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "sylvander-llm-anthropic",
+    "sylvander-agent",
 ]
 
 [workspace.package]
