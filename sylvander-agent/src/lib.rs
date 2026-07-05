@@ -98,6 +98,10 @@ pub mod tool;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
+    pub use crate::compress::{
+        CompressContext, CompressionOutcome, Compressor, NoCompression,
+        SimpleWindowCompressor,
+    };
     pub use crate::error::AgentLoopError;
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
 }
