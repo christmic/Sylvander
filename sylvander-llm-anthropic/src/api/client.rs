@@ -57,6 +57,48 @@ impl AnthropicClient {
         MessagesApi::new(self)
     }
 
+    /// Build a blocking (sync) wrapper around this client using the
+    /// default runtime configuration.
+    ///
+    /// # Errors
+    /// Returns [`super::blocking::BlockingClientError::Client`] if the
+    /// client builder rejects the inputs (e.g., missing `api_key`), or
+    /// [`super::blocking::BlockingClientError::Runtime`] if the tokio
+    /// runtime fails to build.
+    pub fn blocking(self) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError> {
+        self.blocking_with_config(super::blocking::BlockingConfig::default())
+    }
+
+    /// Build a blocking wrapper with a custom runtime configuration.
+    ///
+    /// # Errors
+    /// See [`Self::blocking`].
+    pub fn blocking_with_config(
+        self,
+        config: super::blocking::BlockingConfig,
+    ) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError> {
+        super::blocking::BlockingAnthropicClient::with_config(
+            self.into_builder(),
+            config,
+        )
+    }
+
+    /// Consume `self` and produce a builder that reproduces this
+    /// client's configuration. Used by `blocking()` to rebuild a
+    /// builder from an existing client.
+    ///
+    /// Note: timeout is not preserved (`reqwest::Client` doesn't expose
+    /// it back); the default timeout is used for the rebuilt builder.
+    fn into_builder(self) -> AnthropicClientBuilder {
+        AnthropicClientBuilder {
+            api_key: Some(self.inner.api_key.clone()),
+            base_url: self.inner.base_url.to_string(),
+            anthropic_version: self.inner.anthropic_version.clone(),
+            beta_headers: self.inner.beta_headers.clone(),
+            timeout: DEFAULT_TIMEOUT,
+        }
+    }
+
     /// Base URL for API requests.
     #[must_use]
     pub fn base_url(&self) -> &Url {
