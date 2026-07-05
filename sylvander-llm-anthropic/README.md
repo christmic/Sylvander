@@ -3,17 +3,16 @@
 Sylvander v2 Anthropic Protocol SDK — minimal Rust wrapper for the Anthropic
 Messages API.
 
-This is the **M1 Protocol SDK** layer. It implements only the wire format the
-Agent loop actually needs:
+This is the **M1 Protocol SDK** layer. It implements the wire format for:
 
-| Endpoint | Sync | Stream |
-|----------|------|--------|
-| `POST /v1/messages` | yes | yes (SSE) |
-| `POST /v1/messages/count_tokens` | yes | — |
-
-Everything else (`/v1/files`, `/v1/models`, `/v1/messages/batches`,
-Anthropic Managed Agents platform, Bedrock/Vertex/AWS multi-backend) is
-**out of scope for v2 M1**.
+| Endpoint | Sync | Stream | Notes |
+|----------|------|--------|-------|
+| `POST /v1/messages` | yes | yes (SSE) | full Message assembly |
+| `POST /v1/messages/count_tokens` | yes | — | pre-flight budget check |
+| `POST /v1/messages/batches` | yes | — | create batch (50% discount) |
+| `GET /v1/messages/batches` | yes | — | list batches |
+| `GET /v1/messages/batches/{id}` | yes | — | poll batch status |
+| `POST /v1/messages/batches/{id}/cancel` | yes | — | cancel in-progress batch |
 
 ## Usage
 
@@ -33,15 +32,13 @@ let client = AnthropicClient::builder()
     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
     .build()?;
 
-let msg = client.messages()
-    .create(
-        CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
-            .max_tokens(1024)
-            .messages(vec![MessageParam::user("Hello")])
-            .build()?,
-    )
-    .await?;
+let msg = client.messages().create(
+    CreateMessageRequest::builder()
+        .model("claude-sonnet-5-20260601")
+        .max_tokens(1024)
+        .messages(vec![MessageParam::user("Hello")])
+        .build()?
+).await?;
 ```
 
 ### Streaming
@@ -49,54 +46,126 @@ let msg = client.messages()
 ```rust
 use futures_util::StreamExt;
 
-let mut stream = client.messages()
-    .stream(/* same request */)
-    .await?;
-
+let mut stream = client.messages().stream(/* same request */).await?;
 while let Some(event) = stream.next().await {
-    match event? {
-        StreamEvent::ContentBlockDelta { delta: ContentDelta::TextDelta(t), .. } => {
-            print!("{}", t.text);
-        }
-        StreamEvent::MessageStop => break,
-        _ => {}
+    let event = event?;
+    if let RawStreamEvent::ContentBlockDelta { delta: ContentDelta::TextDelta { text }, .. } = &event {
+        print!("{text}");
+    }
+    if matches!(event, RawStreamEvent::MessageStop) {
+        break;
     }
 }
+let final_msg = stream.final_message().expect("MessageStop was seen");
+```
 
-let final_message = stream.final_message().expect("MessageStop was seen");
+### Sync blocking (no async)
+
+For CLI tools / scripts:
+
+```rust
+let blocking = client.blocking()?;
+let msg = blocking.messages().create(&request)?;  // no .await
 ```
 
 ### Count tokens
 
 ```rust
-let count = client.messages()
-    .count_tokens(&request)
-    .await?;
+let count = client.messages().count_tokens(&request).await?;
 println!("will use {} input tokens", count.input_tokens);
+```
+
+### Message Batches
+
+```rust
+let batch = client.messages().batches().create(&batch_request).await?;
+// poll
+let status = client.messages().batches().retrieve(&batch.id).await?;
+if status.processing_status == ProcessingStatus::Ended {
+    // download results_url .jsonl
+}
+```
+
+## Architecture
+
+```
+src/
+├── lib.rs                      crate root + prelude
+└── api/
+    ├── client.rs               AnthropicClient + builder
+    ├── error.rs                AnthropicError (thiserror)
+    ├── model.rs                ModelInfo / ModelCapabilities TYPES (no values)
+    ├── request.rs              CreateMessageRequest + builder
+    ├── messages.rs             MessagesApi (create / stream / count_tokens)
+    ├── message_stream.rs       MessageStream wrapper (impl Stream)
+    ├── streaming.rs            SseParser (byte → RawStreamEvent)
+    ├── batches.rs              BatchesApi (create/retrieve/list/cancel)
+    ├── blocking.rs             BlockingAnthropicClient + BlockingMessagesApi
+    └── types/
+        ├── batch.rs            MessageBatch + variants
+        ├── block.rs            ContentBlock / UserContentBlock
+        ├── cache.rs            CacheControl / CacheTtl
+        ├── citation.rs         TextCitation (5 variants) + Citations
+        ├── event.rs            RawStreamEvent + ContentDelta + MessageDelta
+        ├── image.rs            ImageBlock (base64 inline)
+        ├── message.rs          MessageParam / Message / MessageTokensCount
+        ├── output_config.rs    OutputConfig + JsonOutputFormat + Effort
+        ├── stop_reason.rs      StopReason enum
+        ├── system_prompt.rs    SystemPrompt + SystemTextBlock
+        ├── thinking.rs         ThinkingConfig
+        ├── tool.rs             Tool / ToolChoice / InputSchema
+        ├── tool_result.rs      ToolResultBlock
+        └── usage.rs            Usage
 ```
 
 ## Feature Coverage
 
-See `anthropic-sdk-capabilities.md` in the Oraculo repo
-(`projects/Sylvander/designs/`) for the full capability surface. Highlights:
-
 - **Tools**: custom function tools only (declarative `{name, description, input_schema}`)
-- **Tool choice**: `auto` / `any` / `none` / specific tool
+- **Tool choice**: `auto` / `any` / `none` / specific tool (+ `disable_parallel_tool_use`)
 - **Prompt caching**: `cache_control` ephemeral breakpoint on any block
 - **Extended thinking**: `thinking` config (beta header auto-attached)
 - **Structured output**: `output_config` with JSON Schema (beta header auto-attached)
 - **Multimodal**: base64 image blocks inline (no files API)
 - **Streaming**: full SSE event surface, plus assembled `final_message()`
+- **Citations**: strong-typed 5 location variants
+- **Batches**: full CRUD + cancel
+- **Blocking API**: sync wrappers for non-async callers
+
+## Tests
+
+```bash
+cargo test --workspace                  # all 159 tests
+cargo test --test real_api -- --ignored # 3 tests against real Anthropic API (needs key)
+```
+
+Test breakdown:
+
+- 126 unit (serde round-trip + parser logic + builder validation + error classification)
+- 14 wiremock integration (`tests/`)
+- 3 large-stream stress (`tests/large_stream.rs` — 10K events, 100K chars)
+- 2 sync blocking integration (`tests/blocking.rs`)
+- 8 batches integration (`tests/messages_batches.rs`)
+- 3 real API `#[ignore]` (`tests/real_api.rs`)
+- 2 doctest (`lib.rs` examples)
 
 ## Non-goals
 
 - File uploads (Loop reads local files and base64-encodes them)
-- Batch API
-- Model listing API (model registry is hardcoded)
+- Model listing API (model registry is `ModelInfo` type only — caller
+  maintains their own)
 - Anthropic Managed Agents platform (we build our own loop)
-- Bedrock / Vertex / Foundry / AWS multi-backend (Anthropic API direct only)
-- Citations strong typing (passed through as opaque JSON)
-- Sync blocking API (M2/M3 may add)
+- Bedrock / Vertex / Foundry / AWS multi-backend (Anthropic API direct
+  only; `base_url` is configurable for proxies)
+- Sync blocking streaming (anti-pattern — 1 stream = 1 thread blocked)
+- Retry / backoff (caller's responsibility)
+
+## Conventions
+
+- SDK is purely a protocol wrapper — no model-specific logic baked in
+- All `beta`-feature headers auto-attach based on request fields
+- `base_url` defaults to `https://api.anthropic.com`; override for
+  proxies
+- Errors classify as retryable vs permanent in `AnthropicError::is_retryable()`
 
 ## License
 
