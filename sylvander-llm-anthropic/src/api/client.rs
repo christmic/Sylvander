@@ -218,9 +218,18 @@ impl AnthropicClientBuilder {
 
     /// Override the API base URL. Defaults to
     /// `https://api.anthropic.com`.
+    ///
+    /// A trailing slash is automatically appended if missing — without
+    /// it, `Url::join("v1/messages")` would treat the last path
+    /// segment as a file and replace it. Pass either form; both work.
     #[must_use]
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = url.into();
+        let url = url.into();
+        self.base_url = if url.ends_with('/') {
+            url
+        } else {
+            format!("{url}/")
+        };
         self
     }
 
