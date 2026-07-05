@@ -80,15 +80,22 @@ pub mod api;
 
 /// Convenient re-exports for the most commonly used types.
 pub mod prelude {
+    pub use crate::api::batches::BatchesApi;
+    pub use crate::api::blocking::{BlockingAnthropicClient, BlockingClientError, BlockingConfig};
     pub use crate::api::client::{AnthropicClient, AnthropicClientBuilder};
     pub use crate::api::error::AnthropicError;
+    pub use crate::api::messages::MessagesApi;
     pub use crate::api::model::{ModelCapabilities, ModelInfo, ModelInfoBuilder};
     pub use crate::api::request::{CreateMessageRequest, CreateMessageRequestBuilder};
     pub use crate::api::types::{
-        CacheControl, CacheTtl, ContentBlock, ContentDelta, Effort, ImageBlock, InputSchema,
-        JsonOutputFormat, Message, MessageKind, MessageParam, MessageRole, MessageTokensCount,
-        OutputConfig, RawStreamEvent, RichToolResultBlock, StopReason, SystemPrompt,
-        SystemTextBlock, TextBlock, ThinkingBlock, ThinkingConfig, Tool, ToolChoice,
-        ToolResultBlock, ToolUseBlock, Usage, UserContent, UserContentBlock,
+        BatchRequest, CacheControl, CacheTtl, CitationCharLocation, CitationContentBlockLocation,
+        CitationPageLocation, CitationsSearchResultLocation, CitationsWebSearchResultLocation,
+        ContentBlock, ContentDelta, CreateMessageBatchRequest, Effort, ImageBlock, InputSchema,
+        JsonOutputFormat, ListBatchesParams, Message, MessageBatch, MessageBatchIndividualResponse,
+        MessageBatchKind, MessageBatchRequestCounts, MessageBatchResult, MessageBatchesPage,
+        MessageKind, MessageParam, MessageRole, MessageTokensCount, OutputConfig,
+        ProcessingStatus, RawStreamEvent, RichToolResultBlock, StopReason, SystemPrompt,
+        SystemTextBlock, TextBlock, TextCitation, ThinkingBlock, ThinkingConfig, Timestamp,
+        Tool, ToolChoice, ToolResultBlock, ToolUseBlock, Usage, UserContent, UserContentBlock,
     };
 }
