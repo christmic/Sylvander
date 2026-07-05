@@ -216,3 +216,65 @@ async fn stream_wrong_content_type_errors() {
         Err(other) => panic!("expected Validation error, got {other:?}"),
     }
 }
+#[tokio::test]
+async fn stream_citations_delta_strongly_typed() {
+    let server = MockServer::start().await;
+
+    let stream_body = "\
+event: message_start
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_cite\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-5-20260601\",\"stop_reason\":null,\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"type\":\"char_location\",\"cited_text\":\"hello world\",\"document_index\":0,\"start_char_index\":6,\"end_char_index\":11}}}
+
+event: content_block_stop
+data: {\"type\":\"content_block_stop\",\"index\":0}
+
+event: message_delta
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}
+
+event: message_stop
+data: {\"type\":\"message_stop\"}
+
+";
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(stream_body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let client = mock_client(&server);
+    let mut stream = client
+        .messages()
+        .stream(&minimal_request())
+        .await
+        .expect("stream should succeed");
+
+    let mut found_citation = false;
+    while let Some(event) = stream.next().await {
+        let event = event.expect("event should be Ok");
+        if let sylvander_llm_anthropic::api::types::RawStreamEvent::ContentBlockDelta {
+            delta:
+                sylvander_llm_anthropic::api::types::ContentDelta::CitationsDelta {
+                    citation:
+                        sylvander_llm_anthropic::api::types::TextCitation::CharLocation(c),
+                },
+            ..
+        } = &event
+        {
+            assert_eq!(c.cited_text, "hello world");
+            assert_eq!(c.document_index, 0);
+            assert_eq!(c.start_char_index, 6);
+            assert_eq!(c.end_char_index, 11);
+            found_citation = true;
+        }
+    }
+    assert!(found_citation, "expected to find citations_delta event");
+}

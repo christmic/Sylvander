@@ -19,6 +19,7 @@
 pub mod batch;
 pub mod block;
 pub mod cache;
+pub mod citation;
 pub mod event;
 pub mod image;
 pub mod message;
@@ -40,6 +41,10 @@ pub use block::{
     UserContent, UserContentBlock,
 };
 pub use cache::{CacheControl, CacheControlKind, CacheTtl};
+pub use citation::{
+    CitationCharLocation, CitationContentBlockLocation, CitationPageLocation,
+    CitationsSearchResultLocation, CitationsWebSearchResultLocation, TextCitation,
+};
 pub use event::{ContentDelta, MessageDelta, MessageDeltaUsage, RawStreamEvent};
 pub use image::{Base64ImageSource, ImageBlock, ImageMediaType, ImageSource};
 pub use message::{Message, MessageKind, MessageParam, MessageRole, MessageTokensCount};
