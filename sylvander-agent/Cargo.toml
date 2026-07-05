@@ -1,0 +1,27 @@
+[package]
+name = "sylvander-agent"
+description = "Sylvander v2 Agent Loop — async reactive driver for the Anthropic Messages API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+tokio = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+async-stream = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json = "1"
+
+[lints]
+workspace = true
