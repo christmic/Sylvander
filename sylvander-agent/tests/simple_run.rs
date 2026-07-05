@@ -328,9 +328,9 @@ async fn llm_error_propagates_without_retry() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
-            "type": "api_error",
-            "message": "internal error"
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "type": "invalid_request_error",
+            "message": "bad input"
         })))
         .mount(&server)
         .await;
@@ -345,6 +345,7 @@ async fn llm_error_propagates_without_retry() {
         .run(vec![MessageParam::user("Hi")])
         .await;
 
+    // 4xx is non-retryable — propagates with retries: 0
     assert!(matches!(result, Err(AgentLoopError::Llm { retries: 0, .. })));
 }
 
