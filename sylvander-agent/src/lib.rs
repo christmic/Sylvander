@@ -80,6 +80,7 @@ pub mod error;
 pub mod event;
 pub mod loop_;
 pub mod tool;
+pub mod tools;
 
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
@@ -92,5 +93,6 @@ pub mod prelude {
     pub use crate::event::AgentEvent;
     pub use crate::loop_::{AgentLoop, AgentLoopBuilder, AgentRun};
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use crate::tools::ReadTool;
     pub use sylvander_llm_anthropic::prelude::*;
 }
