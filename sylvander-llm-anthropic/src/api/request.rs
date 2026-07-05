@@ -131,17 +131,13 @@ pub struct CreateMessageRequestBuilder {
 }
 
 impl CreateMessageRequestBuilder {
-    /// Set the model (canonical Anthropic ID string).
+    /// Set the model (canonical Anthropic ID string, e.g.,
+    /// `"claude-sonnet-5-20260601"`).
+    ///
+    /// The SDK treats the model ID as opaque — caller is responsible
+    /// for ensuring the model exists in their own registry.
     #[must_use]
-    pub fn model(mut self, model: super::model_registry::ModelId) -> Self {
-        self.model = Some(model.as_str().to_string());
-        self
-    }
-
-    /// Override the model with a raw string (use [`Self::model`] for
-    /// `ModelId` enum values).
-    #[must_use]
-    pub fn model_str(mut self, model: impl Into<String>) -> Self {
+    pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
         self
     }
@@ -271,13 +267,12 @@ impl CreateMessageRequestBuilder {
 mod tests {
     use super::*;
     use crate::api::error::AnthropicError;
-    use crate::api::model_registry::ModelId;
     use crate::api::types::{InputSchema, Tool};
 
     #[test]
     fn builder_minimal_required() {
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Hi")])
             .build()
@@ -299,7 +294,7 @@ mod tests {
     #[test]
     fn builder_missing_max_tokens_errors() {
         let result = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .messages(vec![MessageParam::user("Hi")])
             .build();
         assert!(matches!(result, Err(AnthropicError::Validation(_))));
@@ -308,7 +303,7 @@ mod tests {
     #[test]
     fn builder_missing_messages_errors() {
         let result = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .build();
         assert!(matches!(result, Err(AnthropicError::Validation(_))));
@@ -317,7 +312,7 @@ mod tests {
     #[test]
     fn validate_empty_messages_errors() {
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![])
             .build()
@@ -328,7 +323,7 @@ mod tests {
     #[test]
     fn validate_temperature_out_of_range_errors() {
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Hi")])
             .temperature(1.5)
@@ -340,7 +335,7 @@ mod tests {
     #[test]
     fn validate_thinking_budget_greater_than_max_tokens_errors() {
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(100)
             .messages(vec![MessageParam::user("Hi")])
             .thinking(200)
@@ -353,7 +348,7 @@ mod tests {
     fn builder_with_tools() {
         let tool = Tool::new("ping", "Health check", InputSchema::empty());
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Ping")])
             .tool(tool)
@@ -366,7 +361,7 @@ mod tests {
     #[test]
     fn serialization_omits_optional_fields() {
         let req = CreateMessageRequest::builder()
-            .model(ModelId::ClaudeSonnet5)
+            .model("claude-sonnet-5-20260601")
             .max_tokens(1024)
             .messages(vec![MessageParam::user("Hi")])
             .build()

@@ -3,7 +3,7 @@
 use serde_json::json;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
-use sylvander_llm_anthropic::api::model_registry::ModelId;
+// ModelId removed; pass model string directly
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::{ContentBlock, InputSchema, MessageParam, StopReason, Tool, ToolChoice};
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -19,7 +19,7 @@ fn mock_client(server: &MockServer) -> AnthropicClient {
 
 fn minimal_request() -> CreateMessageRequest {
     CreateMessageRequest::builder()
-        .model(ModelId::ClaudeSonnet5)
+        .model("claude-sonnet-5-20260601")
         .max_tokens(1024)
         .messages(vec![MessageParam::user("Hello")])
         .build()
@@ -113,7 +113,7 @@ async fn create_with_tools_serializes_correctly() {
         ),
     );
     let req = CreateMessageRequest::builder()
-        .model(ModelId::ClaudeSonnet5)
+        .model("claude-sonnet-5-20260601")
         .max_tokens(1024)
         .messages(vec![MessageParam::user("Weather in Tokyo?")])
         .tool(tool)
@@ -152,7 +152,7 @@ async fn create_with_tool_choice_specific_tool() {
         .await;
 
     let req = CreateMessageRequest::builder()
-        .model(ModelId::ClaudeSonnet5)
+        .model("claude-sonnet-5-20260601")
         .max_tokens(1024)
         .messages(vec![MessageParam::user("Read foo.txt")])
         .tool(Tool::new("Read", "Read a file", InputSchema::empty()))
