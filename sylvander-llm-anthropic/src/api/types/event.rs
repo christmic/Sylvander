@@ -2,9 +2,9 @@
 //! `POST /v1/messages` with `stream: true`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 
 use super::block::ContentBlock;
+use super::citation::TextCitation;
 use super::message::Message;
 use super::stop_reason::StopReason;
 
@@ -92,12 +92,11 @@ pub enum ContentDelta {
         /// The signature fragment.
         signature: String,
     },
-    /// `citations_delta` — citations for a text block. Sylvander v2 does
-    /// not strong-type citations; the JSON is passed through.
+    /// `citations_delta` — citations for a text block.
     #[serde(rename = "citations_delta")]
     CitationsDelta {
-        /// Opaque citations payload.
-        citation: JsonValue,
+        /// The citation payload (one of 5 strong-typed variants).
+        citation: TextCitation,
     },
 }
 
