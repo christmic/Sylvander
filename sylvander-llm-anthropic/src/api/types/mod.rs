@@ -16,6 +16,7 @@
 //! | [`tool_result`] | `ToolResultBlock` (user re-feed of tool output) |
 //! | [`usage`] | Token usage accounting |
 
+pub mod batch;
 pub mod block;
 pub mod cache;
 pub mod event;
@@ -29,6 +30,11 @@ pub mod tool;
 pub mod tool_result;
 pub mod usage;
 
+pub use batch::{
+    BatchError, BatchErrorKind, BatchRequest, CreateMessageBatchRequest, ListBatchesParams,
+    MessageBatch, MessageBatchIndividualResponse, MessageBatchKind, MessageBatchRequestCounts,
+    MessageBatchResult, MessageBatchesPage, ProcessingStatus, Timestamp,
+};
 pub use block::{
     ContentBlock, TextBlock, TextBlockKind, ThinkingBlock, ThinkingBlockKind, ToolUseBlock,
     UserContent, UserContentBlock,

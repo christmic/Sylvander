@@ -12,6 +12,7 @@
 //! - [`response`] — `Message` response type and tokens count
 //! - [`types`] — wire-format types (blocks, tools, content, etc.)
 
+pub mod batches;
 pub mod client;
 pub mod error;
 pub mod message_stream;
