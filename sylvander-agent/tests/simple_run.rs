@@ -54,14 +54,14 @@ async fn single_iteration_end_turn_returns_final_message() {
     let mut loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
-        .on_event(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })
         .build()
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("Hi")])
+        .run_with_events(
+            vec![MessageParam::user("Hi")],
+            |event| events_clone.lock().unwrap().push(event),
+        )
         .await
         .expect("run should succeed");
 
@@ -82,7 +82,7 @@ async fn single_iteration_end_turn_returns_final_message() {
         .collect();
     assert_eq!(
         event_kinds,
-        vec!["IterationStart", "TextChunk", "IterationEnd", "Done"]
+        vec!["IterationStart", "TextChunk", "IterationEnd"]
     );
 }
 
@@ -139,14 +139,14 @@ async fn tool_use_triggers_tool_execution_and_continues() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(weather_tool)
-        .on_event(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })
         .build()
         .expect("build");
 
     let run = loop_
-        .run(vec![MessageParam::user("Get weather")])
+        .run_with_events(
+            vec![MessageParam::user("Get weather")],
+            |event| events_clone.lock().unwrap().push(event),
+        )
         .await
         .expect("run should succeed");
 
@@ -375,14 +375,14 @@ async fn event_order_iteration_start_chunks_end() {
     let mut loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
-        .on_event(move |event| {
-            events_clone.lock().unwrap().push(event);
-        })
         .build()
         .expect("build");
 
     loop_
-        .run(vec![MessageParam::user("Think")])
+        .run_with_events(
+            vec![MessageParam::user("Think")],
+            move |event| events_clone.lock().unwrap().push(event),
+        )
         .await
         .expect("run");
 
@@ -405,7 +405,6 @@ async fn event_order_iteration_start_chunks_end() {
             "ThinkingChunk",
             "TextChunk",
             "IterationEnd",
-            "Done",
         ]
     );
 }

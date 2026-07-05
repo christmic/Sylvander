@@ -61,25 +61,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Reactive event stream
 
-Use `on_event` to react to events as they happen (text chunks, tool
-calls, compression, etc.):
+Use `run_with_events` to react to events as they happen (text chunks,
+tool calls, compression, etc.):
 
 ```rust,no_run
 use sylvander_agent::prelude::*;
 
 # async fn example(loop_: AgentLoop) -> Result<(), Box<dyn std::error::Error>> {
 let mut loop_ = loop_;
-let run = loop_.run_with_events(vec![MessageParam::user("hi"))], |event| {
-    match event {
+let run = loop_.run_with_events(
+    vec![MessageParam::user("hi")],
+    |event| match event {
         AgentEvent::TextChunk(t) => print!("{t}"),
         AgentEvent::ToolCallStart { name, .. } => eprintln!("\n[tool] {name}"),
         AgentEvent::Compressed { removed_count, .. } => {
             eprintln!("[compressed, dropped {removed_count} messages]")
         }
-        AgentEvent::Done(_) => eprintln!("\n[done]"),
         _ => {}
-    }
-}).await?;
+    },
+).await?;
+# Ok(())
+# }
+```
+
+`run_with_events` fires **non-terminal** events into the callback
+(`IterationStart`, `TextChunk`, `ToolCallStart`, `ToolCallEnd`,
+`Compressed`, `IterationEnd`). The terminal `Done` event is
+extracted into the returned `AgentRun`; terminal `Error` is
+returned as the `Err` variant. This avoids double-handling.
+
+### Pull from a stream directly
+
+For `select!`, timeout cancellation, or merging multiple agents,
+pull from `run_stream()`:
+
+```rust,no_run
+use futures_util::StreamExt;
+use sylvander_agent::prelude::*;
+
+# async fn example(loop_: AgentLoop) -> Result<(), Box<dyn std::error::Error>> {
+let mut loop_ = loop_;
+let mut stream = Box::pin(loop_.run_stream(vec![MessageParam::user("hi")]));
+while let Some(event) = stream.next().await {
+    // Full control — including `select!` over other futures
+    # let _ = event;
+}
 # Ok(())
 # }
 ```
@@ -187,6 +213,19 @@ Error(String)                         loop terminated with error
 
 ## API Reference
 
+| Method | Signature | Description |
+|---|---|---|
+| `run(initial)` | `async` | Drive loop, return `Result<AgentRun, _>` — convenience over `run_stream` |
+| `run_with_events(initial, callback)` | `async` | Drive loop, fire non-terminal events into callback, return final `AgentRun` |
+| `run_stream(initial)` | `-> impl Stream<Item = AgentEvent>` | Core API — drive loop, yield events as they happen |
+| `model()` | `-> &ModelInfo` | Resolved model metadata |
+| `tools()` | `-> &ToolRegistry` | Configured tool registry |
+| `compressor()` | `-> &dyn Compressor` | Compression strategy |
+| `max_iterations()` | `-> u32` | Configured cap |
+| `max_retries()` | `-> u32` | Configured retry count |
+
+### Builder methods
+
 | Builder method | Default | Description |
 |---|---|---|
 | `client(client)` | required | Anthropic SDK client |
@@ -196,9 +235,12 @@ Error(String)                         loop terminated with error
 | `compressor(c)` | `NoCompression` | Compression strategy |
 | `max_iterations(n)` | 50 | Iteration cap |
 | `max_retries(n)` | 3 | Per-LLM-call retry on transient errors; 0 = disable |
-| `on_event(f)` | none | Reactive event callback |
 
-`run(initial_messages)` returns `Result<AgentRun, AgentLoopError>`.
+Note: the previous `on_event(f)` builder method was removed in the
+stream-first refactor — events are now delivered through
+`run_with_events(initial, callback)` or by pulling from
+`run_stream(initial)` directly.
+
 `AgentRun { final_message, iterations, total_usage }`.
 
 ## Error types
