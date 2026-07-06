@@ -239,40 +239,6 @@ impl AgentLoop {
     pub fn max_retries(&self) -> u32 {
         self.max_retries
     }
-
-    /// Drive the agent loop and yield events as they happen. Method
-    /// delegate to the module-level [`run_stream`] free function.
-    pub fn run_stream(
-        &mut self,
-        initial_messages: Vec<MessageParam>,
-    ) -> impl Stream<Item = AgentEvent> + Send + '_ {
-        run_stream(&*self, initial_messages)
-    }
-
-    /// Convenience wrapper around [`run_stream`] that consumes the
-    /// event stream and returns the final [`AgentRun`]. Method
-    /// delegate to the module-level [`run`] free function.
-    pub async fn run(
-        &mut self,
-        initial_messages: Vec<MessageParam>,
-    ) -> Result<AgentRun, AgentLoopError> {
-        run(&*self, initial_messages).await
-    }
-
-    /// Convenience wrapper around [`run_stream`] that fires every
-    /// event into the supplied callback, then returns the final
-    /// [`AgentRun`]. Method delegate to the module-level
-    /// [`run_with_events`] free function.
-    pub async fn run_with_events<F>(
-        &mut self,
-        initial_messages: Vec<MessageParam>,
-        on_event: F,
-    ) -> Result<AgentRun, AgentLoopError>
-    where
-        F: FnMut(AgentEvent) + Send,
-    {
-        run_with_events(&*self, initial_messages, on_event).await
-    }
 }
 
 // =====================================================================

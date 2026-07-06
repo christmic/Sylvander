@@ -51,19 +51,19 @@ async fn single_iteration_end_turn_returns_final_message() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .build()
         .expect("build");
 
-    let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Hi")],
-            |event| events_clone.lock().unwrap().push(event),
-        )
-        .await
-        .expect("run should succeed");
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Hi")],
+        |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run should succeed");
 
     assert_eq!(run.final_message.id, "msg_1");
     assert_eq!(run.iterations, 1);
@@ -135,20 +135,20 @@ async fn tool_use_triggers_tool_execution_and_continues() {
         ToolOutput::ok("sunny, 25C"),
     );
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(weather_tool)
         .build()
         .expect("build");
 
-    let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Get weather")],
-            |event| events_clone.lock().unwrap().push(event),
-        )
-        .await
-        .expect("run should succeed");
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Get weather")],
+        |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run should succeed");
 
     assert_eq!(run.final_message.id, "msg_2");
     assert_eq!(run.iterations, 2);
@@ -194,7 +194,7 @@ async fn max_iterations_limit_enforced() {
 
     let noop_tool = MockTool::new("noop", "no-op", ToolOutput::ok(""));
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(noop_tool)
@@ -202,9 +202,7 @@ async fn max_iterations_limit_enforced() {
         .build()
         .expect("build");
 
-    let result = loop_
-        .run(vec![MessageParam::user("Loop forever")])
-        .await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Loop forever")]).await;
 
     assert!(matches!(
         result,
@@ -253,15 +251,14 @@ async fn tool_error_continues_loop() {
 
     let failing_tool = MockTool::new("failing_tool", "always fails", ToolOutput::err("intentional failure"));
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(failing_tool)
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("Try tool")])
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Try tool")])
         .await
         .expect("run should succeed even when tool errors");
 
@@ -308,14 +305,13 @@ async fn tool_not_found_records_error_and_continues() {
         .await;
 
     // No tools registered
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("Try missing")])
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Try missing")])
         .await
         .expect("run should succeed");
 
@@ -335,15 +331,13 @@ async fn llm_error_propagates_without_retry() {
         .mount(&server)
         .await;
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .build()
         .expect("build");
 
-    let result = loop_
-        .run(vec![MessageParam::user("Hi")])
-        .await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Hi")]).await;
 
     // 4xx is non-retryable — propagates with retries: 0
     assert!(matches!(result, Err(AgentLoopError::Llm { retries: 0, .. })));
@@ -372,19 +366,19 @@ async fn event_order_iteration_start_chunks_end() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .build()
         .expect("build");
 
-    loop_
-        .run_with_events(
-            vec![MessageParam::user("Think")],
-            move |event| events_clone.lock().unwrap().push(event),
-        )
-        .await
-        .expect("run");
+    sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Think")],
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run");
 
     let events = events.lock().unwrap();
     let kinds: Vec<&'static str> = events
