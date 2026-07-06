@@ -14,6 +14,7 @@
 //! Custom strategies (summarization, semantic dedup, etc.) implement
 //! the [`Compressor`] trait.
 
+pub mod disk;
 pub mod layer;
 
 use std::collections::HashSet;
