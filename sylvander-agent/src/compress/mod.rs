@@ -7,8 +7,14 @@
 //! - [`SimpleWindowCompressor`] — when input tokens approach the model
 //!   context window, drop the oldest non-system messages
 //!
+//! M3 introduces a multi-layer [`CompressionPipeline`] that composes
+//! independent [`CompressionLayer`]s in cheap-first, expensive-last
+//! order (see `pipeline.rs` and `layers/`).
+//!
 //! Custom strategies (summarization, semantic dedup, etc.) implement
 //! the [`Compressor`] trait.
+
+pub mod layer;
 
 use std::collections::HashSet;
 
