@@ -11,6 +11,7 @@
 //! | L3 | [`context_collapse`](self::context_collapse) | pending (M4+) |
 //! | L4 | [`auto_compact`](self::auto_compact) | pending |
 
+pub mod auto_compact;
 pub mod context_collapse;
 pub mod micro_compact;
 pub mod orphan_snip;
