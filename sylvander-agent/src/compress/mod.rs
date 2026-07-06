@@ -16,6 +16,7 @@
 
 pub mod disk;
 pub mod layer;
+pub mod layers;
 
 use std::collections::HashSet;
 
