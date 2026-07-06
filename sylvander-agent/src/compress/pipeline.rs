@@ -1,8 +1,8 @@
 //! `CompressionPipeline` — ordered composition of compression
-//! layers. Cheap-first, expensive-last.
+//! `layer`s. Cheap-first, expensive-last.
 //!
 //! The pipeline is the primary way to use compression in M3. Each
-//! layer is independent, testable, and replaceable. A layer that
+//! `layer` is independent, testable, and replaceable. A layer that
 //! records a failure does NOT stop subsequent layers — pipeline
 //! ordering is preserved and partial work is the norm.
 //!
@@ -67,19 +67,25 @@ impl CompressionPipeline {
         Self { layers }
     }
 
-    /// A sensible default pipeline for the given model: L1 +
-    /// L2 (no L0 disk dependency, no L3 stub, no L4 LLM cost).
-    /// Order matters: L1 runs before L2 so orphan removal happens
-    /// before in-place condensation.
+    /// A sensible default pipeline for the given model: L1 + L2 + L3
+    /// + L4. No L0 (disk dependency, opt-in).
     ///
-    /// L0 (disk offload) is opt-in because it requires a
-    /// `ToolResultDisk`. L4 (LLM summary) is opt-in because it
-    /// requires an `AutoCompactLlm` and has cost.
+    /// L4 is included because it has zero cost below the trigger
+    /// threshold (returns no-op). When context fills up, it kicks
+    /// in automatically using the `AgentLoop`'s client. L0 requires
+    /// a `ToolResultDisk` so it's opt-in via custom pipeline.
+    ///
+    /// Order matters: L1 runs before L2 so orphan removal happens
+    /// before in-place condensation; L3 runs last among the cheap
+    /// `layer`s so it sees the messages after they've been cleaned;
+    /// L4 runs last (the expensive semantic step).
     #[must_use]
     pub fn default_for_model(_model: &sylvander_llm_anthropic::api::model::ModelInfo) -> Self {
         Self::builder()
             .layer(crate::compress::layers::orphan_snip::OrphanSnipLayer::new())
             .layer(crate::compress::layers::micro_compact::MicroCompactLayer::new())
+            .layer(crate::compress::layers::context_collapse::ContextCollapseLayer::new())
+            .layer(crate::compress::layers::auto_compact::AutoCompactLayer::new())
             .build()
     }
 
@@ -312,11 +318,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_for_model_contains_l1_and_l2() {
+    async fn default_for_model_contains_l1_l2_l3_l4() {
         let model = model();
         let pipeline = CompressionPipeline::default_for_model(&model);
         let names = pipeline.layer_names();
-        assert_eq!(names, vec!["orphan_snip", "micro_compact"]);
+        assert_eq!(
+            names,
+            vec!["orphan_snip", "micro_compact", "context_collapse", "auto_compact"]
+        );
     }
 
     #[tokio::test]

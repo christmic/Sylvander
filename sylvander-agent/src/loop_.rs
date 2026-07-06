@@ -35,7 +35,6 @@ use sylvander_llm_anthropic::api::types::{
     ToolUseBlock, Usage, UserContentBlock,
 };
 
-use super::compress::Compressor;
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
 use super::tool::ToolRegistry;
@@ -47,7 +46,7 @@ pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,
     pub(crate) tools: ToolRegistry,
-    pub(crate) compression_driver: super::compress::CompressionDriver,
+    pub(crate) compression_pipeline: Arc<super::compress::pipeline::CompressionPipeline>,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
 }
@@ -84,7 +83,6 @@ pub struct AgentLoopBuilder {
     client: Option<AnthropicClient>,
     model: Option<ModelInfo>,
     tools: ToolRegistry,
-    compressor: Option<Arc<dyn Compressor>>,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     max_iterations: u32,
     max_retries: u32,
@@ -96,7 +94,6 @@ impl Default for AgentLoopBuilder {
             client: None,
             model: None,
             tools: ToolRegistry::new(),
-            compressor: None,
             compression_pipeline: None,
             max_iterations: 50,
             max_retries: 3,
@@ -152,16 +149,9 @@ impl AgentLoopBuilder {
         self
     }
 
-    /// Set the compression strategy (defaults to `NoCompression`).
-    #[must_use]
-    pub fn compressor<C: Compressor + 'static>(mut self, compressor: C) -> Self {
-        self.compressor = Some(Arc::new(compressor));
-        self
-    }
-
-    /// Set the M3 compression pipeline (mutually exclusive with
-    /// `compressor`). When set, takes precedence over the legacy
-    /// `compressor(...)` setting.
+    /// Set the M3 compression pipeline. If not called, defaults to
+    /// [`CompressionPipeline::default_for_model`] (L1 + L2 + L3).
+    /// Opt in to L0 or L4 by building a custom pipeline.
     #[must_use]
     pub fn compression_pipeline(
         mut self,
@@ -198,26 +188,20 @@ impl AgentLoopBuilder {
         let model = self
             .model
             .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
-        // At most one of compressor / compression_pipeline. Pipeline
-        // wins if both are set? No — reject the ambiguity.
-        let compression_driver = match (self.compressor, self.compression_pipeline) {
-            (Some(c), None) => super::compress::CompressionDriver::Legacy(c),
-            (None, Some(p)) => super::compress::CompressionDriver::Pipeline(p),
-            (Some(_), Some(_)) => {
-                return Err(AgentLoopError::Builder(
-                    "set at most one of compressor(...) or compression_pipeline(...)".into(),
-                ));
-            }
-            (None, None) => super::compress::CompressionDriver::Legacy(Arc::new(
-                super::compress::NoCompression,
-            )),
-        };
+        // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
+        // Opt-in to L0 (disk offload) or L4 (LLM summary) by
+        // building a custom pipeline.
+        let compression_pipeline = self
+            .compression_pipeline
+            .unwrap_or_else(|| {
+                Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
+            });
 
         Ok(AgentLoop {
             client,
             model,
             tools: self.tools,
-            compression_driver,
+            compression_pipeline,
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
         })
@@ -295,37 +279,36 @@ pub fn run_stream(
         for iteration in 1..=config.max_iterations {
             yield AgentEvent::IterationStart { iteration };
 
-            // 1. Compression (driver-dispatched: legacy sync or pipeline async)
+            // 1. Compression (pipeline: layers run in order, async)
             {
-                use super::compress::CompressionDriver;
-                let reports = match &config.compression_driver {
-                    CompressionDriver::Legacy(c) => {
-                        let mut compress_ctx = super::compress::CompressContext {
-                            messages: &mut messages,
-                            last_usage: &total_usage,
-                            model_info: &config.model,
-                            auto_compact_llm: None,
-                        };
-                        let outcome = c.maybe_compress(&mut compress_ctx);
-                        super::compress::outcome_to_layer_report(c.name(), &outcome)
-                            .into_iter()
-                            .collect()
-                    }
-                    CompressionDriver::Pipeline(p) => {
-                        let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
-                            config.client.clone(),
-                        );
-                        let mut compress_ctx = super::compress::CompressContext {
-                            messages: &mut messages,
-                            last_usage: &total_usage,
-                            model_info: &config.model,
-                            auto_compact_llm: Some(&auto_llm),
-                        };
-                        p.run_all(&mut compress_ctx).await
-                    }
+                let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
+                    config.client.clone(),
+                );
+                let mut compress_ctx = super::compress::CompressContext {
+                    messages: &mut messages,
+                    last_usage: &total_usage,
+                    model_info: &config.model,
+                    auto_compact_llm: Some(&auto_llm),
                 };
-                if !reports.is_empty() {
-                    yield AgentEvent::Compressed { layers: reports };
+                let reports = config
+                    .compression_pipeline
+                    .run_all(&mut compress_ctx)
+                    .await;
+                // Filter out no-op reports (every layer runs every
+                // iteration even when there's nothing to do — only
+                // emit a Compressed event when at least one layer
+                // actually did work or recorded a failure).
+                let meaningful: Vec<_> = reports
+                    .into_iter()
+                    .filter(|r| {
+                        r.removed_count > 0
+                            || r.condensed_count > 0
+                            || r.freed_tokens > 0
+                            || r.failure.is_some()
+                    })
+                    .collect();
+                if !meaningful.is_empty() {
+                    yield AgentEvent::Compressed { layers: meaningful };
                 }
             }
 
