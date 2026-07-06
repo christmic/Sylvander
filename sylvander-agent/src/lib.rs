@@ -86,6 +86,7 @@ pub mod tools;
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
     pub use crate::compress::{
+        layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},
         CompressContext, CompressionOutcome, Compressor, NoCompression,
         SimpleWindowCompressor,
     };
