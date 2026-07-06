@@ -50,6 +50,39 @@ pub struct CompressContext<'a> {
 pub trait Compressor: Send + Sync {
     /// Inspect the conversation and (optionally) truncate it.
     fn maybe_compress(&self, ctx: &mut CompressContext<'_>) -> CompressionOutcome;
+
+    /// Stable identifier used when emitting a [`LayerReport`] for this
+    /// strategy via the legacy single-strategy path. The M3
+    /// [`CompressionPipeline`](self::pipeline::CompressionPipeline)
+    /// uses per-layer names instead. Default: `"compressor"`.
+    fn name(&self) -> &'static str {
+        "compressor"
+    }
+}
+
+/// Bridge from the legacy sync `Compressor` API to the per-layer
+/// `LayerReport` shape used by M3 events and the pipeline. Returns
+/// `None` for `Keep` (no work done → no event emitted).
+///
+/// This is the only place that knows how to interpret
+/// [`CompressionOutcome`]; layers report directly via `LayerReport`.
+#[must_use]
+pub fn outcome_to_layer_report(name: &str, outcome: &CompressionOutcome) -> Option<layer::LayerReport> {
+    use layer::LayerReport;
+    match outcome {
+        CompressionOutcome::Keep => None,
+        CompressionOutcome::Truncated {
+            removed_count,
+            freed_tokens,
+        } => Some(LayerReport {
+            name: name.to_string(),
+            removed_count: *removed_count,
+            condensed_count: 0,
+            freed_tokens: *freed_tokens,
+            details: None,
+            failure: None,
+        }),
+    }
 }
 
 // =============================================================================
@@ -61,6 +94,10 @@ pub trait Compressor: Send + Sync {
 pub struct NoCompression;
 
 impl Compressor for NoCompression {
+    fn name(&self) -> &'static str {
+        "no_compression"
+    }
+
     fn maybe_compress(&self, _ctx: &mut CompressContext<'_>) -> CompressionOutcome {
         CompressionOutcome::Keep
     }
@@ -112,6 +149,9 @@ impl SimpleWindowCompressor {
 }
 
 impl Compressor for SimpleWindowCompressor {
+    fn name(&self) -> &'static str {
+        "simple_window_compressor"
+    }
     fn maybe_compress(&self, ctx: &mut CompressContext<'_>) -> CompressionOutcome {
         let threshold_tokens =
             (ctx.model_info.context_window as f32 * self.threshold_ratio) as u32;

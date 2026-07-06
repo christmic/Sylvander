@@ -7,13 +7,14 @@
 //! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:
-//! `IterationStart → TextChunk* / ThinkingChunk* → ToolCallStart →
-//! ToolCallEnd → Compressed (optional) → IterationEnd → [repeat] → Done`
+//! `IterationStart → Compressed (optional) → TextChunk* / ThinkingChunk* →
+//! ToolCallStart → ToolCallEnd → IterationEnd → [repeat] → Done`
 
 use serde_json::Value as JsonValue;
 
 use sylvander_llm_anthropic::api::types::{Message, Usage};
 
+use crate::compress::layer::LayerReport;
 use crate::error::AgentLoopError;
 
 /// Events emitted by the agent loop. All consumption paths
@@ -57,11 +58,14 @@ pub enum AgentEvent {
     },
 
     /// Compression was applied this iteration.
+    ///
+    /// Always emitted when at least one layer produced work (removed,
+    /// condensed, freed tokens, or recorded a failure). For pipelines
+    /// this is a `Vec<LayerReport>` with one entry per layer that ran.
+    /// For the legacy single-strategy path it is a 1-element vec.
     Compressed {
-        /// Number of messages removed from the front.
-        removed_count: usize,
-        /// Estimated tokens freed (heuristic).
-        freed_tokens: u32,
+        /// Per-layer breakdown. Empty only if no layer ran.
+        layers: Vec<LayerReport>,
     },
 
     /// An iteration completed (LLM call returned). The next iteration
