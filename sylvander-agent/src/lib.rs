@@ -88,8 +88,7 @@ pub mod prelude {
     pub use crate::compress::{
         layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},
         pipeline::CompressionPipeline,
-        AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext, CompressionDriver,
-        CompressionOutcome, Compressor, NoCompression, SimpleWindowCompressor,
+        AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext,
         DEFAULT_SUMMARY_PROMPT,
     };
     pub use crate::error::AgentLoopError;
