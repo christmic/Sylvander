@@ -153,7 +153,7 @@ async fn real_use_case_read_and_summarize() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
@@ -162,15 +162,15 @@ async fn real_use_case_read_and_summarize() {
         .expect("build");
 
     // === Run the agent loop with reactive event delivery ===
-    let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Summarize /tmp/notes.md")],
-            move |event| {
-                events_clone.lock().unwrap().push(event);
-            },
-        )
-        .await
-        .expect("run should succeed");
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Summarize /tmp/notes.md")],
+        move |event| {
+            events_clone.lock().unwrap().push(event);
+        },
+    )
+    .await
+    .expect("run should succeed");
 
     // === Verify the result ===
     assert_eq!(run.iterations, 2, "expected 2 iterations (tool_use + end_turn)");
@@ -304,7 +304,7 @@ async fn real_use_case_tool_error_recovery() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
@@ -312,15 +312,15 @@ async fn real_use_case_tool_error_recovery() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Read /nonexistent")],
-            move |event| {
-                events_clone.lock().unwrap().push(event);
-            },
-        )
-        .await
-        .expect("run should succeed even with tool error");
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Read /nonexistent")],
+        move |event| {
+            events_clone.lock().unwrap().push(event);
+        },
+    )
+    .await
+    .expect("run should succeed even with tool error");
 
     assert_eq!(run.iterations, 2);
     assert!(

@@ -100,7 +100,7 @@ async fn read_e2e_wiremock() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
@@ -108,15 +108,15 @@ async fn read_e2e_wiremock() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run_with_events(
-            vec![MessageParam::user("Read notes.md and summarize")],
-            move |event| {
-                events_clone.lock().unwrap().push(event);
-            },
-        )
-        .await
-        .expect("run should succeed");
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("Read notes.md and summarize")],
+        move |event| {
+            events_clone.lock().unwrap().push(event);
+        },
+    )
+    .await
+    .expect("run should succeed");
 
     // Verify the agent completed in 2 iterations
     assert_eq!(run.iterations, 2);
@@ -186,7 +186,7 @@ async fn read_e2e_wiremock_missing_file() {
 
     let read_tool = ReadTool::new(dir.path());
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
@@ -194,8 +194,7 @@ async fn read_e2e_wiremock_missing_file() {
         .build()
         .expect("build");
 
-    let run = loop_
-        .run(vec![MessageParam::user("Read missing.txt")])
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Read missing.txt")])
         .await
         .expect("run should succeed even with file-not-found error");
 
@@ -263,7 +262,7 @@ async fn read_e2e_real_api_single_iteration() {
     }
 
     let read_tool = ReadTool::new("/tmp");
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(client)
         .model(model)
         .tool(read_tool)
@@ -284,14 +283,14 @@ async fn read_e2e_real_api_single_iteration() {
     // to invoke it.
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let result = loop_
-        .run_with_events(
-            vec![MessageParam::user(prompt)],
-            move |event| {
-                events_clone.lock().unwrap().push(event);
-            },
-        )
-        .await;
+    let result = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user(prompt)],
+        move |event| {
+            events_clone.lock().unwrap().push(event);
+        },
+    )
+    .await;
 
     eprintln!("=== Run result: {result:?}");
     eprintln!();

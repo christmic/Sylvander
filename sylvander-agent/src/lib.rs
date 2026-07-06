@@ -33,7 +33,7 @@
 //!     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
 //!     .build()?;
 //!
-//! let mut loop_ = AgentLoop::builder()
+//! let loop_ = AgentLoop::builder()
 //!     .client(client)
 //!     .model(model)
 //!     .max_iterations(50)
@@ -42,7 +42,7 @@
 //! let initial = vec![MessageParam::user("List files in /tmp")];
 //!
 //! // Await full completion
-//! let run = loop_.run(initial).await?;
+//! let run = sylvander_agent::prelude::run(&loop_, initial).await?;
 //! println!("finished after {} iterations", run.iterations);
 //! # Ok(())
 //! # }
@@ -91,7 +91,7 @@ pub mod prelude {
     };
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
-    pub use crate::loop_::{AgentLoop, AgentLoopBuilder, AgentRun};
+    pub use crate::loop_::{run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentRun};
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
     pub use crate::tools::ReadTool;
     pub use sylvander_llm_anthropic::prelude::*;

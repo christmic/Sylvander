@@ -32,14 +32,14 @@ async fn tools_set_without_tool_use_capability_errors() {
     let model = model_with(ModelCapabilities::default()); // no capabilities
     let tool = MockTool::new("foo", "foo", ToolOutput::ok("bar"));
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .tool(tool)
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     assert!(matches!(
         result,
         Err(AgentLoopError::IncompatibleModel(ref msg)) if msg.contains("TOOL_USE")
@@ -89,14 +89,14 @@ async fn llm_4xx_error_propagates_without_retry() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_retries(3)
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     // 4xx → not retryable → propagates with retries: 0
     match result {
         Err(AgentLoopError::Llm { retries, .. }) => assert_eq!(retries, 0),
@@ -119,14 +119,14 @@ async fn llm_5xx_retries_then_propagates_after_max() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_retries(2)
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     // max_retries=2 → max_attempts=3 → all 3 fail
     match result {
         Err(AgentLoopError::Llm { retries, .. }) => {
@@ -167,14 +167,14 @@ async fn llm_5xx_succeeds_after_retry() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_retries(3)
         .build()
         .expect("build");
 
-    let run = loop_.run(vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
     assert_eq!(run.final_message.id, "msg_retry_ok");
     assert_eq!(run.iterations, 1);
 }
@@ -208,14 +208,14 @@ async fn llm_429_retries_and_succeeds() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_retries(3)
         .build()
         .expect("build");
 
-    let run = loop_.run(vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
     assert_eq!(run.final_message.id, "msg_429_ok");
 }
 
@@ -233,14 +233,14 @@ async fn zero_max_retries_means_no_retry() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_retries(0) // disable retry
         .build()
         .expect("build");
 
-    let result = loop_.run(vec![MessageParam::user("hi")]).await;
+    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     match result {
         Err(AgentLoopError::Llm { retries, .. }) => assert_eq!(retries, 0),
         other => panic!("expected Llm error, got {other:?}"),
@@ -269,14 +269,14 @@ async fn tool_use_capability_passes_validation() {
     let model = model_with(ModelCapabilities::TOOL_USE);
     let tool = MockTool::new("foo", "foo", ToolOutput::ok("bar"));
 
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .tool(tool)
         .build()
         .expect("build");
 
-    let run = loop_.run(vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
     assert_eq!(run.final_message.id, "msg_cap");
 }
 
@@ -299,7 +299,7 @@ async fn thinking_capability_passes_validation() {
         .await;
 
     let model = model_with(ModelCapabilities::EXTENDED_THINKING);
-    let mut loop_ = AgentLoop::builder()
+    let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
         .max_iterations(1)
@@ -309,6 +309,6 @@ async fn thinking_capability_passes_validation() {
     // Cannot easily set thinking via builder — would need raw request.
     // Skip the thinking setup, just verify no validation error when
     // capability is present but not used.
-    let run = loop_.run(vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
     assert_eq!(run.final_message.id, "msg_thinking");
 }
