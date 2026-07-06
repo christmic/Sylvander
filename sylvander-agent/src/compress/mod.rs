@@ -17,6 +17,7 @@
 pub mod disk;
 pub mod layer;
 pub mod layers;
+pub mod pipeline;
 
 use std::collections::HashSet;
 
