@@ -276,7 +276,7 @@ pub fn run_stream(
         for iteration in 1..=config.max_iterations {
             yield AgentEvent::IterationStart { iteration };
 
-            // 1. Compression (best-effort)
+            // 1. Compression (best-effort, legacy single-strategy path)
             {
                 let mut compress_ctx = super::compress::CompressContext {
                     messages: &mut messages,
@@ -284,14 +284,11 @@ pub fn run_stream(
                     model_info: &config.model,
                 };
                 let outcome = config.compressor.maybe_compress(&mut compress_ctx);
-                if let super::compress::CompressionOutcome::Truncated {
-                    removed_count,
-                    freed_tokens,
-                } = outcome
+                if let Some(layer) =
+                    super::compress::outcome_to_layer_report(config.compressor.name(), &outcome)
                 {
                     yield AgentEvent::Compressed {
-                        removed_count,
-                        freed_tokens,
+                        layers: vec![layer],
                     };
                 }
             }

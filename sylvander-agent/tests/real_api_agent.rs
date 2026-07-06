@@ -116,8 +116,24 @@ async fn real_api_agent_loop_completes() {
                     usage.input_tokens, usage.output_tokens
                 );
             }
-            AgentEvent::Compressed { removed_count, .. } => {
-                eprintln!("[compress] dropped {removed_count} messages");
+            AgentEvent::Compressed { layers } => {
+                let total: u32 = layers.iter().map(|l| l.freed_tokens).sum();
+                let removed: usize = layers.iter().map(|l| l.removed_count).sum();
+                eprintln!(
+                    "[compress] {} layers ran, dropped {} messages, freed ~{} tokens",
+                    layers.len(),
+                    removed,
+                    total
+                );
+                for layer in layers {
+                    eprintln!(
+                        "  - {}: removed={} condensed={} freed={}",
+                        layer.name,
+                        layer.removed_count,
+                        layer.condensed_count,
+                        layer.freed_tokens
+                    );
+                }
             }
             AgentEvent::Done(msg) => {
                 final_message = Some(msg);
