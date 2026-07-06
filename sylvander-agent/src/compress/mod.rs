@@ -14,15 +14,20 @@
 //! Custom strategies (summarization, semantic dedup, etc.) implement
 //! the [`Compressor`] trait.
 
+pub mod auto_compact_llm;
 pub mod disk;
 pub mod layer;
 pub mod layers;
 pub mod pipeline;
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use sylvander_llm_anthropic::api::types::{MessageParam, MessageRole, Usage};
 use sylvander_llm_anthropic::api::model::ModelInfo;
+
+pub use auto_compact_llm::{AutoCompactLlm, AgentLoopAutoCompactLlm, DEFAULT_SUMMARY_PROMPT};
+use crate::compress::pipeline::CompressionPipeline;
 
 /// Outcome of a compression decision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +52,35 @@ pub struct CompressContext<'a> {
     pub last_usage: &'a Usage,
     /// Resolved model metadata (for `context_window` + capabilities).
     pub model_info: &'a ModelInfo,
+    /// Optional LLM for L4 (auto-compact). Populated by
+    /// `AgentLoop`; `None` in unit tests where L4 should be a no-op.
+    pub auto_compact_llm: Option<&'a dyn AutoCompactLlm>,
+}
+
+impl<'a> CompressContext<'a> {
+    /// Construct a context with the standard 3 fields. The LLM is
+    /// `None` by default — use [`Self::with_auto_compact_llm`] to
+    /// set it.
+    #[must_use]
+    pub fn new(
+        messages: &'a mut Vec<MessageParam>,
+        last_usage: &'a Usage,
+        model_info: &'a ModelInfo,
+    ) -> Self {
+        Self {
+            messages,
+            last_usage,
+            model_info,
+            auto_compact_llm: None,
+        }
+    }
+
+    /// Attach an LLM for L4.
+    #[must_use]
+    pub fn with_auto_compact_llm(mut self, llm: &'a dyn AutoCompactLlm) -> Self {
+        self.auto_compact_llm = Some(llm);
+        self
+    }
 }
 
 /// Trait for compression strategies.
@@ -85,6 +119,32 @@ pub fn outcome_to_layer_report(name: &str, outcome: &CompressionOutcome) -> Opti
             details: None,
             failure: None,
         }),
+    }
+}
+
+/// Which compression strategy an `AgentLoop` uses. The legacy
+/// `Compressor` is sync (M2 back-compat); the pipeline is async
+/// (M3). The agent loop dispatches via [`Self::run`].
+///
+/// Constructed by [`crate::loop_::AgentLoopBuilder::build`].
+pub enum CompressionDriver {
+    /// Legacy single-strategy path (sync `Compressor`).
+    Legacy(Arc<dyn Compressor>),
+    /// M3 multi-layer pipeline (async `CompressionPipeline`).
+    Pipeline(Arc<CompressionPipeline>),
+}
+
+impl CompressionDriver {
+    /// Run whichever path is configured. Returns the per-layer
+    /// reports to surface on `AgentEvent::Compressed`.
+    pub async fn run(&self, ctx: &mut CompressContext<'_>) -> Vec<layer::LayerReport> {
+        match self {
+            Self::Legacy(c) => {
+                let outcome = c.maybe_compress(ctx);
+                outcome_to_layer_report(c.name(), &outcome).into_iter().collect()
+            }
+            Self::Pipeline(p) => p.run_all(ctx).await,
+        }
     }
 }
 
@@ -287,6 +347,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = NoCompression.maybe_compress(&mut ctx);
         assert_eq!(outcome, CompressionOutcome::Keep);
@@ -306,6 +367,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = SimpleWindowCompressor::default().maybe_compress(&mut ctx);
         assert_eq!(outcome, CompressionOutcome::Keep);
@@ -333,6 +395,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = SimpleWindowCompressor::default().maybe_compress(&mut ctx);
         // input_tokens is 199_000 which is >= 170_000 threshold, so we
@@ -371,6 +434,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = SimpleWindowCompressor::default().maybe_compress(&mut ctx);
         if let CompressionOutcome::Truncated { removed_count, .. } = outcome {
@@ -399,6 +463,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(1000),
+            auto_compact_llm: None,
         };
         // Threshold = 1000 * 0.5 = 500. input_tokens 1000 >= 500, trigger.
         let outcome = SimpleWindowCompressor::default()
@@ -422,6 +487,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = SimpleWindowCompressor::default().maybe_compress(&mut ctx);
         assert_eq!(outcome, CompressionOutcome::Keep);
@@ -440,6 +506,7 @@ use sylvander_llm_anthropic::api::model::ModelCapabilities;
             messages: &mut messages,
             last_usage: &usage,
             model_info: &model_info(200_000),
+            auto_compact_llm: None,
         };
         let outcome = SimpleWindowCompressor::default()
             .with_threshold(0.0)

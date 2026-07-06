@@ -47,7 +47,7 @@ pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,
     pub(crate) tools: ToolRegistry,
-    pub(crate) compressor: Arc<dyn Compressor>,
+    pub(crate) compression_driver: super::compress::CompressionDriver,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
 }
@@ -85,6 +85,7 @@ pub struct AgentLoopBuilder {
     model: Option<ModelInfo>,
     tools: ToolRegistry,
     compressor: Option<Arc<dyn Compressor>>,
+    compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     max_iterations: u32,
     max_retries: u32,
 }
@@ -96,6 +97,7 @@ impl Default for AgentLoopBuilder {
             model: None,
             tools: ToolRegistry::new(),
             compressor: None,
+            compression_pipeline: None,
             max_iterations: 50,
             max_retries: 3,
         }
@@ -157,6 +159,18 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the M3 compression pipeline (mutually exclusive with
+    /// `compressor`). When set, takes precedence over the legacy
+    /// `compressor(...)` setting.
+    #[must_use]
+    pub fn compression_pipeline(
+        mut self,
+        pipeline: super::compress::pipeline::CompressionPipeline,
+    ) -> Self {
+        self.compression_pipeline = Some(Arc::new(pipeline));
+        self
+    }
+
     /// Set the max iterations (default 50).
     #[must_use]
     pub fn max_iterations(mut self, n: u32) -> Self {
@@ -184,15 +198,26 @@ impl AgentLoopBuilder {
         let model = self
             .model
             .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
-        let compressor = self
-            .compressor
-            .unwrap_or_else(|| Arc::new(super::compress::NoCompression));
+        // At most one of compressor / compression_pipeline. Pipeline
+        // wins if both are set? No — reject the ambiguity.
+        let compression_driver = match (self.compressor, self.compression_pipeline) {
+            (Some(c), None) => super::compress::CompressionDriver::Legacy(c),
+            (None, Some(p)) => super::compress::CompressionDriver::Pipeline(p),
+            (Some(_), Some(_)) => {
+                return Err(AgentLoopError::Builder(
+                    "set at most one of compressor(...) or compression_pipeline(...)".into(),
+                ));
+            }
+            (None, None) => super::compress::CompressionDriver::Legacy(Arc::new(
+                super::compress::NoCompression,
+            )),
+        };
 
         Ok(AgentLoop {
             client,
             model,
             tools: self.tools,
-            compressor,
+            compression_driver,
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
         })
@@ -220,12 +245,6 @@ impl AgentLoop {
     #[must_use]
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools
-    }
-
-    /// Borrow the configured compression strategy.
-    #[must_use]
-    pub fn compressor(&self) -> &dyn Compressor {
-        self.compressor.as_ref()
     }
 
     /// Configured max iterations.
@@ -276,20 +295,37 @@ pub fn run_stream(
         for iteration in 1..=config.max_iterations {
             yield AgentEvent::IterationStart { iteration };
 
-            // 1. Compression (best-effort, legacy single-strategy path)
+            // 1. Compression (driver-dispatched: legacy sync or pipeline async)
             {
-                let mut compress_ctx = super::compress::CompressContext {
-                    messages: &mut messages,
-                    last_usage: &total_usage,
-                    model_info: &config.model,
+                use super::compress::CompressionDriver;
+                let reports = match &config.compression_driver {
+                    CompressionDriver::Legacy(c) => {
+                        let mut compress_ctx = super::compress::CompressContext {
+                            messages: &mut messages,
+                            last_usage: &total_usage,
+                            model_info: &config.model,
+                            auto_compact_llm: None,
+                        };
+                        let outcome = c.maybe_compress(&mut compress_ctx);
+                        super::compress::outcome_to_layer_report(c.name(), &outcome)
+                            .into_iter()
+                            .collect()
+                    }
+                    CompressionDriver::Pipeline(p) => {
+                        let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
+                            config.client.clone(),
+                        );
+                        let mut compress_ctx = super::compress::CompressContext {
+                            messages: &mut messages,
+                            last_usage: &total_usage,
+                            model_info: &config.model,
+                            auto_compact_llm: Some(&auto_llm),
+                        };
+                        p.run_all(&mut compress_ctx).await
+                    }
                 };
-                let outcome = config.compressor.maybe_compress(&mut compress_ctx);
-                if let Some(layer) =
-                    super::compress::outcome_to_layer_report(config.compressor.name(), &outcome)
-                {
-                    yield AgentEvent::Compressed {
-                        layers: vec![layer],
-                    };
+                if !reports.is_empty() {
+                    yield AgentEvent::Compressed { layers: reports };
                 }
             }
 
@@ -764,31 +800,6 @@ mod tests {
             .build()
             .expect("build");
         assert_eq!(loop_.max_iterations(), 50);
-    }
-
-    #[test]
-    fn default_compressor_is_no_compression() {
-        let loop_ = AgentLoop::builder()
-            .client(test_client())
-            .model(test_model())
-            .build()
-            .expect("build");
-        use super::super::compress::{CompressContext, CompressionOutcome};
-        use sylvander_llm_anthropic::api::types::Usage;
-        let mut messages = vec![];
-        let usage = Usage {
-            input_tokens: 100,
-            output_tokens: 10,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-        };
-        let mut ctx = CompressContext {
-            messages: &mut messages,
-            last_usage: &usage,
-            model_info: loop_.model(),
-        };
-        let outcome = loop_.compressor().maybe_compress(&mut ctx);
-        assert_eq!(outcome, CompressionOutcome::Keep);
     }
 
     #[test]

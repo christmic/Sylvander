@@ -272,6 +272,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
 
         let report = layer.apply(&mut ctx).await;
@@ -292,6 +293,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
 
         let report = layer.apply(&mut ctx).await;
@@ -325,6 +327,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
 
         let report = layer.apply(&mut ctx).await;
@@ -354,6 +357,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
 
         let report = layer.apply(&mut ctx).await;

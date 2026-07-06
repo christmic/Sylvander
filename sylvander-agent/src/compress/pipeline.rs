@@ -243,6 +243,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
 
         let reports = pipeline.run_all(&mut ctx).await;
@@ -274,6 +275,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
         let _ = pipeline.run_all(&mut ctx).await;
         assert_eq!(*log.lock().unwrap(), vec![0, 1, 2]);
@@ -299,6 +301,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
         let reports = pipeline.run_all(&mut ctx).await;
 
@@ -335,6 +338,7 @@ mod tests {
             messages: &mut messages,
             last_usage: &usage(),
             model_info: &model(),
+            auto_compact_llm: None,
         };
         let reports = pipeline.run_all(&mut ctx).await;
         // L1 dropped the orphan.
