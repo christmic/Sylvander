@@ -1,18 +1,22 @@
 //! `AgentLoop` — the OOP class-based async driver for the agent loop.
 //!
-//! # Architecture: stream-first, `run()` as wrapper
+//! # Architecture
 //!
-//! The single source of truth is [`AgentLoop::run_stream`], which drives
-//! the iteration and yields [`AgentEvent`]s. All other consumption
-//! paths are thin wrappers:
+//! The loop logic lives in three module-level free functions:
+//! - [`run`] — consumes the stream, returns `Result<AgentRun, _>`
+//! - [`run_stream`] — the single source of truth: drives the
+//!   iteration, yields `AgentEvent`s
+//! - [`run_with_events`] — consumes the stream, fires events into a
+//!   callback, returns the final `AgentRun`
 //!
-//! - [`AgentLoop::run`] — consumes the stream, returns `Result<AgentRun, _>`
-//! - [`AgentLoop::run_with_events`] — consumes the stream, fires
-//!   events into a callback, returns the final `AgentRun`
+//! `AgentLoop` itself is just a configuration holder (LLM client,
+//! model, tools, compressor, iteration limits). The methods
+//! `AgentLoop::run`, `AgentLoop::run_stream`, and
+//! `AgentLoop::run_with_events` are 1-line delegates to the free
+//! functions for callers who prefer method syntax.
 //!
-//! This way there is exactly one iteration implementation, and any
-//! future addition (streaming LLM, `select!` cancellation, etc.)
-//! only needs to touch `run_stream`.
+//! Adding new event types or consumption patterns only touches
+//! `run_stream` — the single iteration implementation.
 //!
 //! See `projects/Sylvander/designs/sylvander-agent-design.md` for
 //! the full design.
@@ -37,7 +41,8 @@ use super::event::AgentEvent;
 use super::tool::ToolRegistry;
 
 /// The agent loop. Holds the LLM client, resolved model, tools, and
-/// configuration. Drives the `while` iteration in `run_stream()`.
+/// configuration. Iteration logic is in the free functions [`run`],
+/// [`run_stream`], and [`run_with_events`].
 pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,
@@ -58,7 +63,7 @@ impl std::fmt::Debug for AgentLoop {
     }
 }
 
-/// Outcome of a completed [`AgentLoop::run`] / [`AgentLoop::run_with_events`].
+/// Outcome of a completed [`run`] / [`run_with_events`].
 #[derive(Debug, Clone)]
 pub struct AgentRun {
     /// Final assembled message (the last assistant turn before the loop
@@ -69,6 +74,10 @@ pub struct AgentRun {
     /// Cumulative token usage across all LLM calls.
     pub total_usage: Usage,
 }
+
+// =====================================================================
+// Builder
+// =====================================================================
 
 /// Builder for [`AgentLoop`].
 pub struct AgentLoopBuilder {
@@ -190,6 +199,10 @@ impl AgentLoopBuilder {
     }
 }
 
+// =====================================================================
+// AgentLoop methods — accessor + builder + thin delegates
+// =====================================================================
+
 impl AgentLoop {
     /// Start building an agent loop.
     #[must_use]
@@ -227,300 +240,307 @@ impl AgentLoop {
         self.max_retries
     }
 
-    // =====================================================================
-    // Core API: run_stream
-    // =====================================================================
-
-    /// Drive the agent loop and yield events as they happen.
-    ///
-    /// This is the **single source of truth** for the iteration logic.
-    /// All other entry points ([`run`], [`run_with_events`]) consume this
-    /// stream.
-    ///
-    /// Event order within an iteration:
-    /// `IterationStart → [Compressed] → [TextChunk* / ThinkingChunk*] →
-    /// [ToolCallStart → ToolCallEnd]* → IterationEnd → [repeat] → Done | Error`
-    ///
-    /// On error (capability mismatch, LLM failure after retries,
-    /// max iterations reached), yields an `AgentEvent::Error(_)` and
-    /// terminates the stream.
+    /// Drive the agent loop and yield events as they happen. Method
+    /// delegate to the module-level [`run_stream`] free function.
     pub fn run_stream(
         &mut self,
         initial_messages: Vec<MessageParam>,
     ) -> impl Stream<Item = AgentEvent> + Send + '_ {
-        // We can't easily return Err from an `async_stream::stream!`
-        // block — error handling is done by yielding `AgentEvent::Error(_)`
-        // and breaking. The wrapper `run()` converts those to
-        // `Result<_, AgentLoopError>`.
-        async_stream::stream! {
-            let mut messages = initial_messages;
-            let mut total_usage = Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-            };
-            let mut final_message: Option<Message> = None;
-
-            for iteration in 1..=self.max_iterations {
-                yield AgentEvent::IterationStart { iteration };
-
-                // 1. Compression (best-effort)
-                {
-                    let mut compress_ctx = super::compress::CompressContext {
-                        messages: &mut messages,
-                        last_usage: &total_usage,
-                        model_info: &self.model,
-                    };
-                    let outcome = self.compressor.maybe_compress(&mut compress_ctx);
-                    if let super::compress::CompressionOutcome::Truncated {
-                        removed_count,
-                        freed_tokens,
-                    } = outcome
-                    {
-                        yield AgentEvent::Compressed {
-                            removed_count,
-                            freed_tokens,
-                        };
-                    }
-                }
-
-                // 2. Build request
-                let request = self.build_request(&messages);
-
-                // 3. Validate capabilities (errors terminate the stream)
-                if let Err(e) = self.validate_capabilities(&request) {
-                    yield AgentEvent::Error(e);
-                    break;
-                }
-
-                // 4. Call LLM with retry on transient errors
-                let response = match self.call_llm_with_retry(&request).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        yield AgentEvent::Error(e);
-                        break;
-                    }
-                };
-
-                // 5. Emit text / thinking chunks
-                for block in &response.content {
-                    match block {
-                        ContentBlock::Text(t) => {
-                            yield AgentEvent::TextChunk(t.text.clone());
-                        }
-                        ContentBlock::Thinking(t) => {
-                            yield AgentEvent::ThinkingChunk(t.thinking.clone());
-                        }
-                        ContentBlock::ToolUse(_) => {}
-                    }
-                }
-
-                // Capture state we need after re-feeding
-                let response_stop_reason = response.stop_reason;
-                let response_id = response.id.clone();
-                total_usage = response.usage.clone();
-
-                // 6. Re-feed assistant message
-                messages.push(assistant_message_from_response(&response));
-
-                yield AgentEvent::IterationEnd {
-                    iteration,
-                    usage: total_usage.clone(),
-                };
-
-                // 7. Check stop_reason
-                let should_continue = match response_stop_reason {
-                    Some(
-                        StopReason::EndTurn
-                        | StopReason::StopSequence
-                        | StopReason::MaxTokens
-                        | StopReason::Refusal
-                        | StopReason::PauseTurn,
-                    ) => {
-                        // Reconstruct final_message with the response's
-                        // ID (which `assistant_message_from_response`
-                        // discards). We can't avoid this clone because
-                        // we need to push the message to `messages`
-                        // before knowing whether we'll terminate.
-                        final_message = Some(Message {
-                            id: response_id,
-                            kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
-                            role: MessageRole::Assistant,
-                            content: response.content.clone(),
-                            model: self.model.id.clone(),
-                            stop_reason: response_stop_reason,
-                            stop_sequence: None,
-                            usage: total_usage.clone(),
-                        });
-                        false
-                    }
-                    Some(StopReason::ToolUse) | None => true,
-                };
-
-                if !should_continue {
-                    break;
-                }
-
-                // 8. Execute tools if any tool_use blocks
-                let tool_blocks: Vec<&ToolUseBlock> = response
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolUse(t) => Some(t),
-                        _ => None,
-                    })
-                    .collect();
-
-                if tool_blocks.is_empty() {
-                    // stop_reason said ToolUse but no actual tool_use block.
-                    // Treat as end.
-                    final_message = Some(response);
-                    break;
-                }
-
-                let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-                for tool_use in tool_blocks {
-                    yield AgentEvent::ToolCallStart {
-                        id: tool_use.id.clone(),
-                        name: tool_use.name.clone(),
-                        input: tool_use.input.clone(),
-                    };
-
-                    let (output, is_error) = if let Some(tool) =
-                        self.tools.get(tool_use.name.as_str())
-                    {
-                        match tool.execute(tool_use.input.clone()).await {
-                            Ok(out) => (out.content, out.is_error),
-                            Err(e) => {
-                                warn!(tool = %tool_use.name, error = %e, "tool execution failed");
-                                (format!("tool execution failed: {e}"), true)
-                            }
-                        }
-                    } else {
-                        warn!(tool = %tool_use.name, "tool not found in registry");
-                        (
-                            format!("tool `{}` not found in registry", tool_use.name),
-                            true,
-                        )
-                    };
-
-                    yield AgentEvent::ToolCallEnd {
-                        id: tool_use.id.clone(),
-                        name: tool_use.name.clone(),
-                        output: output.clone(),
-                        is_error,
-                    };
-
-                    tool_result_blocks.push(UserContentBlock::ToolResult(
-                        ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
-                    ));
-                }
-
-                messages.push(MessageParam::user_blocks(tool_result_blocks));
-            }
-
-            // Final event: Done or MaxIterationsReached error.
-            match final_message {
-                Some(msg) => yield AgentEvent::Done(msg),
-                None => {
-                    yield AgentEvent::Error(AgentLoopError::MaxIterationsReached(
-                        self.max_iterations,
-                    ));
-                }
-            }
-        }
+        run_stream(&*self, initial_messages)
     }
 
-    // =====================================================================
-    // Wrapper 1: run — pull from stream, return AgentRun
-    // =====================================================================
-
     /// Convenience wrapper around [`run_stream`] that consumes the
-    /// event stream and returns the final [`AgentRun`].
-    ///
-    /// Use this when you only care about the final result. For
-    /// reactive event consumption, use [`run_with_events`] or pull from
-    /// [`run_stream`] directly.
-    ///
-    /// # Errors
-    /// - [`AgentLoopError::MaxIterationsReached`] — loop hit cap
-    /// - [`AgentLoopError::Llm`] — LLM call failed (after retries)
-    /// - [`AgentLoopError::Tool`] — non-recoverable tool failure
-    /// - [`AgentLoopError::IncompatibleModel`] — request requires
-    ///   capability the model doesn't have
+    /// event stream and returns the final [`AgentRun`]. Method
+    /// delegate to the module-level [`run`] free function.
     pub async fn run(
         &mut self,
         initial_messages: Vec<MessageParam>,
     ) -> Result<AgentRun, AgentLoopError> {
-        let max_iterations = self.max_iterations;
-        consume_stream_to_run(max_iterations, self.run_stream(initial_messages)).await
+        run(&*self, initial_messages).await
     }
-
-    // =====================================================================
-    // Wrapper 2: run_with_events — fire callback as events flow
-    // =====================================================================
 
     /// Convenience wrapper around [`run_stream`] that fires every
     /// event into the supplied callback, then returns the final
-    /// [`AgentRun`].
-    ///
-    /// Use this for reactive consumers (CLI typewriter, progress
-    /// indicators, logging) that want events as they happen.
-    ///
-    /// Note: `Error` events are NOT fired to the callback — they are
-    /// returned as the `Err` variant of `Result`. This avoids
-    /// double-handling.
+    /// [`AgentRun`]. Method delegate to the module-level
+    /// [`run_with_events`] free function.
     pub async fn run_with_events<F>(
         &mut self,
         initial_messages: Vec<MessageParam>,
-        mut on_event: F,
+        on_event: F,
     ) -> Result<AgentRun, AgentLoopError>
     where
         F: FnMut(AgentEvent) + Send,
     {
-        let max_iterations = self.max_iterations;
-        let mut stream = Box::pin(self.run_stream(initial_messages));
-        let mut final_message: Option<Message> = None;
+        run_with_events(&*self, initial_messages, on_event).await
+    }
+}
+
+// =====================================================================
+// Free-function API — the canonical implementations
+// =====================================================================
+
+/// Drive the agent loop and yield events as they happen. The
+/// single source of truth for iteration logic. `run` and
+/// `run_with_events` consume the stream this returns.
+///
+/// `config` carries the LLM client, model, tools, compressor, and
+/// iteration limits. `initial_messages` seeds the conversation.
+///
+/// Event order within an iteration:
+/// `IterationStart → [Compressed] → [TextChunk* / ThinkingChunk*] →
+/// [ToolCallStart → ToolCallEnd]* → IterationEnd → [repeat] → Done | Error`
+///
+/// On error (capability mismatch, LLM failure after retries,
+/// max iterations reached), yields an `AgentEvent::Error(_)` and
+/// terminates the stream.
+pub fn run_stream(
+    config: &AgentLoop,
+    initial_messages: Vec<MessageParam>,
+) -> impl Stream<Item = AgentEvent> + Send + '_ {
+    async_stream::stream! {
+        let mut messages = initial_messages;
         let mut total_usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
         };
-        let mut iterations: u32 = 0;
+        let mut final_message: Option<Message> = None;
 
-        while let Some(event) = stream.next().await {
-            match &event {
-                AgentEvent::IterationStart { iteration } => iterations = *iteration,
-                AgentEvent::IterationEnd { usage, .. } => total_usage = usage.clone(),
-                _ => {}
+        for iteration in 1..=config.max_iterations {
+            yield AgentEvent::IterationStart { iteration };
+
+            // 1. Compression (best-effort)
+            {
+                let mut compress_ctx = super::compress::CompressContext {
+                    messages: &mut messages,
+                    last_usage: &total_usage,
+                    model_info: &config.model,
+                };
+                let outcome = config.compressor.maybe_compress(&mut compress_ctx);
+                if let super::compress::CompressionOutcome::Truncated {
+                    removed_count,
+                    freed_tokens,
+                } = outcome
+                {
+                    yield AgentEvent::Compressed {
+                        removed_count,
+                        freed_tokens,
+                    };
+                }
             }
-            match event {
-                AgentEvent::Done(msg) => final_message = Some(msg),
-                AgentEvent::Error(e) => return Err(e),
-                other => on_event(other),
+
+            // 2. Build request
+            let request = config.build_request(&messages);
+
+            // 3. Validate capabilities (errors terminate the stream)
+            if let Err(e) = config.validate_capabilities(&request) {
+                yield AgentEvent::Error(e);
+                break;
             }
+
+            // 4. Call LLM with retry on transient errors
+            let response = match config.call_llm_with_retry(&request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    yield AgentEvent::Error(e);
+                    break;
+                }
+            };
+
+            // 5. Emit text / thinking chunks
+            for block in &response.content {
+                match block {
+                    ContentBlock::Text(t) => {
+                        yield AgentEvent::TextChunk(t.text.clone());
+                    }
+                    ContentBlock::Thinking(t) => {
+                        yield AgentEvent::ThinkingChunk(t.thinking.clone());
+                    }
+                    ContentBlock::ToolUse(_) => {}
+                }
+            }
+
+            // Capture state we need after re-feeding
+            let response_stop_reason = response.stop_reason;
+            let response_id = response.id.clone();
+            total_usage = response.usage.clone();
+
+            // 6. Re-feed assistant message
+            messages.push(assistant_message_from_response(&response));
+
+            yield AgentEvent::IterationEnd {
+                iteration,
+                usage: total_usage.clone(),
+            };
+
+            // 7. Check stop_reason
+            let should_continue = match response_stop_reason {
+                Some(
+                    StopReason::EndTurn
+                    | StopReason::StopSequence
+                    | StopReason::MaxTokens
+                    | StopReason::Refusal
+                    | StopReason::PauseTurn,
+                ) => {
+                    final_message = Some(Message {
+                        id: response_id,
+                        kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
+                        role: MessageRole::Assistant,
+                        content: response.content.clone(),
+                        model: config.model.id.clone(),
+                        stop_reason: response_stop_reason,
+                        stop_sequence: None,
+                        usage: total_usage.clone(),
+                    });
+                    false
+                }
+                Some(StopReason::ToolUse) | None => true,
+            };
+
+            if !should_continue {
+                break;
+            }
+
+            // 8. Execute tools if any tool_use blocks
+            let tool_blocks: Vec<&ToolUseBlock> = response
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::ToolUse(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+
+            if tool_blocks.is_empty() {
+                // stop_reason said ToolUse but no actual tool_use block.
+                // Treat as end.
+                final_message = Some(response);
+                break;
+            }
+
+            let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
+            for tool_use in tool_blocks {
+                yield AgentEvent::ToolCallStart {
+                    id: tool_use.id.clone(),
+                    name: tool_use.name.clone(),
+                    input: tool_use.input.clone(),
+                };
+
+                let (output, is_error) = if let Some(tool) =
+                    config.tools.get(tool_use.name.as_str())
+                {
+                    match tool.execute(tool_use.input.clone()).await {
+                        Ok(out) => (out.content, out.is_error),
+                        Err(e) => {
+                            warn!(tool = %tool_use.name, error = %e, "tool execution failed");
+                            (format!("tool execution failed: {e}"), true)
+                        }
+                    }
+                } else {
+                    warn!(tool = %tool_use.name, "tool not found in registry");
+                    (
+                        format!("tool `{}` not found in registry", tool_use.name),
+                        true,
+                    )
+                };
+
+                yield AgentEvent::ToolCallEnd {
+                    id: tool_use.id.clone(),
+                    name: tool_use.name.clone(),
+                    output: output.clone(),
+                    is_error,
+                };
+
+                tool_result_blocks.push(UserContentBlock::ToolResult(
+                    ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
+                ));
+            }
+
+            messages.push(MessageParam::user_blocks(tool_result_blocks));
         }
 
-        let final_message = final_message
-            .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
+        // Final event: Done or MaxIterationsReached error.
+        match final_message {
+            Some(msg) => yield AgentEvent::Done(msg),
+            None => {
+                yield AgentEvent::Error(AgentLoopError::MaxIterationsReached(
+                    config.max_iterations,
+                ));
+            }
+        }
+    }
+}
 
-        Ok(AgentRun {
-            final_message,
-            iterations,
-            total_usage,
-        })
+/// Convenience wrapper around [`run_stream`] that consumes the
+/// event stream and returns the final [`AgentRun`].
+///
+/// # Errors
+/// - [`AgentLoopError::MaxIterationsReached`] — loop hit cap
+/// - [`AgentLoopError::Llm`] — LLM call failed (after retries)
+/// - [`AgentLoopError::Tool`] — non-recoverable tool failure
+/// - [`AgentLoopError::IncompatibleModel`] — request requires
+///   capability the model doesn't have
+pub async fn run(
+    config: &AgentLoop,
+    initial_messages: Vec<MessageParam>,
+) -> Result<AgentRun, AgentLoopError> {
+    let max_iterations = config.max_iterations;
+    consume_stream_to_run(max_iterations, run_stream(config, initial_messages)).await
+}
+
+/// Convenience wrapper around [`run_stream`] that fires every event
+/// into the supplied callback, then returns the final [`AgentRun`].
+/// Terminal `Done` / `Error` events are extracted into the return
+/// value rather than fired to the callback.
+pub async fn run_with_events<F>(
+    config: &AgentLoop,
+    initial_messages: Vec<MessageParam>,
+    mut on_event: F,
+) -> Result<AgentRun, AgentLoopError>
+where
+    F: FnMut(AgentEvent) + Send,
+{
+    let max_iterations = config.max_iterations;
+    let mut stream = Box::pin(run_stream(config, initial_messages));
+    let mut final_message: Option<Message> = None;
+    let mut total_usage = Usage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+    };
+    let mut iterations: u32 = 0;
+
+    while let Some(event) = stream.next().await {
+        match &event {
+            AgentEvent::IterationStart { iteration } => iterations = *iteration,
+            AgentEvent::IterationEnd { usage, .. } => total_usage = usage.clone(),
+            _ => {}
+        }
+        match event {
+            AgentEvent::Done(msg) => final_message = Some(msg),
+            AgentEvent::Error(e) => return Err(e),
+            other => on_event(other),
+        }
     }
 
-    // =====================================================================
-    // Internal helpers
-    // =====================================================================
+    let final_message = final_message
+        .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
 
+    Ok(AgentRun {
+        final_message,
+        iterations,
+        total_usage,
+    })
+}
+
+// =====================================================================
+// Internal helpers on AgentLoop (private methods used by run_stream)
+// =====================================================================
+
+impl AgentLoop {
     /// Call the LLM with retry/backoff on transient errors.
-    ///
-    /// Retries up to `max_retries` times on `AnthropicError::is_retryable()`
-    /// (5xx + 429). 4xx and other errors propagate immediately.
     async fn call_llm_with_retry(
         &self,
         request: &CreateMessageRequest,
@@ -611,11 +631,11 @@ impl AgentLoop {
 }
 
 // =====================================================================
-// Free helpers (operate on the stream / events)
+// Free helper (operates on the stream)
 // =====================================================================
 
-/// Internal helper for [`AgentLoop::run`]: pull events from the
-/// stream, accumulate final state, return `AgentRun` or `Err`.
+/// Internal helper for [`run`]: pull events from the stream,
+/// accumulate final state, return `AgentRun` or `Err`.
 async fn consume_stream_to_run(
     max_iterations: u32,
     stream: impl Stream<Item = AgentEvent> + Send,
@@ -656,6 +676,10 @@ async fn consume_stream_to_run(
         total_usage,
     })
 }
+
+// =====================================================================
+// Conversion helpers
+// =====================================================================
 
 /// Convert a `Message` response into a `MessageParam` for re-feed.
 fn assistant_message_from_response(msg: &Message) -> MessageParam {
@@ -832,21 +856,5 @@ mod tests {
         };
         let _ = format!("{run:?}");
         let _ = json!({});
-    }
-
-    #[test]
-    fn run_with_events_fires_non_terminal_events_to_callback() {
-        // Verify run_with_events is the new path: build without
-        // on_event, then call run_with_events with a callback.
-        // We can't actually call run() without a server, but we can
-        // verify the signature compiles and the builder no longer
-        // exposes on_event.
-        let builder = AgentLoop::builder()
-            .client(test_client())
-            .model(test_model());
-        // on_event should no longer exist on the builder.
-        // (compile-time guarantee — if this compiles, the refactor
-        // is in place.)
-        let _ = builder;
     }
 }
