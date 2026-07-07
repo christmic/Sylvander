@@ -330,7 +330,15 @@ pub fn run_stream(
                 }
             };
 
-            // 5. Emit text / thinking chunks
+            // 5. Emit text / thinking chunks (assemble them so we can
+            //    put them in the assistant message on re-feed, even
+            //    if the response is later classified as terminal).
+            let final_message_content = response.content.clone();
+            let response_stop_reason = response.stop_reason;
+            let response_id = response.id.clone();
+
+            // Drain text / thinking into the event stream. We hold
+            // tool_use blocks for the next phase.
             for block in &response.content {
                 match block {
                     ContentBlock::Text(t) => {
@@ -343,49 +351,11 @@ pub fn run_stream(
                 }
             }
 
-            // Capture state we need after re-feeding
-            let response_stop_reason = response.stop_reason;
-            let response_id = response.id.clone();
-            total_usage = response.usage.clone();
-
             // 6. Re-feed assistant message
             messages.push(assistant_message_from_response(&response));
 
-            yield AgentEvent::IterationEnd {
-                iteration,
-                usage: total_usage.clone(),
-            };
-
-            // 7. Check stop_reason
-            let should_continue = match response_stop_reason {
-                Some(
-                    StopReason::EndTurn
-                    | StopReason::StopSequence
-                    | StopReason::MaxTokens
-                    | StopReason::Refusal
-                    | StopReason::PauseTurn
-                    | StopReason::Other,
-                ) => {
-                    final_message = Some(Message {
-                        id: response_id,
-                        kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
-                        role: MessageRole::Assistant,
-                        content: response.content.clone(),
-                        model: config.model.id.clone(),
-                        stop_reason: response_stop_reason,
-                        stop_sequence: None,
-                        usage: total_usage.clone(),
-                    });
-                    false
-                }
-                Some(StopReason::ToolUse) | None => true,
-            };
-
-            if !should_continue {
-                break;
-            }
-
-            // 8. Execute tools if any tool_use blocks
+            // 7. Execute tools (if any) — events are emitted INSIDE
+            //    this iteration's window, before IterationEnd.
             let tool_blocks: Vec<&ToolUseBlock> = response
                 .content
                 .iter()
@@ -395,52 +365,85 @@ pub fn run_stream(
                 })
                 .collect();
 
-            if tool_blocks.is_empty() {
-                // stop_reason said ToolUse but no actual tool_use block.
-                // Treat as end.
-                final_message = Some(response);
+            if !tool_blocks.is_empty() {
+                let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
+                for tool_use in tool_blocks {
+                    yield AgentEvent::ToolCallStart {
+                        id: tool_use.id.clone(),
+                        name: tool_use.name.clone(),
+                        input: tool_use.input.clone(),
+                    };
+
+                    let (output, is_error) = if let Some(tool) =
+                        config.tools.get(tool_use.name.as_str())
+                    {
+                        match tool.execute(tool_use.input.clone()).await {
+                            Ok(out) => (out.content, out.is_error),
+                            Err(e) => {
+                                warn!(tool = %tool_use.name, error = %e, "tool execution failed");
+                                (format!("tool execution failed: {e}"), true)
+                            }
+                        }
+                    } else {
+                        warn!(tool = %tool_use.name, "tool not found in registry");
+                        (
+                            format!("tool `{}` not found in registry", tool_use.name),
+                            true,
+                        )
+                    };
+
+                    yield AgentEvent::ToolCallEnd {
+                        id: tool_use.id.clone(),
+                        name: tool_use.name.clone(),
+                        output: output.clone(),
+                        is_error,
+                    };
+
+                    tool_result_blocks.push(UserContentBlock::ToolResult(
+                        ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
+                    ));
+                }
+                messages.push(MessageParam::user_blocks(tool_result_blocks));
+            }
+
+            // 8. Update running usage (needed for next iteration's
+            //    compression trigger checks).
+            total_usage = response.usage.clone();
+
+            // 9. Emit IterationEnd — only AFTER all iter-internal
+            //    events (chunks + tool calls) have fired.
+            yield AgentEvent::IterationEnd {
+                iteration,
+                usage: total_usage.clone(),
+            };
+
+            // 10. Check stop_reason. If terminal, build final_message
+            //     and break; otherwise loop into the next iteration.
+            let terminal = matches!(
+                response_stop_reason,
+                Some(
+                    StopReason::EndTurn
+                        | StopReason::StopSequence
+                        | StopReason::MaxTokens
+                        | StopReason::Refusal
+                        | StopReason::PauseTurn
+                        | StopReason::Other
+                )
+            );
+
+            if terminal {
+                final_message = Some(Message {
+                    id: response_id,
+                    kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
+                    role: MessageRole::Assistant,
+                    content: final_message_content,
+                    model: config.model.id.clone(),
+                    stop_reason: response_stop_reason,
+                    stop_sequence: None,
+                    usage: total_usage.clone(),
+                });
                 break;
             }
-
-            let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-            for tool_use in tool_blocks {
-                yield AgentEvent::ToolCallStart {
-                    id: tool_use.id.clone(),
-                    name: tool_use.name.clone(),
-                    input: tool_use.input.clone(),
-                };
-
-                let (output, is_error) = if let Some(tool) =
-                    config.tools.get(tool_use.name.as_str())
-                {
-                    match tool.execute(tool_use.input.clone()).await {
-                        Ok(out) => (out.content, out.is_error),
-                        Err(e) => {
-                            warn!(tool = %tool_use.name, error = %e, "tool execution failed");
-                            (format!("tool execution failed: {e}"), true)
-                        }
-                    }
-                } else {
-                    warn!(tool = %tool_use.name, "tool not found in registry");
-                    (
-                        format!("tool `{}` not found in registry", tool_use.name),
-                        true,
-                    )
-                };
-
-                yield AgentEvent::ToolCallEnd {
-                    id: tool_use.id.clone(),
-                    name: tool_use.name.clone(),
-                    output: output.clone(),
-                    is_error,
-                };
-
-                tool_result_blocks.push(UserContentBlock::ToolResult(
-                    ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
-                ));
-            }
-
-            messages.push(MessageParam::user_blocks(tool_result_blocks));
         }
 
         // Final event: Done or MaxIterationsReached error.
