@@ -39,8 +39,11 @@
 
 use std::sync::Arc;
 
+use serde_json::json;
+use sylvander_agent::compress::disk::{InMemoryToolResultDisk, ToolResultDisk};
 use sylvander_agent::compress::layers::{
-    micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
+    context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
+    orphan_snip::OrphanSnipLayer, tool_result_budget::ToolResultBudgetLayer,
 };
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -216,37 +219,238 @@ async fn real_api_l4_smoke_test() {
 }
 
 // =============================================================================
-// Documented limitation: L0/L2/L3 cannot easily trigger against MiniMax-M3
-// because pre-populated `tool_result` blocks return HTTP 400. Kept here as
-// documentation of the gap.
+// L0/L2/L3 against real API — now that ToolResultBlock has the
+// `type: "tool_result"` discriminator, pre-populated messages
+// should be accepted by MiniMax-M3.
 // =============================================================================
 
 #[tokio::test]
-#[ignore = "MiniMax-M3 rejects pre-populated tool_result blocks (HTTP 400)"]
-async fn real_api_l0_disabled_due_to_minimax_limit() {
-    eprintln!(
-        "L0 against MiniMax-M3: SKIPPED — pre-populated tool_result blocks are\n\
-         rejected with HTTP 400. Run with a different real LLM that supports\n\
-         multi-turn tool_use/tool_result conversations, or use the wiremock-based\n\
-         tests in real_use_case_compression.rs which run on a real local port."
+#[ignore = "requires real API env vars"]
+async fn real_api_l0_offloads_prepopulated_big_tool_result() {
+    let Some((client, model)) = real_client_and_model() else {
+        eprintln!("env vars missing; skipping");
+        return;
+    };
+
+    let big_body = "Z".repeat(10_000);
+
+    use sylvander_llm_anthropic::api::types::{
+        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
+    };
+    let initial = vec![
+        MessageParam {
+            role: MessageRole::Assistant,
+            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
+                "type": "tool_use",
+                "id": "toolu_big",
+                "name": "Read",
+                "input": {"file_path": "x"}
+            }))]),
+        },
+        MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
+                ToolResultBlock::new("toolu_big", &big_body),
+            )]),
+        },
+        MessageParam::user("now summarize"),
+    ];
+
+    let disk = Arc::new(InMemoryToolResultDisk::new());
+    let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
+    let pipeline = CompressionPipeline::builder()
+        .layer(ToolResultBudgetLayer::new(disk_dyn).with_max_inline_chars(1000))
+        .build();
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let loop_ = AgentLoop::builder()
+        .client(client)
+        .model(model)
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run against real API");
+
+    let events = events.lock().unwrap();
+    let l0_active: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l0 = layers.iter().find(|l| l.name == "tool_result_budget");
+                l0.map(|l| (l.condensed_count, l.freed_tokens))
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_api_l0_offloads_prepopulated_big_tool_result ===");
+    println!("L0 active events: {l0_active:?}");
+    println!("Disk write count: {}", disk.write_count());
+    println!("============================================================");
+
+    assert!(
+        disk.write_count() >= 1,
+        "L0 should offload the 10k tool_result to disk"
+    );
+    assert!(
+        l0_active.iter().any(|&(c, _)| c >= 1),
+        "L0 should report condensed_count >= 1"
     );
 }
 
 #[tokio::test]
-#[ignore = "MiniMax-M3 rejects pre-populated tool_result blocks (HTTP 400)"]
-async fn real_api_l2_disabled_due_to_minimax_limit() {
-    eprintln!(
-        "L2 against MiniMax-M3: SKIPPED — same tool_result 400 limitation as L0."
+#[ignore = "requires real API env vars"]
+async fn real_api_l2_condenses_old_tool_results() {
+    let Some((client, model)) = real_client_and_model() else {
+        eprintln!("env vars missing; skipping");
+        return;
+    };
+
+    use sylvander_llm_anthropic::api::types::{
+        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
+    };
+    let long_body = "Q".repeat(500);
+
+    let mut initial: Vec<MessageParam> = Vec::new();
+    for i in 0..5 {
+        initial.push(MessageParam {
+            role: MessageRole::Assistant,
+            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
+                "type": "tool_use",
+                "id": format!("toolu_{i}"),
+                "name": "Read",
+                "input": {"file_path": format!("f{i}.md")}
+            }))]),
+        });
+        initial.push(MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
+                ToolResultBlock::new(format!("toolu_{i}"), &long_body),
+            )]),
+        });
+    }
+    initial.push(MessageParam::user("summarize everything"));
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(MicroCompactLayer::new().with_keep_last_n(2))
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(client)
+        .model(model)
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run against real API");
+
+    let events = events.lock().unwrap();
+    let l2_active: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l2 = layers.iter().find(|l| l.name == "micro_compact");
+                l2.map(|l| l.condensed_count)
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_api_l2_condenses_old_tool_results ===");
+    println!("L2 active events: {l2_active:?}");
+    println!("===========================================");
+
+    assert!(
+        l2_active.iter().any(|&c| c >= 3),
+        "L2 should have condensed at least 3 old tool_results; got {l2_active:?}"
     );
 }
 
 #[tokio::test]
-#[ignore = "Pre-populated assistant thinking blocks not re-fed as thinking"]
-async fn real_api_l3_disabled_due_to_minimax_limit() {
-    eprintln!(
-        "L3 against MiniMax-M3: SKIPPED — pre-populated Other(json) thinking\n\
-         blocks don't round-trip through the assistant_message_from_response\n\
-         converter cleanly. See real_use_case_compression.rs L3 test for the\n\
-         wiremock-based path that does work."
+#[ignore = "requires real API env vars"]
+async fn real_api_l3_trims_old_thinking_block() {
+    let Some((client, model)) = real_client_and_model() else {
+        eprintln!("env vars missing; skipping");
+        return;
+    };
+
+    use sylvander_llm_anthropic::api::types::{
+        MessageParam, MessageRole, UserContent, UserContentBlock,
+    };
+    let initial = vec![
+        MessageParam {
+            role: MessageRole::Assistant,
+            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
+                "type": "thinking",
+                "thinking": "Y".repeat(2000),
+                "signature": "sig_prepopulated"
+            }))]),
+        },
+        MessageParam::user("now act on that reasoning"),
+    ];
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(
+            ContextCollapseLayer::new()
+                .with_keep_last_n(0)
+                .with_max_thinking_chars(200),
+        )
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(client)
+        .model(model)
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run against real API");
+
+    let events = events.lock().unwrap();
+    let l3_active: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l3 = layers.iter().find(|l| l.name == "context_collapse");
+                l3.map(|l| (l.condensed_count, l.freed_tokens))
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_api_l3_trims_old_thinking_block ===");
+    println!("L3 active events: {l3_active:?}");
+    println!("==========================================");
+
+    assert!(
+        l3_active.iter().any(|&(c, _)| c >= 1),
+        "L3 should have trimmed the 2000-char thinking block"
     );
 }

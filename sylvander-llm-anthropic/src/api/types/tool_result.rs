@@ -22,6 +22,11 @@ use serde_json::Value as JsonValue;
 /// return rich data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResultBlock {
+    /// Discriminator: always `"tool_result"`. Required by the
+    /// Anthropic API; the wire format is
+    /// `{"type": "tool_result", "tool_use_id": "...", ...}`.
+    #[serde(rename = "type")]
+    pub kind: ToolResultBlockKind,
     /// The `id` of the corresponding `tool_use` block.
     pub tool_use_id: String,
     /// The result payload — either a string or a list of structured
@@ -37,12 +42,30 @@ pub struct ToolResultBlock {
     pub cache_control: Option<CacheControl>,
 }
 
+/// Discriminator for [`ToolResultBlock`]. Always `ToolResult`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResultBlockKind {
+    /// Anthropic wire value: `"tool_result"`.
+    #[serde(rename = "tool_result")]
+    ToolResult,
+}
+
 impl ToolResultBlock {
     /// Create a tool result block with the given `tool_use_id` and a
-    /// plain-string content.
+    /// plain-string content. (Equivalent to [`Self::new`] — kept as
+    /// an alias for backwards compatibility.)
     #[must_use]
     pub fn new(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self::with_string(tool_use_id, content)
+    }
+
+    /// Create a tool result block with the given `tool_use_id` and a
+    /// plain-string content. Default `kind = ToolResult`,
+    /// `is_error = false`.
+    #[must_use]
+    pub fn with_string(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
+            kind: ToolResultBlockKind::ToolResult,
             tool_use_id: tool_use_id.into(),
             content: Some(ToolResultContent::String(content.into())),
             is_error: false,
@@ -54,6 +77,7 @@ impl ToolResultBlock {
     #[must_use]
     pub fn with_blocks(tool_use_id: impl Into<String>, blocks: Vec<RichToolResultBlock>) -> Self {
         Self {
+            kind: ToolResultBlockKind::ToolResult,
             tool_use_id: tool_use_id.into(),
             content: Some(ToolResultContent::Blocks(blocks)),
             is_error: false,
@@ -61,7 +85,7 @@ impl ToolResultBlock {
         }
     }
 
-    /// Mark this result as an error.
+    /// Mark this result as an error. Alias for [`Self::as_error`].
     #[must_use]
     pub fn as_error(mut self) -> Self {
         self.is_error = true;
