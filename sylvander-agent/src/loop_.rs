@@ -343,25 +343,54 @@ pub fn run_stream(
                 break;
             }
 
-            // 4. Call LLM with retry on transient errors (streaming).
-            //    `call_llm_with_retry` returns a MessageStream; a
-            //    consumer task drains events into an mpsc channel so
-            //    we can yield TextChunk / ThinkingChunk into the
-            //    outer agent event stream as each delta arrives.
-            let mut llm_stream = match config.call_llm_with_retry(&request).await {
-                Ok(s) => s,
-                Err(e) => {
-                    yield AgentEvent::Error(e);
-                    break;
-                }
-            };
+            // 4. Call LLM with streaming + stream-level retry on transient
+            //    errors. If the stream connection drops mid-flight
+            //    (5xx, network), we reopen and continue. 4xx / validation
+            //    errors still propagate immediately.
+            //
+            //    The request is the same for each retry — the LLM
+            //    generates from the same conversation state, so
+            //    reopening is safe.
+            const MAX_STREAM_RETRIES: u32 = 2;
+            let mut stream_attempt = 0u32;
+            let mut llm_stream: Option<sylvander_llm_anthropic::prelude::MessageStream> = None;
+            let mut stream_open_err: Option<AgentLoopError> = None;
 
-            // 5. Spawn a consumer task that translates stream events
-            //    into AgentEvents and sends them to a channel. The
-            //    consumer also returns the final assembled Message
-            //    via a oneshot channel (since it owns the stream).
-            //    The outer stream drains events and reads the final
-            //    message after the consumer finishes.
+            loop {
+                match config.call_llm_with_retry(&request).await {
+                    Ok(s) => {
+                        llm_stream = Some(s);
+                        break;
+                    }
+                    Err(AgentLoopError::Llm { source, .. })
+                        if source.is_retryable()
+                            && stream_attempt < MAX_STREAM_RETRIES =>
+                    {
+                        stream_attempt += 1;
+                        let delay =
+                            std::time::Duration::from_millis(100 * (1 << stream_attempt));
+                        warn!(
+                            stream_attempt,
+                            delay_ms = delay.as_millis(),
+                            error = %source,
+                            "stream open failed, retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                    Err(e) => {
+                        stream_open_err = Some(e);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(e) = stream_open_err {
+                yield AgentEvent::Error(e);
+                break;
+            }
+
+            // 5. Consume the stream in a spawned task — events flow
+            //    through an mpsc channel into the outer event stream.
             use futures_util::StreamExt;
             use sylvander_llm_anthropic::api::types::event::ContentDelta;
             use sylvander_llm_anthropic::api::types::RawStreamEvent;
@@ -370,6 +399,7 @@ pub fn run_stream(
             let (done_tx, done_rx) =
                 tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
 
+            let mut llm_stream = llm_stream.take().expect("stream must be set after open loop");
             let consumer_task = tokio::spawn(async move {
                 let mut stream_err: Option<AgentLoopError> = None;
                 while let Some(event_result) = llm_stream.next().await {
@@ -537,14 +567,34 @@ pub fn run_stream(
                 usage: total_usage.clone(),
             };
 
-            // 10. Check stop_reason. If terminal, build final_message
-            //     and break; otherwise loop into the next iteration.
+            // 10. Check stop_reason.
+            //
+            //    MaxTokens is NOT terminal — the loop continues so the
+            //    model can pick up where it left off. The truncated
+            //    assistant message is already in `messages` (re-fed at
+            //    step 6), so the next iteration sends the same
+            //    conversation and the model continues naturally.
+            //
+            //    Always save the latest response as final_message — if
+            //    the loop exits without seeing EndTurn (e.g. max_iterations
+            //    reached during a MaxTokens chain), the caller sees the
+            //    last partial result rather than nothing.
+            final_message = Some(Message {
+                id: response_id,
+                kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
+                role: MessageRole::Assistant,
+                content: final_message_content,
+                model: config.model.id.clone(),
+                stop_reason: response_stop_reason,
+                stop_sequence: None,
+                usage: total_usage.clone(),
+            });
+
             let terminal = matches!(
                 response_stop_reason,
                 Some(
                     StopReason::EndTurn
                         | StopReason::StopSequence
-                        | StopReason::MaxTokens
                         | StopReason::Refusal
                         | StopReason::PauseTurn
                         | StopReason::Other
@@ -552,16 +602,6 @@ pub fn run_stream(
             );
 
             if terminal {
-                final_message = Some(Message {
-                    id: response_id,
-                    kind: sylvander_llm_anthropic::api::types::MessageKind::Message,
-                    role: MessageRole::Assistant,
-                    content: final_message_content,
-                    model: config.model.id.clone(),
-                    stop_reason: response_stop_reason,
-                    stop_sequence: None,
-                    usage: total_usage.clone(),
-                });
                 break;
             }
         }
