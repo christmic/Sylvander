@@ -83,6 +83,61 @@ impl MessageStream {
         }
     }
 
+    /// Construct a `MessageStream` from a fully-buffered JSON `Message`
+    /// response. Used as a fallback for non-SSE responses (e.g. in
+    /// tests, wiremock, or providers that don't support SSE).
+    /// tests that don't go through wiremock SSE bodies). The state
+    /// is pre-populated with the message, its `stop_reason`, `usage`,
+    /// and per-block accumulators (so `final_message()` returns a
+    /// faithful reconstruction of the original content).
+    pub fn from_message(message: Message) -> Self {
+        let mut block_order: Vec<u32> = Vec::new();
+        let mut initial_blocks: HashMap<u32, ContentBlock> = HashMap::new();
+        let mut text_accum: HashMap<u32, String> = HashMap::new();
+        let mut tool_input_accum: HashMap<u32, String> = HashMap::new();
+        let mut thinking_accum: HashMap<u32, String> = HashMap::new();
+        let mut signature_accum: HashMap<u32, String> = HashMap::new();
+        for (i, block) in message.content.iter().enumerate() {
+            let idx = i as u32;
+            block_order.push(idx);
+            initial_blocks.insert(idx, block.clone());
+            match block {
+                ContentBlock::Text(t) => {
+                    text_accum.insert(idx, t.text.clone());
+                }
+                ContentBlock::ToolUse(tu) => {
+                    tool_input_accum.insert(idx, tu.input.to_string());
+                }
+                ContentBlock::Thinking(th) => {
+                    thinking_accum.insert(idx, th.thinking.clone());
+                    signature_accum.insert(idx, th.signature.clone());
+                }
+            }
+        }
+        let state = MessageStreamState {
+            message: Some(Message {
+                content: Vec::new(), // final_message() rebuilds from block_order
+                ..message.clone()
+            }),
+            initial_blocks,
+            block_order,
+            text_accum,
+            tool_input_accum,
+            thinking_accum,
+            signature_accum,
+            stop_reason: message.stop_reason,
+            usage: Some(message.usage.clone()),
+            finished: true,
+        };
+        Self {
+            body: Box::pin(futures_util::stream::empty()),
+            parser: SseParser::new(),
+            pending: Vec::new(),
+            state: Arc::new(Mutex::new(state)),
+            body_done: true,
+        }
+    }
+
     /// Get the assembled final [`Message`]. Available after `message_stop`
     /// has been observed.
     ///

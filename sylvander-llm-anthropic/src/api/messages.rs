@@ -113,19 +113,27 @@ impl<'a> MessagesApi<'a> {
             return Err(parse_api_error(status.as_u16(), &bytes));
         }
 
-        // Verify the response is an event stream.
+        // Verify the response is an event stream. If it's a regular
+        // JSON response (e.g., from a test mock that doesn't bother
+        // with SSE wrapping), synthesize a single-event stream from
+        // the assembled Message. This lets the same loop work with
+        // both real streaming responses and convenient test setups.
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if !content_type.starts_with("text/event-stream") {
-            return Err(AnthropicError::Validation(format!(
-                "expected text/event-stream response, got {content_type}"
-            )));
+        if content_type.starts_with("text/event-stream") {
+            Ok(MessageStream::new(response))
+        } else {
+            let bytes = response.bytes().await?;
+            let message: Message = serde_json::from_slice(&bytes).map_err(|e| {
+                AnthropicError::Validation(format!(
+                    "non-SSE response failed to parse as Message: {e}"
+                ))
+            })?;
+            Ok(MessageStream::from_message(message))
         }
-
-        Ok(MessageStream::new(response))
     }
 
     /// Estimate the number of input tokens for a request without sending
