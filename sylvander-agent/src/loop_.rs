@@ -343,35 +343,97 @@ pub fn run_stream(
                 break;
             }
 
-            // 4. Call LLM with retry on transient errors
-            let response = match config.call_llm_with_retry(&request).await {
-                Ok(r) => r,
+            // 4. Call LLM with retry on transient errors (streaming).
+            //    `call_llm_with_retry` returns a MessageStream; a
+            //    consumer task drains events into an mpsc channel so
+            //    we can yield TextChunk / ThinkingChunk into the
+            //    outer agent event stream as each delta arrives.
+            let mut llm_stream = match config.call_llm_with_retry(&request).await {
+                Ok(s) => s,
                 Err(e) => {
                     yield AgentEvent::Error(e);
                     break;
                 }
             };
 
-            // 5. Emit text / thinking chunks (assemble them so we can
-            //    put them in the assistant message on re-feed, even
-            //    if the response is later classified as terminal).
+            // 5. Spawn a consumer task that translates stream events
+            //    into AgentEvents and sends them to a channel. The
+            //    consumer also returns the final assembled Message
+            //    via a oneshot channel (since it owns the stream).
+            //    The outer stream drains events and reads the final
+            //    message after the consumer finishes.
+            use futures_util::StreamExt;
+            use sylvander_llm_anthropic::api::types::event::ContentDelta;
+            use sylvander_llm_anthropic::api::types::RawStreamEvent;
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            let (done_tx, done_rx) =
+                tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
+
+            let consumer_task = tokio::spawn(async move {
+                let mut stream_err: Option<AgentLoopError> = None;
+                while let Some(event_result) = llm_stream.next().await {
+                    match event_result {
+                        Ok(RawStreamEvent::ContentBlockDelta { delta, .. }) => match delta {
+                            ContentDelta::TextDelta { text } => {
+                                let _ = tx.send(AgentEvent::TextChunk(text));
+                            }
+                            ContentDelta::ThinkingDelta { thinking } => {
+                                let _ = tx.send(AgentEvent::ThinkingChunk(thinking));
+                            }
+                            _ => {}
+                        },
+                        Ok(_) => {} // MessageStart, ContentBlockStart/Stop, etc.
+                        Err(e) => {
+                            stream_err = Some(AgentLoopError::Llm { retries: 0, source: e });
+                            break;
+                        }
+                    }
+                }
+                // Drop tx so the receiver sees end-of-stream.
+                drop(tx);
+                let result = match stream_err {
+                    Some(e) => Err(e),
+                    None => llm_stream.final_message().ok_or_else(|| {
+                        AgentLoopError::Validation("stream ended without final message".into())
+                    }),
+                };
+                let _ = done_tx.send(result);
+            });
+
+            // Drain events into the outer stream until consumer ends.
+            let stream_err: Option<AgentLoopError> = loop {
+                match rx.recv().await {
+                    Some(AgentEvent::Error(e)) => break Some(e),
+                    Some(ev) => yield ev,
+                    None => break None, // consumer finished cleanly
+                }
+            };
+
+            // Wait for the consumer's final result.
+            let Ok(consumer_result) = done_rx.await else {
+                yield AgentEvent::Error(AgentLoopError::Validation(
+                    "stream consumer dropped oneshot".into(),
+                ));
+                break;
+            };
+            let _ = consumer_task.await;
+
+            if let Some(e) = stream_err {
+                yield AgentEvent::Error(e);
+                break;
+            }
+            let response = match consumer_result {
+                Ok(m) => m,
+                Err(e) => {
+                    yield AgentEvent::Error(e);
+                    break;
+                }
+            };
+
             let final_message_content = response.content.clone();
             let response_stop_reason = response.stop_reason;
             let response_id = response.id.clone();
-
-            // Drain text / thinking into the event stream. We hold
-            // tool_use blocks for the next phase.
-            for block in &response.content {
-                match block {
-                    ContentBlock::Text(t) => {
-                        yield AgentEvent::TextChunk(t.text.clone());
-                    }
-                    ContentBlock::Thinking(t) => {
-                        yield AgentEvent::ThinkingChunk(t.thinking.clone());
-                    }
-                    ContentBlock::ToolUse(_) => {}
-                }
-            }
 
             // 6. Re-feed assistant message
             messages.push(assistant_message_from_response(&response));
@@ -584,16 +646,52 @@ where
 // =====================================================================
 
 impl AgentLoop {
-    /// Call the LLM with retry/backoff on transient errors.
+    /// Call the LLM with retry/backoff on transient errors. Returns
+    /// a [`MessageStream`]. Tries streaming first (so `TextChunk`s
+    /// arrive as SSE deltas); falls back to non-streaming if the
+    /// provider doesn't support SSE.
     async fn call_llm_with_retry(
         &self,
         request: &CreateMessageRequest,
-    ) -> Result<Message, AgentLoopError> {
+    ) -> Result<sylvander_llm_anthropic::prelude::MessageStream, AgentLoopError> {
         let mut last_err: Option<AnthropicError> = None;
         let max_attempts = self.max_retries + 1;
+
+        // Try streaming first.
+        for attempt in 0..max_attempts {
+            match self.client.messages().stream(request).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    if !e.is_retryable() || attempt == max_attempts - 1 {
+                        // Non-retryable (or exhausted retries): try
+                        // non-streaming as a fallback. Some providers
+                        // (e.g. MiniMax-M3) don't support SSE.
+                        warn!(
+                            error = %e,
+                            "streaming failed, falling back to non-streaming create()"
+                        );
+                        break;
+                    }
+                    let delay = std::time::Duration::from_millis(100 * (1 << attempt));
+                    warn!(
+                        attempt = attempt,
+                        delay_ms = delay.as_millis(),
+                        error = %e,
+                        "LLM stream open failed, retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        // Fallback: non-streaming create(), wrapped as a synthetic
+        // MessageStream via from_message().
         for attempt in 0..max_attempts {
             match self.client.messages().create(request).await {
-                Ok(msg) => return Ok(msg),
+                Ok(msg) => {
+                    return Ok(sylvander_llm_anthropic::prelude::MessageStream::from_message(msg));
+                }
                 Err(e) => {
                     if !e.is_retryable() || attempt == max_attempts - 1 {
                         return Err(AgentLoopError::Llm {

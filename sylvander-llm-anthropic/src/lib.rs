@@ -84,6 +84,7 @@ pub mod prelude {
     pub use crate::api::blocking::{BlockingAnthropicClient, BlockingClientError, BlockingConfig};
     pub use crate::api::client::{AnthropicClient, AnthropicClientBuilder};
     pub use crate::api::error::AnthropicError;
+    pub use crate::api::message_stream::MessageStream;
     pub use crate::api::messages::MessagesApi;
     pub use crate::api::model::{ModelCapabilities, ModelInfo, ModelInfoBuilder};
     pub use crate::api::request::{CreateMessageRequest, CreateMessageRequestBuilder};
