@@ -46,9 +46,15 @@ pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,
     pub(crate) tools: ToolRegistry,
+    /// Cached tool definitions for the LLM `tools` field. Built once
+    /// at `build()` time and reused every iteration. The registry
+    /// is immutable post-build, so this is safe.
+    pub(crate) tool_definitions: Vec<sylvander_llm_anthropic::api::types::Tool>,
     pub(crate) compression_pipeline: Arc<super::compress::pipeline::CompressionPipeline>,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
+    /// Optional system prompt (set via `AgentLoopBuilder::system_prompt`).
+    pub(crate) system_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for AgentLoop {
@@ -86,6 +92,7 @@ pub struct AgentLoopBuilder {
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     max_iterations: u32,
     max_retries: u32,
+    system_prompt: Option<String>,
 }
 
 impl Default for AgentLoopBuilder {
@@ -97,6 +104,7 @@ impl Default for AgentLoopBuilder {
             compression_pipeline: None,
             max_iterations: 50,
             max_retries: 3,
+            system_prompt: None,
         }
     }
 }
@@ -161,6 +169,15 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the system prompt. Sent on every LLM request as the
+    /// `system` field. If not set, the request omits `system`
+    /// (provider default).
+    #[must_use]
+    pub fn system_prompt(mut self, system: impl Into<String>) -> Self {
+        self.system_prompt = Some(system.into());
+        self
+    }
+
     /// Set the max iterations (default 50).
     #[must_use]
     pub fn max_iterations(mut self, n: u32) -> Self {
@@ -197,13 +214,18 @@ impl AgentLoopBuilder {
                 Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
             });
 
+        // Cache tool definitions once — tools are immutable post-build.
+        let tool_definitions = self.tools.definitions();
+
         Ok(AgentLoop {
             client,
             model,
             tools: self.tools,
+            tool_definitions,
             compression_pipeline,
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
+            system_prompt: self.system_prompt,
         })
     }
 }
@@ -356,6 +378,13 @@ pub fn run_stream(
 
             // 7. Execute tools (if any) — events are emitted INSIDE
             //    this iteration's window, before IterationEnd.
+            //
+            //    Multiple tool_use blocks in one response run in
+            //    PARALLEL via futures::join_all. Event ordering is
+            //    preserved: all Start events fire first (in tool_use
+            //    order), then all End events (in the same order).
+            //    This way consumers see a deterministic stream
+            //    regardless of which tool finished first.
             let tool_blocks: Vec<&ToolUseBlock> = response
                 .content
                 .iter()
@@ -366,39 +395,68 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
-                let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-                for tool_use in tool_blocks {
+                const TOOL_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(30);
+
+                // Phase 1: emit all ToolCallStart events (deterministic order).
+                for tool_use in &tool_blocks {
                     yield AgentEvent::ToolCallStart {
                         id: tool_use.id.clone(),
                         name: tool_use.name.clone(),
                         input: tool_use.input.clone(),
                     };
+                }
 
-                    let (output, is_error) = if let Some(tool) =
-                        config.tools.get(tool_use.name.as_str())
-                    {
-                        match tool.execute(tool_use.input.clone()).await {
-                            Ok(out) => (out.content, out.is_error),
-                            Err(e) => {
-                                warn!(tool = %tool_use.name, error = %e, "tool execution failed");
-                                (format!("tool execution failed: {e}"), true)
+                // Phase 2: execute all tools in parallel.
+                let tool_futures = tool_blocks.iter().map(|tool_use| {
+                    let tool = config.tools.get(tool_use.name.as_str());
+                    let input = tool_use.input.clone();
+                    let name = tool_use.name.clone();
+                    async move {
+                        let result = if let Some(tool) = tool {
+                            match tokio::time::timeout(TOOL_TIMEOUT, tool.execute(input)).await {
+                                Ok(Ok(out)) => (out.content, out.is_error),
+                                Ok(Err(e)) => {
+                                    warn!(tool = %name, error = %e, "tool execution failed");
+                                    (format!("tool execution failed: {e}"), true)
+                                }
+                                Err(_) => {
+                                    warn!(
+                                        tool = %name,
+                                        timeout_secs = TOOL_TIMEOUT.as_secs(),
+                                        "tool execution timed out"
+                                    );
+                                    (
+                                        format!(
+                                            "tool `{}` timed out after {}s",
+                                            name,
+                                            TOOL_TIMEOUT.as_secs()
+                                        ),
+                                        true,
+                                    )
+                                }
                             }
-                        }
-                    } else {
-                        warn!(tool = %tool_use.name, "tool not found in registry");
-                        (
-                            format!("tool `{}` not found in registry", tool_use.name),
-                            true,
-                        )
-                    };
+                        } else {
+                            warn!(tool = %name, "tool not found in registry");
+                            (format!("tool `{name}` not found in registry"), true)
+                        };
+                        (name, result)
+                    }
+                });
+                let results: Vec<(String, (String, bool))> =
+                    futures_util::future::join_all(tool_futures).await;
 
+                // Phase 3: emit all ToolCallEnd events (same order as Starts)
+                //         and collect tool_results for re-feed.
+                let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
+                for (i, (name, (output, is_error))) in results.into_iter().enumerate() {
+                    let tool_use = tool_blocks[i];
                     yield AgentEvent::ToolCallEnd {
                         id: tool_use.id.clone(),
-                        name: tool_use.name.clone(),
+                        name,
                         output: output.clone(),
                         is_error,
                     };
-
                     tool_result_blocks.push(UserContentBlock::ToolResult(
                         ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
                     ));
@@ -606,8 +664,23 @@ impl AgentLoop {
             .max_tokens(self.model.max_output_tokens)
             .messages(messages.to_vec());
 
-        if !self.tools.is_empty() {
-            builder = builder.tools(self.tools.definitions());
+        if let Some(sp) = &self.system_prompt {
+            // Use structured Blocks form so we can attach a
+            // cache_control breakpoint to the system prompt.
+            use sylvander_llm_anthropic::api::types::{
+                CacheControl, SystemBlock, SystemPrompt, SystemTextBlock,
+            };
+            builder = builder.system(SystemPrompt::Blocks(vec![SystemBlock::Text(
+                SystemTextBlock::new(sp.clone())
+                    .with_cache_control(CacheControl::ephemeral()),
+            )]));
+        }
+
+        // Use cached tool definitions (built once at construction
+        // time; tools are immutable post-build). Avoids re-serializing
+        // every iteration.
+        if !self.tool_definitions.is_empty() {
+            builder = builder.tools(self.tool_definitions.clone());
         }
 
         builder
