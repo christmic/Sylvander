@@ -132,20 +132,36 @@ impl ToolRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<dyn Tool>)> {
         self.tools.iter().map(|(k, v)| (k.as_str(), v))
     }
+}
 
-    /// Wire-format `Tool` definitions for the LLM request.
+/// Wire-format `Tool` definitions for the LLM request, with prompt
+/// caching enabled. The LAST tool in the array gets an
+/// `ephemeral` `cache_control` breakpoint so the entire tools
+/// block is cached across iterations.
+pub fn build_definitions(tools: &ToolRegistry) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+    let mut defs: Vec<_> = tools
+        .iter()
+        .map(|(_, t)| {
+            sylvander_llm_anthropic::api::types::Tool::new(
+                t.name(),
+                t.description(),
+                t.input_schema(),
+            )
+        })
+        .collect();
+    if let Some(last) = defs.last_mut() {
+        use sylvander_llm_anthropic::api::types::CacheControl;
+        last.cache_control = Some(CacheControl::ephemeral());
+    }
+    defs
+}
+
+impl ToolRegistry {
+    /// Wire-format `Tool` definitions for the LLM request (with
+    /// prompt caching on the last tool).
     #[must_use]
     pub fn definitions(&self) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
-        self.tools
-            .values()
-            .map(|t| {
-                sylvander_llm_anthropic::api::types::Tool::new(
-                    t.name(),
-                    t.description(),
-                    t.input_schema(),
-                )
-            })
-            .collect()
+        build_definitions(self)
     }
 }
 

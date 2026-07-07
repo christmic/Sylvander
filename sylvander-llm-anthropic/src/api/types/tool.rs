@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+use super::cache::CacheControl;
+
 /// A custom function tool that the model may invoke.
 ///
 /// Wire format:
@@ -30,6 +32,8 @@ pub struct Tool {
     pub description: String,
     /// JSON Schema describing the tool's input parameters.
     pub input_schema: InputSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 impl Tool {
@@ -44,7 +48,15 @@ impl Tool {
             name: name.into(),
             description: description.into(),
             input_schema,
+            cache_control: None,
         }
+    }
+
+    /// Attach a cache control breakpoint to this tool.
+    #[must_use]
+    pub fn with_cache_control(mut self, cc: CacheControl) -> Self {
+        self.cache_control = Some(cc);
+        self
     }
 }
 
