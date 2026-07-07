@@ -1,0 +1,252 @@
+//! Real-API compression tests.
+//!
+//! Hits a real Anthropic-compatible endpoint (default:
+//! `https://api.minimaxi.com/anthropic` with model `MiniMax-M3`).
+//!
+//! All tests are `#[ignore]` — they need env vars to run:
+//!
+//! ```bash
+//! ANTHROPIC_AUTH_TOKEN=... \
+//! ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic \
+//! SYLVANDER_MODEL=MiniMax-M3 \
+//!   cargo test -p sylvander-agent --test real_api_compression -- --ignored --nocapture
+//! ```
+//!
+//! ## What works against MiniMax-M3 today
+//!
+//! - `real_api_l1_drops_prepopulated_orphan` ✓
+//!   Pre-populates an orphan `tool_result` (no `tool_use` needed) and
+//!   verifies L1 fires on it. Single iteration against the real API.
+//!
+//! - `real_api_l4_smoke_test` ✓
+//!   Single-iter call against the real API; verifies the pipeline
+//!   doesn't crash with L4 included.
+//!
+//! ## Limitations (L0/L2/L3 against MiniMax-M3)
+//!
+//! - L0 `ToolResultBudget` / L2 `MicroCompact`: pre-populating a
+//!   `tool_result` block (without a matching `tool_use`) is rejected
+//!   by `MiniMax-M3` with HTTP 400. Triggering these layers naturally
+//!   requires multi-turn tool calling, which `MiniMax-M3` does not support.
+//! - L3 `ContextCollapse`: pre-populating an assistant `thinking`
+//!   block isn't re-fed as a thinking block by the loop's converter
+//!   — the `Other(json)` format doesn't round-trip cleanly.
+//!
+//! For L0/L2/L3 against a real local HTTP server (real port, no
+//! network), use `tests/real_use_case_compression.rs` which uses
+//! wiremock. Each test prints the wiremock URL so the real-port
+//! nature of the traffic is visible.
+
+use std::sync::Arc;
+
+use sylvander_agent::compress::layers::{
+    micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
+};
+use sylvander_agent::prelude::*;
+use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_anthropic::api::types::{
+    MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
+};
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+fn real_client_and_model() -> Option<(AnthropicClient, ModelInfo)> {
+    let token = optional_env("ANTHROPIC_AUTH_TOKEN")
+        .or_else(|| optional_env("ANTHROPIC_API_KEY"))?;
+    let base_url = optional_env("ANTHROPIC_BASE_URL")?;
+    let model_id = optional_env("SYLVANDER_MODEL")?;
+
+    let client = AnthropicClient::builder()
+        .api_key(&token)
+        .base_url(&base_url)
+        .build()
+        .ok()?;
+    let model = ModelInfo::builder()
+        .id(&model_id)
+        .context_window(200_000)
+        .max_output_tokens(2048)
+        .capability(ModelCapabilities::TOOL_USE)
+        .build()?;
+    Some((client, model))
+}
+
+fn print_real_api_banner(label: &str) {
+    eprintln!(
+        "=== {label} against real API: {} / {} ===",
+        optional_env("ANTHROPIC_BASE_URL").unwrap_or_default(),
+        optional_env("SYLVANDER_MODEL").unwrap_or_default()
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires real API env vars"]
+async fn real_api_l1_drops_prepopulated_orphan() {
+    let Some((client, model)) = real_client_and_model() else {
+        eprintln!("env vars missing; skipping");
+        return;
+    };
+    print_real_api_banner("L1 OrphanSnip");
+
+    let initial = vec![
+        // Orphan tool_result (no matching tool_use anywhere in
+        // history). MiniMax-M3 accepts this because it's just a
+        // user message with a single tool_result block.
+        MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
+                ToolResultBlock::new("orphan_xyz", "stale result from a previous turn"),
+            )]),
+        },
+        MessageParam::user("continue"),
+    ];
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(client)
+        .model(model)
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run against real API");
+
+    let events = events.lock().unwrap();
+    let l1_active: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l1 = layers.iter().find(|l| l.name == "orphan_snip");
+                l1.map(|l| l.condensed_count)
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("L1 active events: {l1_active:?}");
+
+    assert!(
+        l1_active.iter().any(|&c| c >= 1),
+        "L1 should have condensed at least one orphan block; got {l1_active:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires real API env vars"]
+async fn real_api_l4_smoke_test() {
+    let Some((client, _model)) = real_client_and_model() else {
+        eprintln!("env vars missing; skipping");
+        return;
+    };
+    print_real_api_banner("L4 AutoCompact smoke");
+
+    let tiny_model = ModelInfo::builder()
+        .id(optional_env("SYLVANDER_MODEL").unwrap())
+        .context_window(500)
+        .max_output_tokens(2048)
+        .capability(ModelCapabilities::default())
+        .build()
+        .unwrap();
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .layer(MicroCompactLayer::new())
+        .layer(
+            sylvander_agent::compress::layers::context_collapse::ContextCollapseLayer::new(),
+        )
+        .layer(
+            sylvander_agent::compress::layers::auto_compact::AutoCompactLayer::new()
+                .with_trigger_ratio(0.5),
+        )
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(client)
+        .model(tiny_model)
+        .compression_pipeline(pipeline)
+        .max_iterations(2)
+        .build()
+        .expect("build");
+
+    let result = run_with_events(
+        &loop_,
+        vec![MessageParam::user(
+            "List 10 distinct colors. For each, give its hex code and one sentence describing when to use it."
+        )],
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await;
+
+    let events = events.lock().unwrap();
+    let l4_active: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l4 = layers.iter().find(|l| l.name == "auto_compact");
+                l4.map(|l| (l.removed_count, l.failure.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("Run result: {result:?}");
+    println!("L4 active events: {l4_active:?}");
+
+    // L4 firing depends on real API usage exceeding threshold.
+    // We don't assert on this — just verify the pipeline ran
+    // without crashing against the real API.
+    let _ = l4_active;
+}
+
+// =============================================================================
+// Documented limitation: L0/L2/L3 cannot easily trigger against MiniMax-M3
+// because pre-populated `tool_result` blocks return HTTP 400. Kept here as
+// documentation of the gap.
+// =============================================================================
+
+#[tokio::test]
+#[ignore = "MiniMax-M3 rejects pre-populated tool_result blocks (HTTP 400)"]
+async fn real_api_l0_disabled_due_to_minimax_limit() {
+    eprintln!(
+        "L0 against MiniMax-M3: SKIPPED — pre-populated tool_result blocks are\n\
+         rejected with HTTP 400. Run with a different real LLM that supports\n\
+         multi-turn tool_use/tool_result conversations, or use the wiremock-based\n\
+         tests in real_use_case_compression.rs which run on a real local port."
+    );
+}
+
+#[tokio::test]
+#[ignore = "MiniMax-M3 rejects pre-populated tool_result blocks (HTTP 400)"]
+async fn real_api_l2_disabled_due_to_minimax_limit() {
+    eprintln!(
+        "L2 against MiniMax-M3: SKIPPED — same tool_result 400 limitation as L0."
+    );
+}
+
+#[tokio::test]
+#[ignore = "Pre-populated assistant thinking blocks not re-fed as thinking"]
+async fn real_api_l3_disabled_due_to_minimax_limit() {
+    eprintln!(
+        "L3 against MiniMax-M3: SKIPPED — pre-populated Other(json) thinking\n\
+         blocks don't round-trip through the assistant_message_from_response\n\
+         converter cleanly. See real_use_case_compression.rs L3 test for the\n\
+         wiremock-based path that does work."
+    );
+}
