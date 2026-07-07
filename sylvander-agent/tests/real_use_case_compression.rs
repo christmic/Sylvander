@@ -17,8 +17,9 @@ use std::sync::Arc;
 use serde_json::json;
 use sylvander_agent::compress::disk::{InMemoryToolResultDisk, ToolResultDisk};
 use sylvander_agent::compress::layers::{
-    context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
-    orphan_snip::OrphanSnipLayer, tool_result_budget::ToolResultBudgetLayer,
+    auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
+    micro_compact::MicroCompactLayer, orphan_snip::OrphanSnipLayer,
+    tool_result_budget::ToolResultBudgetLayer,
 };
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -335,4 +336,467 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
     // L0 must have offloaded the big body once.
     assert!(disk.write_count() >= 1, "L0 should offload the big body");
     assert!(l0_count >= 1, "expected at least one L0 Compressed event");
+}
+
+// =============================================================================
+// L1 — OrphanSnip: pre-populated conversation with orphan tool_result
+// =============================================================================
+
+#[tokio::test]
+async fn real_use_case_l1_drops_orphan_tool_results() {
+    // Scenario: agent starts a fresh run with initial messages that
+    // include an orphan tool_result (no matching tool_use anywhere
+    // in history). On iter 1, L1 drops it; the loop then runs a
+    // normal end_turn.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_ok",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "all good"}],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 50, "output_tokens": 10}
+        })))
+        .mount(&server)
+        .await;
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .layer(MicroCompactLayer::new())
+        .layer(ContextCollapseLayer::new().with_keep_last_n(0).with_max_thinking_chars(200))
+        .layer(AutoCompactLayer::new())
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    // Construct initial messages with an orphan tool_result
+    // (tool_use_id="orphan" never has a matching tool_use).
+    use serde_json::json;
+    use sylvander_llm_anthropic::api::types::{
+        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
+    };
+    let initial = vec![
+        MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
+                ToolResultBlock::new("orphan", "stale result from a previous turn"),
+            )]),
+        },
+        MessageParam::user("continue from where we left off"),
+    ];
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run");
+
+    let events = events.lock().unwrap();
+    let l1_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l1 = layers.iter().find(|l| l.name == "orphan_snip");
+                l1.map(|l| l.condensed_count)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !l1_events.is_empty(),
+        "expected L1 to fire on the orphan tool_result"
+    );
+    assert!(
+        l1_events.iter().any(|&c| c >= 1),
+        "L1 should have condensed at least one orphan block, got {l1_events:?}"
+    );
+
+    println!("=== real_use_case_l1_drops_orphan_tool_results ===");
+    println!("L1 events: {l1_events:?}");
+    println!("================================================");
+}
+
+// =============================================================================
+// L2 — MicroCompact: multi-turn conversation, older tool_results condensed
+// =============================================================================
+
+#[tokio::test]
+async fn real_use_case_l2_condenses_old_tool_results() {
+    // Scenario: 5 user messages each carrying a tool_result with a
+    // long body. keep_last_n=2 means L2 condenses the 3 oldest
+    // (default keep_last_n=3 means 2 are condensed; we set N=2
+    // explicitly so 3 are condensed).
+    let server = MockServer::start().await;
+
+    // Iter 1: model returns tool_use(Read). up_to_n_times(1) so
+    // iter 2 onwards falls through to the default end_turn mock.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_tool",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_x",
+                "name": "Read",
+                "input": {"file_path": "x.md"}
+            }],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 100, "output_tokens": 30}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Fallback: end_turn with text.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_done",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 50, "output_tokens": 5}
+        })))
+        .mount(&server)
+        .await;
+
+    // 5 user messages with long tool_results pre-loaded.
+    use serde_json::json;
+    use sylvander_llm_anthropic::api::types::{
+        MessageParam, MessageRole, ToolResultBlock, UserContent, UserContentBlock,
+    };
+    let long_body = "Z".repeat(500);
+    let mut initial: Vec<MessageParam> = Vec::new();
+    // 5 stale user turns (each with an orphaned tool_result since
+    // L1 will see them but no tool_use exists — actually L1 will
+    // drop them, so the conversation only has 1 user message
+    // remaining for L2 to act on). To exercise L2, we need
+    // tool_results that ARE paired with tool_use OR L1 will sweep
+    // them first.
+    //
+    // Solution: skip L1 in the pipeline so L1 doesn't clean up.
+    // Or include the matching tool_use blocks in initial messages.
+    // We use the second approach — write tool_use + tool_result
+    // pairs into initial messages so L1 sees valid pairs and
+    // leaves them alone, then L2 condenses older ones.
+    for i in 0..5 {
+        // Add assistant message with tool_use
+        initial.push(MessageParam {
+            role: MessageRole::Assistant,
+            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
+                "type": "tool_use",
+                "id": format!("toolu_{i}"),
+                "name": "Read",
+                "input": {"file_path": format!("file{i}.md")}
+            }))]),
+        });
+        // Add user message with tool_result
+        initial.push(MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
+                ToolResultBlock::new(format!("toolu_{i}"), &long_body),
+            )]),
+        });
+    }
+    // Plus the user's current request (will trigger iter 1).
+    initial.push(MessageParam::user("now summarize"));
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .layer(MicroCompactLayer::new().with_keep_last_n(2))
+        .layer(ContextCollapseLayer::new())
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        initial,
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run");
+
+    let events = events.lock().unwrap();
+    let l2_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l2 = layers.iter().find(|l| l.name == "micro_compact");
+                l2.map(|l| l.condensed_count)
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_use_case_l2_condenses_old_tool_results ===");
+    println!("L2 events: {l2_events:?}");
+    println!("==============================================");
+
+    // 5 old tool_results, keep_last_n=2 means 3 are condensed.
+    assert!(
+        l2_events.iter().any(|&c| c >= 1),
+        "L2 should have condensed at least one old tool_result; got {l2_events:?}"
+    );
+}
+
+// =============================================================================
+// L3 — ContextCollapse: thinking block in response, trimmed
+// =============================================================================
+
+#[tokio::test]
+async fn real_use_case_l3_trims_old_thinking_blocks() {
+    // Scenario: assistant response includes a long thinking block.
+    // After re-feed, the messages have an Other(json) with
+    // type=thinking. L3 walks old assistant messages and trims
+    // long thinking.
+    let server = MockServer::start().await;
+
+    // Iter 1: returns tool_use + thinking. up_to_n_times(1).
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_thinking",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "x".repeat(2000), "signature": "sig_abc"},
+                {"type": "tool_use", "id": "toolu_t", "name": "Read", "input": {"file_path": "x"}}
+            ],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 100, "output_tokens": 50}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_done",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 50, "output_tokens": 5}
+        })))
+        .mount(&server)
+        .await;
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .layer(MicroCompactLayer::new())
+        // keep_last_n=0 → all assistant thinking blocks are
+        // considered "old" and get trimmed.
+        .layer(ContextCollapseLayer::new().with_keep_last_n(0).with_max_thinking_chars(200))
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .compression_pipeline(pipeline)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        vec![MessageParam::user("read x")],
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run");
+
+    let events = events.lock().unwrap();
+    let all_event_kinds: Vec<String> = events
+        .iter()
+        .map(|e| match e {
+            AgentEvent::IterationStart { iteration } => format!("Start[{iteration}]"),
+            AgentEvent::TextChunk(_) => "TextChunk".into(),
+            AgentEvent::ThinkingChunk(_) => "ThinkingChunk".into(),
+            AgentEvent::ToolCallStart { name, .. } => format!("ToolCallStart({name})"),
+            AgentEvent::ToolCallEnd { name, .. } => format!("ToolCallEnd({name})"),
+            AgentEvent::Compressed { layers } => {
+                let names: Vec<&str> = layers.iter().map(|l| l.name.as_str()).collect();
+                format!("Compressed[{}]", names.join(","))
+            }
+            AgentEvent::IterationEnd { iteration, .. } => format!("End[{iteration}]"),
+            _ => "Other".into(),
+        })
+        .collect();
+    let l3_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l3 = layers.iter().find(|l| l.name == "context_collapse");
+                l3.map(|l| l.condensed_count)
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_use_case_l3_trims_old_thinking_blocks ===");
+    println!("All events:");
+    for (i, k) in all_event_kinds.iter().enumerate() {
+        println!("  [{i}] {k}");
+    }
+    println!("L3 events: {l3_events:?}");
+    println!("===============================================");
+
+    assert!(
+        l3_events.iter().any(|&c| c >= 1),
+        "L3 should have trimmed at least one old thinking block; got {l3_events:?}"
+    );
+}
+
+// =============================================================================
+// L4 — AutoCompact: high usage triggers LLM summary
+// =============================================================================
+
+#[tokio::test]
+async fn real_use_case_l4_summarizes_at_high_usage() {
+    // Tiny context_window + huge usage forces L4 to fire at iter 2
+    // start. L4 calls the LLM (via AgentLoopAutoCompactLlm) to
+    // generate a summary. The summary call is caught by the same
+    // wiremock default response (end_turn + text).
+    let server = MockServer::start().await;
+
+    // Iter 1: tool_use with HUGE usage (above 50% of context_window=100)
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_l4",
+                "name": "Read",
+                "input": {"file_path": "x"}
+            }],
+            "model": "tiny",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 95, "output_tokens": 5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    // Default fallback: returns end_turn + text. This catches:
+    // - L4's summarize call (extracts the text as summary)
+    // - iter 2's normal LLM call (loop ends)
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_end",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "ok"}],
+            "model": "tiny",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let tiny_model = ModelInfo::builder()
+        .id("tiny")
+        .context_window(100)
+        .max_output_tokens(50)
+        .capability(ModelCapabilities::default())
+        .build()
+        .unwrap();
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+
+    let pipeline = CompressionPipeline::builder()
+        .layer(OrphanSnipLayer::new())
+        .layer(MicroCompactLayer::new())
+        .layer(ContextCollapseLayer::new())
+        .layer(
+            AutoCompactLayer::new()
+                .with_trigger_ratio(0.5)
+                .with_keep_last_n_turns(0), // keep 0 → always summarize
+        )
+        .build();
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(tiny_model)
+        .compression_pipeline(pipeline)
+        .max_iterations(3)
+        .build()
+        .expect("build");
+
+    let _run = run_with_events(
+        &loop_,
+        vec![MessageParam::user("hi")],
+        move |event| events_clone.lock().unwrap().push(event),
+    )
+    .await
+    .expect("run");
+
+    let events = events.lock().unwrap();
+    let l4_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compressed { layers } => {
+                let l4 = layers.iter().find(|l| l.name == "auto_compact");
+                l4.map(|l| (l.removed_count, l.failure.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    println!("=== real_use_case_l4_summarizes_at_high_usage ===");
+    println!("L4 events: {l4_events:?}");
+    println!("============================================");
+
+    // L4 should have either:
+    // a) fired successfully (removed_count > 0)
+    // b) failed gracefully (failure: Some("auto_compact_llm not configured") OR LLM call failed)
+    //
+    // The AgentLoop wires the AutoCompactLlm via the AgentLoopAutoCompactLlm
+    // struct, so the LLM IS configured. The L4 call hits wiremock's
+    // default mock, which returns end_turn+text. L4 extracts the text
+    // as summary, replaces messages.
+    let fired = l4_events
+        .iter()
+        .any(|(removed, failure)| *removed > 0 && failure.is_none());
+    assert!(
+        fired,
+        "L4 should have fired successfully and replaced messages; got {l4_events:?}"
+    );
 }
