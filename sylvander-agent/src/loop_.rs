@@ -363,7 +363,8 @@ pub fn run_stream(
                     | StopReason::StopSequence
                     | StopReason::MaxTokens
                     | StopReason::Refusal
-                    | StopReason::PauseTurn,
+                    | StopReason::PauseTurn
+                    | StopReason::Other,
                 ) => {
                     final_message = Some(Message {
                         id: response_id,
