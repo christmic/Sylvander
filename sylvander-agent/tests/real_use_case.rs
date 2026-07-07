@@ -220,16 +220,16 @@ async fn real_use_case_read_and_summarize() {
     }
     drop(event_log);
 
-    // Expected event order:
-    //   IterationStart, IterationEnd, ToolCallStart(Read),
-    //   ToolCallEnd(Read,ok), IterationStart, TextChunk, IterationEnd
+    // Expected event order (after the IterationEnd placement fix):
+    //   IterationStart, ToolCallStart(Read), ToolCallEnd(Read,ok),
+    //   IterationEnd, IterationStart, TextChunk, IterationEnd
     assert_eq!(
         event_kinds,
         vec![
             "IterationStart",
-            "IterationEnd",
             "ToolCallStart(Read)",
             "ToolCallEnd(Read,ok)",
+            "IterationEnd",
             "IterationStart",
             "TextChunk",
             "IterationEnd",
