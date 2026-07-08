@@ -10,4 +10,4 @@ Cargo.lock.bak
 *.swo
 
 # OS
-.DS_Store
+.DS_Store*.env

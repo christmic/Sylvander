@@ -1,15 +1,4 @@
 //! Sylvander server — boots the agent system with channels.
-//!
-//! # Env vars
-//!
-//! ```text
-//! ANTHROPIC_API_KEY      (required) Anthropic API key
-//! ANTHROPIC_BASE_URL     (optional) default: https://api.anthropic.com
-//! SYLVANDER_MODEL        (optional) default: claude-sonnet-5-20260601
-//! DINGTALK_APP_KEY       (optional) enable DingTalk channel
-//! DINGTALK_APP_SECRET    (optional)
-//! SYLVANDER_APPROVAL     (optional) enable bus-based tool approval
-//! ```
 
 use std::sync::Arc;
 
@@ -28,7 +17,10 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn require_env(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| panic!("{key} must be set"))
+    std::env::var(key).unwrap_or_else(|_| {
+        eprintln!("ERROR: {key} must be set. Source sylvander.env or export it.");
+        std::process::exit(1);
+    })
 }
 
 #[tokio::main]
@@ -42,7 +34,6 @@ async fn main() {
 
     info!("sylvander server starting");
 
-    // ── Config ──
     let model_name = env_or("SYLVANDER_MODEL", "claude-sonnet-5-20260601");
     let client = AnthropicClient::builder()
         .api_key(require_env("ANTHROPIC_API_KEY"))
@@ -66,7 +57,7 @@ async fn main() {
         .build()
         .expect("spec");
 
-    let _model = ModelInfo::builder()
+    let model = ModelInfo::builder()
         .id(&model_name)
         .context_window(200_000)
         .max_output_tokens(32_000)
@@ -81,10 +72,8 @@ async fn main() {
         .register(EditTool::new("/"))
         .register(MemoryReadTool::new(memory));
 
-    // ── Bus ──
     let bus = Arc::new(InProcessMessageBus::new());
 
-    // ── Agent ──
     let mut run_builder = sylvander_agent::run::AgentRun::builder(spec.clone(), client.clone())
         .bus(bus.clone())
         .override_tools(tools)
@@ -96,14 +85,13 @@ async fn main() {
 
     let run = run_builder.build().expect("agent build");
     let agent_id = run.id().clone();
-
     let filter = run.subscription_filter();
     let inbox = bus.subscribe(filter).await.expect("subscribe");
-    let agent_task = tokio::spawn(async move { run.run(inbox).await });
+    let _agent_task = tokio::spawn(async move { run.run(inbox).await });
 
     info!(%agent_id, "agent spawned");
 
-    // ── DingTalk channel ──
+    // DingTalk channel
     let dt_key = std::env::var("DINGTALK_APP_KEY");
     let dt_secret = std::env::var("DINGTALK_APP_SECRET");
 
@@ -115,18 +103,15 @@ async fn main() {
             bus: bus.clone(),
             sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
         };
-        let ch = channel.clone();
-        tokio::spawn(async move { ch.run(ctx).await });
+        tokio::spawn(async move { channel.run(ctx).await });
         info!("dingtalk channel started");
     } else {
         info!("dingtalk not configured (set DINGTALK_APP_KEY + DINGTALK_APP_SECRET)");
     }
 
     info!("sylvander server running — Ctrl+C to stop");
-
-    // ── Wait ──
     tokio::signal::ctrl_c().await.expect("ctrl_c");
     info!("shutting down...");
-    agent_task.abort();
+    _agent_task.abort();
     info!("stopped");
 }
