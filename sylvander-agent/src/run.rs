@@ -5,14 +5,23 @@
 //! - An [`AgentLoop`] (the pure inference engine)
 //! - A map of [`SessionContext`]s (one per session it participates in)
 //! - A handle to the [`MessageBus`](crate::bus::MessageBus)
+//! - A [`MemoryStore`](crate::tools::memory::MemoryStore) (infrastructure, not a tool)
 //!
-//! [`AgentRun`] does NOT own its lifecycle — that's the job of
-//! [`AgentRunEngine`](crate::engine::AgentRunEngine) (M6).
+//! # Memory: mechanism first, tools second
 //!
-//! # Agent : Session = N : N
+//! Memory is agent infrastructure — like the LLM client or tool registry.
+//! The *read* path is exposed as a tool (`read_memory`) so the model can
+//! autonomously retrieve relevant context. The *write* path is
+//! system-driven — the agent cannot arbitrarily modify its own memory.
+//! Writes happen via [`AgentRun::remember`] (called by the engine after
+//! session milestones) or post-compression summarization.
 //!
-//! An agent can participate in multiple sessions simultaneously. Each
-//! session has its own isolated conversation history.
+//! # Session: engineering layer, model-invisible
+//!
+//! Sessions are purely an engineering concern for message routing and
+//! context isolation. The model never sees session IDs or session
+//! management — it only receives the conversation history for the
+//! current session.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +36,9 @@ use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop, AgentLoopResult};
 use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::spec::{AgentId, AgentSpec, SessionId};
-use crate::tool::ToolRegistry;
+use crate::tool::{Tool, ToolRegistry};
+use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
+use crate::tools::MemoryReadTool;
 
 // ---------------------------------------------------------------------------
 // Control
@@ -60,6 +71,11 @@ pub struct AgentRun {
     pub(crate) bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
     pub(crate) sessions: RwLock<HashMap<SessionId, SessionContext>>,
+    /// Long-term memory store — agent infrastructure, not a tool.
+    ///
+    /// The model can *read* memory via the `read_memory` tool, but
+    /// *writes* are system-driven (see [`Self::remember`]).
+    pub(crate) memory: Option<Arc<dyn MemoryStore>>,
 }
 
 impl AgentRun {
@@ -240,6 +256,49 @@ impl AgentRun {
         }
     }
 
+    // -- memory (infrastructure, not tools) --
+
+    /// Return the tools that give the model access to this agent's memory.
+    ///
+    /// Currently returns only `read_memory` — the model can search but
+    /// cannot write. Memory writes are system-driven via [`Self::remember`].
+    #[must_use]
+    pub fn memory_tools(&self) -> Vec<Arc<dyn Tool>> {
+        match &self.memory {
+            Some(store) => vec![Arc::new(MemoryReadTool::new(store.clone()))],
+            None => vec![],
+        }
+    }
+
+    /// Store a fact in the agent's long-term memory (system-driven).
+    ///
+    /// This is NOT exposed as a tool — the model cannot call it directly.
+    /// The engine or session manager calls this after conversation
+    /// milestones (session end, compression, explicit user "remember"
+    /// command).
+    ///
+    /// # Errors
+    /// Returns an error if no memory store is configured or the store
+    /// operation fails.
+    pub async fn remember(
+        &self,
+        content: impl Into<String>,
+        tags: &[&str],
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let store = self
+            .memory
+            .as_ref()
+            .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
+
+        let entry = MemoryEntry::new(uuid::Uuid::new_v4().to_string(), content);
+        let entry = tags
+            .iter()
+            .fold(entry, |e, tag| e.with_tag(*tag, "true"));
+
+        store.store(entry.clone()).await?;
+        Ok(entry)
+    }
+
     // -- helpers --
 
     /// Convert a [`BusMessage`] to a [`MessageParam`] for the loop.
@@ -262,6 +321,7 @@ pub struct AgentRunBuilder {
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
+    memory: Option<Arc<dyn MemoryStore>>,
 }
 
 impl AgentRunBuilder {
@@ -272,6 +332,7 @@ impl AgentRunBuilder {
             bus: None,
             tool_overrides: None,
             compression_overrides: None,
+            memory: None,
         }
     }
 
@@ -282,7 +343,20 @@ impl AgentRunBuilder {
         self
     }
 
+    /// Set the agent's memory store (infrastructure).
+    ///
+    /// If not set but the spec has `memory_stores` configured, the
+    /// first compatible store is auto-resolved.
+    #[must_use]
+    pub fn memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
+        self.memory = Some(store);
+        self
+    }
+
     /// Override the tool registry (otherwise empty).
+    ///
+    /// Callers should include [`AgentRun::memory_tools`] in the
+    /// registry if they want the model to have memory access.
     #[must_use]
     pub fn override_tools(mut self, tools: ToolRegistry) -> Self {
         self.tool_overrides = Some(tools);
@@ -301,6 +375,9 @@ impl AgentRunBuilder {
 
     /// Build the [`AgentRun`].
     ///
+    /// Memory stores from the spec are auto-resolved if no explicit
+    /// store was set via [`Self::memory`].
+    ///
     /// # Errors
     /// Returns [`AgentRunError`] if required fields are missing or
     /// the loop configuration fails.
@@ -309,6 +386,16 @@ impl AgentRunBuilder {
         let bus = self
             .bus
             .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
+
+        // Resolve memory store: explicit override > spec config > None
+        let memory = if self.memory.is_some() {
+            self.memory
+        } else {
+            self.spec
+                .memory_stores
+                .first()
+                .and_then(|cfg| cfg.build().ok())
+        };
 
         let model_info = self.spec.to_model_info();
 
@@ -340,6 +427,7 @@ impl AgentRunBuilder {
             loop_config,
             bus,
             sessions: RwLock::new(HashMap::new()),
+            memory,
         })
     }
 }
@@ -372,6 +460,7 @@ pub enum AgentRunError {
 mod tests {
     use super::*;
     use crate::bus::InProcessMessageBus;
+    use crate::tools::memory::InMemoryMemoryStore;
     use std::path::PathBuf;
 
     fn test_metadata() -> SessionMetadata {
@@ -382,20 +471,92 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn join_and_leave_session() {
-        let bus = Arc::new(InProcessMessageBus::new());
+    fn test_spec_and_client() -> (AgentSpec, AnthropicClient) {
         let spec = AgentSpec::builder()
             .id("test-agent")
             .name("Test")
             .model_name("claude-sonnet-5-20260601")
             .build()
             .expect("spec");
-
         let client = AnthropicClient::builder()
             .api_key("test-key")
             .build()
             .expect("client");
+        (spec, client)
+    }
+
+    #[tokio::test]
+    async fn memory_is_infrastructure_not_tool() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let store = Arc::new(InMemoryMemoryStore::new());
+
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store)
+            .build()
+            .expect("build");
+
+        // Memory tools return only read_memory (not write_memory)
+        let tools = run.memory_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "read_memory");
+    }
+
+    #[tokio::test]
+    async fn remember_is_system_driven() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let store = Arc::new(InMemoryMemoryStore::new());
+
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store.clone())
+            .build()
+            .expect("build");
+
+        // System-driven write (not a tool!)
+        run.remember("User prefers dark mode", &["preference"])
+            .await
+            .expect("remember");
+
+        // Verify it was stored
+        let results = store.search("dark mode", 5).await.expect("search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].content, "User prefers dark mode");
+    }
+
+    #[tokio::test]
+    async fn remember_fails_without_memory_configured() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
+
+        let err = run.remember("something", &[]).await.unwrap_err();
+        assert!(err.to_string().contains("no memory store"));
+    }
+
+    #[tokio::test]
+    async fn memory_tools_empty_without_memory_configured() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
+
+        assert!(run.memory_tools().is_empty());
+    }
+
+    #[tokio::test]
+    async fn join_and_leave_session() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
 
         let run = AgentRun::builder(spec, client)
             .bus(bus)
@@ -421,7 +582,6 @@ mod tests {
             .model_name("claude-sonnet-5-20260601")
             .build()
             .expect("spec");
-
         let client = AnthropicClient::builder()
             .api_key("test-key")
             .build()
