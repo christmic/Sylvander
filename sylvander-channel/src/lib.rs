@@ -82,6 +82,7 @@ pub trait Channel: Send + Sync {
 ///
 /// The channel uses these to interact with agents and sessions.
 /// It never accesses AgentRun, Engine, or Runtime directly.
+#[derive(Clone)]
 pub struct ChannelContext {
     /// Publish messages to the bus, subscribe to events.
     pub bus: Arc<dyn MessageBus>,
