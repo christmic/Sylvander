@@ -1,47 +1,57 @@
 # Sylvander v2
 
-Sylvander v2 is an AI Agent framework written in Rust. This is a fresh start
-(`v2`); the original `v1` code is preserved at `../Sylvander_archive` and is
-not referenced in v2 development.
+AI Agent framework in Rust — multi-agent, multi-session, multi-channel.
 
-## Workspace Layout
+## Architecture
 
 ```
-.
-├── Cargo.toml                     workspace root
-├── sylvander-llm-anthropic/       M1: Anthropic protocol SDK
-└── (future crates)                M2/M3: sylvander-llm-openai, sylvander-agent, ...
+sylvander-server              binary — boots the system
+  ├─ sylvander-channel-http   HTTP debug channel (SSE streaming)
+  ├─ sylvander-channel-dingtalk  DingTalk bot (Stream protocol)
+  ├─ sylvander-channel        Channel trait (lightweight)
+  ├─ sylvander-runtime        bootstrap, session persistence
+  ├─ sylvander-agent          engine, AgentRun, bus, tools, memory
+  └─ sylvander-llm-anthropic  Anthropic wire protocol
 ```
 
-## Milestones
+## Quickstart
 
-| Milestone | Status | Crate |
-|-----------|--------|-------|
-| **M1 Protocol SDK** | in progress | `sylvander-llm-anthropic` |
-| **M2 Agent Loop** | pending | `sylvander-agent` |
-| **M3 Tool System** | pending | `sylvander-agent` |
+```bash
+# Configure
+export ANTHROPIC_API_KEY=sk-...
+export SYLVANDER_MODEL=deepseek-v4-flash
+# optional: DingTalk
+export DINGTALK_APP_KEY=... DINGTALK_APP_SECRET=...
 
-See `../projects/Sylvander/designs/m1-m2-m3-roadmap.md` (in Oraculo) for the
-product-first roadmap: **M2 Agent Loop comes before M3 Tool System**, because
-the loop drives tool design rather than the reverse.
+# Run
+cargo run -p sylvander-server --release
 
-## Build
+# Test
+curl -X POST http://localhost:8080/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"test","message":"hello"}'
+```
+
+## Key Concepts
+
+| Layer | Crate | Responsibility |
+|-------|-------|----------------|
+| **Protocol** | `sylvander-llm-anthropic` | Anthropic wire format, streaming, error handling |
+| **Agent Core** | `sylvander-agent` | AgentLoop, AgentRun, engine, bus, session, memory, tools, approval |
+| **Runtime** | `sylvander-runtime` | Bootstrap, session persistence |
+| **Channel** | `sylvander-channel` | Channel trait (lightweight contract) |
+| **Channels** | `sylvander-channel-dingtalk`, `-http` | Concrete channel implementations |
+| **Server** | `sylvander-server` | Binary entry point |
+
+## Build & Test
 
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo doc --workspace --no-deps
 ```
 
 ## Conventions
 
-- **MSRV**: 1.96, edition 2024
-- **Async**: tokio (multi-thread runtime)
-- **HTTP**: reqwest (rustls only, no OpenSSL)
-- **Errors**: `thiserror` for typed crate errors
-- **Lints**: workspace `unsafe_code = "deny"` + clippy pedantic (with allow-list)
-- **Tests**: `#[cfg(test)]` unit + `tests/` integration (wiremock)
-
-## License
-
-MIT
+- MSRV: 1.96, edition 2024
+- Async: tokio (multi-thread)
+- Tests: wiremock for e2e, 150+ tests
