@@ -1,0 +1,23 @@
+[package]
+name = "sylvander-server"
+description = "Sylvander server — boots the agent system with channels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sylvander"
+path = "src/main.rs"
+
+[dependencies]
+sylvander-agent = { path = "../sylvander-agent" }
+sylvander-channel = { path = "../sylvander-channel" }
+sylvander-channel-dingtalk = { path = "../sylvander-channel-dingtalk" }
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true
