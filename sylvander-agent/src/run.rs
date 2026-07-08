@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
-use tracing::warn;
+use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
@@ -28,6 +28,17 @@ use crate::loop_::{self, AgentLoop, AgentLoopResult};
 use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::tool::ToolRegistry;
+
+// ---------------------------------------------------------------------------
+// Control
+// ---------------------------------------------------------------------------
+
+/// Commands sent to a running agent via its control channel.
+#[derive(Debug, Clone)]
+pub enum ControlCommand {
+    /// Gracefully stop the agent's main loop.
+    Stop,
+}
 
 // ---------------------------------------------------------------------------
 // AgentRun
@@ -158,50 +169,73 @@ impl AgentRun {
     }
 
     /// Main event loop. Consumes messages from the inbox and processes
-    /// them one at a time.
+    /// them one at a time. Listens for [`ControlCommand::Stop`] on the
+    /// control channel.
     ///
     /// This is designed to be spawned as a tokio task by the engine.
-    pub async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
-        while let Some(msg) = inbox.recv().await {
-            let session_id = msg.session_id.clone();
+    pub async fn run(
+        self,
+        mut inbox: mpsc::UnboundedReceiver<BusMessage>,
+        mut control: mpsc::Receiver<ControlCommand>,
+    ) {
+        loop {
+            tokio::select! {
+                // Incoming messages
+                Some(msg) = inbox.recv() => {
+                    let session_id = msg.session_id.clone();
 
-            // Check that we're actually in this session
-            {
-                let sessions = self.sessions.read().await;
-                if !sessions.contains_key(&session_id) {
-                    warn!(
-                        agent_id = %self.id,
-                        session_id = %session_id,
-                        "received message for unknown session — ignoring"
-                    );
-                    continue;
-                }
-            }
+                    {
+                        let sessions = self.sessions.read().await;
+                        if !sessions.contains_key(&session_id) {
+                            warn!(
+                                agent_id = %self.id,
+                                session_id = %session_id,
+                                "received message for unknown session — ignoring"
+                            );
+                            continue;
+                        }
+                    }
 
-            match self.handle_message(msg).await {
-                Ok(_result) => {
-                    // Loop completed successfully
+                    match self.handle_message(msg).await {
+                        Ok(_result) => {}
+                        Err(err) => {
+                            warn!(
+                                agent_id = %self.id,
+                                session_id = %session_id,
+                                error = %err,
+                                "agent loop failed"
+                            );
+                            let _ = self
+                                .bus
+                                .publish(BusMessage {
+                                    session_id: session_id.clone(),
+                                    sender: Sender::Agent(self.id.clone()),
+                                    recipient: Recipient::Broadcast,
+                                    kind: MessageKind::Chat,
+                                    payload: format!("Error: {err}"),
+                                    timestamp: now_secs(),
+                                    id: crate::bus::MessageId::new(),
+                                })
+                                .await;
+                        }
+                    }
                 }
-                Err(err) => {
-                    warn!(
-                        agent_id = %self.id,
-                        session_id = %session_id,
-                        error = %err,
-                        "agent loop failed"
-                    );
-                    let _ = self
-                        .bus
-                        .publish(BusMessage {
-                            session_id: session_id.clone(),
-                            sender: Sender::Agent(self.id.clone()),
-                            recipient: Recipient::Broadcast,
-                            kind: MessageKind::Chat,
-                            payload: format!("Error: {err}"),
-                            timestamp: now_secs(),
-                            id: crate::bus::MessageId::new(),
-                        })
-                        .await;
+
+                // Control commands
+                Some(cmd) = control.recv() => {
+                    match cmd {
+                        ControlCommand::Stop => {
+                            info!(
+                                agent_id = %self.id,
+                                "received stop command — shutting down"
+                            );
+                            break;
+                        }
+                    }
                 }
+
+                // Both channels closed
+                else => break,
             }
         }
     }

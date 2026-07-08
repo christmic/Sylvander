@@ -77,6 +77,7 @@
 
 pub mod bus;
 pub mod compress;
+pub mod engine;
 pub mod error;
 pub mod event;
 pub mod loop_;
@@ -99,6 +100,7 @@ pub mod prelude {
         AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext,
         DEFAULT_SUMMARY_PROMPT,
     };
+    pub use crate::engine::{AgentHandle, AgentRunEngine, AgentStatus, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
     pub use crate::loop_::{
