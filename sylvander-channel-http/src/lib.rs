@@ -30,10 +30,13 @@ struct ChatRequest {
 
 pub struct HttpChannel {
     addr: SocketAddr,
+    agent_id: sylvander_agent::spec::AgentId,
 }
 
 impl HttpChannel {
-    pub fn new(addr: SocketAddr) -> Self { Self { addr } }
+    pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_agent::spec::AgentId>) -> Self {
+        Self { addr, agent_id: agent_id.into() }
+    }
 }
 
 #[async_trait]
@@ -41,8 +44,10 @@ impl Channel for HttpChannel {
     fn name(&self) -> &str { "http" }
 
     async fn run(self: Arc<Self>, ctx: ChannelContext) {
+        let agent = self.agent_id.clone();
         let state = Arc::new(AppState {
             ctx: Arc::new(ctx),
+            agent_id: agent,
             sessions: Mutex::new(std::collections::HashMap::new()),
         });
 
@@ -59,6 +64,7 @@ impl Channel for HttpChannel {
 
 struct AppState {
     ctx: Arc<ChannelContext>,
+    agent_id: sylvander_agent::spec::AgentId,
     sessions: Mutex<std::collections::HashMap<String, SessionId>>,
 }
 
@@ -85,10 +91,33 @@ async fn chat(
         .await
         .unwrap();
 
+    // Ensure agent is in this session before sending message
+    use sylvander_agent::bus::SystemMessage;
+    use sylvander_agent::session::SessionMetadata;
+    use std::path::PathBuf;
+    let _ = state.ctx.bus.publish(sylvander_agent::bus::BusMessage {
+        session_id: sid.clone(),
+        sender: sylvander_agent::bus::Sender::System,
+        recipient: sylvander_agent::bus::Recipient::Agent(
+            state.agent_id.clone(),
+        ),
+        kind: sylvander_agent::bus::MessageKind::System(SystemMessage::JoinSession {
+            session_id: sid.clone(),
+            metadata: SessionMetadata {
+                workspace: PathBuf::from("/tmp"),
+                name: "http".into(),
+                user_id: "http-user".into(),
+            },
+        }),
+        payload: String::new(),
+        timestamp: sylvander_agent::session::now_secs(),
+        id: sylvander_agent::bus::MessageId::new(),
+    }).await;
+
     let _ = state
         .ctx
         .bus
-        .publish(BusMessage::user_chat(sid, "http-user", &req.message))
+        .publish(BusMessage::user_chat(sid.clone(), "http-user", &req.message))
         .await;
 
     let stream = async_stream::stream! {
