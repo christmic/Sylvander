@@ -113,6 +113,9 @@ pub mod prelude {
         MemoryStoreConfig, ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
-    pub use crate::tools::{EditTool, ReadTool, WriteTool};
+    pub use crate::tools::{
+        EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
+        MemoryWriteTool, ReadTool, WriteTool,
+    };
     pub use sylvander_llm_anthropic::prelude::*;
 }
