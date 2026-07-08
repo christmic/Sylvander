@@ -121,6 +121,7 @@ async fn real_api_natural_multi_turn_with_compression() {
             }
             AgentEvent::Done(_) => "Done".into(),
             AgentEvent::Error(e) => format!("Error({e})"),
+            _ => "Other".into(),
         })
         .collect();
 

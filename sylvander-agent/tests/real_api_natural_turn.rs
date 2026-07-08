@@ -93,6 +93,7 @@ async fn real_api_does_multi_turn_work() {
             AgentEvent::IterationEnd { iteration, .. } => format!("End[{iteration}]"),
             AgentEvent::Done(_) => "Done".into(),
             AgentEvent::Error(e) => format!("Error({e:?})"),
+            _ => "Other".into(),
         })
         .collect();
     let _ = event_kinds;

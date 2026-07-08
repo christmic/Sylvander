@@ -57,6 +57,16 @@ pub enum AgentEvent {
         is_error: bool,
     },
 
+    /// Tool execution was rejected by the approval gate (not executed).
+    ToolRejected {
+        /// Tool call ID.
+        id: String,
+        /// Tool name.
+        name: String,
+        /// Rejection reason.
+        reason: String,
+    },
+
     /// Compression was applied this iteration.
     ///
     /// Always emitted when at least one layer produced work (removed,

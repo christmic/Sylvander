@@ -75,6 +75,7 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
+pub mod approval;
 pub mod bus;
 pub mod compress;
 pub mod engine;

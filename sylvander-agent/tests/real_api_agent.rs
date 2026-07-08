@@ -144,6 +144,7 @@ async fn real_api_agent_loop_completes() {
                 eprintln!("{e}");
                 panic!("agent loop errored: {e}");
             }
+            _ => {}
         }
     }
 
