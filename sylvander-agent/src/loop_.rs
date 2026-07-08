@@ -55,6 +55,8 @@ pub struct AgentLoop {
     pub(crate) max_retries: u32,
     /// Optional system prompt (set via `AgentLoopBuilder::system_prompt`).
     pub(crate) system_prompt: Option<String>,
+    /// Optional approval gate — called before tool execution (M12).
+    pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
 }
 
 impl std::fmt::Debug for AgentLoop {
@@ -93,6 +95,7 @@ pub struct AgentLoopBuilder {
     max_iterations: u32,
     max_retries: u32,
     system_prompt: Option<String>,
+    approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
 }
 
 impl Default for AgentLoopBuilder {
@@ -105,6 +108,7 @@ impl Default for AgentLoopBuilder {
             max_iterations: 50,
             max_retries: 3,
             system_prompt: None,
+            approval_gate: None,
         }
     }
 }
@@ -193,6 +197,18 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the approval gate (M12). If set, the loop calls
+    /// [`ApprovalGate::check_batch`](crate::approval::ApprovalGate::check_batch)
+    /// before executing each batch of tool calls.
+    #[must_use]
+    pub fn approval_gate(
+        mut self,
+        gate: Arc<dyn crate::approval::ApprovalGate>,
+    ) -> Self {
+        self.approval_gate = Some(gate);
+        self
+    }
+
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
@@ -226,6 +242,7 @@ impl AgentLoopBuilder {
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
             system_prompt: self.system_prompt,
+            approval_gate: self.approval_gate,
         })
     }
 }
@@ -490,68 +507,92 @@ pub fn run_stream(
                 const TOOL_TIMEOUT: std::time::Duration =
                     std::time::Duration::from_secs(30);
 
-                // Phase 1: emit all ToolCallStart events (deterministic order).
-                for tool_use in &tool_blocks {
-                    yield AgentEvent::ToolCallStart {
-                        id: tool_use.id.clone(),
-                        name: tool_use.name.clone(),
-                        input: tool_use.input.clone(),
+                // Check approval gate before executing tools.
+                // The loop PAUSES here if the gate waits for external input.
+                let decisions: Vec<crate::approval::ApprovalDecision> =
+                    if let Some(gate) = &config.approval_gate {
+                        let requests: Vec<crate::approval::ToolUseRequest> = tool_blocks
+                            .iter()
+                            .map(|t| crate::approval::ToolUseRequest {
+                                call_id: t.id.clone(),
+                                tool_name: t.name.clone(),
+                                input: t.input.clone(),
+                            })
+                            .collect();
+                        let result = gate.check_batch(&requests).await;
+                        result.decisions
+                    } else {
+                        // No gate → auto-approve all (backward compatible)
+                        vec![
+                            crate::approval::ApprovalDecision::Approved;
+                            tool_blocks.len()
+                        ]
                     };
-                }
 
-                // Phase 2: execute all tools in parallel.
-                let tool_futures = tool_blocks.iter().map(|tool_use| {
-                    let tool = config.tools.get(tool_use.name.as_str());
-                    let input = tool_use.input.clone();
-                    let name = tool_use.name.clone();
-                    async move {
-                        let result = if let Some(tool) = tool {
-                            match tokio::time::timeout(TOOL_TIMEOUT, tool.execute(input)).await {
-                                Ok(Ok(out)) => (out.content, out.is_error),
-                                Ok(Err(e)) => {
-                                    warn!(tool = %name, error = %e, "tool execution failed");
-                                    (format!("tool execution failed: {e}"), true)
-                                }
-                                Err(_) => {
-                                    warn!(
-                                        tool = %name,
-                                        timeout_secs = TOOL_TIMEOUT.as_secs(),
-                                        "tool execution timed out"
-                                    );
-                                    (
-                                        format!(
-                                            "tool `{}` timed out after {}s",
-                                            name,
-                                            TOOL_TIMEOUT.as_secs()
-                                        ),
-                                        true,
-                                    )
-                                }
-                            }
-                        } else {
-                            warn!(tool = %name, "tool not found in registry");
-                            (format!("tool `{name}` not found in registry"), true)
-                        };
-                        (name, result)
-                    }
-                });
-                let results: Vec<(String, (String, bool))> =
-                    futures_util::future::join_all(tool_futures).await;
-
-                // Phase 3: emit all ToolCallEnd events (same order as Starts)
-                //         and collect tool_results for re-feed.
+                // Execute approved tools, skip rejected ones
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
-                for (i, (name, (output, is_error))) in results.into_iter().enumerate() {
-                    let tool_use = tool_blocks[i];
-                    yield AgentEvent::ToolCallEnd {
-                        id: tool_use.id.clone(),
-                        name,
-                        output: output.clone(),
-                        is_error,
-                    };
-                    tool_result_blocks.push(UserContentBlock::ToolResult(
-                        ToolResultBlock::new(tool_use.id.clone(), output).with_error(is_error),
-                    ));
+                for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
+                    match decision {
+                        crate::approval::ApprovalDecision::Approved => {
+                            yield AgentEvent::ToolCallStart {
+                                id: tool_use.id.clone(),
+                                name: tool_use.name.clone(),
+                                input: tool_use.input.clone(),
+                            };
+
+                            let tool = config.tools.get(tool_use.name.as_str());
+                            let input = tool_use.input.clone();
+                            let name = tool_use.name.clone();
+                            let (output, is_error) = if let Some(tool) = tool {
+                                match tokio::time::timeout(TOOL_TIMEOUT, tool.execute(input)).await
+                                {
+                                    Ok(Ok(out)) => (out.content, out.is_error),
+                                    Ok(Err(e)) => {
+                                        warn!(tool = %name, error = %e, "tool execution failed");
+                                        (format!("tool execution failed: {e}"), true)
+                                    }
+                                    Err(_) => {
+                                        warn!(tool = %name, "tool execution timed out");
+                                        (
+                                            format!(
+                                                "tool `{}` timed out after {}s",
+                                                name,
+                                                TOOL_TIMEOUT.as_secs()
+                                            ),
+                                            true,
+                                        )
+                                    }
+                                }
+                            } else {
+                                warn!(tool = %name, "tool not found in registry");
+                                (format!("tool `{name}` not found in registry"), true)
+                            };
+
+                            yield AgentEvent::ToolCallEnd {
+                                id: tool_use.id.clone(),
+                                name,
+                                output: output.clone(),
+                                is_error,
+                            };
+                            tool_result_blocks.push(UserContentBlock::ToolResult(
+                                ToolResultBlock::new(tool_use.id.clone(), output)
+                                    .with_error(is_error),
+                            ));
+                        }
+                        crate::approval::ApprovalDecision::Rejected { reason } => {
+                            yield AgentEvent::ToolRejected {
+                                id: tool_use.id.clone(),
+                                name: tool_use.name.clone(),
+                                reason: reason.clone(),
+                            };
+                            // Re-feed a tool_result with is_error so the model
+                            // knows the tool was rejected.
+                            tool_result_blocks.push(UserContentBlock::ToolResult(
+                                ToolResultBlock::new(tool_use.id.clone(), reason.clone())
+                                    .with_error(true),
+                            ));
+                        }
+                    }
                 }
                 messages.push(MessageParam::user_blocks(tool_result_blocks));
             }
