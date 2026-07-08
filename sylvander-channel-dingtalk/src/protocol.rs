@@ -99,6 +99,8 @@ pub struct RobotMessage {
     pub session_webhook: String,
     #[serde(rename = "sessionWebhookExpiredTime")]
     pub session_webhook_expired: i64,
+    #[serde(rename = "robotCode", default)]
+    pub robot_code: String,
     #[serde(rename = "msgtype")]
     pub msg_type: String,
     pub text: Option<TextContent>,
