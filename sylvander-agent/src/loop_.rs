@@ -42,6 +42,7 @@ use super::tool::ToolRegistry;
 /// The agent loop. Holds the LLM client, resolved model, tools, and
 /// configuration. Iteration logic is in the free functions [`run`],
 /// [`run_stream`], and [`run_with_events`].
+#[derive(Clone)]
 pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,

@@ -30,9 +30,10 @@ use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
+use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::bus::{
     AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
-    SubscriptionFilter, SystemMessage,
+    StreamEvent, SubscriptionFilter, SystemMessage, ToolCallInfo,
 };
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
@@ -61,9 +62,10 @@ pub(crate) struct AgentRunInner {
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
     /// Long-term memory store.
     memory: Option<Arc<dyn MemoryStore>>,
-    /// Pending approval requests: call_id → oneshot sender (M12).
-    #[allow(dead_code)] // used in M12c via run()
-    pending_approvals: Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::approval::ApprovalDecision>>>,
+    /// Whether bus-based approval is enabled (opt-in, off by default).
+    approval_enabled: bool,
+    /// Pending approval requests (shared with BusApprovalGate).
+    pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::approval::ApprovalDecision>>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
 }
@@ -255,6 +257,70 @@ impl AgentRun {
 }
 
 // ---------------------------------------------------------------------------
+// BusApprovalGate — bus-based approval (M12c)
+// ---------------------------------------------------------------------------
+
+/// Approval gate that publishes to the bus and waits for responses.
+struct BusApprovalGate {
+    bus: Arc<dyn MessageBus>,
+    agent_id: AgentId,
+    session_id: SessionId,
+    pending_approvals: Arc<
+        Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>,
+    >,
+}
+
+#[async_trait::async_trait]
+impl ApprovalGate for BusApprovalGate {
+    async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult {
+        let batch_id = uuid::Uuid::new_v4().to_string();
+        let mut receivers: Vec<(String, tokio::sync::oneshot::Receiver<ApprovalDecision>)> =
+            Vec::new();
+
+        for tool in tools {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.pending_approvals
+                .lock()
+                .await
+                .insert(tool.call_id.clone(), tx);
+            receivers.push((tool.call_id.clone(), rx));
+        }
+
+        // Publish batch approval request
+        let _ = self
+            .bus
+            .publish(BusMessage::stream_event(
+                self.session_id.clone(),
+                self.agent_id.clone(),
+                StreamEvent::ToolApprovalRequired {
+                    batch_id,
+                    tools: tools
+                        .iter()
+                        .map(|t| ToolCallInfo {
+                            call_id: t.call_id.clone(),
+                            tool_name: t.tool_name.clone(),
+                            input: t.input.clone(),
+                        })
+                        .collect(),
+                },
+            ))
+            .await;
+
+        // Wait for all decisions (120s timeout each)
+        let mut decisions = Vec::new();
+        for (_call_id, rx) in receivers {
+            match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
+                Ok(Ok(d)) => decisions.push(d),
+                _ => decisions.push(ApprovalDecision::Rejected {
+                    reason: "approval timeout".into(),
+                }),
+            }
+        }
+        ApprovalBatchResult { decisions }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AgentRunInner — the actual implementation
 // ---------------------------------------------------------------------------
 
@@ -273,9 +339,24 @@ impl AgentRunInner {
             ctx.history_snapshot()
         };
 
-        // 2. Run loop with streaming
+        // 2. Build per-session approval gate (if enabled)
+        let loop_config = if self.approval_enabled {
+            let gate = Arc::new(BusApprovalGate {
+                bus: self.bus.clone(),
+                agent_id: self.id.clone(),
+                session_id: session_id.clone(),
+                pending_approvals: self.pending_approvals.clone(),
+            });
+            let mut cfg = self.loop_config.clone();
+            cfg.approval_gate = Some(gate);
+            cfg
+        } else {
+            self.loop_config.clone()
+        };
+
+        // 3. Run loop with streaming
         use futures_util::StreamExt;
-        let mut stream = Box::pin(loop_::run_stream(&self.loop_config, history));
+        let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
         let mut final_message: Option<sylvander_llm_anthropic::api::types::Message> = None;
 
         while let Some(event) = stream.next().await {
@@ -322,7 +403,7 @@ impl AgentRunInner {
             }
         }
 
-        // 3. Write final message to session + publish Done
+        // 4. Write final message to session + publish Done
         if let Some(msg) = final_message {
             let text = msg.text();
             self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text }).await;
@@ -372,6 +453,7 @@ pub struct AgentRunBuilder {
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
+    approval_enabled: bool,
 }
 
 impl AgentRunBuilder {
@@ -384,6 +466,7 @@ impl AgentRunBuilder {
             compression_overrides: None,
             memory: None,
             model_capabilities: None,
+            approval_enabled: false,
         }
     }
 
@@ -402,6 +485,13 @@ impl AgentRunBuilder {
     ) -> Self { self.model_capabilities = Some(caps); self }
 
     #[must_use]
+    /// Enable bus-based tool approval (opt-in, off by default).
+    #[must_use]
+    pub fn enable_approval(mut self) -> Self {
+        self.approval_enabled = true;
+        self
+    }
+
     pub fn override_compression(
         mut self, pipeline: crate::compress::pipeline::CompressionPipeline,
     ) -> Self { self.compression_overrides = Some(pipeline); self }
@@ -449,7 +539,8 @@ impl AgentRunBuilder {
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 memory,
-                pending_approvals: Mutex::new(HashMap::new()),
+                approval_enabled: self.approval_enabled,
+                pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
             }),
         })
