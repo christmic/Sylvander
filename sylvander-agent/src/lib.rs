@@ -75,10 +75,13 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
+pub mod bus;
 pub mod compress;
 pub mod error;
 pub mod event;
 pub mod loop_;
+pub mod run;
+pub mod session;
 pub mod spec;
 pub mod tool;
 pub mod tools;
@@ -86,6 +89,10 @@ pub mod tools;
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
+    pub use crate::bus::{
+        BusError, BusMessage, ControlAction, InProcessMessageBus, MessageBus, MessageId,
+        MessageKind, Recipient, Sender, SubscriptionFilter,
+    };
     pub use crate::compress::{
         layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},
         pipeline::CompressionPipeline,
@@ -97,11 +104,13 @@ pub mod prelude {
     pub use crate::loop_::{
         run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentLoopResult,
     };
-    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use crate::run::{AgentRun, AgentRunBuilder, AgentRunError};
+    pub use crate::session::{SessionContext, SessionMetadata};
     pub use crate::spec::{
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig,
         MemoryStoreConfig, ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
+    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
     pub use crate::tools::{EditTool, ReadTool, WriteTool};
     pub use sylvander_llm_anthropic::prelude::*;
 }
