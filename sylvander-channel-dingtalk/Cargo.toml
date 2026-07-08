@@ -1,6 +1,6 @@
 [package]
 name = "sylvander-channel-dingtalk"
-description = "Sylvander DingTalk channel — DingTalk bot integration"
+description = "Sylvander DingTalk channel — DingTalk Stream protocol implementation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,17 +10,17 @@ license.workspace = true
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-agent = { path = "../sylvander-agent" }
 async-trait = "0.1"
-axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-serde_json = { workspace = true }
 
 [lints]
 workspace = true
