@@ -14,6 +14,7 @@ path = "src/main.rs"
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-channel-dingtalk = { path = "../sylvander-channel-dingtalk" }
+sylvander-channel-http = { path = "../sylvander-channel-http" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 tracing = { workspace = true }

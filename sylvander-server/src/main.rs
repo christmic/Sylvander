@@ -109,6 +109,16 @@ async fn main() {
         info!("dingtalk not configured (set DINGTALK_APP_KEY + DINGTALK_APP_SECRET)");
     }
 
+    // HTTP debug channel
+    let http_addr: std::net::SocketAddr = env_or("HTTP_ADDR", "127.0.0.1:8080").parse().unwrap();
+    let http_channel = Arc::new(sylvander_channel_http::HttpChannel::new(http_addr));
+    let http_ctx = sylvander_channel::ChannelContext {
+        bus: bus.clone(),
+        sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
+    };
+    tokio::spawn(async move { http_channel.run(http_ctx).await });
+    info!(addr = %http_addr, "http channel started — curl http://{http_addr}/health");
+
     info!("sylvander server running — Ctrl+C to stop");
     tokio::signal::ctrl_c().await.expect("ctrl_c");
     info!("shutting down...");

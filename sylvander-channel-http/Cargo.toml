@@ -1,0 +1,24 @@
+[package]
+name = "sylvander-channel-http"
+description = "Sylvander HTTP channel — debug/development HTTP API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-channel = { path = "../sylvander-channel" }
+sylvander-agent = { path = "../sylvander-agent" }
+async-stream = "0.3"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+axum = { version = "0.8", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-util = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
