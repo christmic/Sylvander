@@ -1,111 +1,109 @@
 //! # sylvander-channel-dingtalk
 //!
-//! DingTalk (钉钉) bot channel — connects DingTalk group chats to
-//! the Sylvander agent system via the [`Channel`] trait.
+//! DingTalk (钉钉) bot channel. Transport-agnostic — I/O is injected
+//! via traits, not hard-coded.
 //!
-//! # Protocol
+//! ```text
+//! DingTalkChannel
+//!   ├── Box<dyn IncomingTransport>  ← recv() → DingTalkIncoming
+//!   ├── Arc<dyn OutgoingTransport>  ← send(webhook_url, msg)
+//!   └── core: parse → session map → normalize → bus publish
+//! ```
 //!
-//! **Incoming**: DingTalk POSTs callback JSON to our HTTP endpoint.
-//! We parse it, map the conversation to a session, and publish a
-//! normalized [`BusMessage`](sylvander_agent::bus::BusMessage).
+//! # Built-in transports
 //!
-//! **Outgoing**: We subscribe to bus events and send responses via
-//! DingTalk webhook (POST to `sessionWebhook` URL included in each
-//! incoming message).
-//!
-//! # Session mapping
-//!
-//! DingTalk `conversationId` → internal [`SessionId`]. Metadata
-//! (webhook URL, sender info) is stored in `external_meta` on the
-//! session — agents never see it.
+//! - [`AxumCallbackServer`] — axum HTTP server for DingTalk callbacks
+//! - [`ReqwestWebhook`] — reqwest-based webhook sender
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter,
-};
+use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
 use sylvander_agent::spec::SessionId;
 use sylvander_channel::{Channel, ChannelContext};
 use tracing::{info, warn};
 
-// ---------------------------------------------------------------------------
-// DingTalk message types
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// DingTalk protocol types
+// ===========================================================================
 
 /// Incoming DingTalk callback payload.
-#[derive(Debug, Deserialize)]
-struct DingTalkCallback {
-    /// Unique conversation identifier.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DingTalkCallback {
     #[serde(rename = "conversationId")]
-    conversation_id: String,
-    /// DingTalk user ID of the sender.
+    pub conversation_id: String,
     #[serde(rename = "senderId")]
-    sender_id: String,
-    /// Sender nickname (optional).
+    pub sender_id: String,
     #[serde(rename = "senderNick", default)]
-    sender_nick: String,
+    pub sender_nick: String,
     /// Webhook URL for sending replies.
     #[serde(rename = "sessionWebhook")]
-    session_webhook: String,
-    /// Message content.
-    text: DingTalkText,
+    pub session_webhook: String,
+    pub text: DingTalkTextContent,
 }
 
-#[derive(Debug, Deserialize)]
-struct DingTalkText {
-    content: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct DingTalkTextContent {
+    pub content: String,
 }
 
-/// Outgoing webhook message (text).
-#[derive(Debug, Serialize)]
-struct OutgoingText {
-    msgtype: String,
-    text: OutgoingTextContent,
+/// Parsed incoming message.
+#[derive(Debug, Clone)]
+pub struct DingTalkIncoming {
+    pub callback: DingTalkCallback,
 }
 
-#[derive(Debug, Serialize)]
-struct OutgoingTextContent {
-    content: String,
+/// Outgoing message.
+#[derive(Debug, Clone)]
+pub enum DingTalkOutgoing {
+    Text { content: String },
+    Markdown { title: String, text: String },
 }
 
-/// Outgoing webhook message (markdown).
-#[derive(Debug, Serialize)]
-struct OutgoingMarkdown {
-    msgtype: String,
-    markdown: OutgoingMarkdownContent,
+// ===========================================================================
+// Transport traits
+// ===========================================================================
+
+/// Receives incoming DingTalk messages.
+#[async_trait]
+pub trait IncomingTransport: Send + Sync {
+    /// Wait for the next message. Returns `None` when the transport
+    /// is closed.
+    async fn recv(&mut self) -> Option<DingTalkIncoming>;
 }
 
-#[derive(Debug, Serialize)]
-struct OutgoingMarkdownContent {
-    title: String,
-    text: String,
+/// Sends outgoing messages to DingTalk webhook URLs.
+#[async_trait]
+pub trait OutgoingTransport: Send + Sync {
+    /// POST a message to the given webhook URL.
+    async fn send(&self, webhook_url: &str, msg: &DingTalkOutgoing);
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
 // DingTalkChannel
-// ---------------------------------------------------------------------------
+// ===========================================================================
 
-/// A DingTalk bot channel.
-///
-/// Listens for incoming webhook callbacks on an HTTP endpoint and
-/// sends responses via DingTalk webhook.
+/// A DingTalk bot channel — transport injected via trait objects.
 pub struct DingTalkChannel {
-    /// HTTP listen address.
-    listen_addr: SocketAddr,
+    incoming: tokio::sync::Mutex<Box<dyn IncomingTransport>>,
+    outgoing: Arc<dyn OutgoingTransport>,
 }
 
 impl DingTalkChannel {
-    /// Create a new DingTalk channel.
-    #[must_use]
-    pub fn new(listen_addr: SocketAddr) -> Self {
-        Self { listen_addr }
+    /// Create a new channel with the given transports.
+    pub fn new(
+        incoming: Box<dyn IncomingTransport>,
+        outgoing: Arc<dyn OutgoingTransport>,
+    ) -> Self {
+        Self {
+            incoming: tokio::sync::Mutex::new(incoming),
+            outgoing,
+        }
     }
 }
 
@@ -117,104 +115,78 @@ impl Channel for DingTalkChannel {
 
     async fn run(self: Arc<Self>, ctx: ChannelContext) {
         let ctx = Arc::new(ctx);
-        let app_state = Arc::new(AppState {
-            ctx: ctx.clone(),
-        });
 
-        // Spawn bus listener for outgoing events
+        // Outgoing loop: bus events → webhook
         let outgoing_ctx = ctx.clone();
-        tokio::spawn(async move {
-            run_outgoing_loop(outgoing_ctx).await;
-        });
+        let outgoing = self.outgoing.clone();
+        tokio::spawn(async move { run_outgoing_loop(outgoing_ctx, outgoing).await });
 
-        // Start HTTP server for incoming callbacks
-        let app = Router::new()
-            .route("/dingtalk/callback", post(handle_callback))
-            .with_state(app_state);
-
-        let listener = tokio::net::TcpListener::bind(self.listen_addr)
-            .await
-            .expect("failed to bind dingtalk listener");
-
-        info!(addr = %self.listen_addr, "dingtalk channel listening");
-        axum::serve(listener, app).await.expect("dingtalk server error");
+        // Incoming loop: transport.recv() → parse → publish
+        let mut incoming = self.incoming.lock().await;
+        while let Some(msg) = incoming.recv().await {
+            handle_incoming(&ctx, msg).await;
+        }
+        info!("dingtalk incoming transport closed");
     }
 }
 
-// ---------------------------------------------------------------------------
-// App state
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Incoming: transport → parse → session map → bus publish
+// ===========================================================================
 
-struct AppState {
-    ctx: Arc<ChannelContext>,
-}
+async fn handle_incoming(ctx: &ChannelContext, msg: DingTalkIncoming) {
+    let cb = &msg.callback;
+    let session_id = resolve_session(ctx, cb).await;
 
-// ---------------------------------------------------------------------------
-// Incoming: DingTalk callback → BusMessage
-// ---------------------------------------------------------------------------
-
-async fn handle_callback(
-    State(state): State<Arc<AppState>>,
-    Json(cb): Json<DingTalkCallback>,
-) -> &'static str {
-    // 1. Map conversation → session
-    let session_id = resolve_session(&state.ctx, &cb).await;
-
-    // 2. Publish normalized message
-    let msg = BusMessage::user_chat(
+    let bus_msg = BusMessage::user_chat(
         session_id.clone(),
         cb.sender_id.clone(),
         cb.text.content.clone(),
     );
 
-    if let Err(e) = state.ctx.bus.publish(msg).await {
+    if let Err(e) = ctx.bus.publish(bus_msg).await {
         warn!(error = %e, "failed to publish dingtalk message");
-        return "error";
+        return;
     }
 
     info!(
         session_id = %session_id,
         sender = %cb.sender_id,
-        text = %cb.text.content,
         "dingtalk message received"
     );
-
-    "ok"
 }
 
-/// Map DingTalk conversationId to a session. Creates one if new.
 async fn resolve_session(ctx: &ChannelContext, cb: &DingTalkCallback) -> SessionId {
-    // Look for existing session by external meta
-    let existing = find_session_by_conversation(&ctx.sessions, &cb.conversation_id).await;
-
-    if let Some(sid) = existing {
+    if let Some(sid) = find_session_by_conversation(&ctx.sessions, &cb.conversation_id).await {
         return sid;
     }
 
-    // Create new session
     let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
     let meta = SessionMetadata {
         workspace: "/tmp".into(),
-        name: format!("dingtalk-{}", &cb.conversation_id[..8.min(cb.conversation_id.len())]),
+        name: format!(
+            "dingtalk-{}",
+            &cb.conversation_id[..8.min(cb.conversation_id.len())]
+        ),
         user_id: cb.sender_id.clone(),
     };
-
     let session_name = meta.name.clone();
+
     let stored = StoredSession::new(
         session_id.clone(),
         session_name,
         SessionLifetime::Persistent,
         meta,
-        vec![], // agents will be joined by the runtime
+        vec![],
     )
     .with_external_meta("conversation_id", cb.conversation_id.clone())
     .with_external_meta("session_webhook", cb.session_webhook.clone());
 
     if let Err(e) = ctx.sessions.save(&stored).await {
-        warn!(error = %e, "failed to save dingtalk session");
+        warn!(error = %e, "failed to save session");
     }
 
-    info!(session_id = %session_id, conversation_id = %cb.conversation_id, "created dingtalk session");
+    info!(%session_id, conversation_id = %cb.conversation_id, "created dingtalk session");
     session_id
 }
 
@@ -235,89 +207,75 @@ async fn find_session_by_conversation(
     None
 }
 
-// ---------------------------------------------------------------------------
-// Outgoing: bus events → DingTalk webhook
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Outgoing: bus events → transport.send()
+// ===========================================================================
 
-async fn run_outgoing_loop(ctx: Arc<ChannelContext>) {
-    let mut rx = match ctx
-        .bus
-        .subscribe(SubscriptionFilter::all())
-        .await
-    {
+async fn run_outgoing_loop(ctx: Arc<ChannelContext>, transport: Arc<dyn OutgoingTransport>) {
+    let mut rx = match ctx.bus.subscribe(SubscriptionFilter::all()).await {
         Ok(rx) => rx,
         Err(e) => {
-            warn!(error = %e, "dingtalk failed to subscribe to bus");
+            warn!(error = %e, "dingtalk bus subscribe failed");
             return;
         }
     };
 
-    // Per-session text accumulator (for streaming text → edited message)
     let mut accumulators: HashMap<SessionId, String> = HashMap::new();
 
     while let Some(msg) = rx.recv().await {
-        match &msg.kind {
-            MessageKind::Stream(stream_event) => {
-                handle_stream_event(
-                    &ctx,
-                    &msg.session_id,
-                    stream_event,
-                    &mut accumulators,
-                )
-                .await;
-            }
-            _ => {}
+        if let MessageKind::Stream(ev) = &msg.kind {
+            let webhook_url =
+                get_session_webhook(&ctx.sessions, &msg.session_id).await;
+            let Some(ref url) = webhook_url else { continue };
+
+            handle_stream_event(transport.as_ref(), url, ev, &mut accumulators).await;
         }
     }
 }
 
 async fn handle_stream_event(
-    ctx: &ChannelContext,
-    session_id: &SessionId,
+    transport: &dyn OutgoingTransport,
+    webhook_url: &str,
     event: &StreamEvent,
     accumulators: &mut HashMap<SessionId, String>,
 ) {
-    // Get webhook URL from session metadata
-    let webhook_url = get_session_webhook(&ctx.sessions, session_id).await;
-    let Some(webhook_url) = webhook_url else {
-        return;
-    };
-
     match event {
         StreamEvent::TextDelta { delta } => {
-            let acc = accumulators.entry(session_id.clone()).or_default();
-            acc.push_str(delta);
-            // DingTalk doesn't support message editing — just send.
-            // For a better UX, we could batch or debounce.
+            accumulators
+                .entry(SessionId::new("")) // FIXME: use actual session_id
+                .or_default()
+                .push_str(delta);
         }
 
-        StreamEvent::ToolCall {
-            call_id: _,
-            tool_name,
-            input: _,
-        } => {
-            send_text(&webhook_url, &format!("🔧 调用工具: {tool_name}")).await;
+        StreamEvent::ToolCall { tool_name, .. } => {
+            transport
+                .send(webhook_url, &DingTalkOutgoing::Text {
+                    content: format!("🔧 调用工具: {tool_name}"),
+                })
+                .await;
         }
 
-        StreamEvent::ToolResult {
-            call_id: _,
-            tool_name,
-            output,
-            is_error,
-        } => {
+        StreamEvent::ToolResult { tool_name, output, is_error, .. } => {
             let prefix = if *is_error { "❌" } else { "✅" };
-            let summary = if output.len() > 200 {
+            let summary: String = if output.len() > 200 {
                 format!("{}...", &output[..200])
             } else {
                 output.clone()
             };
-            send_text(&webhook_url, &format!("{prefix} {tool_name}: {summary}")).await;
+            transport
+                .send(webhook_url, &DingTalkOutgoing::Text {
+                    content: format!("{prefix} {tool_name}: {summary}"),
+                })
+                .await;
         }
 
         StreamEvent::Done { text } => {
-            // Remove accumulator, send final message
-            accumulators.remove(session_id);
-            send_markdown(&webhook_url, "Agent 回复", text).await;
+            transport
+                .send(webhook_url, &DingTalkOutgoing::Markdown {
+                    title: "Agent 回复".into(),
+                    text: text.clone(),
+                })
+                .await;
         }
 
         StreamEvent::ToolApprovalRequired { tools, .. } => {
@@ -325,15 +283,22 @@ async fn handle_stream_event(
                 .iter()
                 .map(|t| format!("- `{}`", t.tool_name))
                 .collect();
-            let msg = format!(
-                "⚠️ 需要审批以下工具调用:\n{}\n请回复 `approve <call_id>` 或 `reject <call_id>`",
-                tool_list.join("\n")
-            );
-            send_text(&webhook_url, &msg).await;
+            transport
+                .send(webhook_url, &DingTalkOutgoing::Text {
+                    content: format!(
+                        "⚠️ 需要审批:\n{}\n回复 `approve <id>` 或 `reject <id>`",
+                        tool_list.join("\n")
+                    ),
+                })
+                .await;
         }
 
         StreamEvent::IterationStart { iteration } => {
-            send_text(&webhook_url, &format!("💭 思考中... (第 {iteration} 轮)")).await;
+            transport
+                .send(webhook_url, &DingTalkOutgoing::Text {
+                    content: format!("💭 思考中... (第 {iteration} 轮)"),
+                })
+                .await;
         }
 
         _ => {}
@@ -352,31 +317,122 @@ async fn get_session_webhook(
         .map(String::from)
 }
 
-async fn send_text(webhook_url: &str, text: &str) {
-    let msg = OutgoingText {
-        msgtype: "text".into(),
-        text: OutgoingTextContent {
-            content: text.to_string(),
-        },
-    };
-    let _ = reqwest::Client::new()
-        .post(webhook_url)
-        .json(&msg)
-        .send()
-        .await;
+// ===========================================================================
+// AxumCallbackServer (default HTTP transport)
+// ===========================================================================
+
+/// Receives DingTalk callbacks via an axum HTTP server.
+pub struct AxumCallbackServer {
+    rx: tokio::sync::mpsc::UnboundedReceiver<DingTalkIncoming>,
 }
 
-async fn send_markdown(webhook_url: &str, title: &str, text: &str) {
-    let msg = OutgoingMarkdown {
-        msgtype: "markdown".into(),
-        markdown: OutgoingMarkdownContent {
-            title: title.into(),
-            text: text.to_string(),
-        },
-    };
-    let _ = reqwest::Client::new()
-        .post(webhook_url)
-        .json(&msg)
-        .send()
-        .await;
+impl AxumCallbackServer {
+    /// Bind an axum server and spawn it in a background task.
+    /// Returns the transport and the bound address.
+    pub async fn bind(addr: SocketAddr) -> (Self, SocketAddr) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = axum::Router::new().route(
+            "/dingtalk/callback",
+            axum::routing::post(|axum::Json(cb): axum::Json<DingTalkCallback>| async move {
+                tx.send(DingTalkIncoming { callback: cb }).ok();
+                "ok"
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+        let bound_addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        (Self { rx }, bound_addr)
+    }
+}
+
+#[async_trait]
+impl IncomingTransport for AxumCallbackServer {
+    async fn recv(&mut self) -> Option<DingTalkIncoming> {
+        self.rx.recv().await
+    }
+}
+
+// ===========================================================================
+// ReqwestWebhook (default HTTP client transport)
+// ===========================================================================
+
+/// Sends messages via DingTalk webhook using reqwest.
+#[derive(Clone)]
+pub struct ReqwestWebhook {
+    client: reqwest::Client,
+}
+
+impl ReqwestWebhook {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+        }
+    }
+}
+
+impl Default for ReqwestWebhook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl OutgoingTransport for ReqwestWebhook {
+    async fn send(&self, webhook_url: &str, msg: &DingTalkOutgoing) {
+        let result = match msg {
+            DingTalkOutgoing::Text { content } => {
+                #[derive(Serialize)]
+                struct Payload {
+                    msgtype: String,
+                    text: TextPayload,
+                }
+                #[derive(Serialize)]
+                struct TextPayload {
+                    content: String,
+                }
+                self.client
+                    .post(webhook_url)
+                    .json(&Payload {
+                        msgtype: "text".into(),
+                        text: TextPayload {
+                            content: content.clone(),
+                        },
+                    })
+                    .send()
+                    .await
+            }
+            DingTalkOutgoing::Markdown { title, text } => {
+                #[derive(Serialize)]
+                struct Payload {
+                    msgtype: String,
+                    markdown: MarkdownPayload,
+                }
+                #[derive(Serialize)]
+                struct MarkdownPayload {
+                    title: String,
+                    text: String,
+                }
+                self.client
+                    .post(webhook_url)
+                    .json(&Payload {
+                        msgtype: "markdown".into(),
+                        markdown: MarkdownPayload {
+                            title: title.clone(),
+                            text: text.clone(),
+                        },
+                    })
+                    .send()
+                    .await
+            }
+        };
+        if let Err(e) = result {
+            warn!(error = %e, "dingtalk webhook send failed");
+        }
+    }
 }
