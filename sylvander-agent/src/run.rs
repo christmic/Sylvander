@@ -64,6 +64,8 @@ pub(crate) struct AgentRunInner {
     memory: Option<Arc<dyn MemoryStore>>,
     /// Whether bus-based approval is enabled (opt-in, off by default).
     approval_enabled: bool,
+    /// Static approval rules (auto-approve/auto-reject).
+    approval_rules: Vec<crate::approval::ApprovalRule>,
     /// Pending approval requests (shared with BusApprovalGate).
     pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::approval::ApprovalDecision>>>>,
     /// Per-session concurrency locks (M12).
@@ -341,12 +343,20 @@ impl AgentRunInner {
 
         // 2. Build per-session approval gate (if enabled)
         let loop_config = if self.approval_enabled {
-            let gate = Arc::new(BusApprovalGate {
+            let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
                 agent_id: self.id.clone(),
                 session_id: session_id.clone(),
                 pending_approvals: self.pending_approvals.clone(),
             });
+            let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
+                bus_gate
+            } else {
+                Arc::new(crate::approval::RuleBasedApprovalGate::new(
+                    self.approval_rules.clone(),
+                    bus_gate,
+                ))
+            };
             let mut cfg = self.loop_config.clone();
             cfg.approval_gate = Some(gate);
             cfg
@@ -454,6 +464,7 @@ pub struct AgentRunBuilder {
     memory: Option<Arc<dyn MemoryStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     approval_enabled: bool,
+    approval_rules: Vec<crate::approval::ApprovalRule>,
 }
 
 impl AgentRunBuilder {
@@ -467,6 +478,7 @@ impl AgentRunBuilder {
             memory: None,
             model_capabilities: None,
             approval_enabled: false,
+            approval_rules: Vec::new(),
         }
     }
 
@@ -484,11 +496,19 @@ impl AgentRunBuilder {
         mut self, caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
     ) -> Self { self.model_capabilities = Some(caps); self }
 
-    #[must_use]
-    /// Enable bus-based tool approval (opt-in, off by default).
+    /// Enable bus-based tool approval (opt-in).
     #[must_use]
     pub fn enable_approval(mut self) -> Self {
         self.approval_enabled = true;
+        self
+    }
+
+    /// Set static approval rules. Auto-approve/auto-reject matching tools
+    /// before falling back to bus approval.
+    #[must_use]
+    pub fn approval_rules(mut self, rules: Vec<crate::approval::ApprovalRule>) -> Self {
+        self.approval_enabled = true; // rules imply approval
+        self.approval_rules = rules;
         self
     }
 
@@ -540,6 +560,7 @@ impl AgentRunBuilder {
                 sessions: RwLock::new(HashMap::new()),
                 memory,
                 approval_enabled: self.approval_enabled,
+                approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
             }),
