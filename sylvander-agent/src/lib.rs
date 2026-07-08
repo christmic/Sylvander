@@ -79,6 +79,7 @@ pub mod compress;
 pub mod error;
 pub mod event;
 pub mod loop_;
+pub mod spec;
 pub mod tool;
 pub mod tools;
 
@@ -97,6 +98,10 @@ pub mod prelude {
         run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentLoopResult,
     };
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use crate::spec::{
+        AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig,
+        MemoryStoreConfig, ModelConfig, PersonaConfig, SessionId, ToolRef,
+    };
     pub use crate::tools::{EditTool, ReadTool, WriteTool};
     pub use sylvander_llm_anthropic::prelude::*;
 }
