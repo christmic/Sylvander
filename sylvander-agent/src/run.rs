@@ -31,7 +31,10 @@ use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
-use crate::bus::{BusMessage, MessageBus, MessageKind, Recipient, Sender, SubscriptionFilter};
+use crate::bus::{
+    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
+    SubscriptionFilter, SystemMessage,
+};
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop, AgentLoopResult};
 use crate::session::{now_secs, SessionContext, SessionMetadata};
@@ -39,17 +42,6 @@ use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::tool::{Tool, ToolRegistry};
 use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
 use crate::tools::MemoryReadTool;
-
-// ---------------------------------------------------------------------------
-// Control
-// ---------------------------------------------------------------------------
-
-/// Commands sent to a running agent via its control channel.
-#[derive(Debug, Clone)]
-pub enum ControlCommand {
-    /// Gracefully stop the agent's main loop.
-    Stop,
-}
 
 // ---------------------------------------------------------------------------
 // AgentRun
@@ -184,20 +176,74 @@ impl AgentRun {
         Ok(result)
     }
 
-    /// Main event loop. Consumes messages from the inbox and processes
-    /// them one at a time. Listens for [`ControlCommand::Stop`] on the
-    /// control channel.
+    /// Main event loop. Receives all messages from the bus — both chat
+    /// and system messages — and dispatches them appropriately.
     ///
-    /// This is designed to be spawned as a tokio task by the engine.
-    pub async fn run(
-        self,
-        mut inbox: mpsc::UnboundedReceiver<BusMessage>,
-        mut control: mpsc::Receiver<ControlCommand>,
-    ) {
-        loop {
-            tokio::select! {
-                // Incoming messages
-                Some(msg) = inbox.recv() => {
+    /// System messages (Stop, JoinSession, LeaveSession) are handled
+    /// directly; chat messages are passed to [`Self::handle_message`].
+    ///
+    /// Status updates are published to the bus on state transitions.
+    pub async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
+        // Publish initial status
+        let _ = self
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.id.clone(),
+                BusAgentStatus::Starting,
+            ))
+            .await;
+
+        let _ = self
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.id.clone(),
+                BusAgentStatus::Running,
+            ))
+            .await;
+
+        while let Some(msg) = inbox.recv().await {
+            match &msg.kind {
+                // -- System messages (agent lifecycle) --
+                MessageKind::System(sys_msg) => match sys_msg {
+                    SystemMessage::Stop => {
+                        info!(agent_id = %self.id, "received stop — shutting down");
+                        break;
+                    }
+
+                    SystemMessage::JoinSession {
+                        session_id,
+                        metadata,
+                    } => {
+                        let ctx =
+                            SessionContext::new(session_id.clone(), metadata.clone());
+                        self.sessions
+                            .write()
+                            .await
+                            .insert(session_id.clone(), ctx);
+                        info!(
+                            agent_id = %self.id,
+                            session_id = %session_id,
+                            "joined session"
+                        );
+                    }
+
+                    SystemMessage::LeaveSession { session_id } => {
+                        self.sessions.write().await.remove(session_id);
+                        info!(
+                            agent_id = %self.id,
+                            session_id = %session_id,
+                            "left session"
+                        );
+                    }
+
+                    SystemMessage::StatusUpdate { .. } => {
+                        // Status updates from other agents — ignore.
+                        // We only publish, never consume these.
+                    }
+                },
+
+                // -- Chat messages --
+                MessageKind::Chat => {
                     let session_id = msg.session_id.clone();
 
                     {
@@ -206,7 +252,7 @@ impl AgentRun {
                             warn!(
                                 agent_id = %self.id,
                                 session_id = %session_id,
-                                "received message for unknown session — ignoring"
+                                "received chat for unknown session — ignoring"
                             );
                             continue;
                         }
@@ -236,24 +282,19 @@ impl AgentRun {
                         }
                     }
                 }
-
-                // Control commands
-                Some(cmd) = control.recv() => {
-                    match cmd {
-                        ControlCommand::Stop => {
-                            info!(
-                                agent_id = %self.id,
-                                "received stop command — shutting down"
-                            );
-                            break;
-                        }
-                    }
-                }
-
-                // Both channels closed
-                else => break,
             }
         }
+
+        // Publish final status
+        let _ = self
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.id.clone(),
+                BusAgentStatus::Stopped,
+            ))
+            .await;
+
+        info!(agent_id = %self.id, "agent loop exited");
     }
 
     // -- memory (infrastructure, not tools) --
