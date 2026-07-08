@@ -160,6 +160,27 @@ pub struct MemoryStoreConfig {
     pub path: PathBuf,
 }
 
+impl MemoryStoreConfig {
+    /// Resolve this config into an actual [`MemoryStore`] implementation.
+    ///
+    /// Currently supports `"in_memory"`. `"sqlite"` is planned.
+    ///
+    /// # Errors
+    /// Returns an error for unknown store types.
+    pub fn build(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::tools::memory::MemoryStore>, crate::tools::memory::MemoryStoreError> {
+        match self.store_type.as_str() {
+            "in_memory" => Ok(std::sync::Arc::new(
+                crate::tools::memory::InMemoryMemoryStore::new(),
+            )),
+            other => Err(crate::tools::memory::MemoryStoreError::Store(format!(
+                "unknown memory store type: {other}"
+            ))),
+        }
+    }
+}
+
 /// Behavior tuning parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorConfig {
