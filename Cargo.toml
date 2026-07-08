@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "sylvander-channel",
+    "sylvander-channel-dingtalk",
     "sylvander-llm-anthropic",
     "sylvander-agent",
     "sylvander-runtime",
