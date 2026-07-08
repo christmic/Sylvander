@@ -63,23 +63,59 @@ pub enum Recipient {
 }
 
 /// What kind of message this is.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageKind {
     /// A normal chat message (user ↔ agent).
     Chat,
-    /// A lifecycle control command.
-    Control(ControlAction),
+    /// A system-level message (lifecycle, state, control).
+    System(SystemMessage),
 }
 
-/// Lifecycle control action.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ControlAction {
-    /// Pause the agent.
-    Pause,
-    /// Resume a paused agent.
-    Resume,
-    /// Stop / despawn the agent.
+/// System-level messages for agent lifecycle and coordination.
+///
+/// These flow through the same bus as chat messages. Agents subscribe
+/// to their own control channel; the engine subscribes to status updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemMessage {
+    // -- Engine → Agent (control) --
+
+    /// Stop the agent gracefully.
     Stop,
+
+    /// Join a session — the agent should create a new SessionContext.
+    JoinSession {
+        /// The session to join.
+        session_id: SessionId,
+        /// Session metadata (workspace, name, user).
+        metadata: crate::session::SessionMetadata,
+    },
+
+    /// Leave a session — the agent should drop its SessionContext.
+    LeaveSession {
+        /// The session to leave.
+        session_id: SessionId,
+    },
+
+    // -- Agent → Engine (status) --
+
+    /// Agent status update. Published on state transitions.
+    StatusUpdate {
+        /// Current lifecycle status.
+        status: AgentStatus,
+    },
+}
+
+/// Agent lifecycle status — published by the agent, observed by the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Agent task started, initializing.
+    Starting,
+    /// Agent is running its main loop.
+    Running,
+    /// Agent is idle (no pending messages).
+    Idle,
+    /// Agent has stopped.
+    Stopped,
 }
 
 /// A message on the bus.
@@ -133,6 +169,71 @@ impl BusMessage {
             recipient: Recipient::Broadcast,
             kind: MessageKind::Chat,
             payload: text.into(),
+            timestamp: crate::session::now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    // -- System message constructors --
+
+    /// Tell an agent to stop.
+    #[must_use]
+    pub fn system_stop(agent_id: AgentId) -> Self {
+        Self {
+            session_id: SessionId::new(""), // agent-level, not session-scoped
+            sender: Sender::System,
+            recipient: Recipient::Agent(agent_id),
+            kind: MessageKind::System(SystemMessage::Stop),
+            payload: String::new(),
+            timestamp: crate::session::now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    /// Tell an agent to join a session.
+    #[must_use]
+    pub fn system_join_session(
+        agent_id: AgentId,
+        session_id: SessionId,
+        metadata: crate::session::SessionMetadata,
+    ) -> Self {
+        Self {
+            session_id: session_id.clone(),
+            sender: Sender::System,
+            recipient: Recipient::Agent(agent_id),
+            kind: MessageKind::System(SystemMessage::JoinSession {
+                session_id,
+                metadata,
+            }),
+            payload: String::new(),
+            timestamp: crate::session::now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    /// Tell an agent to leave a session.
+    #[must_use]
+    pub fn system_leave_session(agent_id: AgentId, session_id: SessionId) -> Self {
+        Self {
+            session_id: session_id.clone(),
+            sender: Sender::System,
+            recipient: Recipient::Agent(agent_id),
+            kind: MessageKind::System(SystemMessage::LeaveSession { session_id }),
+            payload: String::new(),
+            timestamp: crate::session::now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    /// Publish an agent's status update.
+    #[must_use]
+    pub fn system_status_update(agent_id: AgentId, status: AgentStatus) -> Self {
+        Self {
+            session_id: SessionId::new(""), // agent-level
+            sender: Sender::Agent(agent_id),
+            recipient: Recipient::Broadcast,
+            kind: MessageKind::System(SystemMessage::StatusUpdate { status }),
+            payload: String::new(),
             timestamp: crate::session::now_secs(),
             id: MessageId::new(),
         }

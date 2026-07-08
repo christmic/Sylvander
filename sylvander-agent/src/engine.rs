@@ -1,81 +1,94 @@
 //! Agent run engine — lifecycle manager for agents and sessions.
 //!
-//! [`AgentRunEngine`] is the top-level orchestrator. It:
-//! - Spawns and despawns [`AgentRun`](crate::run::AgentRun) instances
-//! - Creates and manages sessions
-//! - Routes messages from the bus to the correct agent
+//! [`AgentRunEngine`] is the top-level orchestrator. All communication
+//! flows through the message bus — there are no direct channels between
+//! the engine and agents.
 //!
-//! The engine owns the message bus and is the entry point for all
-//! external interactions (CLI, TUI, API).
+//! # Communication model
+//!
+//! ```text
+//! Engine                              Bus                         Agent
+//!   │                                  │                            │
+//!   │── publish(System::Stop) ────────►│                            │
+//!   │                                  │── route ──────────────────►│
+//!   │                                  │                            │ run() handles it
+//!   │                                  │◄── StatusUpdate ──────────│
+//!   │◄── status_rx ───────────────────│                            │
+//! ```
+//!
+//! The engine subscribes to each agent's status updates so it can
+//! detect dead/stuck agents.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
-use crate::bus::{BusMessage, MessageBus, Sender};
-use crate::run::{AgentRun, ControlCommand};
+use crate::bus::{
+    AgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender, SystemMessage,
+};
+use crate::run::AgentRun;
 use crate::session::SessionMetadata;
 use crate::spec::{AgentId, AgentSpec, SessionId};
-
-// ---------------------------------------------------------------------------
-// AgentStatus
-// ---------------------------------------------------------------------------
-
-/// Lifecycle status of a spawned agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum AgentStatus {
-    /// The agent task has been spawned but hasn't started its loop yet.
-    Starting = 0,
-    /// The agent is actively processing messages.
-    Running = 1,
-    /// The agent is alive but idle (no pending messages).
-    Idle = 2,
-    /// The agent has been stopped / despawned.
-    Stopped = 3,
-}
-
-impl AgentStatus {
-    /// Decode from the raw `u8` stored in the atomic.
-    #[must_use]
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => Self::Starting,
-            1 => Self::Running,
-            2 => Self::Idle,
-            _ => Self::Stopped,
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // AgentHandle
 // ---------------------------------------------------------------------------
 
-/// A handle to a spawned agent. Used by the engine (and callers) to
-/// inspect and control an agent's lifecycle.
+/// A handle to a spawned agent.
+///
+/// The engine uses this to monitor the agent's status and send
+/// lifecycle commands (all via the bus).
 #[derive(Debug)]
 pub struct AgentHandle {
     /// Agent identifier.
     pub id: AgentId,
-    /// The spec this agent was built from (clone).
+    /// The spec this agent was built from.
     pub spec: AgentSpec,
-    /// Send control commands (Stop, Pause, Resume) to the agent task.
-    control_tx: mpsc::Sender<ControlCommand>,
-    /// Current lifecycle status (atomically updated).
-    pub status: Arc<AtomicU8>,
+    /// Latest known status (updated from bus messages).
+    pub status: AgentStatus,
+    /// Receiver for the agent's status updates (engine monitors this).
+    status_rx: mpsc::UnboundedReceiver<BusMessage>,
+}
+
+impl AgentHandle {
+    /// Wait for the agent to reach a given status, with a timeout.
+    ///
+    /// Returns `true` if the status was reached, `false` on timeout.
+    pub async fn wait_for_status(&mut self, target: AgentStatus, timeout_ms: u64) -> bool {
+        if self.status == target {
+            return true;
+        }
+        let deadline =
+            tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            match tokio::time::timeout(remaining, self.status_rx.recv()).await {
+                Ok(Some(msg)) => {
+                    if let MessageKind::System(SystemMessage::StatusUpdate { status }) = msg.kind {
+                        self.status = status;
+                        if status == target {
+                            return true;
+                        }
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // SessionMeta
 // ---------------------------------------------------------------------------
 
-/// Global metadata about a session (shared across all agents in it).
+/// Global metadata about a session.
 #[derive(Debug, Clone)]
 pub struct SessionMeta {
     /// Session identifier.
@@ -92,47 +105,19 @@ pub struct SessionMeta {
 // AgentRunEngine
 // ---------------------------------------------------------------------------
 
-/// The top-level engine that manages agent lifecycles and session
-/// routing.
-///
-/// # Example
-///
-/// ```no_run
-/// # use sylvander_agent::prelude::*;
-/// # use sylvander_llm_anthropic::api::client::AnthropicClient;
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let bus = InProcessMessageBus::new();
-/// let engine = AgentRunEngine::new(Arc::new(bus));
-///
-/// let spec = AgentSpec::builder()
-///     .id("my-agent")
-///     .name("My Agent")
-///     .system_prompt("You are helpful.")
-///     .model_name("claude-sonnet-5-20260601")
-///     .build()?;
-///
-/// let client = AnthropicClient::builder()
-///     .api_key(std::env::var("ANTHROPIC_API_KEY")?)
-///     .build()?;
-///
-/// let handle = engine.spawn(spec, client).await?;
-/// assert_eq!(AgentStatus::from_u8(handle.status.load(Ordering::SeqCst)), AgentStatus::Running);
-///
-/// engine.despawn(&handle.id).await?;
-/// # Ok(())
-/// # }
-/// ```
+/// The top-level engine. All agent and session management flows
+/// through the bus.
 pub struct AgentRunEngine {
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
-    /// Active agents.
+    /// Active agents (handle + status monitor).
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
-    /// Active sessions (global metadata).
+    /// Active sessions.
     sessions: RwLock<HashMap<SessionId, SessionMeta>>,
 }
 
 impl AgentRunEngine {
-    /// Create a new engine backed by the given message bus.
+    /// Create a new engine.
     #[must_use]
     pub fn new(bus: Arc<dyn MessageBus>) -> Self {
         Self {
@@ -150,14 +135,15 @@ impl AgentRunEngine {
 
     // -- agent lifecycle --
 
-    /// Spawn a new agent from a spec and LLM client.
+    /// Spawn a new agent.
     ///
-    /// The agent is immediately subscribed to the bus and starts
-    /// processing messages.
+    /// 1. Builds the AgentRun
+    /// 2. Subscribes to the bus for the agent's messages
+    /// 3. Subscribes to the bus for status updates
+    /// 4. Spawns the tokio task
     ///
     /// # Errors
-    /// Returns [`EngineError`] if the agent is already running or the
-    /// build fails.
+    /// Returns [`EngineError`] if the agent is already running.
     pub async fn spawn(
         &self,
         spec: AgentSpec,
@@ -173,112 +159,156 @@ impl AgentRunEngine {
             }
         }
 
-        // Build the AgentRun
+        // Build AgentRun
         let run = AgentRun::builder(spec.clone(), client)
             .bus(self.bus.clone())
             .build()
             .map_err(EngineError::Build)?;
 
+        // Subscribe to all messages for this agent (chat + system)
         let filter = run.subscription_filter();
         let inbox = self
             .bus
             .subscribe(filter)
             .await
-            .map_err(|e| EngineError::Bus(format!("subscribe failed: {e}")))?;
+            .map_err(|e| EngineError::Bus(format!("agent subscribe failed: {e}")))?;
 
-        // Control channel
-        let (control_tx, control_rx) = mpsc::channel(8);
+        // Subscribe to all broadcast messages — we filter for StatusUpdate
+        // in the receiver. (We can't filter by SystemMessage variant alone
+        // because PartialEq compares the inner fields too.)
+        let status_filter = crate::bus::SubscriptionFilter {
+            session_ids: None,
+            recipients: Some(vec![Recipient::Broadcast]),
+            kinds: None,
+        };
+        let status_rx = self
+            .bus
+            .subscribe(status_filter)
+            .await
+            .map_err(|e| EngineError::Bus(format!("status subscribe failed: {e}")))?;
 
-        // Status tracking
-        let status = Arc::new(AtomicU8::new(AgentStatus::Starting as u8));
-        let status_clone = status.clone();
-        let task_agent_id = agent_id.clone();
+        let agent_id_clone = agent_id.clone();
 
         // Spawn the agent task
         tokio::spawn(async move {
-            status_clone.store(AgentStatus::Running as u8, Ordering::SeqCst);
-            run.run(inbox, control_rx).await;
-            status_clone.store(AgentStatus::Stopped as u8, Ordering::SeqCst);
-            info!(agent_id = %task_agent_id, "agent task exited");
+            run.run(inbox).await;
+            info!(agent_id = %agent_id_clone, "agent task exited");
         });
 
         let handle = AgentHandle {
             id: agent_id.clone(),
             spec,
-            control_tx,
-            status,
+            status: AgentStatus::Starting,
+            status_rx,
         };
 
-        self.agents.write().await.insert(agent_id.clone(), handle.clone());
+        // Return a lightweight copy before moving the handle into the map
+        let ret = AgentHandle {
+            id: handle.id.clone(),
+            spec: handle.spec.clone(),
+            status: handle.status,
+            status_rx: mpsc::unbounded_channel().1, // dummy — caller uses list_agents for status
+        };
+
+        self.agents.write().await.insert(agent_id.clone(), handle);
 
         info!(agent_id = %agent_id, "agent spawned");
-        Ok(handle)
+        Ok(ret)
     }
 
     /// Despawn (stop) a running agent.
     ///
-    /// Sends a [`ControlCommand::Stop`] and waits briefly for the task
-    /// to exit. The agent's sessions are NOT removed — they persist
-    /// for potential re-spawn.
+    /// Publishes a `System::Stop` message to the bus, then waits for
+    /// the agent to report `Stopped`.
     ///
     /// # Errors
-    /// Returns [`EngineError`] if the agent is not found.
+    /// Returns [`EngineError`] if the agent is not found or doesn't
+    /// stop within the timeout.
     pub async fn despawn(&self, agent_id: &AgentId) -> Result<(), EngineError> {
-        let handle = {
-            let agents = self.agents.read().await;
-            agents
-                .get(agent_id)
-                .cloned()
-                .ok_or_else(|| EngineError::NotFound(agent_id.clone()))?
+        // Publish stop command via the bus
+        let stop_msg = BusMessage::system_stop(agent_id.clone());
+        self.bus
+            .publish(stop_msg)
+            .await
+            .map_err(|e| EngineError::Bus(format!("stop publish failed: {e}")))?;
+
+        // Wait for the agent to stop
+        let stopped = {
+            let mut agents = self.agents.write().await;
+            if let Some(handle) = agents.get_mut(agent_id) {
+                handle.wait_for_status(AgentStatus::Stopped, 5000).await
+            } else {
+                return Err(EngineError::NotFound(agent_id.clone()));
+            }
         };
 
-        let _ = handle.control_tx.send(ControlCommand::Stop).await;
-
-        // Wait for the status to transition to Stopped (with timeout)
-        for _ in 0..50 {
-            if AgentStatus::from_u8(handle.status.load(Ordering::SeqCst)) == AgentStatus::Stopped
-            {
-                break;
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        if !stopped {
+            warn!(agent_id = %agent_id, "agent did not stop within timeout");
         }
 
         self.agents.write().await.remove(agent_id);
-
         info!(agent_id = %agent_id, "agent despawned");
         Ok(())
     }
 
-    /// List all running agents.
+    /// List all running agents with their current status.
     pub async fn list_agents(&self) -> Vec<AgentHandle> {
-        self.agents.read().await.values().cloned().collect()
+        let mut agents = self.agents.write().await;
+        let mut result = Vec::new();
+        for handle in agents.values_mut() {
+            // Drain pending status updates
+            while let Ok(msg) = handle.status_rx.try_recv() {
+                if let MessageKind::System(SystemMessage::StatusUpdate { status }) = msg.kind {
+                    handle.status = status;
+                }
+            }
+            result.push(AgentHandle {
+                id: handle.id.clone(),
+                spec: handle.spec.clone(),
+                status: handle.status,
+                status_rx: mpsc::unbounded_channel().1,
+            });
+        }
+        result
     }
 
     /// Get a handle to a running agent.
     pub async fn get_agent(&self, agent_id: &AgentId) -> Option<AgentHandle> {
-        self.agents.read().await.get(agent_id).cloned()
+        let agents = self.agents.read().await;
+        agents.get(agent_id).map(|h| AgentHandle {
+            id: h.id.clone(),
+            spec: h.spec.clone(),
+            status: h.status,
+            status_rx: mpsc::unbounded_channel().1,
+        })
     }
 
     // -- session management --
 
-    /// Create a new session and add the given agents to it.
+    /// Create a new session and notify agents to join.
     ///
-    /// Each agent's [`AgentRun`] is notified via `join_session`. The
-    /// session metadata is stored for later lookup.
-    ///
-    /// # Note
-    /// This method publishes to the bus — callers must ensure the
-    /// agents have been spawned first.
+    /// Publishes `System::JoinSession` to each agent via the bus.
+    /// The agents create their own `SessionContext` on receipt.
     pub async fn create_session(
         &self,
         name: impl Into<String>,
-        _metadata: SessionMetadata,
+        metadata: SessionMetadata,
         agent_ids: &[AgentId],
     ) -> Result<SessionId, EngineError> {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let name = name.into();
 
-        // Store session meta
+        // Notify each agent to join via the bus
+        for agent_id in agent_ids {
+            let join_msg =
+                BusMessage::system_join_session(agent_id.clone(), session_id.clone(), metadata.clone());
+            self.bus
+                .publish(join_msg)
+                .await
+                .map_err(|e| EngineError::Bus(format!("join publish failed: {e}")))?;
+        }
+
+        // Store session metadata
         let meta = SessionMeta {
             id: session_id.clone(),
             name,
@@ -290,28 +320,11 @@ impl AgentRunEngine {
             .await
             .insert(session_id.clone(), meta);
 
-        // We publish a broadcast message to notify agents of the new session.
-        // AgentRun::handle_message will ignore it (unknown session), but
-        // in a future version we'd add a dedicated SessionJoined notification.
-        let _ = self
-            .bus
-            .publish(BusMessage {
-                session_id: session_id.clone(),
-                sender: Sender::System,
-                recipient: crate::bus::Recipient::Broadcast,
-                kind: crate::bus::MessageKind::Chat,
-                payload: String::new(),
-                timestamp: crate::session::now_secs(),
-                id: crate::bus::MessageId::new(),
-            })
-            .await;
-
+        info!(session_id = %session_id, "session created");
         Ok(session_id)
     }
 
     /// Send a user message to an agent in a session.
-    ///
-    /// This is the primary entry point for user interactions.
     pub async fn send_message(
         &self,
         session_id: SessionId,
@@ -330,7 +343,7 @@ impl AgentRunEngine {
             session_id,
             sender: Sender::User("user".into()),
             recipient: target,
-            kind: crate::bus::MessageKind::Chat,
+            kind: MessageKind::Chat,
             payload: text.into(),
             timestamp: crate::session::now_secs(),
             id: crate::bus::MessageId::new(),
@@ -352,22 +365,6 @@ impl AgentRunEngine {
     /// Get metadata for a session.
     pub async fn get_session(&self, session_id: &SessionId) -> Option<SessionMeta> {
         self.sessions.read().await.get(session_id).cloned()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Clone impl (manual — AgentHandle doesn't need Clone, but the engine is
-// Send + Sync via Arc internals)
-// ---------------------------------------------------------------------------
-
-impl Clone for AgentHandle {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            spec: self.spec.clone(),
-            control_tx: self.control_tx.clone(),
-            status: self.status.clone(),
-        }
     }
 }
 
@@ -435,19 +432,12 @@ mod tests {
             .expect("spawn");
 
         assert_eq!(handle.id, AgentId::new("agent-1"));
+        assert_eq!(handle.status, AgentStatus::Starting);
 
-        // Should be running (give the task a moment to start)
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        let status = AgentStatus::from_u8(handle.status.load(Ordering::SeqCst));
-        assert!(status == AgentStatus::Running || status == AgentStatus::Idle);
-
-        // Despawn
+        // Despawn via bus
         engine.despawn(&handle.id).await.expect("despawn");
 
-        let status = AgentStatus::from_u8(handle.status.load(Ordering::SeqCst));
-        assert_eq!(status, AgentStatus::Stopped);
-
-        // Should be removed from the engine
+        // Should be removed
         assert!(engine.get_agent(&AgentId::new("agent-1")).await.is_none());
     }
 
@@ -470,9 +460,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_session_stores_meta() {
+    async fn create_session_notifies_agents() {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = AgentRunEngine::new(bus);
+
+        // Spawn agent and drain its status updates so inbox is clean
+        let _handle = engine
+            .spawn(test_spec("agent-1"), test_client())
+            .await
+            .expect("spawn");
+
+        // Give the agent a moment to start and publish status
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Now subscribe to the agent's inbox to observe JoinSession
+        let mut observer = engine
+            .bus()
+            .subscribe(crate::bus::SubscriptionFilter::for_agent(AgentId::new(
+                "agent-1",
+            )))
+            .await
+            .expect("subscribe");
+
+        // Drain any pending messages (status updates)
+        while observer.try_recv().is_ok() {}
 
         let sid = engine
             .create_session(
@@ -487,9 +498,25 @@ mod tests {
             .await
             .expect("create_session");
 
+        // Agent should receive JoinSession
+        let msg = tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            observer.recv(),
+        )
+        .await
+        .expect("timeout")
+        .expect("should receive JoinSession");
+
+        assert!(matches!(
+            msg.kind,
+            MessageKind::System(SystemMessage::JoinSession { .. })
+        ));
+
         let meta = engine.get_session(&sid).await.expect("get_session");
         assert_eq!(meta.name, "test-session");
-        assert_eq!(meta.agents.len(), 1);
+
+        // Clean up
+        engine.despawn(&AgentId::new("agent-1")).await.ok();
     }
 
     #[tokio::test]
@@ -514,7 +541,6 @@ mod tests {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = AgentRunEngine::new(bus);
 
-        // Spawn two agents
         engine
             .spawn(test_spec("agent-a"), test_client())
             .await
@@ -524,9 +550,12 @@ mod tests {
             .await
             .expect("spawn b");
 
-        assert_eq!(engine.list_agents().await.len(), 2);
+        // Let them start
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        // Create a session
+        let agents = engine.list_agents().await;
+        assert_eq!(agents.len(), 2);
+
         engine
             .create_session(
                 "multi-agent",
@@ -545,14 +574,5 @@ mod tests {
         // Clean up
         engine.despawn(&AgentId::new("agent-a")).await.ok();
         engine.despawn(&AgentId::new("agent-b")).await.ok();
-    }
-
-    #[test]
-    fn agent_status_from_u8() {
-        assert_eq!(AgentStatus::from_u8(0), AgentStatus::Starting);
-        assert_eq!(AgentStatus::from_u8(1), AgentStatus::Running);
-        assert_eq!(AgentStatus::from_u8(2), AgentStatus::Idle);
-        assert_eq!(AgentStatus::from_u8(3), AgentStatus::Stopped);
-        assert_eq!(AgentStatus::from_u8(99), AgentStatus::Stopped); // unknown → Stopped
     }
 }

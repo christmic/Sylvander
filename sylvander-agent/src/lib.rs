@@ -91,8 +91,8 @@ pub mod tools;
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
     pub use crate::bus::{
-        BusError, BusMessage, ControlAction, InProcessMessageBus, MessageBus, MessageId,
-        MessageKind, Recipient, Sender, SubscriptionFilter,
+        AgentStatus, BusError, BusMessage, InProcessMessageBus, MessageBus, MessageId,
+        MessageKind, Recipient, Sender, SubscriptionFilter, SystemMessage,
     };
     pub use crate::compress::{
         layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},
@@ -100,7 +100,7 @@ pub mod prelude {
         AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext,
         DEFAULT_SUMMARY_PROMPT,
     };
-    pub use crate::engine::{AgentHandle, AgentRunEngine, AgentStatus, EngineError, SessionMeta};
+    pub use crate::engine::{AgentHandle, AgentRunEngine, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
     pub use crate::loop_::{

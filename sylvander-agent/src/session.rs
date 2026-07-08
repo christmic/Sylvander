@@ -31,7 +31,7 @@ pub(crate) fn now_secs() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// Static metadata shared by all agents in a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMetadata {
     /// Working directory for this session.
     pub workspace: PathBuf,
