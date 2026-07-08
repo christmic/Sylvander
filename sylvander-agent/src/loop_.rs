@@ -3,11 +3,11 @@
 //! # Architecture
 //!
 //! The loop logic lives in three module-level free functions:
-//! - [`run`] — consumes the stream, returns `Result<AgentRun, _>`
+//! - [`run`] — consumes the stream, returns `Result<AgentLoopResult, _>`
 //! - [`run_stream`] — the single source of truth: drives the
 //!   iteration, yields `AgentEvent`s
 //! - [`run_with_events`] — consumes the stream, fires events into a
-//!   callback, returns the final `AgentRun`
+//!   callback, returns the final `AgentLoopResult`
 //!
 //! `AgentLoop` itself is just a configuration holder (LLM client,
 //! model, tools, compressor, iteration limits). The methods
@@ -70,7 +70,7 @@ impl std::fmt::Debug for AgentLoop {
 
 /// Outcome of a completed [`run`] / [`run_with_events`].
 #[derive(Debug, Clone)]
-pub struct AgentRun {
+pub struct AgentLoopResult {
     /// Final assembled message (the last assistant turn before the loop
     /// terminated).
     pub final_message: Message,
@@ -619,7 +619,7 @@ pub fn run_stream(
 }
 
 /// Convenience wrapper around [`run_stream`] that consumes the
-/// event stream and returns the final [`AgentRun`].
+/// event stream and returns the final [`AgentLoopResult`].
 ///
 /// # Errors
 /// - [`AgentLoopError::MaxIterationsReached`] — loop hit cap
@@ -630,20 +630,20 @@ pub fn run_stream(
 pub async fn run(
     config: &AgentLoop,
     initial_messages: Vec<MessageParam>,
-) -> Result<AgentRun, AgentLoopError> {
+) -> Result<AgentLoopResult, AgentLoopError> {
     let max_iterations = config.max_iterations;
     consume_stream_to_run(max_iterations, run_stream(config, initial_messages)).await
 }
 
 /// Convenience wrapper around [`run_stream`] that fires every event
-/// into the supplied callback, then returns the final [`AgentRun`].
+/// into the supplied callback, then returns the final [`AgentLoopResult`].
 /// Terminal `Done` / `Error` events are extracted into the return
 /// value rather than fired to the callback.
 pub async fn run_with_events<F>(
     config: &AgentLoop,
     initial_messages: Vec<MessageParam>,
     mut on_event: F,
-) -> Result<AgentRun, AgentLoopError>
+) -> Result<AgentLoopResult, AgentLoopError>
 where
     F: FnMut(AgentEvent) + Send,
 {
@@ -674,7 +674,7 @@ where
     let final_message = final_message
         .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
 
-    Ok(AgentRun {
+    Ok(AgentLoopResult {
         final_message,
         iterations,
         total_usage,
@@ -832,11 +832,11 @@ impl AgentLoop {
 // =====================================================================
 
 /// Internal helper for [`run`]: pull events from the stream,
-/// accumulate final state, return `AgentRun` or `Err`.
+/// accumulate final state, return `AgentLoopResult` or `Err`.
 async fn consume_stream_to_run(
     max_iterations: u32,
     stream: impl Stream<Item = AgentEvent> + Send,
-) -> Result<AgentRun, AgentLoopError> {
+) -> Result<AgentLoopResult, AgentLoopError> {
     let mut stream = Box::pin(stream);
     let mut final_message: Option<Message> = None;
     let mut total_usage = Usage {
@@ -867,7 +867,7 @@ async fn consume_stream_to_run(
 
     let final_message = final_message
         .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
-    Ok(AgentRun {
+    Ok(AgentLoopResult {
         final_message,
         iterations,
         total_usage,
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[test]
     fn agent_run_debug_impl() {
-        let run = AgentRun {
+        let run = AgentLoopResult {
             final_message: Message {
                 id: "msg_x".into(),
                 kind: sylvander_llm_anthropic::api::types::MessageKind::Message,

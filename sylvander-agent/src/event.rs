@@ -3,7 +3,7 @@
 //! The agent loop has a single core API — [`AgentLoop::run_stream`] —
 //! that drives the iteration and yields events. [`AgentLoop::run`] is
 //! a thin wrapper that consumes the stream and returns an
-//! [`crate::AgentRun`]. [`AgentLoop::run_with_events`] is a wrapper
+//! [`crate::AgentLoopResult`]. [`AgentLoop::run_with_events`] is a wrapper
 //! that fires events into a callback as they flow.
 //!
 //! Events fire in chronological order within a single iteration:
