@@ -93,7 +93,9 @@ pub mod prelude {
     };
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
-    pub use crate::loop_::{run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentRun};
+    pub use crate::loop_::{
+        run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentLoopResult,
+    };
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
     pub use crate::tools::{EditTool, ReadTool, WriteTool};
     pub use sylvander_llm_anthropic::prelude::*;
