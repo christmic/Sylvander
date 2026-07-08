@@ -1,0 +1,23 @@
+[package]
+name = "sylvander-runtime"
+description = "Sylvander v2 Runtime — system bootstrap, session persistence, protocol adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-agent = { path = "../sylvander-agent" }
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+tokio = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

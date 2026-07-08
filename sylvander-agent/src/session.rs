@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use sylvander_llm_anthropic::api::types::{Message, MessageParam};
 
 use crate::spec::SessionId;
@@ -19,7 +20,7 @@ use crate::spec::SessionId;
 // ---------------------------------------------------------------------------
 
 /// Current Unix timestamp in seconds.
-pub(crate) fn now_secs() -> i64 {
+pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -31,7 +32,7 @@ pub(crate) fn now_secs() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// Static metadata shared by all agents in a session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMetadata {
     /// Working directory for this session.
     pub workspace: PathBuf,
