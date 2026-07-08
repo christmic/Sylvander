@@ -10,7 +10,7 @@ use serde_json::json;
 use sylvander_agent::prelude::*;
 use sylvander_agent::bus::StreamEvent;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_anthropic::api::model::ModelCapabilities;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -73,6 +73,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::IterationStart { .. } => "IterationStart",
                 StreamEvent::IterationEnd { .. } => "IterationEnd",
                 StreamEvent::Done { .. } => "Done",
+                StreamEvent::ToolApprovalRequired { .. } => "ToolApprovalRequired",
             }),
             _ => None,
         })

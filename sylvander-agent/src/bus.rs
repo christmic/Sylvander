@@ -117,9 +117,25 @@ pub enum StreamEvent {
     },
     /// The loop completed successfully — final assembled text.
     Done {
-        /// The complete response text.
         text: String,
     },
+
+    /// Batch approval request — one or more tools need approval.
+    ToolApprovalRequired {
+        /// Unique batch identifier.
+        batch_id: String,
+        /// Tools waiting for approval.
+        tools: Vec<ToolCallInfo>,
+    },
+}
+
+/// Info about a single tool call — shared between approval requests
+/// and execution events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallInfo {
+    pub call_id: String,
+    pub tool_name: String,
+    pub input: serde_json::Value,
 }
 
 /// What kind of message this is.
@@ -160,10 +176,17 @@ pub enum SystemMessage {
 
     // -- Agent → Engine (status) --
 
-    /// Agent status update. Published on state transitions.
+    /// Agent status update.
     StatusUpdate {
-        /// Current lifecycle status.
         status: AgentStatus,
+    },
+
+    /// Approve or reject a pending tool call (adapter → agent).
+    ApproveTool {
+        /// Tool call ID.
+        call_id: String,
+        /// `true` to execute, `false` to reject.
+        approved: bool,
     },
 }
 
