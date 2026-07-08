@@ -1135,6 +1135,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sylvander-channel"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "sylvander-agent",
+ "tokio",
+]
+
+[[package]]
 name = "sylvander-llm-anthropic"
 version = "0.1.0"
 dependencies = [
@@ -1159,6 +1168,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sylvander-agent",
+ "sylvander-channel",
  "sylvander-llm-anthropic",
  "thiserror",
  "tokio",

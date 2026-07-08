@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "sylvander-channel",
     "sylvander-llm-anthropic",
     "sylvander-agent",
     "sylvander-runtime",

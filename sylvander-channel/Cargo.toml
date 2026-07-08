@@ -1,0 +1,15 @@
+[package]
+name = "sylvander-channel"
+description = "Sylvander Channel trait — abstract interface for external communication channels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-agent = { path = "../sylvander-agent" }
+async-trait = "0.1"
+tokio = { workspace = true }
+
+[lints]
+workspace = true
