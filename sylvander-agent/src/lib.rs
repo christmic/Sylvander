@@ -92,7 +92,7 @@ pub mod tools;
 pub mod prelude {
     pub use crate::bus::{
         AgentStatus, BusError, BusMessage, InProcessMessageBus, MessageBus, MessageId,
-        MessageKind, Recipient, Sender, SubscriptionFilter, SystemMessage,
+        MessageKind, Recipient, Sender, StreamEvent, SubscriptionFilter, SystemMessage,
     };
     pub use crate::compress::{
         layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},

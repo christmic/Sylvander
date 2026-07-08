@@ -62,6 +62,66 @@ pub enum Recipient {
     Broadcast,
 }
 
+/// Streaming events published during agent loop execution.
+///
+/// These are transient — they are NOT stored in session history.
+/// Only [`StreamEvent::Done`] triggers a history write.
+///
+/// Named differently from `AgentEvent` to keep bus types independent
+/// of agent internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamEvent {
+    /// Streaming text delta from the model.
+    TextDelta {
+        /// The text fragment.
+        delta: String,
+    },
+    /// Streaming thinking delta (extended thinking).
+    ThinkingDelta {
+        /// The thinking fragment.
+        delta: String,
+    },
+    /// The model invoked a tool. Published before execution.
+    ToolCall {
+        /// Tool call ID (matches the `tool_use.id`).
+        call_id: String,
+        /// Tool name.
+        tool_name: String,
+        /// Parsed input arguments (JSON).
+        input: serde_json::Value,
+    },
+    /// Tool execution finished.
+    ToolResult {
+        /// Matching tool call ID.
+        call_id: String,
+        /// Tool name.
+        tool_name: String,
+        /// Tool output (success or error content).
+        output: String,
+        /// `true` if the tool returned an error.
+        is_error: bool,
+    },
+    /// A new iteration is starting.
+    IterationStart {
+        /// 1-indexed iteration number.
+        iteration: u32,
+    },
+    /// An iteration completed.
+    IterationEnd {
+        /// Iteration that just finished.
+        iteration: u32,
+        /// Input tokens consumed this iteration.
+        input_tokens: u32,
+        /// Output tokens produced this iteration.
+        output_tokens: u32,
+    },
+    /// The loop completed successfully — final assembled text.
+    Done {
+        /// The complete response text.
+        text: String,
+    },
+}
+
 /// What kind of message this is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageKind {
@@ -69,6 +129,8 @@ pub enum MessageKind {
     Chat,
     /// A system-level message (lifecycle, state, control).
     System(SystemMessage),
+    /// A streaming event from an agent's loop execution.
+    Stream(StreamEvent),
 }
 
 /// System-level messages for agent lifecycle and coordination.
@@ -233,6 +295,26 @@ impl BusMessage {
             sender: Sender::Agent(agent_id),
             recipient: Recipient::Broadcast,
             kind: MessageKind::System(SystemMessage::StatusUpdate { status }),
+            payload: String::new(),
+            timestamp: crate::session::now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    // -- Stream constructors --
+
+    /// Create a streaming event message.
+    #[must_use]
+    pub fn stream_event(
+        session_id: SessionId,
+        agent_id: AgentId,
+        event: StreamEvent,
+    ) -> Self {
+        Self {
+            session_id,
+            sender: Sender::Agent(agent_id),
+            recipient: Recipient::Broadcast,
+            kind: MessageKind::Stream(event),
             payload: String::new(),
             timestamp: crate::session::now_secs(),
             id: MessageId::new(),

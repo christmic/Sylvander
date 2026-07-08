@@ -36,7 +36,7 @@ use crate::bus::{
     SubscriptionFilter, SystemMessage,
 };
 use crate::error::AgentLoopError;
-use crate::loop_::{self, AgentLoop, AgentLoopResult};
+use crate::loop_::{self, AgentLoop};
 use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::tool::{Tool, ToolRegistry};
@@ -116,11 +116,13 @@ impl AgentRun {
 
     // -- message handling --
 
-    /// Handle an incoming message: retrieve session context, run the
-    /// loop, update history, and publish a response.
+    /// Handle an incoming chat message: retrieve session context, run
+    /// the loop with streaming, and publish every event to the bus.
     ///
-    /// This is the core method that bridges the message bus and the
-    /// inference engine.
+    /// Streaming events ([`StreamEvent`]) are published in real-time:
+    /// `TextDelta`, `ToolCall`, `ToolResult`, `IterationStart/End`,
+    /// and `Done`. Only `Done` is written to session history — chunks
+    /// are transient.
     ///
     /// # Errors
     /// Returns [`AgentRunError`] if the session is unknown or the
@@ -128,52 +130,117 @@ impl AgentRun {
     pub async fn handle_message(
         &self,
         msg: BusMessage,
-    ) -> Result<AgentLoopResult, AgentRunError> {
+    ) -> Result<(), AgentRunError> {
         let session_id = msg.session_id.clone();
 
-        // 1. Retrieve session context
-        let sessions = self.sessions.read().await;
-        let ctx = sessions
-            .get(&session_id)
-            .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
-
-        // 2. Take a snapshot + append the incoming message
-        let mut history = ctx.history_snapshot();
-        drop(sessions);
-
-        history.push(self.message_to_param(&msg));
-
-        // 3. Run the loop (pure engine, no session awareness)
-        let result = loop_::run(&self.loop_config, history)
-            .await
-            .map_err(AgentRunError::Loop)?;
-
-        // 4. Write the assistant response back to session history
-        {
+        // 1. Append user message to session, then take history snapshot
+        let history = {
             let mut sessions = self.sessions.write().await;
-            if let Some(ctx) = sessions.get_mut(&session_id) {
-                ctx.append_assistant_message(result.final_message.clone());
+            let ctx = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
+            ctx.append_user_message(self.message_to_param(&msg));
+            ctx.history_snapshot()
+        };
+
+        // 2. Run the loop with streaming — publish every event
+        use futures_util::StreamExt;
+        let mut stream = Box::pin(loop_::run_stream(&self.loop_config, history));
+        let mut final_message: Option<
+            sylvander_llm_anthropic::api::types::Message,
+        > = None;
+
+        while let Some(event) = stream.next().await {
+            match event {
+                crate::event::AgentEvent::TextChunk(text) => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::TextDelta { delta: text },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::ThinkingChunk(text) => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ThinkingDelta { delta: text },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::ToolCallStart { id, name, input } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolCall {
+                            call_id: id,
+                            tool_name: name,
+                            input,
+                        },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::ToolCallEnd {
+                    id,
+                    name,
+                    output,
+                    is_error,
+                } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolResult {
+                            call_id: id,
+                            tool_name: name,
+                            output,
+                            is_error,
+                        },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::IterationStart { iteration } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::IterationStart { iteration },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::IterationEnd { iteration, usage } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::IterationEnd {
+                            iteration,
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                        },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::Compressed { .. } => {
+                    // Compression noise — not published to bus
+                }
+                crate::event::AgentEvent::Done(msg) => {
+                    final_message = Some(msg);
+                }
+                crate::event::AgentEvent::Error(e) => {
+                    self.publish_error(&session_id, &e).await;
+                    return Err(AgentRunError::Loop(e));
+                }
             }
         }
 
-        // 5. Publish the response to the bus
-        let response_text = result
-            .final_message
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                sylvander_llm_anthropic::api::types::ContentBlock::Text(t) => {
-                    Some(t.text.as_str())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        // 3. Write final message to session history + publish Done
+        if let Some(msg) = final_message {
+            let text = msg.text();
+            self.publish_stream(
+                &session_id,
+                crate::bus::StreamEvent::Done { text },
+            )
+            .await;
 
-        let response = BusMessage::agent_response(session_id, self.id.clone(), response_text);
-        let _ = self.bus.publish(response).await;
+            let mut sessions = self.sessions.write().await;
+            if let Some(ctx) = sessions.get_mut(&session_id) {
+                ctx.append_assistant_message(msg);
+            }
+        }
 
-        Ok(result)
+        Ok(())
     }
 
     /// Main event loop. Receives all messages from the bus — both chat
@@ -282,6 +349,12 @@ impl AgentRun {
                         }
                     }
                 }
+
+                // -- Stream events (for adapters, agent ignores) --
+                MessageKind::Stream(_) => {
+                    // Stream events flow from agent to adapter — they are
+                    // not consumed by the agent itself.
+                }
             }
         }
 
@@ -340,6 +413,30 @@ impl AgentRun {
         Ok(entry)
     }
 
+    // -- streaming helpers --
+
+    /// Publish a stream event to the bus (fire-and-forget).
+    async fn publish_stream(&self, session_id: &SessionId, event: crate::bus::StreamEvent) {
+        let msg = BusMessage::stream_event(session_id.clone(), self.id.clone(), event);
+        let _ = self.bus.publish(msg).await;
+    }
+
+    /// Publish an error as a Chat message.
+    async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
+        let _ = self
+            .bus
+            .publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: Sender::Agent(self.id.clone()),
+                recipient: Recipient::Broadcast,
+                kind: MessageKind::Chat,
+                payload: format!("Error: {err}"),
+                timestamp: now_secs(),
+                id: crate::bus::MessageId::new(),
+            })
+            .await;
+    }
+
     // -- helpers --
 
     /// Convert a [`BusMessage`] to a [`MessageParam`] for the loop.
@@ -363,6 +460,7 @@ pub struct AgentRunBuilder {
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
+    model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
 }
 
 impl AgentRunBuilder {
@@ -374,6 +472,7 @@ impl AgentRunBuilder {
             tool_overrides: None,
             compression_overrides: None,
             memory: None,
+            model_capabilities: None,
         }
     }
 
@@ -401,6 +500,19 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn override_tools(mut self, tools: ToolRegistry) -> Self {
         self.tool_overrides = Some(tools);
+        self
+    }
+
+    /// Add model capabilities (e.g. `TOOL_USE`).
+    ///
+    /// The spec's `ModelConfig` does not encode capabilities, so
+    /// callers must set them explicitly when registering tools.
+    #[must_use]
+    pub fn model_capabilities(
+        mut self,
+        caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
+    ) -> Self {
+        self.model_capabilities = Some(caps);
         self
     }
 
@@ -438,7 +550,10 @@ impl AgentRunBuilder {
                 .and_then(|cfg| cfg.build().ok())
         };
 
-        let model_info = self.spec.to_model_info();
+        let mut model_info = self.spec.to_model_info();
+        if let Some(caps) = self.model_capabilities {
+            model_info.capabilities = caps;
+        }
 
         let mut loop_builder = AgentLoop::builder()
             .client(self.client)
