@@ -7,12 +7,12 @@
 //! 1. Boots the system (creates bus, engine, session store)
 //! 2. Spawns agents from configuration
 //! 3. Loads persistent sessions
-//! 4. Starts protocol adapters (TUI, Telegram, ...)
+//! 4. Starts protocol channels (TUI, Telegram, ...)
 //!
 //! # Architecture
 //!
 //! ```text
-//! ProtocolAdapter (TUI / Telegram / ...)
+//! Channel (TUI / Telegram / ...)
 //!       │  normalize external messages → BusMessage
 //!       ▼
 //! ┌──────────────────┐
@@ -21,9 +21,6 @@
 //! │  sylvander-agent  │  AgentRunEngine / AgentRun / AgentLoop
 //! └──────────────────┘
 //! ```
-
-pub mod adapter;
-pub mod session_store;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,11 +31,12 @@ use tracing::info;
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::engine::AgentRunEngine;
 use sylvander_agent::session::SessionMetadata;
+use sylvander_agent::session_store::{
+    InMemorySessionStore, SessionLifetime, SessionStore, StoredSession,
+};
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
+use sylvander_channel::{Channel, ChannelContext};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
-
-use crate::adapter::ProtocolAdapter;
-use crate::session_store::{InMemorySessionStore, SessionLifetime, SessionStore, StoredSession};
 
 // ---------------------------------------------------------------------------
 // SystemConfig
@@ -135,17 +133,19 @@ impl Runtime {
         })
     }
 
-    // -- adapters --
+    // -- channels --
 
-    /// Start protocol adapters. Each runs in its own tokio task.
-    pub fn start_adapters(&self, adapters: Vec<Arc<dyn ProtocolAdapter>>) {
-        for adapter in adapters {
-            let bus = self.bus.clone();
-            let store = self.session_store.clone();
-            let name = adapter.name().to_string();
+    /// Start protocol channels. Each runs in its own tokio task.
+    pub fn start_channels(&self, channels: Vec<Arc<dyn Channel>>) {
+        for ch in channels {
+            let ctx = ChannelContext {
+                bus: self.bus.clone(),
+                sessions: self.session_store.clone(),
+            };
+            let name = ch.name().to_string();
             tokio::spawn(async move {
-                adapter.run(bus, store).await;
-                info!(adapter = %name, "adapter stopped");
+                ch.run(ctx).await;
+                info!(channel = %name, "channel stopped");
             });
         }
     }
@@ -154,7 +154,7 @@ impl Runtime {
 
     /// Create a temporary session.
     ///
-    /// This is the primary entry point for adapters creating
+    /// This is the primary entry point for channels creating
     /// per-conversation sessions (new TUI window, new Telegram chat).
     pub async fn create_ephemeral_session(
         &self,

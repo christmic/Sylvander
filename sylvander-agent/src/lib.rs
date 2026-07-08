@@ -84,6 +84,7 @@ pub mod event;
 pub mod loop_;
 pub mod run;
 pub mod session;
+pub mod session_store;
 pub mod spec;
 pub mod tool;
 pub mod tools;

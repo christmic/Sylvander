@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::spec::{AgentId, SessionId};
+use crate::session::SessionMetadata;
+use crate::spec::{AgentId, SessionId};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -71,7 +71,7 @@ impl StoredSession {
             lifetime,
             metadata,
             agents,
-            created_at: sylvander_agent::session::now_secs(),
+            created_at: crate::session::now_secs(),
             external_meta: HashMap::new(),
         }
     }
