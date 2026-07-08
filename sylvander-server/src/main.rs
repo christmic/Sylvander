@@ -48,6 +48,10 @@ async fn main() {
             system_prompt: "You are a helpful assistant. You can read/write/edit files and search your memory with read_memory.".into(),
             description: "Default assistant".into(),
         })
+        .model(sylvander_agent::spec::ModelConfig {
+            model_name: model_name.clone(),
+            ..Default::default()
+        })
         .tools(vec![
             ToolRef::Builtin { name: "read".into() },
             ToolRef::Builtin { name: "write".into() },
@@ -111,7 +115,10 @@ async fn main() {
 
     // HTTP debug channel
     let http_addr: std::net::SocketAddr = env_or("HTTP_ADDR", "127.0.0.1:8080").parse().unwrap();
-    let http_channel = Arc::new(sylvander_channel_http::HttpChannel::new(http_addr));
+    let http_channel = Arc::new(sylvander_channel_http::HttpChannel::new(
+        http_addr,
+        agent_id.clone(),
+    ));
     let http_ctx = sylvander_channel::ChannelContext {
         bus: bus.clone(),
         sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),

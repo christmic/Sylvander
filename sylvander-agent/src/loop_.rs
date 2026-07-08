@@ -740,10 +740,13 @@ impl AgentLoop {
         let max_attempts = self.max_retries + 1;
 
         // Try streaming first.
+        let url = self.client.base_url().join("v1/messages").unwrap();
+        tracing::debug!(%url, model=%request.model, max_tokens=request.max_tokens, "calling LLM");
         for attempt in 0..max_attempts {
             match self.client.messages().stream(request).await {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
+                    tracing::warn!(%url, status=?e, "streaming attempt failed");
                     if !e.is_retryable() || attempt == max_attempts - 1 {
                         // Non-retryable (or exhausted retries): try
                         // non-streaming as a fallback. Some providers
