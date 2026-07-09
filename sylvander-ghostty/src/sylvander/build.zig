@@ -16,6 +16,13 @@ pub fn build(b: *std.Build) void {
     const tests = b.addTest(.{
         .root_module = sylvander_mod,
     });
+    // The test runner pulls in std lib machinery that needs the host
+    // libc. On macOS that is libSystem; without linkLibC() the linker
+    // errors out with undefined symbols like _abort, _bzero,
+    // _realpath$DARWIN_EXTSN, _dispatch_queue_create etc.
+    // See ziglang/zig#31658 — same root cause as the CLT link bug
+    // documented in SYNCUP.md.
+    tests.linkLibC();
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run sylvander module tests");
     test_step.dependOn(&run_tests.step);
