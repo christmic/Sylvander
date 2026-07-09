@@ -1,6 +1,6 @@
 import AppKit
 
-/// Handler for the `send key` AppleScript command defined in `Ghostty.sdef`.
+/// Handler for the `send key` AppleScript command defined in `Sylvander.sdef`.
 ///
 /// Cocoa scripting instantiates this class because the command's `<cocoa>` element
 /// specifies `class="GhosttyScriptKeyEventCommand"`. The runtime calls

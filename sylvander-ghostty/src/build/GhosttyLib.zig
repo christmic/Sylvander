@@ -21,7 +21,7 @@ pub fn initStatic(
     deps: *const SharedDeps,
 ) !GhosttyLib {
     const lib = b.addLibrary(.{
-        .name = "ghostty",
+        .name = "sylvander",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main_c.zig"),
             .target = deps.config.target,
@@ -73,7 +73,7 @@ pub fn initShared(
     deps: *const SharedDeps,
 ) !GhosttyLib {
     const lib = b.addLibrary(.{
-        .name = "ghostty",
+        .name = "sylvander",
         .linkage = .dynamic,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main_c.zig"),
@@ -172,7 +172,7 @@ pub fn initMacOSUniversal(
     ));
 
     const universal = LipoStep.create(b, .{
-        .name = "ghostty",
+        .name = "sylvander",
         .out_name = "ghostty-internal.a",
         .input_a = aarch64.output,
         .input_b = x86_64.output,

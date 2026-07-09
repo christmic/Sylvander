@@ -46,13 +46,13 @@
 			</array>
 		</dict>
 	</array>
-	<key>GhosttyBuild</key>
+	<key>SylvanderBuild</key>
 	<string></string>
-	<key>GhosttyCommit</key>
+	<key>SylvanderCommit</key>
 	<string></string>
 	<key>LSEnvironment</key>
 	<dict>
-		<key>GHOSTTY_MAC_LAUNCH_SOURCE</key>
+		<key>SYLVANDER_MAC_LAUNCH_SOURCE</key>
 		<string>app</string>
 	</dict>
 	<key>MDItemKeywords</key>
@@ -62,7 +62,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>OSAScriptingDefinition</key>
-	<string>Ghostty.sdef</string>
+	<string>Sylvander.sdef</string>
 	<key>NSServices</key>
 	<array>
 		<dict>
@@ -112,9 +112,9 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
-			<string>com.mitchellh.ghosttySurfaceId</string>
+			<string>ai.oraculo.sylvanderSurfaceId</string>
 			<key>UTTypeDescription</key>
-			<string>Ghostty Surface Identifier</string>
+			<string>Sylvander Surface Identifier</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>

@@ -6,7 +6,7 @@ import AppKit
 /// AppleScript objects through Objective-C runtime names/selectors, not Swift
 /// protocol conformance.
 ///
-/// Mapping from `Ghostty.sdef`:
+/// Mapping from `Sylvander.sdef`:
 /// - `class terminal` -> this class (`@objc(GhosttyAppleScriptTerminal)`).
 /// - `property id` -> `@objc(id)` getter below.
 /// - `property title` -> `@objc(title)` getter below.
@@ -193,7 +193,7 @@ final class ScriptTerminal: NSObject {
     }
 }
 
-/// Converts four-character codes from the `split direction` enumeration in `Ghostty.sdef`
+/// Converts four-character codes from the `split direction` enumeration in `Sylvander.sdef`
 /// to `SplitTree.NewDirection` values.
 enum ScriptSplitDirection {
     case right
