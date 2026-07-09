@@ -1,0 +1,116 @@
+name: CI
+
+# Verifies three things on every push to master and on PRs:
+#   1. The Sylvander Zig module compiles and its tests pass.
+#   2. The Ghostty fork still builds end-to-end with our patches
+#      (catches rebrand breakage, API drift after subtree pulls).
+#   3. The Sylvander Rust workspace still compiles and tests pass.
+#
+# macOS only for now. Other runners (Linux / Windows) can be added
+# to the matrices later without changing the job shape.
+#
+# Triggered on push to master, on pull requests, and manually via
+# the Actions tab ("Run workflow").
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: 0.16.0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. Sylvander Zig module — fast smoke test.
+  # ---------------------------------------------------------------
+  zig-module:
+    name: zig module
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Sylvander module tests
+        working-directory: sylvander-ghostty/src/sylvander
+        run: zig build test --summary all
+
+  # ---------------------------------------------------------------
+  # 2. Full Ghostty build — verify the rebrand and any subtree pull
+  # hasn't drifted API. Builds the CLI/library; the full Xcode .app
+  # bundle requires macOS 26 SDK + Xcode 26 which standard runners
+  # don't have, so we stop at the CLI artifact.
+  # ---------------------------------------------------------------
+  zig-full:
+    name: zig build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: zig build
+        working-directory: sylvander-ghostty
+        run: zig build
+
+  # ---------------------------------------------------------------
+  # 3. Sylvander Rust workspace — backend crates.
+  # ---------------------------------------------------------------
+  rust:
+    name: rust workspace
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+
+      - name: cargo build
+        run: cargo build --workspace --locked
+
+      - name: cargo test
+        run: cargo test --workspace --locked
+
+  # ---------------------------------------------------------------
+  # 4. macOS Swift files — syntax sanity (catches our Info.plist /
+  # sdef rename breaking any Swift reference we missed).
+  # ---------------------------------------------------------------
+  macos-swift:
+    name: macos swift sanity
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify rebranded files are consistent
+        working-directory: sylvander-ghostty/macos
+        run: |
+          set -e
+          test -f Sylvander-Info.plist
+          test -f Sylvander.sdef
+          test -f Ghostty.xcodeproj/project.pbxproj
+          # Confirm pbxproj no longer references the old file names.
+          if grep -q 'Ghostty-Info\.plist\|Ghostty\.sdef' Ghostty.xcodeproj/project.pbxproj; then
+            echo "ERROR: pbxproj still references old file names"
+            exit 1
+          fi
+          # Confirm Swift source files don't reference renamed files
+          # under their old names either.
+          if grep -rln 'Ghostty-Info\.plist\|Ghostty\.sdef' Sources Tests 2>/dev/null; then
+            echo "ERROR: Swift sources still reference old file names"
+            exit 1
+          fi
+          echo "OK: rebranded files consistent"
