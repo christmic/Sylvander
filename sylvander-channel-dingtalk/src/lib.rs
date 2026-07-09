@@ -11,6 +11,31 @@
 
 pub mod protocol;
 
+pub use protocol::{
+    FrameHeaders, MessageHandler, RobotMessage, ROBOT_TOPIC,
+};
+
+pub use protocol::Client as DingTalkClient;
+
+/// Parsed incoming message (alias of RobotMessage for legacy tests).
+pub type DingTalkCallback = RobotMessage;
+
+/// Wraps RobotMessage for transport layer.
+#[derive(Debug, Clone)]
+pub struct DingTalkIncoming {
+    pub callback: RobotMessage,
+}
+
+/// Placeholder for outgoing (DingTalk replies via webhook, not via transport trait).
+#[derive(Debug, Clone)]
+pub struct DingTalkOutgoing {
+    pub kind: String,
+    pub text: String,
+}
+
+/// Plain-text content.
+pub type DingTalkTextContent = protocol::TextContent;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,7 +47,7 @@ use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSessio
 use sylvander_agent::spec::SessionId;
 use sylvander_channel::{Channel, ChannelContext};
 
-use protocol::{Client, FrameHeaders, MessageHandler, RobotMessage};
+use protocol::Client;
 
 // ===========================================================================
 // ChannelMessageHandler — bridges protocol → Sylvander

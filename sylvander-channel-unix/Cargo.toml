@@ -1,0 +1,22 @@
+[package]
+name = "sylvander-channel-unix"
+description = "Sylvander Unix socket channel — local IPC for CLI/TUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-channel = { path = "../sylvander-channel" }
+sylvander-agent = { path = "../sylvander-agent" }
+async-trait = "0.1"
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true
