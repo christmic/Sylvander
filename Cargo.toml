@@ -9,6 +9,7 @@ members = [
     "sylvander-channel-ws",
     "sylvander-channel-telegram",
     "sylvander-channel-wechat",
+    "sylvander-tui",
     "sylvander-server",
     "sylvander-llm-anthropic",
     "sylvander-agent",
