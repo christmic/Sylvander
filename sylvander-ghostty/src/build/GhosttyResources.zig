@@ -338,7 +338,7 @@ fn addLinuxAppResources(
         // AppStream metainfo so that application has rich metadata
         // within app stores
         try ts.append(b.allocator, .{
-            b.path("dist/linux/ai.oraculo.sylvander.metainfo.xml.in"),
+            b.path("dist/linux/com.mitchellh.ghostty.metainfo.xml.in"),
             b.fmt("share/metainfo/{s}.metainfo.xml", .{app_id}),
         });
 

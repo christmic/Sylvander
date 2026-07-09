@@ -1,6 +1,6 @@
 import AppKit
 
-/// Handler for the `send mouse scroll` AppleScript command defined in `Sylvander.sdef`.
+/// Handler for the `send mouse scroll` AppleScript command defined in `Ghostty.sdef`.
 ///
 /// Cocoa scripting instantiates this class because the command's `<cocoa>` element
 /// specifies `class="GhosttyScriptMouseScrollCommand"`. The runtime calls

@@ -1,6 +1,6 @@
 import AppKit
 
-/// Handler for the `send mouse button` AppleScript command defined in `Sylvander.sdef`.
+/// Handler for the `send mouse button` AppleScript command defined in `Ghostty.sdef`.
 ///
 /// Cocoa scripting instantiates this class because the command's `<cocoa>` element
 /// specifies `class="GhosttyScriptMouseButtonCommand"`. The runtime calls
@@ -70,7 +70,7 @@ final class ScriptMouseButtonCommand: NSScriptCommand {
     }
 }
 
-/// Four-character codes matching the `mouse button` enumeration in `Sylvander.sdef`.
+/// Four-character codes matching the `mouse button` enumeration in `Ghostty.sdef`.
 private enum ScriptMouseButtonValue {
     case left
     case right

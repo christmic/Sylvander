@@ -2,12 +2,12 @@
 Version=1.0
 Name=@NAME@
 Type=Application
-Comment=A terminal with first-class AI agent support
+Comment=A terminal emulator
 TryExec=@GHOSTTY@
 Exec=@GHOSTTY@ --gtk-single-instance=true
-Icon=ai.oraculo.sylvander
+Icon=com.mitchellh.ghostty
 Categories=System;TerminalEmulator;
-Keywords=terminal;tty;pty;agent;ai;
+Keywords=terminal;tty;pty;
 StartupNotify=true
 StartupWMClass=@APPID@
 Terminal=false

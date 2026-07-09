@@ -1,7 +1,0 @@
-.{
-    .name = .sylvander,
-    .version = "0.1.0-dev",
-    .fingerprint = 0x9ba19b8b7aa7ce07,
-    .minimum_zig_version = "0.16.0",
-    .paths = .{""},
-}

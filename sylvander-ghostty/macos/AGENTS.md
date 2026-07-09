@@ -12,11 +12,11 @@
 
 ## AppleScript
 
-- The AppleScript scripting definition is in `macos/Sylvander.sdef`.
+- The AppleScript scripting definition is in `macos/Ghostty.sdef`.
 - Guard AppleScript entry points and object accessors with the
   `macos-applescript` configuration (use `NSApp.isAppleScriptEnabled`
   and `NSApp.validateScript(command:)` where applicable).
-- In `macos/Sylvander.sdef`, keep top-level definitions in this order:
+- In `macos/Ghostty.sdef`, keep top-level definitions in this order:
   1. Classes
   2. Records
   3. Enums
