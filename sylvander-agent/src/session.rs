@@ -31,16 +31,7 @@ pub fn now_secs() -> i64 {
 // SessionMetadata
 // ---------------------------------------------------------------------------
 
-/// Static metadata shared by all agents in a session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionMetadata {
-    /// Working directory for this session.
-    pub workspace: PathBuf,
-    /// Human-readable session name.
-    pub name: String,
-    /// ID of the user who owns this session.
-    pub user_id: String,
-}
+pub use sylvander_protocol::SessionMetadata;
 
 // ---------------------------------------------------------------------------
 // SessionContext
