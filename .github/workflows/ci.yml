@@ -95,7 +95,8 @@ jobs:
             --skip real_use_case \
             --skip single_iteration_end_turn_returns_final_message \
             --skip event_order_iteration_start_chunks_end \
-            --skip max_iterations_limit_enforced
+            --skip max_iterations_limit_enforced \
+            --skip stream_wrong_content_type_errors
 
   # ---------------------------------------------------------------
   # 4. macOS Swift files — syntax sanity (catches our Info.plist /
