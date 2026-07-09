@@ -1,18 +1,36 @@
 # Sylvander v2
 
-AI Agent framework in Rust — multi-agent, multi-session, multi-channel.
+AI Agent framework in Rust — multi-agent, multi-session, multi-channel,
+with structured tool approval and user clarification.
 
 ## Architecture
 
 ```
-sylvander-server              binary — boots the system
-  ├─ sylvander-channel-http   HTTP debug channel (SSE streaming)
-  ├─ sylvander-channel-dingtalk  DingTalk bot (Stream protocol)
-  ├─ sylvander-channel        Channel trait (lightweight)
-  ├─ sylvander-runtime        bootstrap, session persistence
-  ├─ sylvander-agent          engine, AgentRun, bus, tools, memory
-  └─ sylvander-llm-anthropic  Anthropic wire protocol
+sylvander-server                  binary — boots the system
+  ├─ sylvander-channel-http       HTTP debug channel (SSE streaming)
+  ├─ sylvander-channel-ws         WebSocket channel (desktop + approval UI)
+  ├─ sylvander-channel-unix       Unix socket (CLI/TUI clients, line JSON)
+  ├─ sylvander-channel-dingtalk   DingTalk bot (Stream protocol)
+  ├─ sylvander-channel-telegram   Telegram bot (webhook + sendMessage)
+  ├─ sylvander-channel-wechat     WeChat enterprise (encrypted XML)
+  ├─ sylvander-channel            Channel trait (lightweight contract)
+  ├─ sylvander-runtime            bootstrap, session persistence
+  ├─ sylvander-agent              engine, AgentRun, bus, tools, memory, approval
+  └─ sylvander-llm-anthropic      Anthropic wire protocol
 ```
+
+## Core capabilities
+
+| Feature | Status |
+|---|---|
+| Multi-agent, multi-session (N:N) | M4-M6 |
+| Bus-based message routing (chat/stream/system) | M4-M8 |
+| Memory: read tool exposed, write system-driven | M8 |
+| Tool approval (rule-based + bus) | M12 |
+| Streaming events (text/thinking/tool/iteration/done) | M11 |
+| AskUser tool (model asks mid-loop) | M18 |
+| Channels: HTTP/WS/Unix/DingTalk/Telegram/WeChat | M13-M17 |
+| Approval + AskUser over WebSocket | M18 |
 
 ## Quickstart
 
@@ -20,8 +38,6 @@ sylvander-server              binary — boots the system
 # Configure
 export ANTHROPIC_API_KEY=sk-...
 export SYLVANDER_MODEL=deepseek-v4-flash
-# optional: DingTalk
-export DINGTALK_APP_KEY=... DINGTALK_APP_SECRET=...
 
 # Run
 cargo run -p sylvander-server --release
@@ -32,16 +48,22 @@ curl -X POST http://localhost:8080/chat \
   -d '{"session_id":"test","message":"hello"}'
 ```
 
-## Key Concepts
+For tool approval, set `SYLVANDER_APPROVAL=1`.
 
-| Layer | Crate | Responsibility |
-|-------|-------|----------------|
-| **Protocol** | `sylvander-llm-anthropic` | Anthropic wire format, streaming, error handling |
-| **Agent Core** | `sylvander-agent` | AgentLoop, AgentRun, engine, bus, session, memory, tools, approval |
-| **Runtime** | `sylvander-runtime` | Bootstrap, session persistence |
-| **Channel** | `sylvander-channel` | Channel trait (lightweight contract) |
-| **Channels** | `sylvander-channel-dingtalk`, `-http` | Concrete channel implementations |
-| **Server** | `sylvander-server` | Binary entry point |
+## AskUser tool
+
+The model can call the built-in `ask_user` tool to ask the user a
+clarifying question. The loop pauses, publishes a bus event, and
+resumes with the answer. Supports:
+
+- Free-text input (no `options`)
+- Single choice from a list
+- Multi-select (`multi_select: true`)
+
+```json
+{"type":"ask_user","call_id":"...","question":"A or B?","options":["A","B"]}
+{"type":"answer","call_id":"...","answer":"A"}
+```
 
 ## Build & Test
 
@@ -54,4 +76,8 @@ cargo test --workspace
 
 - MSRV: 1.96, edition 2024
 - Async: tokio (multi-thread)
-- Tests: wiremock for e2e, 150+ tests
+- All 10 crates, 165 tests
+
+## License
+
+MIT
