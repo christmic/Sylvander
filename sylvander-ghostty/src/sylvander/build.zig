@@ -20,8 +20,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run sylvander module tests");
     test_step.dependOn(&run_tests.step);
 
-    // Alias "check" to the same test compile (zig 0.16 doesn't expose a
-    // standalone type-check flag; addTest does both analyse + codegen).
+    // Alias "check" to the same test compile.
     const check_step = b.step("check", "Type-check the sylvander module");
     check_step.dependOn(&tests.step);
 }

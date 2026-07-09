@@ -119,7 +119,7 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         const install_step = b.addInstallDirectory(.{
             .source_dir = b.path("src/shell-integration"),
             .install_dir = .{ .custom = "share" },
-            .install_subdir = b.pathJoin(&.{ "sylvander", "shell-integration" }),
+            .install_subdir = b.pathJoin(&.{ "ghostty", "shell-integration" }),
             .exclude_extensions = &.{".md"},
         });
         try steps.append(b.allocator, &install_step.step);
@@ -131,7 +131,7 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
             const install_step = b.addInstallDirectory(.{
                 .source_dir = upstream.path(""),
                 .install_dir = .{ .custom = "share" },
-                .install_subdir = b.pathJoin(&.{ "sylvander", "themes" }),
+                .install_subdir = b.pathJoin(&.{ "ghostty", "themes" }),
                 .exclude_extensions = &.{".md"},
             });
             try steps.append(b.allocator, &install_step.step);

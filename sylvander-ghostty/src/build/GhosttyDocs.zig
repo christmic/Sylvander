@@ -19,8 +19,8 @@ pub fn init(
         name: []const u8,
         section: []const u8,
     }{
-        .{ .name = "sylvander", .section = "1" },
-        .{ .name = "sylvander", .section = "5" },
+        .{ .name = "ghostty", .section = "1" },
+        .{ .name = "ghostty", .section = "5" },
     };
 
     inline for (manpages) |manpage| {

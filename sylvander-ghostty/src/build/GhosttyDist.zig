@@ -19,7 +19,7 @@ check_step: *std.Build.Step,
 
 pub fn init(b: *std.Build, cfg: *const Config) !GhosttyDist {
     // The name prefix used for all paths in the archive.
-    const name = if (cfg.emit_lib_vt) "libghostty-vt" else "sylvander";
+    const name = if (cfg.emit_lib_vt) "libghostty-vt" else "ghostty";
 
     // Get the resources we're going to inject into the source tarball.
     // lib-vt doesn't need GTK resources or frame data.

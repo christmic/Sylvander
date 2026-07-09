@@ -929,7 +929,7 @@ pub fn gtkNgDistResources(
     const generate_c = b.addSystemCommand(&.{
         "glib-compile-resources",
         "--c-name",
-        "sylvander",
+        "ghostty",
         "--generate-source",
         "--target",
     });
@@ -942,7 +942,7 @@ pub fn gtkNgDistResources(
     const generate_h = b.addSystemCommand(&.{
         "glib-compile-resources",
         "--c-name",
-        "sylvander",
+        "ghostty",
         "--generate-header",
         "--target",
     });
