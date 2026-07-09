@@ -74,6 +74,8 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::IterationEnd { .. } => "IterationEnd",
                 StreamEvent::Done { .. } => "Done",
                 StreamEvent::ToolApprovalRequired { .. } => "ToolApprovalRequired",
+                StreamEvent::AskUser { .. } => "AskUser",
+                StreamEvent::UserAnswer { .. } => "UserAnswer",
             }),
             _ => None,
         })

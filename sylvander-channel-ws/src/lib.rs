@@ -63,6 +63,11 @@ enum ClientMsg {
         call_id: String,
         approved: bool,
     },
+    /// User answered an AskUser question.
+    Answer {
+        call_id: String,
+        answer: String,
+    },
     ListSessions,
     Ping,
 }
@@ -87,6 +92,18 @@ enum ServerMsg {
         session_id: String,
         batch_id: String,
         tools: Vec<ToolInfo>,
+    },
+    AskUser {
+        session_id: String,
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
+    UserAnswer {
+        session_id: String,
+        call_id: String,
+        answer: Vec<String>,
     },
     IterationStart {
         session_id: String,
@@ -355,6 +372,22 @@ async fn handle_client_msg(
                                         .collect(),
                                 })
                             }
+                            StreamEvent::AskUser { call_id, question, options, multi_select } => {
+                                Some(ServerMsg::AskUser {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    question,
+                                    options,
+                                    multi_select,
+                                })
+                            }
+                            StreamEvent::UserAnswer { call_id, answer } => {
+                                Some(ServerMsg::UserAnswer {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    answer,
+                                })
+                            }
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -388,10 +421,24 @@ async fn handle_client_msg(
                 })
                 .await;
         }
+        ClientMsg::Answer { call_id, answer } => {
+            let _ = ctx
+                .bus
+                .publish(BusMessage {
+                    session_id: SessionId::new(String::new()),
+                    sender: sylvander_agent::bus::Sender::System,
+                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                    kind: MessageKind::System(SystemMessage::AnswerQuestion {
+                        call_id,
+                        answer,
+                    }),
+                    payload: String::new(),
+                    timestamp: sylvander_agent::session::now_secs(),
+                    id: sylvander_agent::bus::MessageId::new(),
+                })
+                .await;
+        }
         ClientMsg::ListSessions => {
-            // Sessions are stored in agent's internal state.
-            // For now, just acknowledge — full session listing would require
-            // querying AgentRun.get_session() per agent.
             info!("ws: client listed sessions (not yet fully implemented)");
         }
         ClientMsg::Ping => {
@@ -440,6 +487,12 @@ async fn run_outgoing(
                     tool_name: t.tool_name.clone(),
                     input: t.input.clone(),
                 }).collect(),
+            }),
+            StreamEvent::AskUser { call_id, question, options, multi_select } => Some(ServerMsg::AskUser {
+                session_id: s, call_id: call_id.clone(), question: question.clone(), options: options.clone(), multi_select: *multi_select,
+            }),
+            StreamEvent::UserAnswer { call_id, answer } => Some(ServerMsg::UserAnswer {
+                session_id: s, call_id: call_id.clone(), answer: answer.clone(),
             }),
             _ => None,
         };

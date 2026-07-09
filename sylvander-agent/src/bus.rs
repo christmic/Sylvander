@@ -127,6 +127,25 @@ pub enum StreamEvent {
         /// Tools waiting for approval.
         tools: Vec<ToolCallInfo>,
     },
+
+    /// Model is asking the user a clarifying question. Execution is paused.
+    AskUser {
+        /// Tool call ID.
+        call_id: String,
+        /// The question.
+        question: String,
+        /// Available options (empty = free-text input).
+        options: Vec<String>,
+        /// If true, allow multiple selections.
+        multi_select: bool,
+    },
+
+    /// User answered an AskUser question.
+    UserAnswer {
+        call_id: String,
+        /// Selected options (1 for single, N for multi).
+        answer: Vec<String>,
+    },
 }
 
 /// Info about a single tool call — shared between approval requests
@@ -187,6 +206,14 @@ pub enum SystemMessage {
         call_id: String,
         /// `true` to execute, `false` to reject.
         approved: bool,
+    },
+
+    /// User answered an AskUser question (adapter → agent).
+    AnswerQuestion {
+        /// Tool call ID.
+        call_id: String,
+        /// User's selections (joined string).
+        answer: String,
     },
 }
 

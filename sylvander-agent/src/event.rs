@@ -93,4 +93,18 @@ pub enum AgentEvent {
 
     /// The loop terminated with an error.
     Error(AgentLoopError),
+
+    /// Model is asking the user a question. Loop is paused (M18).
+    AskUser {
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
+
+    /// User answered an AskUser question (M18).
+    UserAnswer {
+        call_id: String,
+        answer: Vec<String>,
+    },
 }
