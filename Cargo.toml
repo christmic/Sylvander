@@ -5,6 +5,7 @@ members = [
     "sylvander-channel-dingtalk",
     "sylvander-channel-http",
     "sylvander-channel-unix",
+    "sylvander-channel-ws",
     "sylvander-channel-telegram",
     "sylvander-channel-wechat",
     "sylvander-server",

@@ -1,0 +1,23 @@
+[package]
+name = "sylvander-channel-ws"
+description = "Sylvander WebSocket channel — desktop client integration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sylvander-channel = { path = "../sylvander-channel" }
+sylvander-agent = { path = "../sylvander-agent" }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true
