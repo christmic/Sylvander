@@ -1,0 +1,23 @@
+[package]
+name = "sylvander-protocol"
+description = "Sylvander wire-format protocol types — language-neutral, cross-crate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# schemars — uncomment when generating JSON Schema for multi-language codegen
+# schemars = { version = "0.8", features = ["uuid1"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

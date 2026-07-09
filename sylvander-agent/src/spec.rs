@@ -21,51 +21,7 @@ use sylvander_llm_anthropic::api::model::ModelInfo;
 // ID types
 // ---------------------------------------------------------------------------
 
-/// Unique identifier for an agent.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AgentId(pub String);
-
-impl AgentId {
-    /// Create a new `AgentId`.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-}
-
-impl std::fmt::Display for AgentId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<&str> for AgentId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl From<String> for AgentId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-/// Unique identifier for a session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SessionId(pub String);
-
-impl SessionId {
-    /// Create a new `SessionId`.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-}
-
-impl std::fmt::Display for SessionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+pub use sylvander_protocol::{AgentId, SessionId};
 
 // ---------------------------------------------------------------------------
 // Config sub-types

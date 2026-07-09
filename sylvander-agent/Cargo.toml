@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
