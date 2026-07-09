@@ -21,7 +21,7 @@ on:
 env:
   # Pinned to Ghostty upstream's requirement. Don't bump unless the
   # upstream build.zig has been audited for the new std API.
-  ZIG_VERSION: 0.15.2
+  ZIG_VERSION: "0.15.2"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,35 +37,80 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig ${{ env.ZIG_VERSION }}
+      - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: ${{ env.ZIG_VERSION }}
+          version: "0.15.2"
+          cache: false
 
       - name: Sylvander module tests
         working-directory: sylvander-ghostty/src/sylvander
         run: zig build test --summary all
 
   # ---------------------------------------------------------------
-  # 2. Full Ghostty build — verify the rebrand and any subtree pull
-  # hasn't drifted API. Builds the CLI/library; the full Xcode .app
-  # bundle requires macOS 26 SDK + Xcode 26 which standard runners
-  # don't have, so we stop at the CLI artifact.
+  # 2a. Checked build — fast gate. Detects rebrand breakage, syntax
+  # errors, API drift, .zon fingerprint mismatch. Single zig
+  # invocation with minimal flags so it does not require macOS 26
+  # SDK; only the default Xcode 16 SDK on macos-latest.
   # ---------------------------------------------------------------
-  zig-full:
-    name: zig build
+  zig-checked:
+    name: zig build (checked)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Zig ${{ env.ZIG_VERSION }}
+      - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: ${{ env.ZIG_VERSION }}
+          version: "0.15.2"
+          cache: false
 
-      - name: zig build
+      # Flags explained:
+      # - Dapp-runtime=none        → lib-only (skip apprt/CLI executable)
+      # - Demit-xcframework=false  → skip GhosttyXCFramework.init which
+      #                              triggers a second findNative() call
+      # - Demit-macos-app=false    → skip GhosttyXcodebuild.init
+      # SharedDeps's findNative() for src/os/locale.c / src/pty.c
+      # translate-c still fires; macos-latest's Xcode 16 SDK is enough
+      # for Zig to resolve those headers.
+      - name: zig build (minimal)
         working-directory: sylvander-ghostty
-        run: zig build
+        run: zig build -Dapp-runtime=none -Demit-xcframework=false -Demit-macos-app=false
+
+  # ---------------------------------------------------------------
+  # 2b. Full build — needs macOS 26 SDK. Mirrors upstream's
+  # `nix develop -c zig build -Dapp-runtime=none test` job, minus
+  # the nix wrapper (we have no CACHIX account, no flakes on beta
+  # runners). macos-26-xlarge ships Xcode 26 so we just pin it
+  # via xcode-select and run the upstream test command verbatim.
+  # ---------------------------------------------------------------
+  zig-full:
+    name: zig build test (full, macos-26)
+    runs-on: macos-26-xlarge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+          cache: false
+
+      # Pin the active developer dir to Xcode 26 so Zig's findNative
+      # and any xcodebuild-coupled steps see macOS 26 SDK. The
+      # `ls -d /Applications/Xcode_26*` is defensive against beta-image
+      # drift between minor runner rollouts.
+      - name: Select Xcode 26
+        run: |
+          set -e
+          xcode_path="$(ls -d /Applications/Xcode_26*.app | head -n 1)"
+          echo "Using $xcode_path"
+          sudo xcode-select -s "$xcode_path"
+          xcodebuild -version
+
+      - name: zig build test (app-runtime=none)
+        working-directory: sylvander-ghostty
+        run: zig build -Dapp-runtime=none test
 
   # ---------------------------------------------------------------
   # 3. Sylvander Rust workspace — backend crates.
