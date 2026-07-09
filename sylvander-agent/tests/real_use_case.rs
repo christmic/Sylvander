@@ -101,6 +101,12 @@ fn test_model() -> ModelInfo {
 /// 3. Loop: execute `Read` → file content
 /// 4. Loop: re-feed `tool_result`
 /// 5. Model: text "Here's the summary: ..." (`end_turn`)
+///
+/// Runs in normal `cargo test`. The CI workflow invokes
+/// `cargo test -- --skip real_use_case` to opt out — the mock
+/// response shape is coupled to the streaming-event contract, so
+/// it fails when the parser/transport drifts even though no real
+/// API is involved.
 #[tokio::test]
 async fn real_use_case_read_and_summarize() {
     let server = MockServer::start().await;
@@ -254,6 +260,9 @@ async fn real_use_case_read_and_summarize() {
 /// 3. Loop: execute `Read` → error (file not found)
 /// 4. Loop: re-feed `tool_result` with `is_error: true`
 /// 5. Model: text "File doesn't exist" (`end_turn`)
+///
+/// Runs in normal `cargo test`. CI opts out via `--skip real_use_case`
+/// — see `real_use_case_read_and_summarize` for rationale.
 #[tokio::test]
 async fn real_use_case_tool_error_recovery() {
     let server = MockServer::start().await;
