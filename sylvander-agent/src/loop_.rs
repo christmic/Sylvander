@@ -58,6 +58,8 @@ pub struct AgentLoop {
     pub(crate) system_prompt: Option<String>,
     /// Optional approval gate — called before tool execution (M12).
     pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
+    /// Optional AskUser gate — called for `ask_user` tool (M18).
+    pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
 }
 
 impl std::fmt::Debug for AgentLoop {
@@ -97,6 +99,7 @@ pub struct AgentLoopBuilder {
     max_retries: u32,
     system_prompt: Option<String>,
     approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
+    ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
 }
 
 impl Default for AgentLoopBuilder {
@@ -110,6 +113,7 @@ impl Default for AgentLoopBuilder {
             max_retries: 3,
             system_prompt: None,
             approval_gate: None,
+            ask_user_gate: None,
         }
     }
 }
@@ -210,6 +214,17 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the AskUser gate (M18). If set, the loop intercepts
+    /// `ask_user` tool calls and routes through the gate.
+    #[must_use]
+    pub fn ask_user_gate(
+        mut self,
+        gate: Arc<dyn crate::ask_user_gate::AskUserGate>,
+    ) -> Self {
+        self.ask_user_gate = Some(gate);
+        self
+    }
+
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
@@ -244,6 +259,7 @@ impl AgentLoopBuilder {
             max_retries: self.max_retries,
             system_prompt: self.system_prompt,
             approval_gate: self.approval_gate,
+            ask_user_gate: self.ask_user_gate,
         })
     }
 }
@@ -540,6 +556,63 @@ pub fn run_stream(
                                 name: tool_use.name.clone(),
                                 input: tool_use.input.clone(),
                             };
+
+                            // M18: intercept ask_user tool — pause loop, ask user
+                            if tool_use.name == "ask_user" {
+                                let question = tool_use.input["question"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
+                                let options: Vec<String> = tool_use.input["options"]
+                                    .as_array()
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let multi_select = tool_use.input["multi_select"]
+                                    .as_bool()
+                                    .unwrap_or(false);
+
+                                yield AgentEvent::AskUser {
+                                    call_id: tool_use.id.clone(),
+                                    question: question.clone(),
+                                    options: options.clone(),
+                                    multi_select,
+                                };
+
+                                let answer = if let Some(gate) = &config.ask_user_gate {
+                                    gate.ask(
+                                        &tool_use.id,
+                                        &question,
+                                        options.clone(),
+                                        multi_select,
+                                    )
+                                    .await
+                                } else {
+                                    Vec::new()
+                                };
+
+                                yield AgentEvent::UserAnswer {
+                                    call_id: tool_use.id.clone(),
+                                    answer: answer.clone(),
+                                };
+
+                                yield AgentEvent::ToolCallEnd {
+                                    id: tool_use.id.clone(),
+                                    name: "ask_user".into(),
+                                    output: answer.join(", "),
+                                    is_error: false,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(
+                                        tool_use.id.clone(),
+                                        answer.join(", "),
+                                    ),
+                                ));
+                                continue;
+                            }
 
                             let tool = config.tools.get(tool_use.name.as_str());
                             let input = tool_use.input.clone();

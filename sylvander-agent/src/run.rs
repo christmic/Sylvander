@@ -31,6 +31,7 @@ use tracing::{info, warn};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
+use crate::ask_user_gate::AskUserGate;
 use crate::bus::{
     AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
     StreamEvent, SubscriptionFilter, SystemMessage, ToolCallInfo,
@@ -68,6 +69,8 @@ pub(crate) struct AgentRunInner {
     approval_rules: Vec<crate::approval::ApprovalRule>,
     /// Pending approval requests (shared with BusApprovalGate).
     pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::approval::ApprovalDecision>>>>,
+    /// Pending AskUser answers (shared with BusAskUserGate).
+    pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
 }
@@ -182,6 +185,14 @@ impl AgentRun {
                                 }
                             };
                             let _ = tx.send(decision);
+                        }
+                    }
+
+                    // M18: forward AskUser answer to the waiting gate
+                    SystemMessage::AnswerQuestion { call_id, answer } => {
+                        let mut pending = self.inner.pending_answers.lock().await;
+                        if let Some(tx) = pending.remove(call_id) {
+                            let _ = tx.send(vec![answer.clone()]);
                         }
                     }
                 },
@@ -322,6 +333,55 @@ impl ApprovalGate for BusApprovalGate {
     }
 }
 
+// ===========================================================================
+// BusAskUserGate — M18
+// ===========================================================================
+
+struct BusAskUserGate {
+    bus: Arc<dyn MessageBus>,
+    agent_id: AgentId,
+    session_id: SessionId,
+    pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>>,
+}
+
+#[async_trait::async_trait]
+impl AskUserGate for BusAskUserGate {
+    async fn ask(
+        &self,
+        call_id: &str,
+        question: &str,
+        options: Vec<String>,
+        multi_select: bool,
+    ) -> Vec<String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.pending_answers
+            .lock()
+            .await
+            .insert(call_id.to_string(), tx);
+
+        // Publish AskUser event
+        let _ = self
+            .bus
+            .publish(BusMessage::stream_event(
+                self.session_id.clone(),
+                self.agent_id.clone(),
+                StreamEvent::AskUser {
+                    call_id: call_id.into(),
+                    question: question.into(),
+                    options,
+                    multi_select,
+                },
+            ))
+            .await;
+
+        // Wait up to 5 minutes for user reply
+        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(answer)) => answer,
+            _ => Vec::new(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AgentRunInner — the actual implementation
 // ---------------------------------------------------------------------------
@@ -359,6 +419,13 @@ impl AgentRunInner {
             };
             let mut cfg = self.loop_config.clone();
             cfg.approval_gate = Some(gate);
+            // M18: also wire AskUser gate
+            cfg.ask_user_gate = Some(Arc::new(BusAskUserGate {
+                bus: self.bus.clone(),
+                agent_id: self.id.clone(),
+                session_id: session_id.clone(),
+                pending_answers: self.pending_answers.clone(),
+            }));
             cfg
         } else {
             self.loop_config.clone()
@@ -403,6 +470,16 @@ impl AgentRunInner {
                     }).await;
                 }
                 crate::event::AgentEvent::Compressed { .. } => {}
+                crate::event::AgentEvent::AskUser { call_id, question, options, multi_select } => {
+                    self.publish_stream(&session_id, crate::bus::StreamEvent::AskUser {
+                        call_id, question, options, multi_select,
+                    }).await;
+                }
+                crate::event::AgentEvent::UserAnswer { call_id, answer } => {
+                    self.publish_stream(&session_id, crate::bus::StreamEvent::UserAnswer {
+                        call_id, answer,
+                    }).await;
+                }
                 crate::event::AgentEvent::Done(msg) => {
                     final_message = Some(msg);
                 }
@@ -562,6 +639,7 @@ impl AgentRunBuilder {
                 approval_enabled: self.approval_enabled,
                 approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+                pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
             }),
         })

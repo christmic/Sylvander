@@ -45,7 +45,7 @@ async fn main() {
         .id("assistant")
         .name("Assistant")
         .persona(PersonaConfig {
-            system_prompt: "You are a helpful assistant. You can read/write/edit files and search your memory with read_memory.".into(),
+            system_prompt: "You are a helpful assistant. You can read/write/edit files, search memory with read_memory, and ask the user clarifying questions with ask_user. Use ask_user when you need a decision, missing info, or confirmation before proceeding. Pass `options` to constrain to choices, or omit for free-text. Use `multi_select: true` to allow multiple choices.".into(),
             description: "Default assistant".into(),
         })
         .model(sylvander_agent::spec::ModelConfig {
@@ -74,7 +74,8 @@ async fn main() {
         .register(ReadTool::new("/"))
         .register(WriteTool::new("/"))
         .register(EditTool::new("/"))
-        .register(MemoryReadTool::new(memory));
+        .register(MemoryReadTool::new(memory))
+        .register(sylvander_agent::tools::AskUserTool::new());
 
     let bus = Arc::new(InProcessMessageBus::new());
 
