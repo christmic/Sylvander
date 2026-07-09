@@ -1,22 +1,30 @@
 //! Sylvander TUI — terminal client for Sylvander agents.
 //!
-//! Connects to a Sylvander server via Unix socket.
+//! Connects to a Sylvander server over Unix socket (M21e will wire this up;
+//! until then the TUI runs locally with keyboard-only state changes).
 
 mod app;
 mod client;
+mod component;
+mod dirty;
+mod event;
 mod input;
+mod modal;
+mod panel;
 mod ui;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::DefaultTerminal;
+use crossterm::event::{Event, KeyEvent, KeyEventKind};
 use tokio::sync::mpsc;
 
-use app::{AppMode, AppState, ChatMessage};
+use app::AppState;
+use client::{ClientEvent, UnixClient};
+use event::Action;
 
 const SOCKET_PATH: &str = "/tmp/sylvander.sock";
+const TICK_MS: u64 = 50;
 
 #[tokio::main]
 async fn main() {
@@ -29,127 +37,109 @@ async fn main() {
     let mut terminal = ratatui::init();
     terminal.clear().unwrap();
 
-    // App state
+    // App state (single-threaded, owned by main)
     let mut state = AppState::new();
 
-    // Event channels
+    // ---- Keyboard input channel ----
     let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
-
-    // crossterm event reader (blocking thread)
     std::thread::spawn(move || loop {
-        if let Ok(event) = event::read() {
-            if let Event::Key(key) = event {
-                if key.kind == KeyEventKind::Press && key_tx.send(key).is_err() {
-                    break;
-                }
+        if let Ok(Event::Key(key)) = crossterm::event::read() {
+            if key.kind == KeyEventKind::Press && key_tx.send(key).is_err() {
+                break;
             }
         }
     });
 
-    // Main loop
+    // ---- Socket client (M21e will use this) ----
+    let (client, event_rx) = UnixClient::new(&socket_path);
+    let mut client = client;
+    let mut event_rx = event_rx;
+    // Try to connect; failure is non-fatal — we surface "Disconnected" in UI.
+    if let Err(e) = client.connect().await {
+        let _ = state.apply(event::DomainEvent::Disconnected {
+            reason: e.to_string(),
+        });
+    }
+
+    // ---- Main loop ----
+    let mut ticker = tokio::time::interval(Duration::from_millis(TICK_MS));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
-        // Process keyboard events
+        // 1. Drain keyboard events.
         while let Ok(key) = key_rx.try_recv() {
-            handle_key(&key, &mut state);
-            if state.should_quit {
-                ratatui::restore();
-                return;
+            if let Some(action) = state.handle_key(&key) {
+                dispatch_action(action, &mut client, &mut state).await;
             }
         }
 
-        // Render
-        terminal
-            .draw(|frame| ui::ui(frame, &state))
-            .unwrap();
+        // 2. Drain socket events.
+        while let Ok(ev) = event_rx.try_recv() {
+            handle_client_event(ev, &mut state, &mut client).await;
+        }
 
-        // Tick: 30fps
-        tokio::time::sleep(Duration::from_millis(33)).await;
-    }
-}
+        // 3. Drain pending outbound actions (from modals).
+        let actions = std::mem::take(&mut state.pending_actions);
+        for action in actions {
+            dispatch_action(action, &mut client, &mut state).await;
+        }
 
-fn handle_key(key: &KeyEvent, state: &mut AppState) {
-    match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-            state.should_quit = true;
+        // 4. Reap expired modals (e.g. Toasts).
+        state.modals.reap();
+
+        // 5. Render if dirty.
+        if state.dirty.take() {
+            terminal.draw(|f| ui::dispatch(f, &state)).unwrap();
+        }
+
+        // 6. Quit check.
+        if state.should_quit {
+            ratatui::restore();
             return;
         }
-        _ => {}
-    }
 
-    match &state.mode {
-        AppMode::Normal => match key.code {
-            KeyCode::Esc => state.should_quit = true,
-            _ => {
-                if let Some(text) = state.input.handle_key(&key.code) {
-                    // Submit message
-                    state.messages.push(ChatMessage::User(text.clone()));
-                    state.status = format!("Sent: {text}");
-
-                    // Simulate agent response for M20a (no socket yet)
-                    tokio::spawn(simulate_agent_response(text));
-                }
-            }
-        },
-        AppMode::Approval { .. } => {
-            if let AppMode::Approval { tools, current, decisions, batch_id: _ } = &mut state.mode {
-                match key.code {
-                    KeyCode::Char('y') => {
-                        decisions[*current] = true;
-                        if *current + 1 < tools.len() {
-                            *current += 1;
-                        } else {
-                            state.mode = AppMode::Normal;
-                        }
-                    }
-                    KeyCode::Char('n') => {
-                        decisions[*current] = false;
-                        if *current + 1 < tools.len() {
-                            *current += 1;
-                        } else {
-                            state.mode = AppMode::Normal;
-                        }
-                    }
-                    KeyCode::Esc => {
-                        state.mode = AppMode::Normal;
-                    }
-                    _ => {}
-                }
-            }
-        },
-        AppMode::AskUser { .. } => {
-            if let AppMode::AskUser { answer, .. } = &mut state.mode {
-                match key.code {
-                    KeyCode::Enter => {
-                        state.mode = AppMode::Normal;
-                    }
-                    KeyCode::Esc => {
-                        state.mode = AppMode::Normal;
-                    }
-                    _ => {
-                        if let Some(text) = state.input.handle_key(&key.code) {
-                            *answer = text;
-                        }
-                    }
-                }
-            }
-        },
+        // 7. Smart wait: wake on next event, fallback tick for animations.
+        let _ = ticker.tick().await;
+        // Heartbeat so spinners can advance.
+        state.apply(event::DomainEvent::Tick);
     }
 }
 
-async fn simulate_agent_response(text: String) {
-    // For M20a: simulate streaming response in chat history.
-    // In M20b this will be replaced with real socket events.
-    if text == "/approve" {
-        // Simulate approval request
-        tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            // In real app this comes from socket, so we'd need to update state
-        });
+async fn handle_client_event(
+    ev: ClientEvent,
+    state: &mut AppState,
+    _client: &mut UnixClient,
+) {
+    match ev {
+        ClientEvent::Connected => {
+            state.apply(event::DomainEvent::Connected);
+        }
+        ClientEvent::Disconnected => {
+            state.apply(event::DomainEvent::Disconnected {
+                reason: "server closed".into(),
+            });
+        }
+        ClientEvent::Message(msg) => {
+            if let Some(ev) = client::parse_server_msg(msg) {
+                state.apply(ev);
+            }
+        }
     }
-    if text == "/ask" {
-        // Simulate AskUser
-        tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
+}
+
+async fn dispatch_action(action: Action, client: &mut UnixClient, _state: &mut AppState) {
+    match action {
+        Action::SendChat { text, session_id } => {
+            let _ = client.send(&client::ClientMsg::Chat { text, session_id }).await;
+        }
+        Action::SendApprove { call_id, approved } => {
+            let _ = client.send(&client::ClientMsg::Approve { call_id, approved }).await;
+        }
+        Action::SendAnswer { call_id, answer } => {
+            let _ = client.send(&client::ClientMsg::Answer { call_id, answer }).await;
+        }
+        Action::Quit => {
+            // handle_key sets state.should_quit instead.
+        }
     }
 }
