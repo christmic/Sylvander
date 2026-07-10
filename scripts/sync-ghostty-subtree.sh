@@ -41,7 +41,12 @@ fi
 
 PREFIX="sylvander-ghostty"
 UPSTREAM_REMOTE="ghostty-org/ghostty"
-UPSTREAM_BRANCH="master"
+# Upstream default branch is `main` (as of ghostty 1.2+; was `master`
+# earlier — override via `SYNC_UPSTREAM_BRANCH=master` if you need to
+# pin to the old branch). The merge-commit subject the post-pull
+# amend step looks for is `Merge branch '<remote>/<branch>'` so this
+# string is the single source of truth for the branch name.
+UPSTREAM_BRANCH="${SYNC_UPSTREAM_BRANCH:-main}"
 
 # Files / directories we explicitly drop from the subtree. The rule
 # is: anything that's about how ghostty-the-upstream-project is run
