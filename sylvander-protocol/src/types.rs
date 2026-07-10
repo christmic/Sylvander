@@ -63,6 +63,45 @@ impl From<&str> for SessionId {
     }
 }
 
+/// Unique identifier for a human user.
+///
+/// Distinct from `AgentId` (the LLM-driven runtime) and `SessionId`
+/// (a single conversation). One user may own many agents and run many
+/// sessions; one session is bound to exactly one user; one agent is
+/// owned by exactly one user.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UserId(pub String);
+
+impl UserId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// Sentinel for system-originated actions (cron, internal tasks)
+    /// that have no real user. Distinct from any real `UserId`.
+    pub fn system() -> Self {
+        Self("__system__".to_string())
+    }
+}
+
+impl std::fmt::Display for UserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<&str> for UserId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for UserId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 /// Static metadata shared by all agents in a session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMetadata {
@@ -334,5 +373,42 @@ impl BusMessage {
             timestamp: now_secs(),
             id: MessageId::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_id_round_trips() {
+        let u: UserId = "alice".into();
+        assert_eq!(u.0, "alice");
+        let u2: UserId = String::from("bob").into();
+        assert_eq!(u2.0, "bob");
+        assert_eq!(u.to_string(), "alice");
+    }
+
+    #[test]
+    fn user_id_system_sentinel_is_distinct() {
+        let sys = UserId::system();
+        let real = UserId::new("alice");
+        assert_ne!(sys, real);
+        assert_ne!(sys.0, "alice");
+    }
+
+    #[test]
+    fn user_id_serializes_as_inner_string() {
+        let u = UserId::new("alice");
+        let json = serde_json::to_string(&u).unwrap();
+        assert_eq!(json, "\"alice\"");
+    }
+
+    #[test]
+    fn three_id_types_share_a_constructor_pattern() {
+        // Smoke: AgentId / SessionId / UserId all have the same shape.
+        let _a: AgentId = "a".into();
+        let _s: SessionId = "s".into();
+        let _u: UserId = "u".into();
     }
 }
