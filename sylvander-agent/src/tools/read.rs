@@ -70,24 +70,39 @@ impl Tool for ReadTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
+        if !ctx.has_cap(crate::tool_context::Cap::Read) {
+            return Ok(ToolOutput::err(
+                "read capability not granted for this invocation",
+            ));
+        }
+
         let path_str = input
             .get("file_path")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
 
-        // Canonicalize the workdir first so that symlink-resolved
-        // paths (e.g., /var/folders/... → /private/var/folders/... on
-        // macOS) are compared on equal footing with the requested path.
-        let workdir_canonical = match self.workdir.canonicalize() {
+        // Effective root: ctx.surface.fs_root takes precedence over the
+        // tool's configured workdir, so a runtime can redirect file
+        // access per-invocation without rebuilding tools.
+        let root = ctx
+            .surface
+            .fs_root
+            .clone()
+            .unwrap_or_else(|| self.workdir.clone());
+
+        // Canonicalize the root first so that symlink-resolved paths
+        // (e.g., /var/folders/... → /private/var/folders/... on macOS)
+        // are compared on equal footing with the requested path.
+        let workdir_canonical = match root.canonicalize() {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("cannot canonicalize workdir: {e}"))),
         };
 
-        // Resolve the requested path against workdir
-        let requested = self.workdir.join(path_str);
+        // Resolve the requested path against the root.
+        let requested = root.join(path_str);
         let canonical = match requested.canonicalize() {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("cannot resolve `{path_str}`: {e}"))),
@@ -137,7 +152,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn ctx() -> ToolContext {
-        ToolContext::new("u", "a", "s")
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite)
     }
 
     /// Helper: create a temp dir with a few files.
