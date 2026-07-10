@@ -11,6 +11,8 @@ zig-cache/
 .zig-cache/
 zig-out/
 build-cmake/
+# Xcode DerivedData (xcodebuild -derivedDataPath build)
+/build/
 CMakeCache.txt
 CMakeFiles/
 /build.zig.zon.bak
