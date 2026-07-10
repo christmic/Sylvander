@@ -265,7 +265,7 @@
 				"Features/Custom App Icon/DockTilePlugin.swift",
 				"Ghostty/Surface View/SurfaceView_UIKit.swift",
 			);
-			target = A5B30530299BEAAA0047F10C /* Ghostty */;
+			target = A5B30530299BEAAA0047F10C /* Sylvander */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -443,7 +443,7 @@
 			productReference = A54F45F32E1F047A0046BD5C /* GhosttyTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		A5B30530299BEAAA0047F10C /* Ghostty */ = {
+		A5B30530299BEAAA0047F10C /* Sylvander */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A5B30540299BEAAB0047F10C /* Build configuration list for PBXNativeTarget "Ghostty" */;
 			buildPhases = (
@@ -461,7 +461,7 @@
 			fileSystemSynchronizedGroups = (
 				81F82BC72E82815D001EDFA7 /* Sources */,
 			);
-			name = Ghostty;
+			name = Sylvander;
 			packageProductDependencies = (
 				A51BFC262B30F1B800E92F16 /* Sparkle */,
 			);
@@ -535,7 +535,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A5B30530299BEAAA0047F10C /* Ghostty */,
+				A5B30530299BEAAA0047F10C /* Sylvander */,
 				A5D4499C2B53AE7B000F5B83 /* Ghostty-iOS */,
 				8193244C2F24E6C000A9ED8F /* DockTilePlugin */,
 				A54F45F22E1F047A0046BD5C /* GhosttyTests */,
@@ -662,7 +662,7 @@
 /* Begin PBXTargetDependency section */
 		810ACCA62E9D3302004F8F92 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = A5B30530299BEAAA0047F10C /* Ghostty */;
+			target = A5B30530299BEAAA0047F10C /* Sylvander */;
 			targetProxy = 810ACCA52E9D3302004F8F92 /* PBXContainerItemProxy */;
 		};
 		819324682F2502FB00A9ED8F /* PBXTargetDependency */ = {
@@ -672,7 +672,7 @@
 		};
 		A54F45F82E1F047A0046BD5C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = A5B30530299BEAAA0047F10C /* Ghostty */;
+			target = A5B30530299BEAAA0047F10C /* Sylvander */;
 			targetProxy = A54F45F72E1F047A0046BD5C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
