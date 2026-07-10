@@ -1,13 +1,15 @@
 name: CI
 
-# Verifies three things on every push to master and on PRs:
+# Verifies on every push to master and on PRs:
 #   1. The Sylvander Zig module compiles and its tests pass.
 #   2. The Ghostty fork still builds end-to-end with our patches
 #      (catches rebrand breakage, API drift after subtree pulls).
-#   3. The Sylvander Rust workspace still compiles and tests pass.
-#
-# macOS only for now. Other runners (Linux / Windows) can be added
-# to the matrices later without changing the job shape.
+#   3. The Sylvander Rust workspace still compiles and tests pass,
+#      is formatted, and passes clippy.
+#   4. The Rust workspace builds on Linux too (catches macOS-only
+#      assumptions before they reach release).
+#   5. macOS Swift files compile-check our rename (Sylvander-Info.plist,
+#      Sylvander.sdef, Sylvander.xcodeproj) hasn't broken references.
 #
 # Triggered on push to master, on pull requests, and manually via
 # the Actions tab ("Run workflow").
@@ -171,3 +173,66 @@ jobs:
             exit 1
           fi
           echo "OK: rebranded files consistent"
+  # ---------------------------------------------------------------
+  # 5. cargo fmt — enforce workspace formatting on every PR.
+  # Runs `cargo fmt --all -- --check` so a "rustfmt everything in
+  # one commit" PR can land in a single review.
+  # ---------------------------------------------------------------
+  rust-fmt:
+    name: cargo fmt --check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  # ---------------------------------------------------------------
+  # 6. cargo clippy — `-D warnings` so any warning fails the job.
+  # Catches dead code, unused imports, and obvious mistakes before
+  # they make it into a release tag.
+  # ---------------------------------------------------------------
+  rust-clippy:
+    name: cargo clippy -D warnings
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # ---------------------------------------------------------------
+  # 7. Linux build — catches macOS-only assumptions (Hardcoded
+  # `/Users/foo`, Apple-only crates, `#[cfg(target_os = "macos")]`
+  # that should be cross-platform). Lightweight: build only, no
+  # test run (the wiremock tests need a running server).
+  # ---------------------------------------------------------------
+  rust-linux:
+    name: cargo build (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libssl-dev libsqlite3-dev protobuf-compiler
+      - name: cargo build --workspace
+        run: cargo build --workspace --locked

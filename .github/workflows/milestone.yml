@@ -1,0 +1,75 @@
+name: Milestone sync
+
+# Auto-keep the project's open milestone in sync with merged PRs.
+# When a PR is merged that mentions a milestone in its body via the
+# standard "Closes #N" or "Fixes #N" syntax, this workflow ensures
+# the linked issue's milestone is up to date.
+#
+# Adapted from ghostty's `milestone.yml` — same one-job shape, but
+# scoped to our repo and using the GitHub CLI for the writes (the
+# upstream version uses raw REST; CLI is easier to maintain).
+
+on:
+  pull_request_target:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull_requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false   # milestone writes are idempotent but careful
+
+jobs:
+  sync:
+    name: Reflect merged PR into milestone progress
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Find linked issues in PR body
+        id: parse
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          {
+            # Match "Closes #N", "Fixes #N", "Resolves #N" (GitHub
+            # auto-closes these on merge). Capture the issue number.
+            echo "$PR_BODY" \
+              | grep -oiE '(closes|fixes|resolves)\s+#?[0-9]+' \
+              | grep -oE '[0-9]+' \
+              | sort -u > linked_issues.txt
+            echo "Linked issues:"
+            cat linked_issues.txt
+
+            # Pick the open milestone with the lowest number
+            # (GitHub sorts by due date ASC; we want the nearest
+            # upcoming one, not the most recently closed).
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/milestones?state=open" \
+              | jq -r '.[0].number // empty' > target_milestone.txt
+            echo "Target milestone:"
+            cat target_milestone.txt
+          }
+
+      - name: Move linked issues to the milestone
+        if: steps.parse.outputs.linked_issues != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MILESTONE: ${{ steps.parse.outputs.target_milestone }}
+        run: |
+          if [ -z "$MILESTONE" ]; then
+            echo "No open milestone to assign to; skipping"
+            exit 0
+          fi
+          while read -r issue; do
+            [ -z "$issue" ] && continue
+            echo "Assigning issue #$issue to milestone #$MILESTONE"
+            gh api -X PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/issues/$issue" \
+              -f milestone="$MILESTONE"
+          done < linked_issues.txt

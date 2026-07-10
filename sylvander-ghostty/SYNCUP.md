@@ -282,6 +282,43 @@ repo root), **not** inside this subtree. It contains four jobs:
 When we add or delete a file under `macos/`, **edit the
 `macos-swift` job's grep list in lockstep**.
 
+## 7.1 post-pull cleanup — what to drop after every subtree sync
+
+`git subtree pull` brings in **everything** from upstream, including
+files that make sense for the ghostty-org/ghostty community project
+but **not** for a private Sylvander fork. Every time we run §3, the
+following reappear and must be dropped:
+
+| Path | Why we drop it |
+|------|---------------|
+| `sylvander-ghostty/.github/` | ghostty's own CI / issue templates / vouch system — we centralize CI at the parent repo's `../../../.github/`. |
+| `sylvander-ghostty/PACKAGING.md` | upstream packager notes (Homebrew / Nix / etc.) — irrelevant to a macOS-only consumer. |
+| `sylvander-ghostty/HACKING.md` | upstream dev guide. We have our own at the Sylvander repo root. |
+| `sylvander-ghostty/CONTRIBUTING.md` | upstream contribution policy — private fork, no external contributors. |
+| `sylvander-ghostty/AI_POLICY.md` | upstream AI contribution policy — same reason. |
+| `sylvander-ghostty/VOUCHED.td` | upstream contributor reputation data. |
+| `sylvander-ghostty/issue-unvouched-message` | upstream issue-template reply. |
+| `sylvander-ghostty/dist/cmake` | upstream CMake packaging. |
+| `sylvander-ghostty/.github/scripts/check-translations.sh` | upstream i18n tooling. |
+| `sylvander-ghostty/.github/scripts/ghostty-tip` | upstream tip-of-tree runner. |
+
+**Do this automatically**: run
+`../../../scripts/sync-ghostty-subtree.sh` from the Sylvander repo root
+**instead of** `git subtree pull …` by hand. The script:
+
+1. Runs `git subtree pull --squash` (non-interactive via
+   `GIT_EDITOR=":"`).
+2. `git rm -r` the paths above.
+3. `git commit --amend` so the PR shows a single merge commit
+   instead of "subtree pull + then remove files" as two commits.
+
+If a path we drop is one we actually need (rare), cherry-pick it
+back: `git checkout HEAD~1 -- sylvander-ghostty/<path>`.
+
+**The principle**: "good ideas absorb, bad ideas discard." ghostty's
+own CI, vouch system, and community templates are *bad* ideas for
+Sylvander — they describe how to run a different project.
+
 ## 8. network — Cloudflare CDN, Sparkle mirror, prefetch
 
 This subtree depends on downloading deps from

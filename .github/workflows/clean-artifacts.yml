@@ -1,0 +1,81 @@
+name: Clean old artifacts
+
+# macOS-26-xlarge runners cost ~$0.01/min and accumulate artifacts
+# (zig build, cargo target, .app bundle) quickly. This workflow
+# trims them weekly.
+#
+# The default retention is 90 days. We bring it down to 14 days for
+# the Sylvander project (PR-driven dev cycle, no long-tail needs).
+#
+# Mirrors the upstream ghostty workflow but scoped to our artifact
+# names only. ghostty's own clean-artifacts.yml in
+# `sylvander-ghostty/.github/` is discarded on every sync (see
+# `SYNCUP.md` § "Post-pull cleanup").
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"  # every Sunday 03:00 UTC
+  workflow_dispatch:      # manual trigger from the Actions tab
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    name: Delete artifacts older than 14 days
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Delete artifacts older than 14 days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RETENTION_DAYS: 14
+        run: |
+          set -euo pipefail
+
+          cutoff=$(date -u -d "${RETENTION_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting artifacts created before ${cutoff}"
+
+          # `gh api --paginate` walks all pages of the org-wide
+          # artifact list. Filter by created_at client-side; the API
+          # doesn't expose a date-range query.
+          page=1
+          deleted=0
+          kept=0
+          while :; do
+            response=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/actions/artifacts?per_page=100&page=${page}")
+
+            count=$(echo "$response" | jq '.artifacts | length')
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+
+            echo "$response" \
+              | jq -r --arg cutoff "$cutoff" \
+                  '.artifacts[] | select(.created_at < $cutoff) | .id' \
+              | while read -r id; do
+                  gh api -X DELETE \
+                    -H "Accept: application/vnd.github+json" \
+                    "/repos/${{ github.repository }}/actions/artifacts/$id" \
+                    > /dev/null
+                  echo "  deleted artifact id=$id"
+                done
+
+            # Count what we deleted this page (jq -c then count)
+            deleted_this_page=$(echo "$response" \
+              | jq -r --arg cutoff "$cutoff" \
+                  '[.artifacts[] | select(.created_at < $cutoff)] | length')
+            kept_this_page=$((count - deleted_this_page))
+            deleted=$((deleted + deleted_this_page))
+            kept=$((kept + kept_this_page))
+
+            page=$((page + 1))
+            if [ "$count" -lt 100 ]; then
+              break
+            fi
+          done
+
+          echo "Done: deleted=${deleted} kept=${kept}"

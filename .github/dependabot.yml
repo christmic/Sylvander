@@ -1,0 +1,55 @@
+# Dependabot configuration for the parent Sylvander project.
+#
+# Covers the entire repository, including the `sylvander-ghostty/`
+# git subtree (ghostty is Cargo-free, so the Cargo ecosystem only
+# touches the Rust workspace at the repo root).
+#
+# The `ghostty-org/ghostty` upstream ships its own Dependabot config
+# at `sylvander-ghostty/.github/dependabot.yml`. That config is
+# discarded on every `scripts/sync-ghostty-subtree.sh` run (see
+# `sylvander-ghostty/SYNCUP.md` § "Post-pull cleanup"), so ghostty's
+# Dependabot settings do not apply to this fork.
+
+version: 2
+
+updates:
+  # Sylvander Rust workspace (sylvander-protocol, sylvander-agent,
+  # sylvander-runtime, sylvander-server, sylvander-channel-*, etc.).
+  # Bump every Monday at 09:00 UTC, group direct deps together so
+  # we get one PR per ecosystem rather than 30 single-dep PRs.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    groups:
+      rust-direct-dependencies:
+        dependency-type: "direct"
+      rust-indirect-dependencies:
+        dependency-type: "indirect"
+    # Don't open PRs for new Rust versions of old MSRVs; the workspace
+    # pins a specific Rust toolchain in rust-toolchain.toml.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # GitHub Actions used by the parent .github/workflows/.
+  # Pinned versions live in `pinact.yml`; Dependabot just keeps them
+  # up to date before they get pinned.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # ghostty subtree's own GitHub Actions are tracked in
+  # `sylvander-ghostty/.github/dependabot.yml` (discarded on each
+  # sync). We do NOT pull those PRs into the parent — see
+  # `scripts/sync-ghostty-subtree.sh` for the cleanup rule.

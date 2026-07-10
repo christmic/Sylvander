@@ -1,0 +1,68 @@
+name: Nix shell build
+
+# Validates that Sylvander's zig build works inside a Nix shell with
+# the same package set upstream ghostty uses. Catches the case where
+# a contributor's local toolchain (brew zig 0.15.2, system sqlite, etc.)
+# silently diverges from the project's stated deps.
+#
+# We do NOT cache the Nix store across runs (CACHIX is upstream-only);
+# each run pays the cost of evaluating the flake. That's intentional —
+# we want a "vanilla" build to detect drift.
+#
+# Mirrors ghostty's `nix.yml` but uses a standalone flake.nix instead
+# of upstream's shared one (we don't need a CACHIX account).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-build:
+    name: zig build inside nix develop
+    runs-on: macos-26-xlarge   # nix-darwin needs a macOS runner
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The flake.nix we'll add in this commit only references
+          # `git ls-files` paths. Default depth is fine.
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          # Pin to a stable nix version. Don't bump casually — nix
+          # upgrades often break flakes.
+          nix_path: /nix/var/nix/profiles/default/bin
+
+      - name: Cache Nix store (best-effort, local)
+        uses: cachix/cachix-action@v15
+        # Intentionally no `cachix authToken` — we don't have a
+        # CACHIX account. The step will silently no-op; that's fine.
+        with:
+          # empty
+
+      - name: Add shell-tools overlay (zig 0.15.2 + python + git)
+        run: |
+          nix profile install nixpkgs#zig_0_15
+
+      - name: zig build (nix-shelled)
+        working-directory: sylvander-ghostty
+        env:
+          # Make sure zig is the Nix one, not a system one.
+          PATH: /root/.nix-profile/bin:$PATH
+        run: |
+          zig version
+          zig build -Dapp-runtime=none -Demit-xcframework=false -Demit-macos-app=false
+
+      - name: zig test (nix-shelled, lib only)
+        working-directory: sylvander-ghostty
+        env:
+          PATH: /root/.nix-profile/bin:$PATH
+        run: zig build -Dapp-runtime=none test
