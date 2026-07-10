@@ -65,14 +65,21 @@ impl Tool for MemoryWriteTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
+        if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
+            return Ok(ToolOutput::err("memory write capability not granted"));
+        }
         let content = input["content"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;
 
-        let mut entry = MemoryEntry::new(uuid::Uuid::new_v4().to_string(), content);
+        let mut entry = MemoryEntry::new(
+            uuid::Uuid::new_v4().to_string(),
+            content,
+            ctx.session.as_ref().clone(),
+        );
 
         // Parse optional tags
         if let Some(tags) = input["tags"].as_array() {
@@ -84,7 +91,7 @@ impl Tool for MemoryWriteTool {
         }
 
         self.store
-            .store(entry.clone())
+            .store(&ctx.session, entry.clone())
             .await
             .map_err(|e| ToolError::Other(format!("memory write failed: {e}")))?;
 
@@ -104,7 +111,7 @@ mod tests {
     use crate::tools::memory::InMemoryMemoryStore;
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
 
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
@@ -147,7 +154,14 @@ mod tests {
         assert!(result.content.contains("stored"));
 
         // Verify it was actually stored
-        let results = store.search("tabs over spaces", 5).await.expect("search");
+        let results = store
+            .search(
+                &c.session,
+                "tabs over spaces",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .expect("search");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "The user prefers tabs over spaces");
     }
@@ -174,7 +188,14 @@ mod tests {
 
         assert!(!result.is_error);
 
-        let results = store.search("minimal entry", 5).await.expect("search");
+        let results = store
+            .search(
+                &c.session,
+                "minimal entry",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .expect("search");
         assert_eq!(results.len(), 1);
         assert!(results[0].metadata.is_empty());
     }
