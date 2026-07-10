@@ -24,6 +24,7 @@ use serde_json::Value as JsonValue;
 
 use crate::session::SessionMetadata;
 use crate::spec::{AgentId, SessionId};
+use sylvander_protocol::types::UserId;
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -120,10 +121,28 @@ pub enum MessageRole {
 /// Storage layout (SQLite `session_messages`):
 /// - `seq` is auto-assigned (next integer in session).
 /// - `id` is the SQLite rowid (auto-increment).
+///
+/// Identity / trace / priority are denormalized as real columns
+/// (not stored as a JSON blob) so SQLite can use indexes for
+/// per-user / per-trace lookups. They are written at `append_message`
+/// time from the caller's `SessionContext`; readers reconstruct a
+/// `SessionContext` if they need one. Adding a new `SessionContext`
+/// field means `ALTER TABLE ADD COLUMN`, not editing a json blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMessage {
     pub id: i64,
+    /// The session this message belongs to.
     pub session_id: SessionId,
+    /// Denormalized from `SessionContext::identity.user_id` at write
+    /// time. Storing it as a real column (not nested in a JSON
+    /// blob) lets us index and query per-user efficiently.
+    pub user_id: UserId,
+    /// Denormalized from `SessionContext::identity.agent_id`.
+    pub agent_id: AgentId,
+    /// Denormalized from `SessionContext::request.trace_id` (if set).
+    pub trace_id: Option<String>,
+    /// Denormalized from `SessionContext::request.priority`.
+    pub priority: Option<sylvander_protocol::session_context::Priority>,
     pub seq: u32,
     pub role: MessageRole,
     /// Wire-format JSON. Matches Anthropic's `MessageParam` shape:
@@ -146,10 +165,16 @@ pub struct StoredMessage {
 
 /// Filter for `SessionStore::list`. All set fields AND together;
 /// `None` = wildcard.
+///
+/// Use `identity` to scope by user / agent / session instead of
+/// scattered `user_id` / `agent_id` fields. New identity fields
+/// added to `SessionContext` will be honored by the implementation
+/// without changing this struct.
 #[derive(Debug, Default, Clone)]
 pub struct SessionFilter {
-    pub user_id: Option<String>,
-    pub agent_id: Option<AgentId>,
+    /// Scope to a specific identity. `None` = all identities (admin
+    /// path). Caller must check authorization before passing `None`.
+    pub identity: Option<sylvander_protocol::Identity>,
     pub lifetime: Option<SessionLifetime>,
     /// When false (default), archived sessions are hidden.
     pub include_archived: bool,
@@ -190,15 +215,25 @@ pub trait SessionStore: Send + Sync {
 
     /// List sessions matching a filter. Used by runtime to scope by
     /// user / agent / lifetime without loading everything.
+    ///
+    /// `ctx` provides the caller's identity. The implementation
+    /// should refuse to return sessions that the caller is not
+    /// allowed to see (i.e. `filter.identity = None` is only safe
+    /// for admin callers; non-admin must pass their own identity).
     async fn list(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         filter: SessionFilter,
     ) -> Result<Vec<StoredSession>, SessionStoreError>;
 
     /// Full-text search over session name + user_id via SQLite FTS5.
     /// Returns matches ordered by relevance, capped at `limit`.
+    ///
+    /// `ctx` provides the caller's identity for scoping. Sessions
+    /// not visible to `ctx.identity` are excluded.
     async fn search(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         query: &str,
         limit: usize,
     ) -> Result<Vec<StoredSession>, SessionStoreError>;
@@ -208,8 +243,12 @@ pub trait SessionStore: Send + Sync {
     /// Append a message to a session's history. `seq` is auto-assigned
     /// (next integer in session). Returns the stored record (with
     /// `id` and assigned `seq`).
+    ///
+    /// `ctx` is what gets stored on the message — use it to
+    /// attribute the message to the right identity.
     async fn append_message(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
         role: MessageRole,
         content: JsonValue,
@@ -221,8 +260,12 @@ pub trait SessionStore: Send + Sync {
     /// Read all messages for a session, ordered by `seq` ascending.
     /// `include_summarized=false` skips M3 L4-compacted messages.
     /// `limit` caps the result (most recent N if Some).
+    ///
+    /// `ctx` provides the caller's identity for access control.
+    /// Messages not visible to `ctx.identity` are excluded.
     async fn read_history(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
@@ -237,9 +280,11 @@ pub trait SessionStore: Send + Sync {
         seq_range: Range<u32>,
     ) -> Result<(), SessionStoreError>;
 
-    /// Count non-summarized messages. Cheap O(1) on SQLite.
+    /// Count non-summarized messages visible to the calling identity.
+    /// Cheap O(1) on SQLite.
     async fn count_active_messages(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, SessionStoreError>;
 }
