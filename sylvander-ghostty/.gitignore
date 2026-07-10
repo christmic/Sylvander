@@ -6,6 +6,13 @@
 .vscode/
 .direnv/
 .envrc.local
+# Xcode user-specific state (per-developer, never tracked)
+*.xcuserdatad/
+*.xcuserstate
+# Profiling / coverage data from Xcode Instruments
+*.profraw
+*.profdata
+# Flatpak / Snap build outputs
 .flatpak-builder/
 zig-cache/
 .zig-cache/
