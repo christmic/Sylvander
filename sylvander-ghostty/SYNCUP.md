@@ -292,6 +292,7 @@ following reappear and must be dropped:
 | Path | Why we drop it |
 |------|---------------|
 | `sylvander-ghostty/.github/` | ghostty's own CI / issue templates / vouch system — we centralize CI at the parent repo's `../../../.github/`. |
+| `sylvander-ghostty/.agents/` | ghostty-org's Claude Code commands/skills directory. Their `writing-commit-messages` skill uses a different format than our mz-commit (they have `<subsystem>: <summary>`; we use `✨ feat: <title>` + Co-Authored-By), so we can't share it. |
 | `sylvander-ghostty/PACKAGING.md` | upstream packager notes (Homebrew / Nix / etc.) — irrelevant to a macOS-only consumer. |
 | `sylvander-ghostty/HACKING.md` | upstream dev guide. We have our own at the Sylvander repo root. |
 | `sylvander-ghostty/CONTRIBUTING.md` | upstream contribution policy — private fork, no external contributors. |

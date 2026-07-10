@@ -50,10 +50,11 @@ UPSTREAM_BRANCH="${SYNC_UPSTREAM_BRANCH:-main}"
 
 # Files / directories we explicitly drop from the subtree. The rule
 # is: anything that's about how ghostty-the-upstream-project is run
-# (CI, issue triage, community governance, release plumbing) is not
-# applicable to Sylvander-the-fork.
+# (CI, issue triage, community governance, release plumbing, AI
+# agent tooling) is not applicable to Sylvander-the-fork.
 DROP_PATHS=(
   "$PREFIX/.github"
+  "$PREFIX/.agents"             # ghostty-org's Claude Code skills (empty placeholders today; not ours)
   "$PREFIX/PACKAGING.md"
   "$PREFIX/HACKING.md"
   "$PREFIX/CONTRIBUTING.md"
