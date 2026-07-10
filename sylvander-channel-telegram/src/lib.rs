@@ -130,7 +130,11 @@ impl Channel for TelegramChannel {
             ctx,
             token: self.token.clone(),
             agent_id: self.agent_id.clone(),
-            sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
+            sessions: Arc::new(
+                sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
+                    .await
+                    .expect("open session store"),
+            ),
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
         });
