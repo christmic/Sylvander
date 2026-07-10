@@ -51,7 +51,7 @@ UPSTREAM_BRANCH="${SYNC_UPSTREAM_BRANCH:-main}"
 # Files / directories we explicitly drop from the subtree. The rule
 # is: anything that's about how ghostty-the-upstream-project is run
 # (CI, issue triage, community governance, release plumbing, AI
-# agent tooling) is not applicable to Sylvander-the-fork.
+# agent tooling, iOS) is not applicable to Sylvander-the-fork.
 DROP_PATHS=(
   "$PREFIX/.github"
   "$PREFIX/.agents"             # ghostty-org's Claude Code skills (empty placeholders today; not ours)
@@ -62,6 +62,32 @@ DROP_PATHS=(
   "$PREFIX/issue-unvouched-message"
   "$PREFIX/VOUCHED.td"
   "$PREFIX/dist/cmake"
+  # iOS shim — we are a macOS-only fork. The upstream `Ghostty-iOS`
+  # PBXNativeTarget and its sole source file are removed. The
+  # project.pbxproj edits live in DROP_PBXPROJ_PATTERNS below
+  # because we can't `git rm` the whole pbxproj (most of it is
+  # still ours).
+  "$PREFIX/macos/Sources/App/iOS"
+)
+
+# Lines to delete from project.pbxproj. Each pattern matches the
+# ghostty-iOS target's UUID (`A5D4499C2B53AE7B000F5B83` and its
+# derived `A5D449AB2B53AE7B000F5B83` for the buildConfigList) and
+# everything that references it. We use line-by-line deletion so
+# unrelated edits in the pbxproj are not lost. The ghostty-iOS
+# UUID is the only stable handle (display name "Ghostty-iOS" is
+# fragile; upstream could rename it).
+DROP_PBXPROJ_PATTERNS=(
+  # PBXFileReference: the .app product
+  'A5D4499D2B53AE7B000F5B83'
+  # PBXNativeTarget: the iOS target itself
+  'A5D4499C2B53AE7B000F5B83'
+  # XCBuildConfiguration list for the iOS target
+  'A5D449AB2B53AE7B000F5B83'
+  # Display name "Ghostty-iOS" in PBXNativeTarget / productName
+  'Ghostty-iOS'
+  # The source-file reference path
+  'App/iOS/iOSApp.swift'
 )
 
 # Also: standalone scripts that don't apply to a non-CI consumer.
@@ -121,6 +147,38 @@ for path in "${DROP_PATHS[@]}" "${DROP_SCRIPTS[@]}"; do
     echo "    (skip $path — not tracked)"
   fi
 done
+
+# Project.pbxproj needs line-level surgery, not whole-file removal:
+# most of the file is still ours (macOS Sylvander target, build
+# settings, schemes). We delete only the lines that mention the
+# ghostty-iOS target by UUID / display name / source-path.
+#
+# Backup first, so a malformed pattern is recoverable.
+if [ -f "$PREFIX/macos/Sylvander.xcodeproj/project.pbxproj" ]; then
+  echo "==> Removing Ghostty-iOS references from project.pbxproj"
+  pbxproj="$PREFIX/macos/Sylvander.xcodeproj/project.pbxproj"
+  cp "$pbxproj" "$pbxproj.sync-bak"
+
+  for pattern in "${DROP_PBXPROJ_PATTERNS[@]}"; do
+    # Fixed-string match (-F) so the UUID isn't interpreted as regex.
+    # Lines that match are deleted; surviving context is preserved.
+    before=$(wc -l < "$pbxproj")
+    sed -i '' "/$pattern/d" "$pbxproj"
+    after=$(wc -l < "$pbxproj")
+    if [ "$before" -ne "$after" ]; then
+      echo "    dropped $((before - after)) lines matching '$pattern'"
+    fi
+  done
+
+  if ! plutil -lint "$pbxproj" >/dev/null 2>&1; then
+    # pbxproj is plist-format; a broken edit will fail to parse.
+    # Restore and bail.
+    echo "ERROR: pbxproj failed plutil -lint after edits; restoring backup" >&2
+    mv "$pbxproj.sync-bak" "$pbxproj"
+    exit 3
+  fi
+  rm "$pbxproj.sync-bak"
+fi
 
 # `git status` to confirm the only diff is the removal we want.
 echo

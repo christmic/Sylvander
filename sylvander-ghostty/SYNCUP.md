@@ -300,6 +300,7 @@ following reappear and must be dropped:
 | `sylvander-ghostty/VOUCHED.td` | upstream contributor reputation data. |
 | `sylvander-ghostty/issue-unvouched-message` | upstream issue-template reply. |
 | `sylvander-ghostty/dist/cmake` | upstream CMake packaging. |
+| `sylvander-ghostty/macos/Sources/App/iOS/` | iOS shim placeholder. We are a macOS-only fork; the upstream `Ghostty-iOS` PBXNativeTarget and its sole source file `iOSApp.swift` are removed. The script also deletes the matching lines from `macos/Sylvander.xcodeproj/project.pbxproj` (UUIDs `A5D4499C2B53AE7B000F5B83` etc., display name "Ghostty-iOS", path `App/iOS/iOSApp.swift`). |
 | `sylvander-ghostty/.github/scripts/check-translations.sh` | upstream i18n tooling. |
 | `sylvander-ghostty/.github/scripts/ghostty-tip` | upstream tip-of-tree runner. |
 
