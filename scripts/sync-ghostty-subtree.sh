@@ -121,18 +121,35 @@ echo
 echo "==> Pending changes:"
 git status --short
 
-# If there's anything to commit, fold the removal into the subtree
-# squash commit so the PR shows a single merge.
+# If there's anything to commit, decide whether to amend the
+# most-recent commit (the subtree squash) or to make a new commit.
+#
+# Cases:
+#   1. HEAD's most-recent commit is a `Merge branch 'ghostty-org/...'
+#      into …` (the subtree squash just produced it): amend it so
+#      the PR shows one commit instead of two.
+#   2. HEAD's most-recent commit is anything else (e.g., a regular
+#      feature commit made since the last sync): make a new commit.
+#      A `--fixup` style would also work, but explicit is simpler
+#      and the diff is small.
 if git diff --cached --quiet; then
-  echo "    (no cached changes — nothing to amend)"
+  echo "    (no cached changes — nothing to commit)"
 else
-  echo "==> Amending the squash commit to include removals"
-  git commit --amend --no-edit
+  if git log -1 --format=%s HEAD | grep -q "Merge branch 'ghostty-org"; then
+    echo "==> Amending the subtree squash commit to include removals"
+    git commit --amend --no-edit
+  else
+    echo "==> Creating a new commit for the upstream-only removals"
+    git commit -m "chore: drop upstream-only files after sync
+
+Removed by scripts/sync-ghostty-subtree.sh. See sylvander-ghostty/SYNCUP.md
+§7.1 for the policy. Run again next time you sync."
+  fi
   echo
   echo "==> Final commit:"
   git log -1 --stat
 fi
 
 echo
-echo "Done. Review the merge commit, then push:"
+echo "Done. Review the diff, then push:"
 echo "  git push origin master"
