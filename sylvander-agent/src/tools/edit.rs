@@ -79,9 +79,12 @@ impl Tool for EditTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
+        if !ctx.has_cap(crate::tool_context::Cap::Write) {
+            return Ok(ToolOutput::err("write capability not granted for this invocation"));
+        }
         let path_str = input
             .get("file_path")
             .and_then(JsonValue::as_str)
@@ -105,7 +108,12 @@ impl Tool for EditTool {
             )));
         }
 
-        let path = self.workdir.join(path_str);
+        let root = ctx
+            .surface
+            .fs_root
+            .clone()
+            .unwrap_or_else(|| self.workdir.clone());
+        let path = root.join(path_str);
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -158,7 +166,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
 
     fn setup_workspace() -> TempDir {
         TempDir::new().expect("tempdir")

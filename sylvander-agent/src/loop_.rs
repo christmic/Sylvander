@@ -257,13 +257,9 @@ impl AgentLoopBuilder {
         // model id, no session. Production code should call
         // `.tool_context(...)` on the builder; this fallback keeps
         // tests and the M2 quickstart working unchanged.
-        let tool_context = self.tool_context.unwrap_or_else(|| {
-            ToolContext::new(
-                crate::tool_context::defaults::system_user(),
-                crate::tool_context::defaults::model_agent(&model),
-                crate::tool_context::defaults::ephemeral_session(),
-            )
-        });
+        let tool_context = self
+            .tool_context
+            .unwrap_or_else(|| crate::tool_context::defaults::model_tool_context(&model));
 
         // Cache tool definitions once — tools are immutable post-build.
         let tool_definitions = self.tools.definitions();

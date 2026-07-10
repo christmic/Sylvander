@@ -42,6 +42,7 @@ use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::tool::{Tool, ToolRegistry};
 use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
+use crate::tool_context::ToolContext;
 use crate::tools::MemoryReadTool;
 
 // ---------------------------------------------------------------------------
@@ -73,6 +74,9 @@ pub(crate) struct AgentRunInner {
     pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    /// Tool invocation context (session identity + budget + surface).
+    /// Used by system-driven ops like `remember` to attribute writes.
+    tool_context: ToolContext,
 }
 
 /// A running agent instance — cheap `Clone` handle.
@@ -92,6 +96,14 @@ impl AgentRun {
     #[must_use]
     pub fn id(&self) -> &AgentId {
         &self.inner.id
+    }
+
+    /// Return the current tool invocation context (session identity,
+    /// budget, surface). Used by system-driven operations like
+    /// `remember` to attribute memory writes to the right identity.
+    #[must_use]
+    pub fn tool_context(&self) -> &ToolContext {
+        &self.inner.tool_context
     }
 
     /// Return this agent's subscription filter.
@@ -262,9 +274,13 @@ impl AgentRun {
         let store = self.inner.memory.as_ref().ok_or_else(|| {
             MemoryStoreError::Store("no memory store configured".into())
         })?;
-        let entry = MemoryEntry::new(uuid::Uuid::new_v4().to_string(), content);
+        let entry = MemoryEntry::new(
+            uuid::Uuid::new_v4().to_string(),
+            content,
+            self.tool_context().session.as_ref().clone(),
+        );
         let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag, "true"));
-        store.store(entry.clone()).await?;
+        store.store(&self.tool_context().session, entry.clone()).await?;
         Ok(entry)
     }
 }
@@ -628,6 +644,10 @@ impl AgentRunBuilder {
         let loop_config = loop_builder.build()
             .map_err(|e| AgentRunError::Build(format!("loop build failed: {e}")))?;
 
+        // Clone the session for the run-level tool context before
+        // moving `loop_config` into `AgentRunInner`.
+        let run_tool_context = ToolContext::new(loop_config.tool_context.session.as_ref().clone());
+
         Ok(AgentRun {
             inner: Arc::new(AgentRunInner {
                 id,
@@ -641,6 +661,7 @@ impl AgentRunBuilder {
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
+                tool_context: run_tool_context,
             }),
         })
     }
@@ -708,7 +729,14 @@ mod tests {
         let store = Arc::new(InMemoryMemoryStore::new());
         let run = AgentRun::builder(spec, client).bus(bus).memory(store.clone()).build().expect("build");
         run.remember("User prefers dark mode", &["preference"]).await.expect("remember");
-        let results = store.search("dark mode", 5).await.expect("search");
+        let results = store
+            .search(
+                &run.tool_context().session,
+                "dark mode",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .expect("search");
         assert_eq!(results.len(), 1);
     }
 
