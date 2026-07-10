@@ -71,7 +71,11 @@ impl Channel for WechatChannel {
             ctx,
             crypto: self.crypto.clone(),
             agent_id: self.agent_id.clone(),
-            sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
+            sessions: Arc::new(
+                sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
+                    .await
+                    .expect("open session store"),
+            ),
         });
 
         let app = Router::new()

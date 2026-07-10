@@ -32,7 +32,7 @@ use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::engine::AgentRunEngine;
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{
-    InMemorySessionStore, SessionLifetime, SessionStore, StoredSession,
+    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext};
@@ -88,7 +88,11 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
-        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            SqliteSessionStore::open_in_memory()
+                .await
+                .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
+        );
 
         // Load persistent sessions
         for session in session_store.list_persistent().await.map_err(|e| {

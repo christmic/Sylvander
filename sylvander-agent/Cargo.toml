@@ -20,6 +20,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# SQLite session store backend (M-D).
+# `bundled` ships libsqlite3 — no system SQLite required.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 [dev-dependencies]
 wiremock = "0.6"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

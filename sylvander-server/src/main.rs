@@ -96,6 +96,14 @@ async fn main() {
 
     info!(%agent_id, "agent spawned");
 
+    // One shared SQLite-backed session store for all channels.
+    let session_store: Arc<dyn sylvander_agent::session_store::SessionStore> =
+        Arc::new(
+            sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
+                .await
+                .expect("open session store"),
+        );
+
     // DingTalk channel
     let dt_key = std::env::var("DINGTALK_APP_KEY");
     let dt_secret = std::env::var("DINGTALK_APP_SECRET");
@@ -106,7 +114,7 @@ async fn main() {
         );
         let ctx = sylvander_channel::ChannelContext {
             bus: bus.clone(),
-            sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
+            sessions: session_store.clone(),
         };
         tokio::spawn(async move { channel.run(ctx).await });
         info!("dingtalk channel started");
@@ -122,7 +130,7 @@ async fn main() {
     ));
     let http_ctx = sylvander_channel::ChannelContext {
         bus: bus.clone(),
-        sessions: Arc::new(sylvander_agent::session_store::InMemorySessionStore::new()),
+        sessions: session_store.clone(),
     };
     tokio::spawn(async move { http_channel.run(http_ctx).await });
     info!(addr = %http_addr, "http channel started — curl http://{http_addr}/health");
