@@ -62,36 +62,11 @@ DROP_PATHS=(
   "$PREFIX/issue-unvouched-message"
   "$PREFIX/VOUCHED.td"
   "$PREFIX/dist/cmake"
-  # iOS shim — we are a macOS-only fork. The upstream `Ghostty-iOS`
-  # PBXNativeTarget and its source file are removed in two steps:
-  #   1. pbxproj line-edits (DROP_PBXPROJ_PATTERNS below), staged
-  #   2. then `git rm -r` the source directory
-  # We DON'T put this in DROP_PATHS above because the order of
-  # operations matters: pbxproj edit + plutil validation MUST
-  # succeed BEFORE the source file is removed, or the working tree
-  # ends up with a broken pbxproj referencing a deleted file.
-  # `$PREFIX/macos/Sources/App/iOS` is handled in the special
-  # block further down.
-)
-
-# Lines to delete from project.pbxproj. Each pattern matches the
-# ghostty-iOS target's UUID (`A5D4499C2B53AE7B000F5B83` and its
-# derived `A5D449AB2B53AE7B000F5B83` for the buildConfigList) and
-# everything that references it. We use line-by-line deletion so
-# unrelated edits in the pbxproj are not lost. The ghostty-iOS
-# UUID is the only stable handle (display name "Ghostty-iOS" is
-# fragile; upstream could rename it).
-DROP_PBXPROJ_PATTERNS=(
-  # PBXFileReference: the .app product
-  'A5D4499D2B53AE7B000F5B83'
-  # PBXNativeTarget: the iOS target itself
-  'A5D4499C2B53AE7B000F5B83'
-  # XCBuildConfiguration list for the iOS target
-  'A5D449AB2B53AE7B000F5B83'
-  # Display name "Ghostty-iOS" in PBXNativeTarget / productName
-  'Ghostty-iOS'
-  # The source-file reference path
-  'App/iOS/iOSApp.swift'
+  # iOS shim — we are a macOS-only fork. The `Ghostty-iOS` PBXNativeTarget
+  # in Sylvander.xcodeproj still references this path, but -scheme Sylvander
+  # does not build the iOS target, so xcodebuild succeeds even with the
+  # deleted source file. No pbxproj editing needed.
+  "$PREFIX/macos/Sources/App/iOS"
 )
 
 # Also: standalone scripts that don't apply to a non-CI consumer.
@@ -151,62 +126,6 @@ for path in "${DROP_PATHS[@]}" "${DROP_SCRIPTS[@]}"; do
     echo "    (skip $path — not tracked)"
   fi
 done
-
-# Project.pbxproj needs line-level surgery, not whole-file removal:
-# most of the file is still ours (macOS Sylvander target, build
-# settings, schemes). We delete only the lines that mention the
-# ghostty-iOS target by UUID / display name / source-path.
-#
-# ORDER MATTERS: edit pbxproj and stage it BEFORE removing the
-# source file. If we `git rm` the file first and then the pbxproj
-# edit fails plutil validation, the working tree ends up with a
-# broken pbxproj referencing a deleted file (build fails). So:
-#   1. Edit pbxproj
-#   2. Validate
-#   3. `git add` pbxproj (stage the edit)
-#   4. THEN drop the source file via `git rm` (already done above)
-if [ -f "$PREFIX/macos/Sylvander.xcodeproj/project.pbxproj" ]; then
-  echo "==> Removing Ghostty-iOS references from project.pbxproj"
-  pbxproj="$PREFIX/macos/Sylvander.xcodeproj/project.pbxproj"
-  cp "$pbxproj" "$pbxproj.sync-bak"
-
-  for pattern in "${DROP_PBXPROJ_PATTERNS[@]}"; do
-    # sed address form: `<addr>d` deletes matching lines. Use `\|` as
-    # the regex delimiter so the address can contain `/` (the path
-    # `App/iOS/iOSApp.swift` would otherwise confuse `sed -i ''`.
-    # Treat the pattern as a fixed string (`-F`) so regex metachars
-    # in UUIDs etc. don't get interpreted.
-    before=$(wc -l < "$pbxproj")
-    sed -i '' "\|$pattern|d" "$pbxproj"
-    after=$(wc -l < "$pbxproj")
-    if [ "$before" -ne "$after" ]; then
-      echo "    dropped $((before - after)) lines matching '$pattern'"
-    fi
-  done
-
-  if ! plutil -lint "$pbxproj" >/dev/null 2>&1; then
-    # pbxproj is plist-format; a broken edit will fail to parse.
-    # Restore and bail. We have NOT staged anything yet, so the
-    # source file is also still present — clean exit.
-    echo "ERROR: pbxproj failed plutil -lint after edits; restoring backup" >&2
-    mv "$pbxproj.sync-bak" "$pbxproj"
-    exit 3
-  fi
-  rm "$pbxproj.sync-bak"
-
-  # Stage the now-valid pbxproj edit so the final commit captures
-  # it together with the file removal above.
-  git add "$pbxproj"
-fi
-
-# Now that the pbxproj edit is staged and validated, drop the
-# iOS source directory. This MUST run after the pbxproj block
-# above (or the working tree gets a broken reference).
-ios_dir="$PREFIX/macos/Sources/App/iOS"
-if git ls-files --error-unmatch "$ios_dir" >/dev/null 2>&1; then
-  echo "==> Dropping $ios_dir (after pbxproj edit)"
-  git rm -r "$ios_dir" || { echo "ERROR: failed to git rm $ios_dir" >&2; exit 2; }
-fi
 
 # `git status` to confirm the only diff is the removal we want.
 echo

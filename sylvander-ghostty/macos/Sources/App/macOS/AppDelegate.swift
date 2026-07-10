@@ -101,19 +101,6 @@ class AppDelegate: NSObject,
     /// The global undo manager for app-level state such as window restoration.
     lazy var undoManager = ExpiringUndoManager()
 
-    // MARK: - Sylvander integration (F2)
-
-    /// Process-level singleton for the Sylvander tab system.
-    /// Holds the WSS client (mock in F2), session store, and keybindings.
-    @MainActor
-    lazy var sylvanderAppState: AppState = AppState()
-
-    /// Currently open Sylvander windows.
-    private var sylvanderControllers: [SylvanderController] = []
-
-    /// Cached preferences window so it can be brought to front instead of stacking.
-    private var preferencesController: PreferencesController?
-
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
 
@@ -378,84 +365,6 @@ class AppDelegate: NSObject,
             }
         }
 
-        // Sylvander: bootstrap the singleton app state and install the preferences
-        // observer. The first Sylvander window is opened lazily (on first menu/shortcut
-        // trigger) so existing terminal workflows are unaffected until the user opts in.
-        Task { @MainActor in
-            await self.sylvanderAppState.bootstrap()
-            self.sylvanderAppState.keyBindings.load()
-        }
-
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(sylvanderOpenPreferencesAction),
-            name: .sylvanderOpenPreferences,
-            object: nil
-        )
-
-        // Sylvander: install the "New Sylvander Tab" menu item under File.
-        // We do it programmatically (not via the .xib) so the change is contained to this file
-        // and doesn't risk xib merge conflicts on upstream sync.
-        installSylvanderMenuItem()
-    }
-
-    @MainActor
-    private func installSylvanderMenuItem() {
-        guard let mainMenu = NSApp.mainMenu,
-              let fileMenu = mainMenu.items.first(where: { $0.title == "File" })?.submenu else {
-            return
-        }
-
-        let item = NSMenuItem(
-            title: "New Sylvander Tab",
-            action: #selector(newSylvanderTabAction(_:)),
-            keyEquivalent: "t"
-        )
-        item.keyEquivalentModifierMask = [.command, .shift]
-        item.target = self
-        item.image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: nil)
-
-        // Insert after the existing "New Tab" item if present, otherwise at top.
-        if let newTabIdx = fileMenu.items.firstIndex(where: { $0.title == "New Tab" }) {
-            fileMenu.insertItem(item, at: newTabIdx + 1)
-        } else {
-            fileMenu.insertItem(item, at: 0)
-        }
-    }
-
-    @MainActor
-    @objc func newSylvanderTabAction(_ sender: Any?) {
-        openSylvanderWindow()
-    }
-
-    /// Open a new Sylvander window, or focus the existing one if a Sylvander window
-    /// is already open and the user wants to switch to it (F2 only supports single window).
-    @MainActor
-    @objc func openSylvanderWindow() {
-        if let existing = sylvanderControllers.first(where: { $0.window?.isVisible == true }) {
-            existing.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let controller = SylvanderController(appState: sylvanderAppState)
-        sylvanderControllers.append(controller)
-        controller.showWindow(nil)
-        controller.window?.center()
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @MainActor
-    @objc func sylvanderOpenPreferencesAction() {
-        if let existing = preferencesController, existing.window?.isVisible == true {
-            existing.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let controller = PreferencesController(appState: sylvanderAppState)
-        preferencesController = controller
-        controller.showWindow(nil)
-        controller.window?.center()
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
