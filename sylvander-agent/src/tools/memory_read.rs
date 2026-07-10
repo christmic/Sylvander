@@ -51,11 +51,19 @@ impl Tool for MemoryReadTool {
             serde_json::json!({
                 "query": {
                     "type": "string",
-                    "description": "Search query. Use keywords or phrases to find relevant memories. Case-insensitive."
+                    "description": "Search query. Use keywords or phrases to find relevant memories. Case-insensitive. Empty string returns most recent / most important entries."
                 },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum number of results to return (default: 5)."
+                },
+                "kind": {
+                    "type": "string",
+                    "description": "Optional filter: only return memories of this kind ('preference', 'project_fact', 'decision', 'conversation_ref', 'agent_note')."
+                },
+                "min_importance": {
+                    "type": "string",
+                    "description": "Optional filter: minimum importance ('low', 'medium', 'high', 'critical')."
                 }
             }),
             &["query"],
@@ -64,18 +72,33 @@ impl Tool for MemoryReadTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
+        if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
+            return Ok(ToolOutput::err("memory read capability not granted"));
+        }
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
 
         let limit = input["limit"].as_u64().unwrap_or(5) as usize;
 
+        let kind_filter = parse_kind(input.get("kind").and_then(|v| v.as_str()));
+        let importance_filter =
+            parse_importance(input.get("min_importance").and_then(|v| v.as_str()));
+
         let results = self
             .store
-            .search(query, limit)
+            .search(
+                &ctx.session,
+                query,
+                super::memory::MemoryFilter {
+                    kind: kind_filter,
+                    min_importance: importance_filter,
+                    limit: Some(limit),
+                },
+            )
             .await
             .map_err(|e| ToolError::Other(format!("memory search failed: {e}")))?;
 
@@ -84,8 +107,12 @@ impl Tool for MemoryReadTool {
             .map(|entry| {
                 json!({
                     "id": entry.id,
+                    "kind": entry.kind,
+                    "importance": entry.importance,
                     "content": entry.content,
-                    "metadata": entry.metadata,
+                    "tags": entry.tags,
+                    "references": entry.references,
+                    "created_at": entry.created_at,
                 })
             })
             .collect();
@@ -107,7 +134,7 @@ mod tests {
     use crate::tools::memory::{InMemoryMemoryStore, MemoryEntry};
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
 
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
@@ -135,12 +162,13 @@ mod tests {
     #[tokio::test]
     async fn execute_returns_matching_entries() {
         let store = test_store();
+        let c = ctx();
         store
-            .store(MemoryEntry::new("1", "User prefers dark mode"))
+            .store(&c.session, MemoryEntry::new("1", "User prefers dark mode", c.session.as_ref().clone()))
             .await
             .expect("store");
         store
-            .store(MemoryEntry::new("2", "Project uses Rust"))
+            .store(&c.session, MemoryEntry::new("2", "Project uses Rust", c.session.as_ref().clone()))
             .await
             .expect("store");
 
@@ -159,7 +187,6 @@ mod tests {
     async fn execute_missing_query_is_error() {
         let tool = MemoryReadTool::new(test_store());
         let c = ctx();
-        let c = ctx();
         let result = tool.execute(&c, json!({})).await;
         assert!(result.is_err());
     }
@@ -167,8 +194,9 @@ mod tests {
     #[tokio::test]
     async fn execute_no_matches_returns_empty_array() {
         let store = test_store();
+        let c = ctx();
         store
-            .store(MemoryEntry::new("1", "some content"))
+            .store(&c.session, MemoryEntry::new("1", "some content", c.session.as_ref().clone()))
             .await
             .expect("store");
 
@@ -182,4 +210,29 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("[]"));
     }
+}
+
+// Parse a string from the model's input into a `MemoryKind`. Unknown
+// values map to `None` (no filter) so the model can probe without
+// hard-failing.
+fn parse_kind(s: Option<&str>) -> Option<super::memory::MemoryKind> {
+    let s = s?;
+    Some(match s {
+        "preference" => super::memory::MemoryKind::Preference,
+        "project_fact" => super::memory::MemoryKind::ProjectFact,
+        "decision" => super::memory::MemoryKind::Decision,
+        "agent_note" => super::memory::MemoryKind::AgentNote,
+        _ => return None,
+    })
+}
+
+fn parse_importance(s: Option<&str>) -> Option<super::memory::Importance> {
+    let s = s?;
+    Some(match s {
+        "low" => super::memory::Importance::Low,
+        "medium" => super::memory::Importance::Medium,
+        "high" => super::memory::Importance::High,
+        "critical" => super::memory::Importance::Critical,
+        _ => return None,
+    })
 }
