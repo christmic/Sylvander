@@ -9,6 +9,7 @@ use serde_json::Value as JsonValue;
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 pub struct AskUserTool;
 
@@ -54,7 +55,11 @@ impl Tool for AskUserTool {
         )
     }
 
-    async fn execute(&self, _input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         // Intercepted at the loop level — this should never run.
         Err(ToolError::Other(
             "ask_user must be intercepted at the loop level".into(),

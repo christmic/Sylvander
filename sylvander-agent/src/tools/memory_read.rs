@@ -11,6 +11,7 @@ use serde_json::{json, Value as JsonValue};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 use super::memory::MemoryStore;
 
@@ -61,7 +62,11 @@ impl Tool for MemoryReadTool {
         )
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
@@ -101,6 +106,9 @@ mod tests {
     use super::*;
     use crate::tools::memory::{InMemoryMemoryStore, MemoryEntry};
 
+    use crate::tool_context::ToolContext;
+    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
     }
@@ -108,6 +116,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
         assert_eq!(tool.name(), "read_memory");
         assert!(!tool.description().is_empty());
     }
@@ -115,6 +124,7 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_query_field() {
         let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("query").is_some());
@@ -135,8 +145,9 @@ mod tests {
             .expect("store");
 
         let tool = MemoryReadTool::new(store);
+        let c = ctx();
         let result = tool
-            .execute(json!({"query": "dark mode"}))
+            .execute(&c, json!({"query": "dark mode"}))
             .await
             .expect("execute");
 
@@ -147,7 +158,9 @@ mod tests {
     #[tokio::test]
     async fn execute_missing_query_is_error() {
         let tool = MemoryReadTool::new(test_store());
-        let result = tool.execute(json!({})).await;
+        let c = ctx();
+        let c = ctx();
+        let result = tool.execute(&c, json!({})).await;
         assert!(result.is_err());
     }
 
@@ -160,8 +173,9 @@ mod tests {
             .expect("store");
 
         let tool = MemoryReadTool::new(store);
+        let c = ctx();
         let result = tool
-            .execute(json!({"query": "nonexistent"}))
+            .execute(&c, json!({"query": "nonexistent"}))
             .await
             .expect("execute");
 

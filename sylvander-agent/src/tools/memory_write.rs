@@ -11,6 +11,7 @@ use serde_json::{json, Value as JsonValue};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 use super::memory::{MemoryEntry, MemoryStore};
 
@@ -62,7 +63,11 @@ impl Tool for MemoryWriteTool {
         )
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         let content = input["content"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;
@@ -98,6 +103,9 @@ mod tests {
     use super::*;
     use crate::tools::memory::InMemoryMemoryStore;
 
+    use crate::tool_context::ToolContext;
+    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
     }
@@ -105,6 +113,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryWriteTool::new(test_store());
+        let c = ctx();
         assert_eq!(tool.name(), "write_memory");
         assert!(!tool.description().is_empty());
     }
@@ -112,6 +121,7 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_content_field() {
         let tool = MemoryWriteTool::new(test_store());
+        let c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
@@ -123,9 +133,10 @@ mod tests {
     async fn execute_stores_and_can_search() {
         let store = test_store();
         let tool = MemoryWriteTool::new(store.clone());
+        let c = ctx();
 
         let result = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "content": "The user prefers tabs over spaces",
                 "tags": ["preference", "code-style"]
             }))
@@ -144,7 +155,9 @@ mod tests {
     #[tokio::test]
     async fn execute_missing_content_is_error() {
         let tool = MemoryWriteTool::new(test_store());
-        let result = tool.execute(json!({"tags": ["test"]})).await;
+        let c = ctx();
+        let c = ctx();
+        let result = tool.execute(&c, json!({"tags": ["test"]})).await;
         assert!(result.is_err());
     }
 
@@ -152,9 +165,10 @@ mod tests {
     async fn execute_without_tags_stores_cleanly() {
         let store = test_store();
         let tool = MemoryWriteTool::new(store.clone());
+        let c = ctx();
 
         let result = tool
-            .execute(json!({"content": "minimal entry"}))
+            .execute(&c, json!({"content": "minimal entry"}))
             .await
             .expect("execute");
 

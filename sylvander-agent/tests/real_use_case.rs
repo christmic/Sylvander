@@ -61,6 +61,7 @@ impl sylvander_agent::tool::Tool for ReadTool {
     }
     async fn execute(
         &self,
+        _ctx: &ToolContext,
         input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
         let path = input

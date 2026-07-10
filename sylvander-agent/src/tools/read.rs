@@ -20,6 +20,7 @@ use serde_json::{json, Value as JsonValue};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 /// Read a file from disk. Paths are resolved relative to `workdir`.
 #[derive(Debug, Clone)]
@@ -67,7 +68,11 @@ impl Tool for ReadTool {
         )
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         let path_str = input
             .get("file_path")
             .and_then(Value::as_str)
@@ -127,8 +132,13 @@ use serde_json::Value;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_context::ToolContext;
     use std::fs;
     use tempfile::TempDir;
+
+    fn ctx() -> ToolContext {
+        ToolContext::new("u", "a", "s")
+    }
 
     /// Helper: create a temp dir with a few files.
     fn setup_workspace() -> (TempDir, std::path::PathBuf) {
@@ -146,7 +156,8 @@ mod tests {
         let (_dir, workdir) = setup_workspace();
         let tool = ReadTool::new(&workdir);
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let out = rt.block_on(tool.execute(json!({"file_path": "hello.txt"}))).unwrap();
+        let c = ctx();
+        let out = rt.block_on(tool.execute(&c, json!({"file_path": "hello.txt"}))).unwrap();
         assert!(!out.is_error);
         assert_eq!(out.content, "Hello, world!");
     }
@@ -156,8 +167,9 @@ mod tests {
         let (_dir, workdir) = setup_workspace();
         let tool = ReadTool::new(&workdir);
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let c = ctx();
         let out = rt
-            .block_on(tool.execute(json!({"file_path": "sub/nested.txt"})))
+            .block_on(tool.execute(&c, json!({"file_path": "sub/nested.txt"})))
             .unwrap();
         assert!(!out.is_error);
         assert_eq!(out.content, "nested content");
@@ -168,8 +180,9 @@ mod tests {
         let (_dir, workdir) = setup_workspace();
         let tool = ReadTool::new(&workdir);
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let c = ctx();
         let out = rt
-            .block_on(tool.execute(json!({"file_path": "empty.txt"})))
+            .block_on(tool.execute(&c, json!({"file_path": "empty.txt"})))
             .unwrap();
         assert!(!out.is_error);
         assert_eq!(out.content, "");
@@ -179,8 +192,9 @@ mod tests {
     async fn read_missing_file_returns_err() {
         let (_dir, workdir) = setup_workspace();
         let tool = ReadTool::new(&workdir);
+        let c = ctx();
         let out = tool
-            .execute(json!({"file_path": "does_not_exist.txt"}))
+            .execute(&c, json!({"file_path": "does_not_exist.txt"}))
             .await
             .unwrap();
         assert!(out.is_error);
@@ -191,7 +205,8 @@ mod tests {
     async fn read_missing_file_path_field() {
         let (_dir, workdir) = setup_workspace();
         let tool = ReadTool::new(&workdir);
-        let result = tool.execute(json!({})).await;
+        let c = ctx();
+        let result = tool.execute(&c, json!({})).await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
 
@@ -205,7 +220,8 @@ mod tests {
         // we surface as a model-visible error. To exercise the actual
         // traversal check, we create a real symlink in setup_workspace
         // (next test).
-        let result = tool.execute(json!({"file_path": "../etc/passwd"})).await;
+        let c = ctx();
+        let result = tool.execute(&c, json!({"file_path": "../etc/passwd"})).await;
         // Either Err (security violation) or Ok(ToolOutput::err(...)) (file
         // not found) — both are correct rejections. The point is the
         // file content is NOT returned.
@@ -224,7 +240,8 @@ mod tests {
         symlink(&outside_file, workdir.join("escape.txt")).unwrap();
 
         let tool = ReadTool::new(&workdir);
-        let result = tool.execute(json!({"file_path": "escape.txt"})).await;
+        let c = ctx();
+        let result = tool.execute(&c, json!({"file_path": "escape.txt"})).await;
 
         // Traversal is a security violation, NOT a model-visible
         // error — must surface as `Err(ToolError::Other)` so the
