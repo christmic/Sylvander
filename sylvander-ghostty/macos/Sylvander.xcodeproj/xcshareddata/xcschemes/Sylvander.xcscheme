@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A5B30530299BEAAA0047F10C"
-               BuildableName = "Ghostty.app"
-               BlueprintName = "Ghostty"
-               ReferencedContainer = "container:Ghostty.xcodeproj">
+               BuildableName = "Sylvander.app"
+               BlueprintName = "Sylvander"
+               ReferencedContainer = "container:Sylvander.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -29,7 +29,7 @@
       shouldUseLaunchSchemeArgsEnv = "YES">
       <TestPlans>
          <TestPlanReference
-            reference = "container:Ghostty.xctestplan"
+            reference = "container:Sylvander.xctestplan"
             default = "YES">
          </TestPlanReference>
       </TestPlans>
@@ -42,7 +42,7 @@
                BlueprintIdentifier = "A54F45F22E1F047A0046BD5C"
                BuildableName = "GhosttyTests.xctest"
                BlueprintName = "GhosttyTests"
-               ReferencedContainer = "container:Ghostty.xcodeproj">
+               ReferencedContainer = "container:Sylvander.xcodeproj">
             </BuildableReference>
          </TestableReference>
          <TestableReference
@@ -53,7 +53,7 @@
                BlueprintIdentifier = "810ACC9E2E9D3301004F8F92"
                BuildableName = "GhosttyUITests.xctest"
                BlueprintName = "GhosttyUITests"
-               ReferencedContainer = "container:Ghostty.xcodeproj">
+               ReferencedContainer = "container:Sylvander.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -73,9 +73,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A5B30530299BEAAA0047F10C"
-            BuildableName = "Ghostty.app"
-            BlueprintName = "Ghostty"
-            ReferencedContainer = "container:Ghostty.xcodeproj">
+            BuildableName = "Sylvander.app"
+            BlueprintName = "Sylvander"
+            ReferencedContainer = "container:Sylvander.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -103,9 +103,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A5B30530299BEAAA0047F10C"
-            BuildableName = "Ghostty.app"
-            BlueprintName = "Ghostty"
-            ReferencedContainer = "container:Ghostty.xcodeproj">
+            BuildableName = "Sylvander.app"
+            BlueprintName = "Sylvander"
+            ReferencedContainer = "container:Sylvander.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>
