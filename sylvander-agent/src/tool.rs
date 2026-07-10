@@ -14,6 +14,8 @@ use thiserror::Error;
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
+use crate::tool_context::ToolContext;
+
 /// Output of a tool execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutput {
@@ -68,6 +70,14 @@ pub enum ToolError {
 ///
 /// `async_trait` provides dyn-compatibility + Send — needed so tools
 /// can live in `Box<dyn Tool>` inside [`ToolRegistry`].
+///
+/// # Context
+///
+/// Every tool call receives a `&ToolContext` so implementations can
+/// scope their work per-user / per-agent / per-session. Tools that
+/// don't need isolation can ignore the `_ctx` argument; tools that
+/// do (Read/Write/MemoryRead/MemoryWrite) use it to namespace data
+/// and enforce permissions.
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Tool name — must match `Tool.name` in the wire `tools` array.
@@ -81,13 +91,17 @@ pub trait Tool: Send + Sync {
     /// in the wire format.
     fn input_schema(&self) -> InputSchema;
 
-    /// Execute the tool with the given input.
+    /// Execute the tool with the given input and invocation context.
     ///
     /// # Errors
     /// Returns [`ToolError`] for system-level failures (panic, timeout).
     /// For model-visible failures (e.g., "file not found"), return
     /// [`ToolOutput::err`] and let the loop continue.
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError>;
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError>;
 }
 
 /// Registry of tools available to the agent. Builder-style.
@@ -251,7 +265,11 @@ impl Tool for MockTool {
         self.schema.clone()
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         self.calls
             .lock()
             .expect("MockTool lock poisoned")
@@ -271,7 +289,12 @@ impl Tool for MockTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_context::ToolContext;
     use serde_json::json;
+
+    fn ctx() -> ToolContext {
+        ToolContext::new("u", "a", "s")
+    }
 
     #[test]
     fn tool_output_ok_constructor() {
@@ -324,8 +347,9 @@ mod tests {
     #[tokio::test]
     async fn mock_tool_records_calls() {
         let tool = MockTool::new("echo", "echo", ToolOutput::ok("hi"));
-        let _ = tool.execute(json!({"input": "hello"})).await.unwrap();
-        let _ = tool.execute(json!({"input": "world"})).await.unwrap();
+        let c = ctx();
+        let _ = tool.execute(&c, json!({"input": "hello"})).await.unwrap();
+        let _ = tool.execute(&c, json!({"input": "world"})).await.unwrap();
         let calls = tool.calls();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0]["input"], "hello");
@@ -341,17 +365,19 @@ mod tests {
                 ToolOutput::ok("second"),
                 ToolOutput::ok("third"),
             ]);
-        assert_eq!(tool.execute(json!({})).await.unwrap().content, "first");
-        assert_eq!(tool.execute(json!({})).await.unwrap().content, "second");
-        assert_eq!(tool.execute(json!({})).await.unwrap().content, "third");
+        let c = ctx();
+        assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "first");
+        assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "second");
+        assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "third");
         // 4th call: cycles back to last configured response
-        assert_eq!(tool.execute(json!({})).await.unwrap().content, "third");
+        assert_eq!(tool.execute(&c, json!({})).await.unwrap().content, "third");
     }
 
     #[tokio::test]
     async fn mock_tool_error_response() {
         let tool = MockTool::new("failing", "always fails", ToolOutput::err("boom"));
-        let out = tool.execute(json!({})).await.unwrap();
+        let c = ctx();
+        let out = tool.execute(&c, json!({})).await.unwrap();
         assert!(out.is_error);
         assert_eq!(out.content, "boom");
     }

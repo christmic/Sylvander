@@ -16,6 +16,7 @@ use serde_json::{json, Value as JsonValue};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 /// Replace text in a file. Paths are resolved relative to `workdir`.
 #[derive(Debug, Clone)]
@@ -76,7 +77,11 @@ impl Tool for EditTool {
         )
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         let path_str = input
             .get("file_path")
             .and_then(JsonValue::as_str)
@@ -152,6 +157,9 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    use crate::tool_context::ToolContext;
+    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+
     fn setup_workspace() -> TempDir {
         TempDir::new().expect("tempdir")
     }
@@ -161,8 +169,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "hello world").unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "world",
                 "new_string": "rust"
@@ -178,8 +187,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "aaa aaa aaa").unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "aaa",
                 "new_string": "bbb"
@@ -197,8 +207,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "aaa aaa aaa").unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "aaa",
                 "new_string": "bbb",
@@ -215,8 +226,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "hello").unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "missing",
                 "new_string": "x"
@@ -232,8 +244,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "hello").unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "hello",
                 "new_string": "hello"
@@ -248,8 +261,9 @@ mod tests {
     async fn edit_missing_file_path_field() {
         let dir = setup_workspace();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let result = tool
-            .execute(json!({"old_string": "a", "new_string": "b"}))
+            .execute(&c, json!({"old_string": "a", "new_string": "b"}))
             .await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
@@ -258,8 +272,9 @@ mod tests {
     async fn edit_missing_old_string_field() {
         let dir = setup_workspace();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let result = tool
-            .execute(json!({"file_path": "f.txt", "new_string": "b"}))
+            .execute(&c, json!({"file_path": "f.txt", "new_string": "b"}))
             .await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
@@ -268,8 +283,9 @@ mod tests {
     async fn edit_missing_new_string_field() {
         let dir = setup_workspace();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let result = tool
-            .execute(json!({"file_path": "f.txt", "old_string": "a"}))
+            .execute(&c, json!({"file_path": "f.txt", "old_string": "a"}))
             .await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
@@ -280,8 +296,9 @@ mod tests {
         let original = "line1\nline2\nline3\n";
         fs::write(dir.path().join("f.txt"), original).unwrap();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({
+            .execute(&c, json!({
                 "file_path": "f.txt",
                 "old_string": "line2\nline3",
                 "new_string": "REPLACED"
@@ -299,6 +316,7 @@ mod tests {
     fn name_description_schema() {
         let dir = setup_workspace();
         let tool = EditTool::new(dir.path());
+        let c = ctx();
         assert_eq!(tool.name(), "Edit");
         assert!(tool.description().contains("replace"));
         let json = serde_json::to_value(tool.input_schema()).unwrap();

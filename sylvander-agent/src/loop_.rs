@@ -38,6 +38,7 @@ use sylvander_llm_anthropic::api::types::{
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
 use super::tool::ToolRegistry;
+use super::tool_context::ToolContext;
 
 /// The agent loop. Holds the LLM client, resolved model, tools, and
 /// configuration. Iteration logic is in the free functions [`run`],
@@ -60,6 +61,10 @@ pub struct AgentLoop {
     pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
     /// Optional AskUser gate — called for `ask_user` tool (M18).
     pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
+    /// Invocation context handed to every tool call.
+    /// Defaults to a placeholder (system user) if the caller doesn't
+    /// supply one — keeps tests / examples working unchanged.
+    pub(crate) tool_context: ToolContext,
 }
 
 impl std::fmt::Debug for AgentLoop {
@@ -100,6 +105,7 @@ pub struct AgentLoopBuilder {
     system_prompt: Option<String>,
     approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
     ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
+    tool_context: Option<ToolContext>,
 }
 
 impl Default for AgentLoopBuilder {
@@ -114,6 +120,7 @@ impl Default for AgentLoopBuilder {
             system_prompt: None,
             approval_gate: None,
             ask_user_gate: None,
+            tool_context: None,
         }
     }
 }
@@ -246,6 +253,18 @@ impl AgentLoopBuilder {
                 Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
             });
 
+        // Default tool context = system user, agent named after the
+        // model id, no session. Production code should call
+        // `.tool_context(...)` on the builder; this fallback keeps
+        // tests and the M2 quickstart working unchanged.
+        let tool_context = self.tool_context.unwrap_or_else(|| {
+            ToolContext::new(
+                crate::tool_context::defaults::system_user(),
+                crate::tool_context::defaults::model_agent(&model),
+                crate::tool_context::defaults::ephemeral_session(),
+            )
+        });
+
         // Cache tool definitions once — tools are immutable post-build.
         let tool_definitions = self.tools.definitions();
 
@@ -260,7 +279,16 @@ impl AgentLoopBuilder {
             system_prompt: self.system_prompt,
             approval_gate: self.approval_gate,
             ask_user_gate: self.ask_user_gate,
+            tool_context,
         })
+    }
+
+    /// Set the tool invocation context. If not called, a placeholder
+    /// system context is used (see [`build`] for details).
+    #[must_use]
+    pub fn tool_context(mut self, ctx: ToolContext) -> Self {
+        self.tool_context = Some(ctx);
+        self
     }
 }
 
@@ -618,7 +646,11 @@ pub fn run_stream(
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
                             let (output, is_error) = if let Some(tool) = tool {
-                                match tokio::time::timeout(TOOL_TIMEOUT, tool.execute(input)).await
+                                match tokio::time::timeout(
+                                    TOOL_TIMEOUT,
+                                    tool.execute(&config.tool_context, input),
+                                )
+                                .await
                                 {
                                     Ok(Ok(out)) => (out.content, out.is_error),
                                     Ok(Err(e)) => {

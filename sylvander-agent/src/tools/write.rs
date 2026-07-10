@@ -15,6 +15,7 @@ use serde_json::{json, Value as JsonValue};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool_context::ToolContext;
 
 /// Write a file to disk. Paths are resolved relative to `workdir`.
 /// If the parent directory does not exist, it is created.
@@ -66,7 +67,11 @@ impl Tool for WriteTool {
         )
     }
 
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         let path_str = input
             .get("file_path")
             .and_then(JsonValue::as_str)
@@ -107,6 +112,9 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    use crate::tool_context::ToolContext;
+    fn ctx() -> ToolContext { ToolContext::new("u", "a", "s") }
+
     fn setup_workspace() -> TempDir {
         TempDir::new().expect("tempdir")
     }
@@ -115,8 +123,9 @@ mod tests {
     async fn write_new_file() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({"file_path": "out.txt", "content": "hello"}))
+            .execute(&c, json!({"file_path": "out.txt", "content": "hello"}))
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -129,8 +138,9 @@ mod tests {
         let dir = setup_workspace();
         fs::write(dir.path().join("f.txt"), "old").unwrap();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({"file_path": "f.txt", "content": "new"}))
+            .execute(&c, json!({"file_path": "f.txt", "content": "new"}))
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -141,8 +151,9 @@ mod tests {
     async fn write_creates_parent_dirs() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({"file_path": "a/b/c/deep.txt", "content": "x"}))
+            .execute(&c, json!({"file_path": "a/b/c/deep.txt", "content": "x"}))
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -153,8 +164,9 @@ mod tests {
     async fn write_writes_empty_string() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         let out = tool
-            .execute(json!({"file_path": "empty.txt", "content": ""}))
+            .execute(&c, json!({"file_path": "empty.txt", "content": ""}))
             .await
             .unwrap();
         assert!(!out.is_error);
@@ -165,7 +177,9 @@ mod tests {
     async fn write_missing_file_path_field() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let result = tool.execute(json!({"content": "x"})).await;
+        let c = ctx();
+        let c = ctx();
+        let result = tool.execute(&c, json!({"content": "x"})).await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
 
@@ -173,7 +187,9 @@ mod tests {
     async fn write_missing_content_field() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let result = tool.execute(json!({"file_path": "x.txt"})).await;
+        let c = ctx();
+        let c = ctx();
+        let result = tool.execute(&c, json!({"file_path": "x.txt"})).await;
         assert!(matches!(result, Err(ToolError::Other(_))));
     }
 
@@ -181,6 +197,7 @@ mod tests {
     fn name_description_schema() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         assert_eq!(tool.name(), "Write");
         assert!(tool.description().contains("workdir"));
         let json = serde_json::to_value(tool.input_schema()).unwrap();
@@ -195,6 +212,7 @@ mod tests {
     fn workdir_accessor() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
+        let c = ctx();
         assert_eq!(tool.workdir(), dir.path());
     }
 }

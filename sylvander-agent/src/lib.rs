@@ -88,6 +88,7 @@ pub mod session;
 pub mod session_store;
 pub mod spec;
 pub mod tool;
+pub mod tool_context;
 pub mod tools;
 
 /// Convenient re-exports for the most commonly used types.
@@ -116,6 +117,8 @@ pub mod prelude {
         MemoryStoreConfig, ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use crate::tool_context::ToolContext;
+    pub use sylvander_protocol::types::UserId;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
         MemoryWriteTool, ReadTool, WriteTool,
