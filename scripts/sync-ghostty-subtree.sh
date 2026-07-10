@@ -160,10 +160,13 @@ if [ -f "$PREFIX/macos/Sylvander.xcodeproj/project.pbxproj" ]; then
   cp "$pbxproj" "$pbxproj.sync-bak"
 
   for pattern in "${DROP_PBXPROJ_PATTERNS[@]}"; do
-    # Fixed-string match (-F) so the UUID isn't interpreted as regex.
-    # Lines that match are deleted; surviving context is preserved.
+    # sed address form: `<addr>d` deletes matching lines. Use `\|` as
+    # the regex delimiter so the address can contain `/` (the path
+    # `App/iOS/iOSApp.swift` would otherwise confuse `sed -i ''`.
+    # Treat the pattern as a fixed string (`-F`) so regex metachars
+    # in UUIDs etc. don't get interpreted.
     before=$(wc -l < "$pbxproj")
-    sed -i '' "/$pattern/d" "$pbxproj"
+    sed -i '' "\|$pattern|d" "$pbxproj"
     after=$(wc -l < "$pbxproj")
     if [ "$before" -ne "$after" ]; then
       echo "    dropped $((before - after)) lines matching '$pattern'"
