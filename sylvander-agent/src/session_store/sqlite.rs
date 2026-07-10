@@ -141,12 +141,23 @@ CREATE TABLE IF NOT EXISTS session_agents (
 );
 
 -- Messages (one row per user/assistant/tool message)
+--
+-- Identity / trace / priority are denormalized into real columns
+-- (not a JSON blob) so SQLite can use indexes for per-user / per-
+-- trace lookups. Adding a new SessionContext field means
+-- `ALTER TABLE ADD COLUMN`, not editing a json blob.
 CREATE TABLE IF NOT EXISTS session_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     seq             INTEGER NOT NULL,
     role            TEXT NOT NULL,
     content_json    TEXT NOT NULL,
+    -- Denormalized identity (copied from SessionContext at write time).
+    user_id         TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    -- Denormalized request metadata (same — copied at write time).
+    trace_id        TEXT,
+    priority        TEXT,
     model_id        TEXT,
     tool_name       TEXT,
     parent_msg_id   INTEGER REFERENCES session_messages(id) ON DELETE SET NULL,
@@ -154,6 +165,13 @@ CREATE TABLE IF NOT EXISTS session_messages (
     created_at      INTEGER NOT NULL,
     UNIQUE(session_id, seq)
 );
+
+CREATE INDEX IF NOT EXISTS idx_messages_user
+    ON session_messages(user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_agent
+    ON session_messages(agent_id);
+CREATE INDEX IF NOT EXISTS idx_messages_trace
+    ON session_messages(trace_id) WHERE trace_id IS NOT NULL;
 
 -- Boot filter: persistent + non-archived
 CREATE INDEX IF NOT EXISTS idx_sessions_lifetime
@@ -179,6 +197,10 @@ impl SessionStore for SqliteSessionStore {
     // ---- session metadata CRUD ----
 
     async fn list_persistent(&self) -> Result<Vec<StoredSession>, SessionStoreError> {
+        // Boot-loader path: returns all persistent, non-archived
+        // sessions across all users. The caller (runtime::boot) is
+        // itself a system-actor that creates AgentRuns per session;
+        // per-user filtering happens in `list` at request time.
         self.run(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, name, lifetime, workspace, user_id, created_at, external_meta \
@@ -307,8 +329,24 @@ impl SessionStore for SqliteSessionStore {
 
     async fn list(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         filter: SessionFilter,
     ) -> Result<Vec<StoredSession>, SessionStoreError> {
+        // Caller-scoping: a non-admin caller MUST set
+        // `filter.identity = Some(caller.identity)`. We force that
+        // here by injecting a WHERE user_id = ? into the query when
+        // identity is Some. When None we return everything (admin).
+        let caller_user = filter
+            .identity
+            .as_ref()
+            .map(|i| i.user_id.0.clone())
+            .unwrap_or_else(|| ctx.identity.user_id.0.clone());
+        let caller_agent = filter
+            .identity
+            .as_ref()
+            .map(|i| i.agent_id.0.clone());
+        let force_scope = filter.identity.is_some();
+
         self.run(move |c| {
             let mut sql = String::from(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
@@ -323,9 +361,9 @@ impl SessionStore for SqliteSessionStore {
             if !filter.include_archived {
                 sql.push_str(" AND s.is_archived = 0");
             }
-            if let Some(uid) = &filter.user_id {
+            if force_scope {
                 sql.push_str(" AND s.user_id = ?");
-                bound.push(Box::new(uid.clone()));
+                bound.push(Box::new(caller_user.clone()));
             }
             if let Some(life) = filter.lifetime {
                 sql.push_str(" AND s.lifetime = ?");
@@ -337,11 +375,11 @@ impl SessionStore for SqliteSessionStore {
                     .to_string(),
                 ));
             }
-            if let Some(agent) = &filter.agent_id {
+            if let Some(agent) = &caller_agent {
                 sql.push_str(
                     " AND s.id IN (SELECT session_id FROM session_agents WHERE agent_id = ?)",
                 );
-                bound.push(Box::new(agent.0.clone()));
+                bound.push(Box::new(agent.clone()));
             }
             sql.push_str(" GROUP BY s.id ORDER BY s.updated_at DESC");
             if let Some(limit) = filter.limit {
@@ -363,10 +401,14 @@ impl SessionStore for SqliteSessionStore {
 
     async fn search(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         query: &str,
         limit: usize,
     ) -> Result<Vec<StoredSession>, SessionStoreError> {
         let query = query.to_string();
+        // Scope to the caller's user_id; non-admins cannot see
+        // other users' sessions even by guessing names.
+        let scope_user = ctx.identity.user_id.0.clone();
         self.run(move |c| {
             // FTS5 would be wired here; for MVP we use LIKE %q%
             // on name + user_id, ordered by updated_at DESC.
@@ -375,12 +417,13 @@ impl SessionStore for SqliteSessionStore {
                 "SELECT id, name, lifetime, workspace, user_id, created_at, external_meta \
                  FROM sessions \
                  WHERE is_archived = 0 \
+                   AND user_id = ?3 \
                    AND (name LIKE ?1 OR user_id LIKE ?1) \
                  ORDER BY updated_at DESC \
                  LIMIT ?2",
             )?;
             let rows = stmt.query_map(
-                params![pattern, limit as i64],
+                params![pattern, limit as i64, scope_user],
                 row_to_session_no_agents,
             )?;
             let mut out = Vec::new();
@@ -396,6 +439,7 @@ impl SessionStore for SqliteSessionStore {
 
     async fn append_message(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
         role: MessageRole,
         content: JsonValue,
@@ -414,6 +458,14 @@ impl SessionStore for SqliteSessionStore {
         let content_json = serde_json::to_string(&content).map_err(|e| {
             SessionStoreError::Store(format!("serialize content: {e}"))
         })?;
+        // Flatten the SessionContext into real columns. We do NOT
+        // store it as a JSON blob — the API still takes the full
+        // SessionContext (so call sites don't change), but storage
+        // is denormalized for query efficiency.
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = Some(priority_str(&ctx.request.priority));
         let now = crate::session::now_secs();
 
         self.run(move |c| {
@@ -441,14 +493,19 @@ impl SessionStore for SqliteSessionStore {
 
             c.execute(
                 "INSERT INTO session_messages \
-                 (session_id, seq, role, content_json, model_id, tool_name, \
+                 (session_id, seq, role, content_json, user_id, agent_id, \
+                  trace_id, priority, model_id, tool_name, \
                   parent_msg_id, is_summarized, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12)",
                 params![
                     session_id.0,
                     next_seq,
                     role_str,
                     content_json,
+                    user_id,
+                    agent_id,
+                    trace_id,
+                    priority,
                     model_id,
                     tool_name,
                     parent_msg_id,
@@ -467,8 +524,10 @@ impl SessionStore for SqliteSessionStore {
             // Re-read to return the full StoredMessage.
             let row = c
                 .query_row(
-                    "SELECT id, session_id, seq, role, content_json, model_id, \
-                            tool_name, parent_msg_id, is_summarized, created_at \
+                    "SELECT id, session_id, seq, role, content_json, \
+                            user_id, agent_id, trace_id, priority, \
+                            model_id, tool_name, parent_msg_id, \
+                            is_summarized, created_at \
                      FROM session_messages WHERE id = ?1",
                     params![id],
                     row_to_message,
@@ -483,16 +542,21 @@ impl SessionStore for SqliteSessionStore {
 
     async fn read_history(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
         include_summarized: bool,
         limit: Option<usize>,
     ) -> Result<Vec<StoredMessage>, SessionStoreError> {
         let session_id = session_id.clone();
+        let scope_user = ctx.identity.user_id.0.clone();
         self.run(move |c| {
             let mut sql = String::from(
-                "SELECT id, session_id, seq, role, content_json, model_id, \
-                        tool_name, parent_msg_id, is_summarized, created_at \
-                 FROM session_messages WHERE session_id = ?1",
+                "SELECT id, session_id, seq, role, content_json, \
+                        user_id, agent_id, trace_id, priority, \
+                        model_id, tool_name, parent_msg_id, \
+                        is_summarized, created_at \
+                 FROM session_messages \
+                 WHERE session_id = ?1 AND user_id = ?2",
             );
             if !include_summarized {
                 sql.push_str(" AND is_summarized = 0");
@@ -502,7 +566,7 @@ impl SessionStore for SqliteSessionStore {
                 sql.push_str(&format!(" LIMIT {limit}"));
             }
             let mut stmt = c.prepare(&sql)?;
-            let rows = stmt.query_map(params![session_id.0], row_to_message)?;
+            let rows = stmt.query_map(params![session_id.0, scope_user], row_to_message)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -532,14 +596,18 @@ impl SessionStore for SqliteSessionStore {
 
     async fn count_active_messages(
         &self,
+        ctx: &sylvander_protocol::SessionContext,
         session_id: &SessionId,
     ) -> Result<u64, SessionStoreError> {
         let session_id = session_id.clone();
+        let scope_user = ctx.identity.user_id.0.clone();
         self.run(move |c| {
             let n: i64 = c.query_row(
                 "SELECT COUNT(*) FROM session_messages \
-                 WHERE session_id = ?1 AND is_summarized = 0",
-                params![session_id.0],
+                 WHERE session_id = ?1 \
+                   AND user_id = ?2 \
+                   AND is_summarized = 0",
+                params![session_id.0, scope_user],
                 |r| r.get(0),
             )?;
             Ok(n as u64)
@@ -621,11 +689,15 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     let seq: i64 = row.get(2)?;
     let role: String = row.get(3)?;
     let content_json: String = row.get(4)?;
-    let model_id: Option<String> = row.get(5)?;
-    let tool_name: Option<String> = row.get(6)?;
-    let parent_msg_id: Option<i64> = row.get(7)?;
-    let is_summarized: i64 = row.get(8)?;
-    let created_at: i64 = row.get(9)?;
+    let user_id: String = row.get(5)?;
+    let agent_id: String = row.get(6)?;
+    let trace_id: Option<String> = row.get(7)?;
+    let priority: Option<String> = row.get(8)?;
+    let model_id: Option<String> = row.get(9)?;
+    let tool_name: Option<String> = row.get(10)?;
+    let parent_msg_id: Option<i64> = row.get(11)?;
+    let is_summarized: i64 = row.get(12)?;
+    let created_at: i64 = row.get(13)?;
 
     let role = match role.as_str() {
         "user" => MessageRole::User,
@@ -646,9 +718,15 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
         )
     })?;
 
+    let priority = priority.as_deref().map(parse_priority).transpose()?;
+
     Ok(StoredMessage {
         id,
         session_id: SessionId::new(session_id),
+        user_id: sylvander_protocol::types::UserId::new(user_id),
+        agent_id: sylvander_protocol::types::AgentId::new(agent_id),
+        trace_id,
+        priority,
         seq: u32::try_from(seq).unwrap_or(u32::MAX),
         role,
         content,
@@ -683,6 +761,13 @@ fn sqlite_err(e: rusqlite::Error) -> SessionStoreError {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Default session context used by every test. Identity is the
+    /// legacy "user-1" from `test_meta` so existing assertions keep
+    /// working after the SessionContext split.
+    fn ctx() -> sylvander_protocol::SessionContext {
+        sylvander_protocol::SessionContext::new("user-1", "agent-1", "sess-1")
+    }
 
     fn test_meta() -> SessionMetadata {
         SessionMetadata {
@@ -736,7 +821,7 @@ mod tests {
         updated.name = "renamed".into();
         store.save(&updated).await.unwrap();
 
-        let all = store.list_persistent().await.unwrap();
+        let all = store.list(&ctx(), SessionFilter { include_archived: true, ..Default::default() }).await.unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "renamed");
     }
@@ -758,13 +843,13 @@ mod tests {
         // get returns None (treats archived as gone from active set)
         assert!(store.get(&SessionId::new("s1")).await.unwrap().is_none());
 
-        // list_persistent hides archived
-        let visible = store.list_persistent().await.unwrap();
+        // list with include_archived=false (default) hides archived
+        let visible = store.list(&ctx(), SessionFilter::default()).await.unwrap();
         assert!(visible.iter().all(|s| s.id != SessionId::new("s1")));
 
         // list with include_archived=true brings it back
         let filter = SessionFilter { include_archived: true, ..Default::default() };
-        let all = store.list(filter).await.unwrap();
+        let all = store.list(&ctx(), filter).await.unwrap();
         assert_eq!(all.len(), 1);
     }
 
@@ -780,8 +865,15 @@ mod tests {
         store.save(&s_a).await.unwrap();
         store.save(&s_b).await.unwrap();
 
-        let filter = SessionFilter { user_id: Some("alice".into()), ..Default::default() };
-        let alice_sessions = store.list(filter).await.unwrap();
+        let filter = SessionFilter {
+            identity: Some(sylvander_protocol::Identity {
+                user_id: sylvander_protocol::types::UserId::new("alice"),
+                agent_id: sylvander_protocol::types::AgentId::new("agent-1"),
+                session_id: sylvander_protocol::types::SessionId::new("dummy"),
+            }),
+            ..Default::default()
+        };
+        let alice_sessions = store.list(&ctx(), filter).await.unwrap();
         assert_eq!(alice_sessions.len(), 1);
         assert_eq!(alice_sessions[0].id, SessionId::new("s-a"));
     }
@@ -796,7 +888,7 @@ mod tests {
         store.save(&s1).await.unwrap();
         store.save(&s2).await.unwrap();
 
-        let hits = store.search("登录", 10).await.unwrap();
+        let hits = store.search(&ctx(), "登录", 10).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, SessionId::new("s1"));
     }
@@ -810,6 +902,7 @@ mod tests {
 
         let m1 = store
             .append_message(
+                &ctx(),
                 &SessionId::new("s1"),
                 MessageRole::User,
                 serde_json::json!({"role":"user","content":"hi"}),
@@ -821,6 +914,7 @@ mod tests {
             .unwrap();
         let m2 = store
             .append_message(
+                &ctx(),
                 &SessionId::new("s1"),
                 MessageRole::Assistant,
                 serde_json::json!({"role":"assistant","content":[{"type":"text","text":"hello"}]}),
@@ -844,6 +938,7 @@ mod tests {
         for i in 0..3 {
             store
                 .append_message(
+                    &ctx(),
                     &SessionId::new("s1"),
                     MessageRole::User,
                     serde_json::json!({"i": i}),
@@ -855,7 +950,7 @@ mod tests {
                 .unwrap();
         }
 
-        let history = store.read_history(&SessionId::new("s1"), false, None).await.unwrap();
+        let history = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
         assert_eq!(history.len(), 3);
         for (i, m) in history.iter().enumerate() {
             assert_eq!(m.seq, i as u32);
@@ -869,6 +964,7 @@ mod tests {
         for i in 0..3 {
             store
                 .append_message(
+                    &ctx(),
                     &SessionId::new("s1"),
                     MessageRole::User,
                     serde_json::json!({"i": i}),
@@ -882,11 +978,11 @@ mod tests {
         // Mark seq 0..2 (i.e. seq 0 and 1) as summarized.
         store.mark_summarized(&SessionId::new("s1"), 0..2).await.unwrap();
 
-        let active = store.read_history(&SessionId::new("s1"), false, None).await.unwrap();
+        let active = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].seq, 2);
 
-        let all = store.read_history(&SessionId::new("s1"), true, None).await.unwrap();
+        let all = store.read_history(&ctx(), &SessionId::new("s1"), true, None).await.unwrap();
         assert_eq!(all.len(), 3);
     }
 
@@ -897,6 +993,7 @@ mod tests {
         for _ in 0..5 {
             store
                 .append_message(
+                    &ctx(),
                     &SessionId::new("s1"),
                     MessageRole::User,
                     serde_json::json!({}),
@@ -909,7 +1006,7 @@ mod tests {
         }
         store.mark_summarized(&SessionId::new("s1"), 0..3).await.unwrap();
 
-        assert_eq!(store.count_active_messages(&SessionId::new("s1")).await.unwrap(), 2);
+        assert_eq!(store.count_active_messages(&ctx(), &SessionId::new("s1")).await.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -918,6 +1015,7 @@ mod tests {
         store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
         store
             .append_message(
+                &ctx(),
                 &SessionId::new("s1"),
                 MessageRole::User,
                 serde_json::json!({}),
@@ -931,7 +1029,7 @@ mod tests {
         store.delete(&SessionId::new("s1")).await.unwrap();
 
         // The message row is gone (CASCADE).
-        let history = store.read_history(&SessionId::new("s1"), true, None).await.unwrap();
+        let history = store.read_history(&ctx(), &SessionId::new("s1"), true, None).await.unwrap();
         assert!(history.is_empty());
     }
 
@@ -940,6 +1038,7 @@ mod tests {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
         let result = store
             .append_message(
+                &ctx(),
                 &SessionId::new("nonexistent"),
                 MessageRole::User,
                 serde_json::json!({}),
@@ -962,6 +1061,7 @@ mod tests {
             let s = store.clone();
             handles.push(tokio::spawn(async move {
                 s.append_message(
+                    &ctx(),
                     &SessionId::new("s1"),
                     MessageRole::User,
                     serde_json::json!({"i": i}),
@@ -976,11 +1076,11 @@ mod tests {
             h.await.unwrap().unwrap();
         }
 
-        let count = store.count_active_messages(&SessionId::new("s1")).await.unwrap();
+        let count = store.count_active_messages(&ctx(), &SessionId::new("s1")).await.unwrap();
         assert_eq!(count, 10);
 
         // All seq values must be unique and contiguous.
-        let history = store.read_history(&SessionId::new("s1"), false, None).await.unwrap();
+        let history = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
         let seqs: Vec<u32> = history.iter().map(|m| m.seq).collect();
         let mut sorted = seqs.clone();
         sorted.sort();
@@ -996,6 +1096,7 @@ mod tests {
         let s1 = SqliteSessionStore::open(&path).await.unwrap();
         s1.save(&make_session("p1", SessionLifetime::Persistent)).await.unwrap();
         s1.append_message(
+            &ctx(),
             &SessionId::new("p1"),
             MessageRole::User,
             serde_json::json!({"hello": "world"}),
@@ -1011,8 +1112,38 @@ mod tests {
         let s2 = SqliteSessionStore::open(&path).await.unwrap();
         let found = s2.get(&SessionId::new("p1")).await.unwrap();
         assert!(found.is_some());
-        let history = s2.read_history(&SessionId::new("p1"), false, None).await.unwrap();
+        let history = s2.read_history(&ctx(), &SessionId::new("p1"), false, None).await.unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content["hello"], "world");
     }
+}
+// ---------------------------------------------------------------------------
+// Priority <-> str
+// ---------------------------------------------------------------------------
+
+fn priority_str(p: &sylvander_protocol::session_context::Priority) -> String {
+    use sylvander_protocol::session_context::Priority;
+    match p {
+        Priority::Low => "low",
+        Priority::Normal => "normal",
+        Priority::High => "high",
+        Priority::Urgent => "urgent",
+    }
+    .to_string()
+}
+
+fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_context::Priority> {
+    use sylvander_protocol::session_context::Priority;
+    Ok(match s {
+        "low" => Priority::Low,
+        "normal" => Priority::Normal,
+        "high" => Priority::High,
+        "urgent" => Priority::Urgent,
+        other => {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!("unknown priority: {other}")),
+            ));
+        }
+    })
 }
