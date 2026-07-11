@@ -1,0 +1,26 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 90, 22)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Tool Approval (batch 2/2 — 2 total) ───────────────┐                  
+                  │Agent wants to run:                                 │                  
+                  │  >> 1. write  {}                                   │                  
+                  │                                                    │                  
+                  │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  │                  
+──────────────────│                                                    │──────────────────
+[y/n]             │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+y:approve  n:reject  Esc:cancel

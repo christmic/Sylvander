@@ -1,0 +1,32 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 90, 28)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+You: run setup                                                                            
+[ ] bash({"command":"ls"})                                                                
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Rejection Feedback ────────────────────────────────┐                  
+                  │Tell Sylvander what to do instead (or press Enter to│                  
+                  │                                                    │                  
+                  │> use docker                                        │                  
+                  │                                                    │                  
+──────────────────│enter=send feedback   esc=back to approval          │──────────────────
+[y/n]             └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+y:approve  n:reject  Esc:cancel
