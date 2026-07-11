@@ -2,11 +2,13 @@
 
 > Status: Implementation-ready design baseline
 >
-> Version: 6.0
+> Version: 7.0
 >
 > Date: 2026-07-11
 >
 > Scope: Terminal-native agent interface and its use inside the Sylvander Ghostty desktop shell
+
+> Brand direction: [`sylvander-brand-system.md`](./sylvander-brand-system.md). The Convergence Core system and `design/27-convergence-brand-tui.svg` supersede the earlier `◖S◗` crab-shell mark and the intermediate Vector Core exploration.
 
 Editable design artifacts:
 
@@ -32,6 +34,11 @@ Editable design artifacts:
 - [`design/20-overlay-system.svg`](./design/20-overlay-system.svg) — approval, AskUser, command palette, and session switcher visual language.
 - [`design/21-diff-artifact-viewer.svg`](./design/21-diff-artifact-viewer.svg) — diff, command output, image, file, and artifact inspection.
 - [`design/22-motion-focus.svg`](./design/22-motion-focus.svg) — streaming, selection, toast, scroll, unread, and reduced-motion feedback.
+- [`design/23-agent-brand-exploration.svg`](./design/23-agent-brand-exploration.svg) — four agent-brand concepts and recommendation.
+- [`design/24-agent-brand-system.svg`](./design/24-agent-brand-system.svg) — Vector Core wordmark, icon, terminal, monochrome, and agent-role variants.
+- [`design/25-brand-applied-tui.svg`](./design/25-brand-applied-tui.svg) — latest brand applied to entry, TUI conversation, and Ghostty workspace.
+- [`design/26-brand-refinement.svg`](./design/26-brand-refinement.svg) — final convergence refinement and selection rationale.
+- [`design/27-convergence-brand-tui.svg`](./design/27-convergence-brand-tui.svg) — normative final brand application with visible multi-agent language.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -92,6 +99,8 @@ The desired aesthetic is **quiet technical confidence**:
 - Symbols always paired with text so meaning survives monochrome terminals.
 
 ### 2.2 Brand mark and session entry
+
+> Historical note: the `◖S◗` mark below established the original compact-logo requirement but is superseded in v7 by Vector Core. Current terminal mark: `◆›`; ASCII fallback: `[o]>`.
 
 Sylvander uses a compact mark rather than a large ASCII-art banner. The goal is the clarity of Codex/Qwen entry screens without copying their geometry or consuming the conversation viewport.
 
@@ -1341,10 +1350,24 @@ When the user scrolls away from live output, streaming does not move the viewpor
 
 Reduced-motion mode removes spinner animation, pulsing, and rewrite effects while preserving elapsed time and textual state.
 
-## 41. Version History
+## 41. Brand-led UI refinement
+
+The v7 brand system introduces a semantic color grammar rather than a logo-only change. The final Convergence Core mark makes orchestration visible: multiple signals enter a decision core and leave as directed action.
+
+- Violet identifies Sylvander intelligence and main-agent presence.
+- Coral identifies user intent, selection, and input focus.
+- Cyan identifies active execution and streaming progress.
+- Teal identifies verified completion.
+
+Turn markers change from `◖S◗` to `◆`; the full terminal wordmark is `◆› SYLVANDER`. Subagents use hollow `◇` markers, allowing multi-agent activity to remain visually legible without portraits or avatars.
+
+The latest representative surface is `design/27-convergence-brand-tui.svg`. Earlier boards remain useful for interaction detail, but their old brand marks and coral-only role assignment are not normative.
+
+## 42. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 7.0 | 2026-07-12 | Replaced the mascot-like crab-shell/S mark with the Convergence Core agent brand, introduced semantic multi-agent roles, and applied the new identity to entry, TUI conversation, and Ghostty Sidebar |
 | 6.0 | 2026-07-11 | Added UI-only refinement for immersive turn rhythm, Composer states, Sidebar micro-interactions, overlay visual language, Diff/artifact inspection, and motion/focus feedback |
 | 5.0 | 2026-07-11 | Closed implementation-readiness gaps with end-to-end journeys, keyboard/focus/state ownership contracts, exact responsive and accessibility matrices, event-component lifecycle mapping, and replayable design QA scenarios |
 | 4.1 | 2026-07-11 | Recorded the implementation-readiness gap audit, blocking-interaction precedence, and phased design iteration plan; synchronized the advanced design artifact set |

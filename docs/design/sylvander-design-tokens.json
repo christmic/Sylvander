@@ -2,7 +2,7 @@
   "$schema": "https://design-tokens.github.io/community-group/format/",
   "meta": {
     "name": "Sylvander Quiet Technical Confidence",
-    "version": "2.0",
+    "version": "3.0",
     "target": "terminal UI and Ghostty desktop shell"
   },
   "color": {
@@ -12,10 +12,12 @@
     "focusWash": { "$value": "#E8796A0A", "$type": "color" },
     "border": { "$value": "#343A40", "$type": "color" },
     "borderStrong": { "$value": "#4A535C", "$type": "color" },
-    "text": { "$value": "#ECE7DE", "$type": "color" },
+    "text": { "$value": "#F0ECE4", "$type": "color" },
     "textMuted": { "$value": "#989B9D", "$type": "color" },
     "textFaint": { "$value": "#666C72", "$type": "color" },
-    "coral": { "$value": "#E8796A", "$type": "color" },
+    "coral": { "$value": "#FF806F", "$type": "color" },
+    "agentViolet": { "$value": "#9B8CFF", "$type": "color" },
+    "actionCyan": { "$value": "#6DD6E8", "$type": "color" },
     "blue": { "$value": "#75A7E8", "$type": "color" },
     "teal": { "$value": "#72C7B1", "$type": "color" },
     "amber": { "$value": "#D9AF62", "$type": "color" },
@@ -85,8 +87,10 @@
       "toastDurationMs": { "$value": 2500, "$type": "duration" }
     },
     "symbols": {
-      "brandUnicode": { "$value": "◖S◗", "$type": "string" },
-      "brandAscii": { "$value": "[S]", "$type": "string" },
+      "brandUnicode": { "$value": "◆›", "$type": "string" },
+      "brandAscii": { "$value": "[o]>", "$type": "string" },
+      "mainAgentUnicode": { "$value": "◆", "$type": "string" },
+      "subagentUnicode": { "$value": "◇", "$type": "string" },
       "workingUnicode": { "$value": "◐", "$type": "string" },
       "workingAscii": { "$value": "~", "$type": "string" },
       "successUnicode": { "$value": "✓", "$type": "string" },
@@ -97,6 +101,11 @@
       "preferred": { "$value": "truecolor", "$type": "string" },
       "fallback": { "$value": "ansi256", "$type": "string" },
       "minimum": { "$value": "monochrome", "$type": "string" }
+    },
+    "brandConcept": {
+      "name": { "$value": "Convergence Core", "$type": "string" },
+      "meaning": { "$value": "context and agents converge into a decision that becomes action", "$type": "string" },
+      "normativeBoard": { "$value": "27-convergence-brand-tui.svg", "$type": "string" }
     }
   }
 }
