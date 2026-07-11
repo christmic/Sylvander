@@ -24,6 +24,11 @@
 - `20-overlay-system.svg` — Approval, AskUser, Command Palette, and Session Switcher.
 - `21-diff-artifact-viewer.svg` — sticky Diff, Command Output, image, file, and artifact inspection.
 - `22-motion-focus.svg` — timing, focus language, unread/live return, toast, and reduced motion.
+- `23-agent-brand-exploration.svg` — four agent-brand logo directions and recommended Vector Core concept.
+- `24-agent-brand-system.svg` — selected wordmark, app icon, terminal, monochrome, small-size, and multi-agent variants.
+- `25-brand-applied-tui.svg` — current brand applied to Welcome, TUI conversation, and Ghostty Sidebar.
+- `26-brand-refinement.svg` — refinement from generic container shape to final Convergence Core.
+- `27-convergence-brand-tui.svg` — normative final brand applied to entry, turns, subagents, and Ghostty workspace.
 - `07-session-management.svg` — large session collections, notification policy, linked views, and draft conflict.
 - `08-execution-control.svg` — steer, queue, interrupt boundaries, and non-interruptible work.
 - `09-permission-center.svg` — pending decisions, scoped permission rules, audit history, and revocation.
@@ -68,6 +73,11 @@ SVG import preserves text, vectors, colors, borders, and groups. Figma may not p
 20. **Overlay system** — common visual language for temporary interaction layers.
 21. **Inspection** — code, output, and generated artifact viewing.
 22. **Motion/focus** — perceptual timing and stable feedback behavior.
+23. **Brand exploration** — alternative concepts and selection rationale.
+24. **Brand system** — production variants and semantic brand language.
+25. **Brand application** — latest normative visual direction for product surfaces.
+26. **Brand refinement** — final silhouette and conceptual convergence.
+27. **Final application** — production reference for branded TUI and multi-agent UI.
 7. **Session management** — scale, attention, linked views, and multi-window consistency.
 8. **Execution control** — steering, queued prompts, interruption, and safe boundaries.
 9. **Permission center** — decision lifecycle, reusable scopes, revocation, and audit.
