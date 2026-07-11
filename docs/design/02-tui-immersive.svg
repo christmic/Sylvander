@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="980" viewBox="0 0 1500 980">
+  <title>Sylvander immersive TUI core screen</title>
+  <defs><style>.bg{fill:#111315}.t{fill:#ECE7DE;font:15px Menlo,monospace}.h{fill:#ECE7DE;font:700 17px Menlo,monospace}.s{fill:#989B9D;font:13px Menlo,monospace}.x{fill:#666C72;font:12px Menlo,monospace}.a{fill:#E8796A}.b{fill:#75A7E8}.g{fill:#72C7B1}.y{fill:#D9AF62}.rule{stroke:#343A40;stroke-width:1}.guide{stroke:#4A535C;stroke-width:1}.focus{fill:#E8796A08;stroke:#E8796A;stroke-width:1}</style></defs>
+  <rect class="bg" width="1500" height="980"/>
+  <g id="header"><text class="h" x="54" y="52"><tspan class="a">◖S◗</tspan> Sylvander  <tspan font-weight="400">auth-refactor</tspan></text><text class="s" x="54" y="80">~/Projects/acme-api · feat/auth-refactor · session 8f21</text><text class="s" text-anchor="end" x="1446" y="52">claude-sonnet-5 · plan</text><line class="rule" x1="54" y1="105" x2="1446" y2="105"/></g>
+  <g id="immersive-transcript" transform="translate(78 150)">
+    <text class="x" y="0">YOU</text><text class="t" y="31">Add JWT authentication. Inspect the current middleware and propose a plan</text><text class="t" y="56">before changing anything.</text>
+    <text class="x a" y="112">ORACULO</text><text class="t" y="143">I’ll trace the authentication boundary and identify where token validation belongs.</text>
+    <g id="tool-rhythm" transform="translate(0 184)"><text class="t b" y="0">●</text><text class="t" x="26" y="0">Exploring the codebase</text><text class="x" text-anchor="end" x="1340" y="0">00:12</text><line class="guide" x1="7" y1="21" x2="7" y2="139"/>
+      <text class="s g" x="30" y="38">✓</text><text class="s" x="58" y="38">Read</text><text class="s" x="150" y="38">src/http/router.rs</text><text class="x" text-anchor="end" x="1340" y="38">126 lines</text>
+      <text class="s g" x="30" y="72">✓</text><text class="s" x="58" y="72">Search</text><text class="s" x="150" y="72">“middleware” in src/</text><text class="x" text-anchor="end" x="1340" y="72">14 matches</text>
+      <text class="s g" x="30" y="106">✓</text><text class="s" x="58" y="106">Read</text><text class="s" x="150" y="106">src/auth/mod.rs</text><text class="x" text-anchor="end" x="1340" y="106">82 lines</text>
+      <text class="s b" x="30" y="140">◐</text><text class="s" x="58" y="140">Inspect</text><text class="s" x="150" y="140">tests/auth_test.rs</text><text class="x b" text-anchor="end" x="1340" y="140">running…</text>
+    </g>
+    <text class="t" y="374">The cookie flow already exposes a reusable identity boundary. JWT support can</text><text class="t" y="399">implement the same contract without changing route handlers.</text>
+    <text class="h" y="455">Proposed plan</text><text class="s g" y="490">✓  1. Inspect the current authentication boundary</text><text class="s b" y="524">●  2. Define the shared identity extraction contract</text><text class="s" y="558">○  3. Implement JWT verification and middleware</text><text class="s" y="592">○  4. Add unit and integration coverage</text>
+  </g>
+  <g id="composer" transform="translate(54 824)"><line class="rule" x1="0" y1="0" x2="1392" y2="0"/><rect class="focus" x="0" y="14" width="1392" height="72" rx="5"/><text class="s" x="18" y="43">Ask Sylvander…</text><text class="x" x="18" y="68">Type while I work — steer, queue, or interrupt.</text><line class="rule" x1="0" y1="102" x2="1392" y2="102"/></g>
+  <g id="status"><text class="s b" x="54" y="958">working</text><text class="s" x="130" y="958">· context 24% · 3 tools · main</text><text class="x" text-anchor="end" x="1446" y="958">↵ send  ⇧↵ newline  esc interrupt  / commands  ? help</text></g>
+</svg>
