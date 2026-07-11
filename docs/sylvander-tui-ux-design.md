@@ -2,7 +2,7 @@
 
 > Status: Design baseline
 >
-> Version: 3.0
+> Version: 4.0
 >
 > Date: 2026-07-11
 >
@@ -16,6 +16,12 @@ Editable design artifacts:
 - [`design/04-ghostty-sidebar.svg`](./design/04-ghostty-sidebar.svg) — Ghostty desktop with left session sidebar.
 - [`design/05-responsive-recovery.svg`](./design/05-responsive-recovery.svg) — narrow, empty, disconnected, and recovery states.
 - [`design/06-component-spec.svg`](./design/06-component-spec.svg) — component anatomy and visual states.
+- [`design/07-session-management.svg`](./design/07-session-management.svg) — large-scale sessions, notifications, multi-window, and view state.
+- [`design/08-execution-control.svg`](./design/08-execution-control.svg) — steer, queue, interrupt, and non-interruptible execution.
+- [`design/09-permission-center.svg`](./design/09-permission-center.svg) — pending decisions, scoped rules, history, and revocation.
+- [`design/10-transcript-navigation.svg`](./design/10-transcript-navigation.svg) — search, filters, checkpoints, forks, context, and compaction.
+- [`design/11-composer-ime.svg`](./design/11-composer-ime.svg) — Chinese IME, attachments, mentions, templates, and draft recovery.
+- [`design/12-resilience-operations.svg`](./design/12-resilience-operations.svg) — crashes, reconnect, diagnostics, performance, security, and updates.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -801,7 +807,151 @@ The baseline design is complete when:
 - A permanently visible session sidebar in the standalone TUI. The Ghostty desktop intentionally has a collapsible left session sidebar.
 - Rich GUI widgets that cannot degrade to terminal cells.
 
-## 22. Version History
+## 22. Session System and Sidebar at Scale
+
+### 22.1 Combined session state
+
+A session can have one execution state and independent view flags. The sidebar must not compress these into one ambiguous dot.
+
+| Dimension | Values | Presentation |
+|---|---|---|
+| Execution | idle, working, waiting, paused, complete, failed, reconnecting | Leading icon + text in expanded sidebar |
+| Draft | clean, unsent | Small trailing dot; never replaces execution icon |
+| Attention | none, unread, approval, question, failure | Count or semantic badge |
+| Visibility | recent, pinned, archived, hidden | Sidebar section and command availability |
+| Connection | local, remote, offline | Metadata only unless degraded |
+
+Priority when space is limited: approval/question → failure → working → unread → draft → complete → idle.
+
+### 22.2 Large session collections
+
+The sidebar scales beyond a recent list:
+
+- **Recent:** recency-ordered views, capped visually but searchable.
+- **Pinned:** manually ordered durable shortcuts.
+- **Waiting for you:** automatically promoted approvals and questions.
+- **Workspaces:** collapsible grouping with per-workspace counts.
+- **Archived:** excluded from normal navigation but globally searchable.
+
+Search matches title, workspace, branch, message text, files, tags, and session ID. Filters include state, workspace, model, agent, date, and tag. Hundreds of sessions use virtual scrolling; selection remains stable while background states update.
+
+### 22.3 Session switching contract
+
+Switching views never implicitly interrupts work. The system preserves transcript position, live-follow mode, selected object, composer draft, history search, and expanded tool rows per session.
+
+Special cases:
+
+- Streaming continues and the sidebar indicator updates.
+- Pending approval is promoted to **Waiting for you** and may notify.
+- A session opened by another client shows a linked-view marker, not a lock.
+- Conflicting draft edits create two labeled drafts; no last-write-wins loss.
+- Deleted or archived remote sessions remain recoverable until the user acknowledges the change.
+
+### 22.4 Notifications
+
+Notifications are generated for waiting approval, AskUser, failure, long-running completion, and explicit agent mention. They are suppressed for the active visible session unless the window is unfocused. Per-workspace quiet hours and “notify only when waiting for me” are supported.
+
+Sidebar state is authoritative; system notifications are transient pointers back to it.
+
+### 22.5 Multi-window behavior
+
+- A session can be moved to another window or opened as a linked view.
+- Each window owns sidebar expansion, selection, geometry, and focus mode.
+- Session execution, history, permissions, and draft versions remain server-owned.
+- Closing the last window does not terminate server-side work unless configured.
+- A workspace-focused window may filter its sidebar without changing global session visibility.
+
+## 23. Execution Control: Steer, Queue, Interrupt
+
+### 23.1 Submission behavior while working
+
+When the composer submits during active execution, Sylvander chooses the least disruptive valid action and makes it visible:
+
+| Situation | Default | Reason |
+|---|---|---|
+| Agent is reasoning or between tools | Steer | New guidance can affect the current turn safely |
+| A non-interactive tool is running | Queue | Avoid implying that the external process received guidance |
+| User explicitly presses interrupt shortcut | Interrupt | Intent is unambiguous |
+| Destructive action is pending approval | Update/reject decision | Never queue behind an unresolved risk decision |
+| Agent has emitted final answer | New turn | Current turn is already terminal |
+
+If confidence is low, a compact chooser appears above the composer: **Steer current**, **Queue next**, **Interrupt and run**.
+
+### 23.2 Steer
+
+Steering messages enter the current turn at the next safe agent boundary. The transcript displays them as user interventions with a `steered` label. Multiple unsent steering messages can be edited, reordered, or merged before consumption.
+
+The agent acknowledges the changed intent before further mutation. A steer does not pretend to alter a command already executing.
+
+### 23.3 Queue
+
+Queued prompts appear immediately above the composer as a numbered borderless list. Users can edit, reorder, delete, or promote an item to interrupt. Each item retains attachments and mode overrides.
+
+Queue execution begins only after the current turn reaches done, failed, or interrupted. A waiting approval pauses queue advancement.
+
+### 23.4 Interrupt
+
+Interrupt is a state transition, not an undo operation:
+
+1. Signal the agent loop and cancellable tools.
+2. Mark non-cancellable external work as “stopping” or “continues externally.”
+3. Preserve partial assistant output and completed tool evidence.
+4. Close orphaned tool calls with an explicit interrupted result.
+5. Start the replacement instruction only after the interruption boundary is recorded.
+
+The UI never implies filesystem rollback. When changes occurred, it offers **Inspect changes**, **Revert selected**, or **Continue from current state** as separate actions.
+
+### 23.5 Non-interruptible work
+
+For atomic writes, remote deployment, or other unsafe cancellation points, `Esc` changes the status to **interrupt requested**. The UI explains what is still running, why immediate cancellation is unsafe, and the next boundary where control returns.
+
+## 24. Permission Center and Decision Lifecycle
+
+### 24.1 Permission scopes
+
+Every reusable permission is explicit about action, resource, workspace, and lifetime:
+
+| Scope | Example | Lifetime |
+|---|---|---|
+| Once | Exact command invocation | One decision |
+| Turn | Reads under `src/` | Current turn |
+| Session | `cargo test` prefix in current workspace | Session lifetime |
+| Workspace | Writes under `docs/` | Until revoked |
+| Global | Trusted MCP server read-only tools | Until revoked |
+
+Global and workspace rules require a review step and are never the preselected option.
+
+### 24.2 Permission Center structure
+
+```text
+Permissions
+  Pending decisions
+  Session rules
+  Workspace rules
+  Global rules
+  Decision history
+```
+
+Each rule shows matcher, effect, origin, creator, created time, last use, and revoke action. Vague patterns such as “all safe commands” are not representable.
+
+### 24.3 Multiple and remote decisions
+
+- Pending decisions are ordered by dependency, then time.
+- Independent read-only decisions may be approved as a reviewed batch.
+- Destructive decisions remain separate.
+- A decision handled by another client updates all views and records the actor.
+- Switching sessions does not dismiss a decision; it moves to the sidebar waiting section.
+- Timeouts resolve to deny unless a stricter policy specifies otherwise.
+
+### 24.4 Invalidating approval
+
+An approval becomes invalid if command text, arguments, working directory, environment mutation, target resource, tool identity, or risk classification changes. The replacement request highlights the difference from the previously reviewed action.
+
+### 24.5 Audit and security
+
+Decision history records requested action, effective rule, actor, result, execution correlation, and revocation. Secrets are redacted before presentation and storage. Tool provenance is shown as Built-in, Skill, MCP, or external provider.
+
+## 25. Version History
 
 | Version | Date | Change |
 |---|---|---|
