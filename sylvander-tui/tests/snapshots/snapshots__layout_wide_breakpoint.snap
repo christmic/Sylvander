@@ -1,0 +1,34 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&s, 132, 30)"
+---
+Sylvander · deepseek-v4-flash · Connected · Connected                                                                               
+You: Add JWT auth.                                                                                                                  
+Inspecting router.                                                                                                                  
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                                   
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
+Enter:send  Alt+Enter:send  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command

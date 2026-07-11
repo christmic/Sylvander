@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod client;
+pub mod compat;
 pub mod component;
 pub mod dirty;
 pub mod event;
