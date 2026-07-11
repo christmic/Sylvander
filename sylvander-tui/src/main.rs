@@ -170,6 +170,16 @@ async fn dispatch_action(action: Action, client: &mut UnixClient, _state: &mut A
         Action::SendAnswer { call_id, answer } => {
             let _ = client.send(&ClientMsg::Answer { call_id, answer }).await;
         }
+        Action::SendFeedback { text, session_id } => {
+            // Wrap so the agent loop can distinguish feedback from regular chat.
+            let wrapped = format!("[/feedback]\n{text}");
+            let _ = client
+                .send(&ClientMsg::Chat {
+                    text: wrapped,
+                    session_id,
+                })
+                .await;
+        }
         Action::Quit => {
             // handle_key sets state.should_quit instead.
         }

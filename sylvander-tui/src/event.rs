@@ -70,6 +70,14 @@ pub enum Action {
     SendApprove { call_id: String, approved: bool },
     /// Answer an AskUser question.
     SendAnswer { call_id: String, answer: String },
+    /// Send a feedback message to the agent (e.g. after rejecting a tool
+    /// call, so it can adjust its next attempt). Wraps as a chat message
+    /// with a `[/feedback]` prefix the agent loop recognizes; the wire
+    /// stays a plain `ClientMsg::Chat`.
+    SendFeedback {
+        text: String,
+        session_id: Option<String>,
+    },
     /// User wants to quit.
     Quit,
 }

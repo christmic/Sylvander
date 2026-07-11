@@ -10,7 +10,7 @@
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-use sylvander_tui::app::{AppMode, AppState, ChatMessage, ToolStatus};
+use sylvander_tui::app::{AppMode, AppState, ChatMessage, ToolInfo, ToolStatus};
 use sylvander_tui::event::DomainEvent;
 
 /// Render `state` into a `(width, height)` TestBackend and return the
@@ -165,4 +165,67 @@ fn many_attachments_collapses_with_more_indicator() {
     }
     assert_eq!(state.composer.attachment_count(), 6);
     insta::assert_snapshot!(render_buf(&state, 80, 24));
+}
+
+#[test]
+fn approval_modal_batch_with_three_tools() {
+    let mut state = AppState::new();
+    state.messages.push(ChatMessage::User("run setup".into()));
+    state.apply(DomainEvent::ToolStarted {
+        tool_name: "bash".into(),
+        input: serde_json::json!({"command": "ls"}),
+    });
+    state.apply(DomainEvent::ApprovalRequested {
+        batch_id: "batch-1".into(),
+        tools: vec![
+            ToolInfo {
+                call_id: "c1".into(),
+                tool_name: "bash".into(),
+                input: serde_json::json!({"command": "ls -la"}),
+            },
+            ToolInfo {
+                call_id: "c2".into(),
+                tool_name: "write".into(),
+                input: serde_json::json!({"path": "/tmp/foo"}),
+            },
+            ToolInfo {
+                call_id: "c3".into(),
+                tool_name: "read".into(),
+                input: serde_json::json!({"path": "/etc/hostname"}),
+            },
+        ],
+    });
+    // Approve first, navigate to second, reject → enter feedback capture.
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c, m| KeyEvent::new(c, m);
+    state.handle_key(&k(KeyCode::Char('y'), KeyModifiers::NONE));
+    state.handle_key(&k(KeyCode::Char('n'), KeyModifiers::NONE));
+    // type some feedback
+    for ch in "use docker".chars() {
+        state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    insta::assert_snapshot!(render_buf(&state, 90, 28));
+}
+
+#[test]
+fn approval_modal_with_queue_header() {
+    let mut state = AppState::new();
+    // Two batches stack — second one should show "batch 2/2" header.
+    state.apply(DomainEvent::ApprovalRequested {
+        batch_id: "first".into(),
+        tools: vec![ToolInfo {
+            call_id: "a".into(),
+            tool_name: "bash".into(),
+            input: serde_json::json!({}),
+        }],
+    });
+    state.apply(DomainEvent::ApprovalRequested {
+        batch_id: "second".into(),
+        tools: vec![ToolInfo {
+            call_id: "b".into(),
+            tool_name: "write".into(),
+            input: serde_json::json!({}),
+        }],
+    });
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
 }

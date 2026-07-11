@@ -221,7 +221,10 @@ impl AppState {
             }
             DomainEvent::ApprovalRequested { batch_id, tools } => {
                 use crate::modal::approval::ApprovalModal;
-                self.modals.push(Box::new(ApprovalModal::new(batch_id, tools)));
+                let mut modal = ApprovalModal::new(batch_id, tools);
+                modal.stack_position = self.modals.len();
+                modal.queue_total = self.modals.len() + 1;
+                self.modals.push(Box::new(modal));
                 self.mode = AppMode::ApprovalPending;
             }
             DomainEvent::Tick => {
