@@ -135,6 +135,20 @@ async fn main() {
     tokio::spawn(async move { http_channel.run(http_ctx).await });
     info!(addr = %http_addr, "http channel started — curl http://{http_addr}/health");
 
+    // Unix socket channel (for sylvander-tui)
+    let socket_path = std::env::var("SYLVANDER_SOCKET")
+        .unwrap_or_else(|_| "/tmp/sylvander.sock".to_string());
+    let unix_channel = Arc::new(sylvander_channel_unix::UnixChannel::new(
+        socket_path.clone(),
+        agent_id.clone(),
+    ));
+    let unix_ctx = sylvander_channel::ChannelContext {
+        bus: bus.clone(),
+        sessions: session_store.clone(),
+    };
+    tokio::spawn(async move { unix_channel.run(unix_ctx).await });
+    info!(path = %socket_path, "unix channel started — sylvander-tui can connect here");
+
     info!("sylvander server running — Ctrl+C to stop");
     tokio::signal::ctrl_c().await.expect("ctrl_c");
     info!("shutting down...");
