@@ -28,7 +28,6 @@
 //! ```
 
 use std::collections::HashMap;
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -127,9 +126,8 @@ impl Channel for UnixChannel {
         // Remove stale socket file
         let _ = std::fs::remove_file(&self.socket_path);
 
-        let listener = match UnixListener::bind(&self.socket_path) {
+        let listener = match tokio::net::UnixListener::bind(&self.socket_path) {
             Ok(l) => {
-                let l = tokio::net::UnixListener::from_std(l).unwrap();
                 info!(path = ?self.socket_path, "unix channel listening");
                 l
             }

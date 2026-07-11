@@ -2012,6 +2012,7 @@ dependencies = [
  "sylvander-channel",
  "sylvander-channel-dingtalk",
  "sylvander-channel-http",
+ "sylvander-channel-unix",
  "sylvander-llm-anthropic",
  "tokio",
  "tracing",
