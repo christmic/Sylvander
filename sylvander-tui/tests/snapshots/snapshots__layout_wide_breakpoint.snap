@@ -31,4 +31,4 @@ Inspecting router.
                                                                                                                                     
                                                                                                                                     
                                                                                                                                     
-Enter:send  Alt+Enter:send  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command
+Enter:send  Shift+Enter:newline  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command

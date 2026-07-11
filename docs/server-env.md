@@ -11,18 +11,31 @@ instead of mid-flight.
 |----------------------|---------------------------------------------------------|
 | `ANTHROPIC_API_KEY`  | Bearer token sent in `Authorization: Bearer …` headers. Non-empty string required. |
 | `ANTHROPIC_BASE_URL` | Root URL of the upstream `/v1/messages` endpoint. Non-empty URL required. |
+| `SYLVANDER_MODEL`    | Model id the gateway recognizes (e.g. `claude-sonnet-5-20260601`). Non-empty required because the wrong id silently 404s on the gateway. |
 
 ## Optional
 
 | Variable             | Default                       | Notes                                          |
 |----------------------|-------------------------------|------------------------------------------------|
-| `SYLVANDER_MODEL`    | `claude-sonnet-5-20260601`    | Model id; check upstream API for allowed values. |
 | `SYLVANDER_SOCKET`   | `/tmp/sylvander.sock`         | Path the TUI client uses for its Unix socket. |
 | `HTTP_ADDR`          | `127.0.0.1:8080`              | Address the debug HTTP channel binds (always on). |
 | `DINGTALK_APP_KEY`   | —                             | DingTalk channel only enabled when *both* this and `DINGTALK_APP_SECRET` are set. |
 | `DINGTALK_APP_SECRET`| —                             | (ditto)                                         |
 | `SYLVANDER_APPROVAL` | unset                         | Set to any value to enable tool approval gate.  |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
+
+## Why is `SYLVANDER_MODEL` required?
+
+The agent loop calls `POST {ANTHROPIC_BASE_URL}/v1/messages` with
+`model={SYLVANDER_MODEL}`. If the gateway doesn't recognize the model
+id it returns **404** — and unlike transient 5xx, the agent loop does
+not back off on 4xx and will hammer the endpoint until the operator
+intervenes. Making the model required at startup ensures a typo or
+unknown id surfaces before any traffic leaves.
+
+If you see `Anthropic API error (status 404): unknown: (no message)` in
+the server log, the gateway does not have the configured model id —
+check `SYLVANDER_MODEL` against the gateway's `/v1/models` list.
 
 ## Examples
 

@@ -615,25 +615,25 @@ mod tests {
     }
 
     #[test]
-    fn alt_enter_submits_chat_returns_send_action() {
+    fn plain_enter_submits_chat_returns_send_action() {
         let mut s = AppState::new();
         let key = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
         s.handle_key(&key);
         let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
         s.handle_key(&key);
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         let action = s.handle_key(&enter);
         assert!(matches!(action, Some(Action::SendChat { ref text, .. }) if text == "hi"));
         assert!(s.composer.is_empty());
     }
 
     #[test]
-    fn plain_enter_inserts_newline_and_does_not_submit() {
+    fn shift_enter_inserts_newline_and_does_not_submit() {
         let mut s = AppState::new();
         s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
-        s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         s.handle_key(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(
             action,
             Some(Action::SendChat { ref text, .. }) if text == "h\ni"

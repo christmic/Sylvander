@@ -307,7 +307,11 @@ impl Composer {
         self.history_idx = None;
     }
 
-    /// Process a key. Returns `Some(text)` on submit (Alt/Ctrl+Enter).
+    /// Process a key. Returns `Some(text)` on submit (plain Enter).
+    ///
+    /// Keymap (iMessage / Codex / Claude Code convention):
+    /// - plain `Enter` → submit (returns `Some(submitted_text)`)
+    /// - `Shift+Enter` (or `Ctrl+Enter` / `Alt+Enter` fallback) → newline
     pub fn handle_key(&mut self, key: &KeyEvent) -> Option<String> {
         // History navigation is independent of selection/shift; do it first.
         if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
@@ -318,11 +322,19 @@ impl Composer {
             }
         }
 
-        // Submit: Alt+Enter or Ctrl+Enter.
+        // Submit on plain Enter. Shift / Ctrl / Alt on Enter insert a
+        // newline (Shift+Enter is the canonical terminal convention; we
+        // keep the alt/ctrl variants as fallbacks for terminals that
+        // swallow Shift+Enter).
         let mods = key.modifiers;
-        let submit = (mods.contains(KeyModifiers::ALT)
+        let newline = (mods.contains(KeyModifiers::SHIFT)
+            || mods.contains(KeyModifiers::ALT)
             || mods.contains(KeyModifiers::CONTROL))
             && key.code == KeyCode::Enter;
+        let submit = key.code == KeyCode::Enter
+            && !mods.contains(KeyModifiers::SHIFT)
+            && !mods.contains(KeyModifiers::ALT)
+            && !mods.contains(KeyModifiers::CONTROL);
 
         // Selection-extending movement: Shift held, with plain arrows/Home/End.
         let shift = mods.contains(KeyModifiers::SHIFT);
@@ -335,7 +347,7 @@ impl Composer {
                 self.anchor = None;
                 return Some(self.take_submit());
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if newline => {
                 self.insert_newline();
             }
             KeyCode::Backspace => {
@@ -683,48 +695,50 @@ mod tests {
     }
 
     #[test]
-    fn enter_inserts_newline_not_submit() {
+    fn shift_enter_inserts_newline_not_submit() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::SHIFT));
         c.handle_key(&key(KeyCode::Char('b'), KeyModifiers::NONE));
         assert_eq!(c.text(), "a\nb");
         assert_eq!(c.row_count(), 2);
     }
 
     #[test]
-    fn alt_enter_submits() {
+    fn plain_enter_submits() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('h'), KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('i'), KeyModifiers::NONE));
-        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(submitted.as_deref(), Some("hi"));
         assert!(c.is_empty());
     }
 
     #[test]
-    fn ctrl_enter_submits_fallback() {
+    fn plain_enter_on_empty_does_nothing() {
         let mut c = Composer::default();
-        c.handle_key(&key(KeyCode::Char('x'), KeyModifiers::NONE));
-        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::CONTROL));
-        assert_eq!(submitted.as_deref(), Some("x"));
-        assert!(c.is_empty());
+        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(submitted, None);
     }
 
     #[test]
-    fn alt_enter_on_empty_does_nothing() {
+    fn ctrl_enter_inserts_newline_fallback() {
+        // Ctrl+Enter is a fallback for terminals that swallow Shift+Enter.
         let mut c = Composer::default();
-        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
-        assert_eq!(submitted, None);
+        c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::CONTROL));
+        c.handle_key(&key(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(c.text(), "a\nb");
+        assert_eq!(c.row_count(), 2);
     }
 
     #[test]
     fn multi_line_submit_joined_with_newline() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::SHIFT));
         c.handle_key(&key(KeyCode::Char('b'), KeyModifiers::NONE));
-        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(submitted.as_deref(), Some("a\nb"));
     }
 
@@ -733,7 +747,8 @@ mod tests {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('b'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
+        // Shift+Enter inserts newline; new convention.
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::SHIFT));
         // rows = ["ab", ""], cursor at (1, 0)
         c.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
         // joins row 1 into row 0 → "ab"
@@ -759,9 +774,9 @@ mod tests {
     fn history_up_recalls_previous_submission() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('h'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('w'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         // Now in fresh empty buffer. Press Up → recall last "w".
         c.handle_key(&key(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(c.text(), "w");
@@ -777,9 +792,9 @@ mod tests {
     fn history_dedupes_consecutive_equal_submissions() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('x'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('x'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(c.history.len(), 1);
     }
 
@@ -793,7 +808,7 @@ mod tests {
             for ch in s.chars() {
                 c.handle_key(&key(KeyCode::Char(ch), KeyModifiers::NONE));
             }
-            let _ = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+            let _ = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         }
         assert_eq!(c.history.len(), HISTORY_CAP);
     }
@@ -802,7 +817,7 @@ mod tests {
     fn submit_pushes_into_history() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('z'), KeyModifiers::NONE));
-        c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(c.history.back().map(String::as_str), Some("z"));
     }
 
@@ -878,7 +893,8 @@ mod tests {
         c.handle_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('u'), KeyModifiers::NONE));
         c.handle_key(&key(KeyCode::Char('e'), KeyModifiers::NONE));
-        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        // Plain Enter submits in the new convention.
+        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         let submitted = submitted.expect("submit");
         // Order: [attachments] block first, then the draft.
         assert!(submitted.contains("[attachments]"));
@@ -920,7 +936,7 @@ mod tests {
         // Pre-populate one entry, then save.
         let mut c1 = Composer::default();
         c1.handle_key(&key(KeyCode::Char('h'), KeyModifiers::NONE));
-        let _ = c1.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        let _ = c1.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         c1.save_history_to(&path).expect("save");
         // A fresh composer loads from disk; remembered history is there.
         let loaded = Composer::load_history_from(&path);
@@ -946,7 +962,7 @@ mod tests {
         let nested = dir.join("nested").join("history.json");
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
-        let _ = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        let _ = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         c.save_history_to(&nested).expect("save");
         assert!(nested.exists());
         std::fs::remove_dir_all(&dir).ok();

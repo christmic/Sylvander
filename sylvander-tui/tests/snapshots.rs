@@ -117,12 +117,13 @@ fn approval_modal_overlays_chat() {
 #[test]
 fn multiline_composer_renders_two_rows() {
     let mut state = AppState::new();
-    // Type "ab", Enter, "cd" — exercises the composer panel.
+    // Type "ab", Shift+Enter (newline), "cd" — exercises the composer panel.
+    // Plain Enter now submits in the new keymap convention.
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let k = |c, m| KeyEvent::new(c, m);
     state.handle_key(&k(KeyCode::Char('a'), KeyModifiers::NONE));
     state.handle_key(&k(KeyCode::Char('b'), KeyModifiers::NONE));
-    state.handle_key(&k(KeyCode::Enter, KeyModifiers::NONE));
+    state.handle_key(&k(KeyCode::Enter, KeyModifiers::SHIFT));
     state.handle_key(&k(KeyCode::Char('c'), KeyModifiers::NONE));
     state.handle_key(&k(KeyCode::Char('d'), KeyModifiers::NONE));
     // Sanity check: composer should be 2 rows.

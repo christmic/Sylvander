@@ -74,10 +74,10 @@ impl Breakpoint {
 pub fn compact_help_for(breakpoint: Breakpoint, mode_label: &str) -> &'static str {
     if breakpoint.shows_full_help() {
         match mode_label {
-            "Normal" => "Enter:send  Alt+Enter:send  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command",
+            "Normal" => "Enter:send  Shift+Enter:newline  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command",
             "ApprovalPending" => "y:approve  n:reject  Y:all  N:reject-all  esc:cancel",
             "AskPending" => "Enter:submit  Space:toggle  Esc:cancel",
-            _ => "Enter:send  Esc:quit  Ctrl+C:quit",
+            _ => "Enter:send  Esc:quit",
         }
     } else {
         "Enter:send  Esc:quit"
@@ -117,7 +117,7 @@ mod tests {
         // mode-specific cue (so we catch a regression where the wide
         // branch collapses too eagerly).
         let normal = compact_help_for(Breakpoint::Wide, "Normal");
-        assert!(normal.contains("Alt+Enter"));
+        assert!(normal.contains("Shift+Enter"));
         let ap = compact_help_for(Breakpoint::Wide, "ApprovalPending");
         assert!(ap.contains("approve") || ap.contains('Y'));
         let ask = compact_help_for(Breakpoint::Wide, "AskPending");
@@ -139,6 +139,6 @@ mod tests {
         // multi-shortcut help → caller compresses to a single short line.
         let std_n = compact_help_for(Breakpoint::Standard, "Normal");
         assert!(std_n.starts_with("Enter:send"));
-        assert!(!std_n.contains("Alt+Enter"));
+        assert!(!std_n.contains("Shift+Enter"));
     }
 }
