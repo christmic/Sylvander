@@ -100,9 +100,9 @@ pub struct Composer {
     /// Optional selection anchor (`row`, `col` byte offset).
     anchor: Option<(usize, usize)>,
     /// Past submissions, newest at the back.
-    history: VecDeque<String>,
+    pub(crate) history: VecDeque<String>,
     /// Position when navigating history. `None` means "editing the live buffer".
-    history_idx: Option<usize>,
+    pub(crate) history_idx: Option<usize>,
     /// Collapsed payloads above the draft.
     pub attachments: Vec<Attachment>,
 }
@@ -263,6 +263,39 @@ impl Composer {
     /// Number of attachment tokens currently above the draft.
     pub fn attachment_count(&self) -> usize {
         self.attachments.len()
+    }
+
+    /// Read-only access to the history ring (newest entries at the back).
+    /// Used by the persistence layer and by tests.
+    pub fn history(&self) -> &VecDeque<String> {
+        &self.history
+    }
+
+    /// Load a previously-persisted history ring from disk. Falls back to
+    /// empty on I/O / parse error so a corrupt file does not block startup.
+    pub fn load_history_from(path: &std::path::Path) -> VecDeque<String> {
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes)
+                .ok()
+                .map(|v| v.into_iter().collect())
+                .unwrap_or_default(),
+            Err(_) => VecDeque::new(),
+        }
+    }
+
+    /// Persist the history ring atomically (write to temp + rename) so a
+    /// power cut mid-write cannot corrupt the file.
+    pub fn save_history_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let bytes = serde_json::to_vec(&self.history.iter().collect::<Vec<_>>())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(&tmp, &bytes)?;
+        // Best-effort atomic rename — on most platforms this is atomic.
+        std::fs::rename(&tmp, path)?;
+        Ok(())
     }
 
     /// Reset the composer to an empty buffer (no history push).
@@ -878,5 +911,57 @@ mod tests {
             c.paste(&(1..=10).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
         }
         assert_eq!(c.attachment_count(), 3);
+    }
+
+    #[test]
+    fn history_round_trips_through_disk() {
+        let dir = tempdir();
+        let path = dir.join("history.json");
+        // Pre-populate one entry, then save.
+        let mut c1 = Composer::default();
+        c1.handle_key(&key(KeyCode::Char('h'), KeyModifiers::NONE));
+        let _ = c1.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c1.save_history_to(&path).expect("save");
+        // A fresh composer loads from disk; remembered history is there.
+        let loaded = Composer::load_history_from(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.front().map(String::as_str), Some("h"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn history_load_returns_empty_on_missing_file() {
+        let dir = tempdir();
+        let path = dir.join("nonexistent.json");
+        let loaded = Composer::load_history_from(&path);
+        assert!(loaded.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn history_save_is_atomic_under_dir() {
+        // Save to a path whose parent does not exist yet — save_history_to
+        // must create the directory.
+        let dir = tempdir();
+        let nested = dir.join("nested").join("history.json");
+        let mut c = Composer::default();
+        c.handle_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
+        let _ = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        c.save_history_to(&nested).expect("save");
+        assert!(nested.exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn tempdir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sylvander-tui-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create tempdir");
+        dir
     }
 }

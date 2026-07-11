@@ -49,12 +49,31 @@ pub struct AppState {
     // ---- pending outbound actions (drained by main loop each tick) ----
     pub pending_actions: Vec<Action>,
 
+    // ---- composer history persistence (opt-in) ----
+    /// Path to write the composer history ring to on every submit.
+    /// `None` keeps history in memory only.
+    pub history_path: Option<std::path::PathBuf>,
+
     // ---- render trigger ----
     pub dirty: DirtyFlag,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        Self::with_history_path(None)
+    }
+
+    /// Build a state whose composer history is loaded from `path` (if
+    /// `Some`). On every submit, the history is persisted back to that
+    /// path. Passing `None` keeps history in memory only (the default).
+    pub fn with_history_path(path: Option<std::path::PathBuf>) -> Self {
+        let mut composer = Composer::default();
+        if let Some(p) = &path {
+            let loaded = Composer::load_history_from(p);
+            if !loaded.is_empty() {
+                composer.history = loaded;
+            }
+        }
         let mut state = Self {
             messages: Vec::new(),
             streaming: String::new(),
@@ -66,14 +85,25 @@ impl AppState {
             sessions: Vec::new(),
             panels: Vec::new(),
             modals: ModalStack::new(),
-            composer: Composer::default(),
+            composer,
             chat_scroll: 0,
             should_quit: false,
             pending_actions: Vec::new(),
             dirty: DirtyFlag::default(),
+            history_path: path,
         };
         state.register_default_panels();
         state
+    }
+
+    /// Persist composer history to disk, if a path is configured. Best-effort:
+    /// errors are surfaced via `AppState.status` but do not propagate.
+    pub fn save_history(&mut self) {
+        if let Some(path) = self.history_path.clone() {
+            if let Err(e) = self.composer.save_history_to(&path) {
+                self.status = format!("history save failed: {e}");
+            }
+        }
     }
 
     fn register_default_panels(&mut self) {
@@ -267,6 +297,15 @@ impl AppState {
                 self.modals.push(Box::new(modal));
                 self.mode = AppMode::AskPending;
             }
+            DomainEvent::ToolRejected { tool_name, reason } => {
+                // Surface in transcript as an Info line so the user sees
+                // the rejection. Don't switch the modal — the agent is
+                // expected to keep iterating, and we'll see its follow-up
+                // streamed text in the next iteration.
+                self.messages.push(ChatMessage::Info(format!(
+                    "tool {tool_name} rejected: {reason}"
+                )));
+            }
             DomainEvent::Tick => {
                 // No state change — only used to wake the render loop.
             }
@@ -367,6 +406,7 @@ impl AppState {
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
         if let Some(text) = self.composer.handle_key(key) {
+            self.save_history();
             self.dirty.mark();
             return Some(Action::SendChat {
                 text,

@@ -137,8 +137,10 @@ jobs:
         # expected event sequences drift even when no real API is
         # involved (mock response shape mismatches). CI opts out;
         # run them locally with plain `cargo test` to validate.
+        # INSTA_UPDATE=no forces insta snapshot tests to fail on drift
+        # instead of silently regenerating — protects visual layout.
         run: |
-          cargo test --workspace --locked -- \
+          INSTA_UPDATE=no cargo test --workspace --locked -- \
             --skip real_use_case \
             --skip single_iteration_end_turn_returns_final_message \
             --skip event_order_iteration_start_chunks_end \
@@ -236,3 +238,42 @@ jobs:
             libssl-dev libsqlite3-dev protobuf-compiler
       - name: cargo build --workspace
         run: cargo build --workspace --locked
+
+  # ---------------------------------------------------------------
+  # 8. TUI snapshot drift guard — the 23 `insta::assert_snapshot!`
+  # tests in `sylvander-tui/tests/snapshots.rs` cover the entire UI
+  # surface (modals, composer, breakpoints, AskUser variants, etc.).
+  # A change that goes unnoticed in `cargo build` because the binary
+  # links fine but shifts visual layout (one extra row in `tool_call_*`
+  # snapshots, a new status prefix) would otherwise slip to master.
+  # INSTA_UPDATE=no makes the test FAIL on drift instead of silently
+  # regenerating, so layout changes are caught in CI before merge.
+  # ---------------------------------------------------------------
+  tui-snapshots:
+    name: tui insta snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libssl-dev libsqlite3-dev protobuf-compiler
+      - name: Install cargo-insta for review artifact
+        run: cargo install --locked cargo-insta
+      - name: Run insta snapshot tests
+        run: |
+          INSTA_UPDATE=no cargo test -p sylvander-tui --test snapshots --locked
+      - name: Upload any *.snap.new drift as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: insta-pending-snapshots
+          path: |
+            sylvander-tui/tests/snapshots/**/*.snap.new
+          if-no-files-found: ignore

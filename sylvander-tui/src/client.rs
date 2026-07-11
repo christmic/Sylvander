@@ -70,6 +70,13 @@ pub enum ServerMsg {
         batch_id: String,
         tools: Vec<ToolInfoMsg>,
     },
+    /// Agent forcefully rejected a tool (server-side policy) — surface
+    /// the reason in the transcript so the user understands the failure.
+    ToolRejected {
+        session_id: String,
+        tool_name: String,
+        reason: String,
+    },
     /// Agent asks the user a clarifying question. UX §12.1:
     /// multi_select=false → single choice + free-text fallback;
     /// multi_select=true → multi-select checkboxes + free-text fallback.
@@ -268,6 +275,12 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             question,
             options,
             multi_select,
+        },
+        ServerMsg::ToolRejected {
+            tool_name, reason, ..
+        } => DomainEvent::ToolRejected {
+            tool_name,
+            reason,
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
