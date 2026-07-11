@@ -10,7 +10,7 @@
 use crate::component::Component;
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
-use crate::input::InputState;
+use crate::input::Composer;
 use crate::modal::ModalStack;
 use crate::panel;
 
@@ -35,7 +35,7 @@ pub struct AppState {
     pub modals: ModalStack,
 
     // ---- focused input ----
-    pub input: InputState,
+    pub composer: Composer,
     /// Chat vertical scroll offset (0 = pinned to bottom).
     pub chat_scroll: usize,
     /// Quit signal — set by handle_key on Ctrl+C / Esc.
@@ -60,7 +60,7 @@ impl AppState {
             mode: AppMode::Normal,
             panels: Vec::new(),
             modals: ModalStack::new(),
-            input: InputState::default(),
+            composer: Composer::default(),
             chat_scroll: 0,
             should_quit: false,
             pending_actions: Vec::new(),
@@ -254,15 +254,20 @@ impl AppState {
             }
         }
 
-        // 2. Global keys (Ctrl+C always quits).
-        if key.code == crossterm::event::KeyCode::Char('c')
+        // 2. Global keys — Ctrl+C quits only when composer is empty.
+        //    When the composer has content we let it through so it can either
+        //    accept the keystroke (no-op) or handle a future copy binding.
+        let is_ctrl_c = key.code == crossterm::event::KeyCode::Char('c')
             && key
                 .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL)
-        {
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl_c && self.composer.is_empty() {
             self.should_quit = true;
             self.dirty.mark();
             return None;
+        }
+        if is_ctrl_c {
+            // fall through to composer handler; it will ignore Ctrl+C.
         }
 
         // 3. Esc cancels current mode or quits.
@@ -280,13 +285,16 @@ impl AppState {
 
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
-        if let Some(text) = self.input.handle_key(&key.code) {
+        if let Some(text) = self.composer.handle_key(key) {
             self.dirty.mark();
             return Some(Action::SendChat {
                 text,
                 session_id: self.session_id.clone(),
             });
         }
+        // Even if composer returned None, it may have mutated (insert char,
+        // backspace, history nav). Always mark dirty so the panel re-renders.
+        self.dirty.mark();
 
         // Any non-input key in normal mode still marks dirty (e.g. Arrow keys
         // could be wired up later for chat scroll).
@@ -395,16 +403,29 @@ mod tests {
     }
 
     #[test]
-    fn enter_submits_chat_returns_send_action() {
+    fn alt_enter_submits_chat_returns_send_action() {
         let mut s = AppState::new();
         let key = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
         s.handle_key(&key);
         let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
         s.handle_key(&key);
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
         let action = s.handle_key(&enter);
         assert!(matches!(action, Some(Action::SendChat { ref text, .. }) if text == "hi"));
-        assert_eq!(s.input.buffer, "");
+        assert!(s.composer.is_empty());
+    }
+
+    #[test]
+    fn plain_enter_inserts_newline_and_does_not_submit() {
+        let mut s = AppState::new();
+        s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        s.handle_key(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+        assert!(matches!(
+            action,
+            Some(Action::SendChat { ref text, .. }) if text == "h\ni"
+        ));
     }
 
     #[test]
