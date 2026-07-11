@@ -18,6 +18,12 @@
 - `14-interaction-contract.svg` — blocking focus, shortcut ownership, and state ownership.
 - `15-responsive-accessibility.svg` — terminal-cell breakpoints and capability fallbacks.
 - `16-event-component-handoff.svg` — event/component lifecycle and replayable design QA.
+- `17-turn-rhythm.svg` — immersive live, settled, and inspected turn density.
+- `18-composer-interactions.svg` — idle, focus, multiline, steer, paste, IME, and adaptive status.
+- `19-sidebar-microinteractions.svg` — priority sections, hover, peek, search, and collapsed rail.
+- `20-overlay-system.svg` — Approval, AskUser, Command Palette, and Session Switcher.
+- `21-diff-artifact-viewer.svg` — sticky Diff, Command Output, image, file, and artifact inspection.
+- `22-motion-focus.svg` — timing, focus language, unread/live return, toast, and reduced motion.
 - `07-session-management.svg` — large session collections, notification policy, linked views, and draft conflict.
 - `08-execution-control.svg` — steer, queue, interrupt boundaries, and non-interruptible work.
 - `09-permission-center.svg` — pending decisions, scoped permission rules, audit history, and revocation.
@@ -56,6 +62,12 @@ SVG import preserves text, vectors, colors, borders, and groups. Figma may not p
 14. **Interaction contract** — deterministic focus and state boundaries.
 15. **Responsive/accessibility** — measurable cell layouts and fallbacks.
 16. **Implementation handoff** — protocol-to-component mapping and QA cases.
+17. **Turn rhythm** — immersive transcript density and progressive disclosure.
+18. **Composer** — input-state visual and micro-interaction specification.
+19. **Sidebar detail** — desktop session navigation behavior and density.
+20. **Overlay system** — common visual language for temporary interaction layers.
+21. **Inspection** — code, output, and generated artifact viewing.
+22. **Motion/focus** — perceptual timing and stable feedback behavior.
 7. **Session management** — scale, attention, linked views, and multi-window consistency.
 8. **Execution control** — steering, queued prompts, interruption, and safe boundaries.
 9. **Permission center** — decision lifecycle, reusable scopes, revocation, and audit.

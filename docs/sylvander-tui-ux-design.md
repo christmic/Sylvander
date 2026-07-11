@@ -2,7 +2,7 @@
 
 > Status: Implementation-ready design baseline
 >
-> Version: 5.0
+> Version: 6.0
 >
 > Date: 2026-07-11
 >
@@ -26,6 +26,12 @@ Editable design artifacts:
 - [`design/14-interaction-contract.svg`](./design/14-interaction-contract.svg) — focus precedence, shortcut ownership, and state ownership.
 - [`design/15-responsive-accessibility.svg`](./design/15-responsive-accessibility.svg) — exact terminal breakpoints, monochrome/ASCII, CJK, and reduced-motion behavior.
 - [`design/16-event-component-handoff.svg`](./design/16-event-component-handoff.svg) — protocol event to UI component lifecycle and retry contract.
+- [`design/17-turn-rhythm.svg`](./design/17-turn-rhythm.svg) — immersive user, agent, thinking, tool, and plan rhythm.
+- [`design/18-composer-interactions.svg`](./design/18-composer-interactions.svg) — idle, focus, multiline, steering, paste, and IME composer states.
+- [`design/19-sidebar-microinteractions.svg`](./design/19-sidebar-microinteractions.svg) — hover, peek, search, collapse, badges, and session density.
+- [`design/20-overlay-system.svg`](./design/20-overlay-system.svg) — approval, AskUser, command palette, and session switcher visual language.
+- [`design/21-diff-artifact-viewer.svg`](./design/21-diff-artifact-viewer.svg) — diff, command output, image, file, and artifact inspection.
+- [`design/22-motion-focus.svg`](./design/22-motion-focus.svg) — streaming, selection, toast, scroll, unread, and reduced-motion feedback.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -1260,10 +1266,86 @@ Implementation handoff is accepted when replayable scenarios pass:
 - Given a server reconnect, when the last event cursor overlaps, then the transcript contains no duplicate delta or tool row.
 - Given 300 sessions updating, when selection is on one row, then background sorting does not move selection.
 
-## 35. Version History
+## 35. UI Refinement: Immersive Turn Rhythm
+
+The transcript uses a readable maximum width of 96–110 terminal columns. On wider Ghostty surfaces it sits within the main region with balanced breathing room; Diff and log inspection may temporarily use additional width.
+
+Turn markers replace repeated uppercase speaker headings:
+
+```text
+›  User instruction
+
+◖S◗  Sylvander response
+```
+
+The full brand appears once on entry. Consecutive assistant paragraphs do not repeat the mark. Subagents use a short textual marker such as `explorer ›`.
+
+Tool activity has three densities:
+
+- **Live:** title, elapsed time, and visible active children.
+- **Settled:** one evidence summary line after successful completion.
+- **Inspected:** expanded aligned rows on explicit selection.
+
+Thinking defaults to one subdued summary line and collapses when the answer begins. Plans likewise collapse to current step and progress after approval.
+
+## 36. UI Refinement: Composer
+
+The ordinary Composer does not use a permanent full coral rectangle.
+
+- **Idle:** two faint horizontal rules and placeholder.
+- **Focused:** short coral leading accent, caret, and slightly brighter placeholder/text.
+- **Steering:** blue active-state label plus current-turn language.
+- **Waiting decision:** composer remains visible but visually subordinate and unavailable.
+- **Paste/attachment:** compact typed objects above the draft.
+- **IME:** composition underline and candidate surface anchored to the caret.
+
+Status text adapts to the dominant state. Idle shows mode/model/context; working shows elapsed time and tool count; waiting shows the required decision; disconnected shows reconnect and draft preservation. Only two or three contextually useful shortcuts remain visible.
+
+## 37. UI Refinement: Sidebar
+
+Sidebar ordering is visual-priority driven: Waiting for You, Active, Pinned, Recent, Workspaces, Archived. Active selection uses a 2–3 px coral leading rule and brighter text, never a full gray selection block.
+
+Hover/focus reveals secondary actions without changing row height. A delayed Peek surface shows current activity, changed files, draft status, and open action without switching the session. Search replaces list content in place and preserves the previous section/scroll state on exit.
+
+The expanded sidebar is resizable; the compact rail retains only brand and semantic state icons. Peeking the rail overlays the main region instead of causing transcript reflow.
+
+## 38. UI Refinement: Overlay System
+
+Approval, AskUser, Palette, Session Switcher, and Inspect share spacing, typography, selection, and dismissal behavior, but not identical size.
+
+- Decision overlays are centered and narrow enough to keep the action/risk readable.
+- Command and session search appear in the upper-middle region, leaving recent transcript context visible.
+- Fields are separated by whitespace and type hierarchy rather than nested boxes.
+- Only the selected option receives a faint wash and leading accent.
+- Ordinary approval is amber; destructive irreversible action is red.
+- Default selection always represents the smallest permission scope or safest non-destructive choice.
+
+## 39. UI Refinement: Diff and Artifacts
+
+Diff uses sticky file titles, muted fixed line-number gutters, strong hunk spacing, and colored text without full-width addition/removal backgrounds. Horizontal scrolling keeps the gutter visible. Selected hunks use a leading accent.
+
+Command output begins as a result summary; expansion shows a bounded live tail or static output with search and copy. Images use terminal preview only when supported and always retain path, size, dimensions, and open/Quick Look actions. File and generated artifact rows share one compact action language.
+
+## 40. UI Refinement: Motion, Focus, and Feedback
+
+Motion exists to confirm state, never to decorate:
+
+- Spinner: 4–6 fps.
+- Coalesced streaming refresh: 20–30 fps maximum.
+- Tool completion remains expanded briefly, then settles without moving scroll anchor.
+- Overlay appears directly or with one subtle frame transition.
+- Toast does not reflow transcript and disappears after 2–3 seconds.
+- Sidebar updates never reorder beneath keyboard selection.
+
+When the user scrolls away from live output, streaming does not move the viewport. A single `3 new events · return to live` control appears. Focus is always indicated by a leading accent, caret, underline, or selection wash—never color alone.
+
+Reduced-motion mode removes spinner animation, pulsing, and rewrite effects while preserving elapsed time and textual state.
+
+## 41. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 6.0 | 2026-07-11 | Added UI-only refinement for immersive turn rhythm, Composer states, Sidebar micro-interactions, overlay visual language, Diff/artifact inspection, and motion/focus feedback |
 | 5.0 | 2026-07-11 | Closed implementation-readiness gaps with end-to-end journeys, keyboard/focus/state ownership contracts, exact responsive and accessibility matrices, event-component lifecycle mapping, and replayable design QA scenarios |
 | 4.1 | 2026-07-11 | Recorded the implementation-readiness gap audit, blocking-interaction precedence, and phased design iteration plan; synchronized the advanced design artifact set |
 | 4.0 | 2026-07-11 | Added advanced session scale, execution control, Permission Center, search/checkpoint/fork, context/model/tool/artifact behavior, CJK/IME composer, resilience, diagnostics, security, multi-window, and performance specifications |
