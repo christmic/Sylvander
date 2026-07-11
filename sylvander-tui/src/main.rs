@@ -3,10 +3,14 @@
 //! Connects to a Sylvander server over Unix socket. Library surface in
 //! `lib.rs`; this file is the binary entry point.
 
+use std::io::stdout;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::event::{Event, KeyEvent, KeyEventKind};
+use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use tokio::sync::mpsc;
 
 use sylvander_tui::{
@@ -15,6 +19,12 @@ use sylvander_tui::{
     event::{Action, DomainEvent},
     ui,
 };
+
+/// Input event from the terminal — either a key press or a bracketed paste.
+enum InputEvent {
+    Key(KeyEvent),
+    Paste(String),
+}
 
 const SOCKET_PATH: &str = "/tmp/sylvander.sock";
 const TICK_MS: u64 = 50;
@@ -30,16 +40,32 @@ async fn main() {
     let mut terminal = ratatui::init();
     terminal.clear().unwrap();
 
+    // Enable bracketed paste so pasted text arrives as `Event::Paste`
+    // instead of flooding the app with synthetic Key events. Required
+    // for the design's inline-vs-attachment paste policy (M-T2).
+    if let Err(e) = execute!(stdout(), EnableBracketedPaste) {
+        eprintln!("warning: failed to enable bracketed paste: {e}");
+    }
+
     // App state (single-threaded, owned by main)
     let mut state = AppState::new();
 
-    // ---- Keyboard input channel ----
-    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+    // ---- Input channel (keys + bracketed paste) ----
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
     std::thread::spawn(move || loop {
-        if let Ok(Event::Key(key)) = crossterm::event::read() {
-            if key.kind == KeyEventKind::Press && key_tx.send(key).is_err() {
-                break;
+        match crossterm::event::read() {
+            Ok(Event::Key(key)) => {
+                if key.kind == KeyEventKind::Press && input_tx.send(InputEvent::Key(key)).is_err() {
+                    break;
+                }
             }
+            Ok(Event::Paste(text)) => {
+                if input_tx.send(InputEvent::Paste(text)).is_err() {
+                    break;
+                }
+            }
+            Ok(_) => {} // Focus / Resize / Mouse — currently ignored.
+            Err(_) => break,
         }
     });
 
@@ -59,10 +85,17 @@ async fn main() {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
-        // 1. Drain keyboard events.
-        while let Ok(key) = key_rx.try_recv() {
-            if let Some(action) = state.handle_key(&key) {
-                dispatch_action(action, &mut client, &mut state).await;
+        // 1. Drain terminal input.
+        while let Ok(input) = input_rx.try_recv() {
+            match input {
+                InputEvent::Key(key) => {
+                    if let Some(action) = state.handle_key(&key) {
+                        dispatch_action(action, &mut client, &mut state).await;
+                    }
+                }
+                InputEvent::Paste(text) => {
+                    state.handle_paste(&text);
+                }
             }
         }
 
@@ -87,7 +120,13 @@ async fn main() {
 
         // 6. Quit check.
         if state.should_quit {
-            ratatui::restore();
+            // Restore terminal cleanly: ratatui::restore() runs its
+            // shutdown hooks (which already includes LeaveAlternateScreen),
+            // but bracketed paste and raw mode are managed by us so we
+            // undo them here in the right order.
+            disable_raw_mode().ok();
+            execute!(stdout(), DisableBracketedPaste).ok();
+            execute!(stdout(), LeaveAlternateScreen).ok();
             return;
         }
 

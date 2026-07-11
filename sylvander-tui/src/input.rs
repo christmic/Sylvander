@@ -17,7 +17,75 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const HISTORY_CAP: usize = 100;
 
-/// Multiline composer with cursor, optional selection, and history.
+/// Inline-vs-attachment threshold per design §12.4 — "Pasted content under
+/// eight lines stays inline." Larger pastes collapse to an attachment token.
+pub const INLINE_PASTE_LINE_LIMIT: usize = 8;
+
+/// What kinds of attachment the composer can hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    /// Bulk text pasted from the clipboard (≥ `INLINE_PASTE_LINE_LIMIT` lines).
+    Paste,
+    /// A file/buffer reference (M-T2.4 — currently only populated by tests;
+    /// production path arrives when file picker lands).
+    File,
+}
+
+/// A collapsed payload attached above the draft. Tokens render as a
+/// single-line object so multi-kilobyte pastes don't blow out the layout.
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    pub kind: AttachmentKind,
+    pub content: String,
+    pub line_count: usize,
+    pub byte_count: usize,
+    /// Truncated preview shown in the token (e.g. "lorem ipsum dolor sit amet…").
+    pub preview: String,
+}
+
+impl Attachment {
+    pub fn new_paste(content: String) -> Self {
+        let line_count = if content.is_empty() {
+            0
+        } else {
+            content.matches('\n').count() + 1
+        };
+        let byte_count = content.len();
+        let preview = make_preview(&content, 32);
+        Self {
+            kind: AttachmentKind::Paste,
+            content,
+            line_count,
+            byte_count,
+            preview,
+        }
+    }
+
+    /// Short label for the token, e.g. `[paste: 23 lines · 1.2kB] lorem…`.
+    pub fn label(&self) -> String {
+        let kind = match self.kind {
+            AttachmentKind::Paste => "paste",
+            AttachmentKind::File => "file",
+        };
+        let size = human_bytes(self.byte_count);
+        format!(
+            "[{kind}: {} lines · {size}] {}",
+            self.line_count, self.preview
+        )
+    }
+}
+
+/// Outcome of a paste operation — the caller (panel) uses this to decide
+/// whether to redraw an extra attachment row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteOutcome {
+    /// Pasted text inserted inline into the draft.
+    Inlined,
+    /// Text was collapsed into a new attachment token above the draft.
+    Attached,
+}
+
+/// Multiline composer with cursor, optional selection, history, attachments.
 ///
 /// Returned by `AppState::handle_key` indirectly: when the user presses
 /// `Alt+Enter` or `Ctrl+Enter` with non-empty buffer, `take_submit()` returns
@@ -35,6 +103,8 @@ pub struct Composer {
     history: VecDeque<String>,
     /// Position when navigating history. `None` means "editing the live buffer".
     history_idx: Option<usize>,
+    /// Collapsed payloads above the draft.
+    pub attachments: Vec<Attachment>,
 }
 
 impl Default for Composer {
@@ -46,6 +116,7 @@ impl Default for Composer {
             anchor: None,
             history: VecDeque::new(),
             history_idx: None,
+            attachments: Vec::new(),
         }
     }
 }
@@ -92,26 +163,106 @@ impl Composer {
     }
 
     /// Drain the current buffer, returning it, and clear composer state.
+    /// Attachments are concatenated as fenced blocks above the draft text;
+    /// on submit both the draft and the attachments are cleared.
     pub fn take_submit(&mut self) -> String {
-        let text = self.text();
-        if !text.is_empty() {
-            // Push into history (dedup against last).
+        let draft = self.text();
+        let mut composed = String::new();
+
+        if !self.attachments.is_empty() {
+            composed.push_str("[attachments]\n");
+            for (i, att) in self.attachments.iter().enumerate() {
+                composed.push_str(&format!(
+                    "--- attachment {} ({:?}, {} lines, {} bytes) ---\n",
+                    i + 1,
+                    att.kind,
+                    att.line_count,
+                    att.byte_count
+                ));
+                composed.push_str(&att.content);
+                if !att.content.ends_with('\n') {
+                    composed.push('\n');
+                }
+            }
+            composed.push_str("[/attachments]\n");
+        }
+
+        if !draft.is_empty() {
+            composed.push_str(&draft);
+        }
+
+        // History dedup only when the **whole** composed payload is identical
+        // to the last submission (paste content makes collisions rarer).
+        let normalized = composed.trim().to_string();
+        if !normalized.is_empty() {
             match self.history.back() {
-                Some(last) if last == &text => {}
+                Some(last) if last == &composed => {}
                 _ => {
                     if self.history.len() == HISTORY_CAP {
                         self.history.pop_front();
                     }
-                    self.history.push_back(text.clone());
+                    self.history.push_back(composed.clone());
                 }
             }
         }
+
         self.rows = vec![String::new()];
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.anchor = None;
         self.history_idx = None;
-        text
+        self.attachments.clear();
+        composed
+    }
+
+    /// Handle a paste event from the terminal. Per design §12.4:
+    /// ≤8 newline-separated lines are inserted inline; larger pastes
+    /// become an attachment token with metadata above the draft.
+    pub fn paste(&mut self, text: &str) -> PasteOutcome {
+        if text.is_empty() {
+            return PasteOutcome::Inlined;
+        }
+        let line_count = if text.is_empty() {
+            0
+        } else {
+            text.matches('\n').count() + 1
+        };
+        if line_count <= INLINE_PASTE_LINE_LIMIT {
+            self.paste_inline(text);
+            PasteOutcome::Inlined
+        } else {
+            self.attachments.push(Attachment::new_paste(text.to_string()));
+            PasteOutcome::Attached
+        }
+    }
+
+    /// Insert pasted text character-by-character, using `insert_char` so
+    /// newline characters advance through `rows` like Enter would.
+    fn paste_inline(&mut self, text: &str) {
+        if self.is_empty() {
+            // First row empty — promote cursor here.
+        }
+        // Walk the pasted string char-by-char so unicode surrogate
+        // boundaries and newlines both flow through the normal composer
+        // logic. Tab characters are converted to single spaces because
+        // tabs in a paste are usually accidental indentation and would
+        // bloat the cursor math.
+        for ch in text.chars() {
+            match ch {
+                '\n' => self.insert_newline(),
+                '\t' => {
+                    for _ in 0..4 {
+                        self.insert_char(' ');
+                    }
+                }
+                c => self.insert_char(c),
+            }
+        }
+    }
+
+    /// Number of attachment tokens currently above the draft.
+    pub fn attachment_count(&self) -> usize {
+        self.attachments.len()
     }
 
     /// Reset the composer to an empty buffer (no history push).
@@ -461,6 +612,31 @@ fn char_count(s: &str) -> usize {
     s.chars().count()
 }
 
+/// Truncate to the first `max_chars` and squash newlines so a single-line
+/// preview is safe to render above the draft.
+fn make_preview(content: &str, max_chars: usize) -> String {
+    let squashed: String = content.chars().map(|c| if c == '\n' { ' ' } else { c }).collect();
+    let trimmed = squashed.trim();
+    if trimmed.chars().count() <= max_chars {
+        trimmed.to_string()
+    } else {
+        let mut out: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn human_bytes(n: usize) -> String {
+    const KB: usize = 1024;
+    if n < KB {
+        format!("{n}B")
+    } else if n < KB * KB {
+        format!("{:.1}kB", n as f64 / KB as f64)
+    } else {
+        format!("{:.1}MB", n as f64 / (KB * KB) as f64)
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -617,5 +793,90 @@ mod tests {
         c.handle_key(&key(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(c.text(), "abcd");
         assert_eq!(c.row_count(), 1);
+    }
+
+    // ----- paste / attachment -----
+
+    #[test]
+    fn paste_under_8_lines_inserts_inline() {
+        let mut c = Composer::default();
+        let outcome = c.paste("hello\nworld\nfoo");
+        assert_eq!(outcome, PasteOutcome::Inlined);
+        assert_eq!(c.text(), "hello\nworld\nfoo");
+        assert_eq!(c.attachment_count(), 0);
+    }
+
+    #[test]
+    fn paste_exactly_8_lines_inserts_inline_at_threshold() {
+        let mut c = Composer::default();
+        let payload = "1\n2\n3\n4\n5\n6\n7\n8"; // 8 lines
+        assert_eq!(c.paste(payload), PasteOutcome::Inlined);
+    }
+
+    #[test]
+    fn paste_over_8_lines_collapses_to_attachment() {
+        let mut c = Composer::default();
+        let payload = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let outcome = c.paste(&payload);
+        assert_eq!(outcome, PasteOutcome::Attached);
+        assert_eq!(c.attachment_count(), 1);
+        assert_eq!(c.attachments[0].kind, AttachmentKind::Paste);
+        assert_eq!(c.attachments[0].line_count, 20);
+        assert_eq!(c.attachments[0].content, payload);
+        // Draft must remain untouched.
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn empty_paste_is_noop() {
+        let mut c = Composer::default();
+        assert_eq!(c.paste(""), PasteOutcome::Inlined);
+        assert_eq!(c.attachment_count(), 0);
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn submit_with_attachment_embeds_content() {
+        let mut c = Composer::default();
+        c.paste(&(1..=15).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
+        c.handle_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
+        c.handle_key(&key(KeyCode::Char('u'), KeyModifiers::NONE));
+        c.handle_key(&key(KeyCode::Char('e'), KeyModifiers::NONE));
+        let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::ALT));
+        let submitted = submitted.expect("submit");
+        // Order: [attachments] block first, then the draft.
+        assert!(submitted.contains("[attachments]"));
+        assert!(submitted.contains("[/attachments]"));
+        assert!(submitted.contains("L1\n"));
+        assert!(submitted.contains("\nL15")); // body preserved
+        assert!(submitted.ends_with("que"));
+        // Everything cleared on submit.
+        assert!(c.is_empty());
+        assert_eq!(c.attachment_count(), 0);
+    }
+
+    #[test]
+    fn attachment_label_is_human_friendly() {
+        let payload = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor";
+        let att = Attachment::new_paste(payload.to_string());
+        let label = att.label();
+        // Label should include kind, line count, and size.
+        assert!(label.starts_with("[paste:"));
+        assert!(label.contains("lines"));
+        assert!(label.contains("lorem"));
+        // Preview truncates long content.
+        assert!(label.contains('…') || label.chars().count() < 80);
+    }
+
+    #[test]
+    fn multiple_pastes_become_multiple_attachments() {
+        let mut c = Composer::default();
+        for _ in 0..3 {
+            c.paste(&(1..=10).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
+        }
+        assert_eq!(c.attachment_count(), 3);
     }
 }

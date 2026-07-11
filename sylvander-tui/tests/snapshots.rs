@@ -129,3 +129,40 @@ fn multiline_composer_renders_two_rows() {
     assert_eq!(state.composer.row_count(), 2);
     insta::assert_snapshot!(render_buf(&state, 80, 24));
 }
+
+#[test]
+fn paste_inline_under_8_lines() {
+    let mut state = AppState::new();
+    // Short paste (≤ 8 lines) should land in the draft directly.
+    state.handle_paste("alpha\nbeta\ngamma");
+    assert_eq!(state.composer.row_count(), 3);
+    assert_eq!(state.composer.attachment_count(), 0);
+    insta::assert_snapshot!(render_buf(&state, 80, 24));
+}
+
+#[test]
+fn paste_over_8_lines_collapses_to_attachment_token() {
+    let mut state = AppState::new();
+    // 20-line paste — should become a single attachment token above the draft.
+    let payload = (1..=20)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.handle_paste(&payload);
+    assert_eq!(state.composer.attachment_count(), 1);
+    assert_eq!(state.composer.row_count(), 1); // draft still empty
+    insta::assert_snapshot!(render_buf(&state, 80, 24));
+}
+
+#[test]
+fn many_attachments_collapses_with_more_indicator() {
+    let mut state = AppState::new();
+    // Six over-limit pastes — only 4 render as token, the rest get a
+    // "… (+2 more attachments)" indicator.
+    for _ in 0..6 {
+        let payload = (1..=10).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n");
+        state.handle_paste(&payload);
+    }
+    assert_eq!(state.composer.attachment_count(), 6);
+    insta::assert_snapshot!(render_buf(&state, 80, 24));
+}
