@@ -4,8 +4,8 @@ expression: "render_buf(&state, 80, 24)"
 ---
 Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
 You: list src                                                                   
-[ ] bash({"command":"ls src"})                                                  
-                                                                                
+◐ bash                                                                          
+  command  ls src                                                               
                                                                                 
                                                                                 
                                                                                 

@@ -4,8 +4,8 @@ expression: "render_buf(&state, 90, 28)"
 ---
 Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
 You: run setup                                                                            
-[ ] bash({"command":"ls"})                                                                
-                                                                                          
+◐ bash                                                                                    
+  command  ls                                                                             
                                                                                           
                                                                                           
                                                                                           

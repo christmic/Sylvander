@@ -83,7 +83,7 @@ impl Component for ChatPanel {
     }
 }
 
-fn push_message_lines(msg: &ChatMessage, lines: &mut Vec<Line>, width: usize) {
+fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width: usize) {
     match msg {
         ChatMessage::User(text) => {
             for chunk in char_chunks(text, width.saturating_sub(5)) {
@@ -107,14 +107,56 @@ fn push_message_lines(msg: &ChatMessage, lines: &mut Vec<Line>, width: usize) {
             input,
         } => {
             let (icon, color) = match status {
-                ToolStatus::Pending => ("[ ]", Color::Yellow),
-                ToolStatus::Done => ("[+]", Color::Green),
-                ToolStatus::Error => ("[x]", Color::Red),
+                ToolStatus::Pending => ("◐", Color::Yellow),
+                ToolStatus::Done => ("✓", Color::Green),
+                ToolStatus::Error => ("✗", Color::Red),
             };
-            lines.push(Line::from(Span::styled(
-                format!("{icon} {name}({input})"),
-                Style::default().fg(color),
-            )));
+            // Header: `◐ bash` (single line).
+            lines.push(Line::from(vec![
+                Span::styled(format!("{icon} "), Style::default().fg(color).bold()),
+                Span::styled(name, Style::default().fg(color).bold()),
+            ]));
+            // Body: structured key/value rows for non-empty input.
+            match input {
+                serde_json::Value::Null => {
+                    // No payload to show (e.g. wire-shape ToolCall without
+                    // input echo). Already covered by the header.
+                }
+                serde_json::Value::Object(map) => {
+                    if map.is_empty() {
+                        // Same — keep the line clean: don't dump "{}".
+                    } else {
+                        let label_w = map
+                            .keys()
+                            .map(|k| k.chars().count())
+                            .max()
+                            .unwrap_or(0)
+                            .min(20);
+                        for (k, v) in map {
+                            let rendered = render_json_value(v);
+                            let label = format!("  {:<w$}  ", k, w = label_w);
+                            // Truncate individual values to fit width.
+                            let val_str =
+                                truncate(&rendered, width.saturating_sub(label_w + 6));
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    label,
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                                Span::styled(val_str, Style::default().fg(Color::White)),
+                            ]));
+                        }
+                    }
+                }
+                _ => {
+                    // Non-object inputs (rare for our tools) — show compact.
+                    let rendered = render_json_value(input);
+                    lines.push(Line::from(Span::styled(
+                        format!("  → {trunc}", trunc = truncate(&rendered, width.saturating_sub(6))),
+                        Style::default().fg(Color::White),
+                    )));
+                }
+            }
         }
         ChatMessage::ToolResult {
             name,
@@ -169,5 +211,39 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
         out.push('…');
         out
+    }
+}
+
+/// Render a `serde_json::Value` as a compact single-line string.
+/// Strings are shown unquoted (their content only), numbers / bools as
+/// themselves, null as `-`, arrays collapsed to `[…]`, objects to
+/// `{k=v, k2=v2}`.
+fn render_json_value(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::Null => "-".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(a) => {
+            let inner: Vec<String> = a.iter().take(4).map(render_json_value).collect();
+            if a.len() > 4 {
+                format!("[{}, …(+{})]", inner.join(", "), a.len() - 4)
+            } else {
+                format!("[{}]", inner.join(", "))
+            }
+        }
+        Value::Object(o) => {
+            let inner: Vec<String> = o
+                .iter()
+                .take(4)
+                .map(|(k, v)| format!("{k}={}", render_json_value(v)))
+                .collect();
+            if o.len() > 4 {
+                format!("{{{}, …(+{})}}", inner.join(", "), o.len() - 4)
+            } else {
+                format!("{{{}}}", inner.join(", "))
+            }
+        }
     }
 }

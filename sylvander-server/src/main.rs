@@ -17,10 +17,19 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn require_env(key: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| {
-        eprintln!("ERROR: {key} must be set. Source sylvander.env or export it.");
+    let v = std::env::var(key).unwrap_or_else(|_| {
+        eprintln!(
+            "ERROR: {key} must be set. Export it or source sylvander.env before launching the server."
+        );
         std::process::exit(1);
-    })
+    });
+    if v.trim().is_empty() {
+        eprintln!(
+            "ERROR: {key} is set but empty — refusing to start. Provide a non-empty value."
+        );
+        std::process::exit(1);
+    }
+    v
 }
 
 #[tokio::main]
@@ -34,12 +43,24 @@ async fn main() {
 
     info!("sylvander server starting");
 
+    // API key + base URL are MANDATORY env vars — never hardcoded. Operators
+    // pick the upstream gateway (the official Anthropic API, an internal
+    // proxy, or a self-hosted /v1/messages-compatible endpoint); we do not
+    // bake any default into the binary. Required at startup so a missing
+    // configuration fails fast instead of mid-flight.
     let model_name = env_or("SYLVANDER_MODEL", "claude-sonnet-5-20260601");
+    let api_key = require_env("ANTHROPIC_API_KEY");
+    let base_url = require_env("ANTHROPIC_BASE_URL");
     let client = AnthropicClient::builder()
-        .api_key(require_env("ANTHROPIC_API_KEY"))
-        .base_url(env_or("ANTHROPIC_BASE_URL", "https://api.anthropic.com"))
+        .api_key(api_key)
+        .base_url(base_url)
         .build()
         .expect("client");
+    info!(
+        model = %model_name,
+        base_url = %client.base_url(),
+        "anthropic client ready"
+    );
 
     let spec = AgentSpec::builder()
         .id("assistant")

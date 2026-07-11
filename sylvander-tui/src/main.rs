@@ -171,13 +171,14 @@ async fn dispatch_action(action: Action, client: &mut UnixClient, _state: &mut A
             let _ = client.send(&ClientMsg::Answer { call_id, answer }).await;
         }
         Action::SendFeedback { text, session_id } => {
-            // Wrap so the agent loop can distinguish feedback from regular chat.
-            let wrapped = format!("[/feedback]\n{text}");
+            // Send the rejection reason as a plain chat message. The agent
+            // loop does not parse any special prefix — feedback is just
+            // the next user turn, presented to the LLM with the rejected
+            // tool's transcript still in context. Avoids inventing a wire
+            // protocol for an annotation that's already represented as
+            // (call_id, approved=false) on the upstream server side.
             let _ = client
-                .send(&ClientMsg::Chat {
-                    text: wrapped,
-                    session_id,
-                })
+                .send(&ClientMsg::Chat { text, session_id })
                 .await;
         }
         Action::Quit => {
