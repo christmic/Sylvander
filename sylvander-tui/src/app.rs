@@ -227,6 +227,17 @@ impl AppState {
                 self.modals.push(Box::new(modal));
                 self.mode = AppMode::ApprovalPending;
             }
+            DomainEvent::AskUserRequested {
+                call_id,
+                question,
+                options,
+                multi_select,
+            } => {
+                use crate::modal::ask_user::AskUserModal;
+                let modal = AskUserModal::new(call_id, question, options, multi_select);
+                self.modals.push(Box::new(modal));
+                self.mode = AppMode::AskPending;
+            }
             DomainEvent::Tick => {
                 // No state change — only used to wake the render loop.
             }

@@ -1,0 +1,26 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 90, 22)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Agent asks (free text) ────────────────────────────┐                  
+                  │Describe the bug in your own words:                 │                  
+                  │                                                    │                  
+──────────────────│Type your answer:                                   │──────────────────
+?                 │> the loader hangs on cold start                    │                  
+                  │                                                    │                  
+                  │Enter: submit   Esc: cancel                         │                  
+                  │                                                    │                  
+                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+Enter:submit  Esc:cancel

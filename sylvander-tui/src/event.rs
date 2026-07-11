@@ -50,6 +50,19 @@ pub enum DomainEvent {
         tools: Vec<ToolInfo>,
     },
 
+    /// Agent asks the user a clarifying question (UX §12.1).
+    /// `options.len() == 0` → free-text only.
+    /// `options.len() > 0 && multi_select == false` → single-select with
+    /// free-text fallback.
+    /// `options.len() > 0 && multi_select == true` → multi-select with
+    /// free-text fallback.
+    AskUserRequested {
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
+
     /// Tick — heartbeat from the main loop (for spinner / time displays).
     Tick,
 }
