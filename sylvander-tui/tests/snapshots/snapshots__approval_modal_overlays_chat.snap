@@ -4,8 +4,8 @@ expression: "render_buf(&state, 80, 24)"
 ---
 Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
 You: rm -rf /                                                                   
-[ ] bash({"command":"rm -rf /"})                                                
-                                                                                
+◐ bash                                                                          
+  command  rm -rf /                                                             
                                                                                 
                 ┌ Tool Approval ───────────────────────────────┐                
                 │Agent wants to run:                           │                
