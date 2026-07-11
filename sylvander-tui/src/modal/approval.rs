@@ -532,6 +532,44 @@ mod tests {
         assert_eq!(m.decisions[0], Decision::Pending);
     }
 
+    #[test]
+    fn shift_n_rejects_all_and_enters_feedback() {
+        let mut m = build_modal_with_n_tools(3);
+        let mut s = AppState::new();
+        let consumed = m.handle_navigate_key(
+            &key(KeyCode::Char('N'), KeyModifiers::SHIFT),
+            &mut s,
+        );
+        // Reject-all keeps the modal open in RejectFeedback mode.
+        assert!(matches!(consumed, Consumed::Yes { dismiss: false }));
+        assert_eq!(m.mode, ApprovalMode::RejectFeedback);
+        // All three decisions are now Reject.
+        assert!(m.decisions.iter().all(|d| *d == Decision::Reject));
+        assert!(s.pending_actions.is_empty(),
+            "no SendApprove should fire yet — feedback still pending");
+        // Finish via Enter in feedback mode.
+        for ch in "too destructive".chars() {
+            let _ = m.handle_feedback_key(
+                &key(KeyCode::Char(ch), KeyModifiers::NONE),
+                &mut s,
+            );
+        }
+        let consumed = m.handle_feedback_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut s);
+        assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
+        // 1 SendFeedback + 3 SendApprove(false).
+        assert_eq!(s.pending_actions.len(), 4);
+        let reject_count = s
+            .pending_actions
+            .iter()
+            .filter(|a| matches!(a, Action::SendApprove { approved: false, .. }))
+            .count();
+        assert_eq!(reject_count, 3);
+        assert!(s.pending_actions.iter().any(|a| matches!(
+            a,
+            Action::SendFeedback { text, .. } if text == "too destructive"
+        )));
+    }
+
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
     }

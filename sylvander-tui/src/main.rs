@@ -47,8 +47,26 @@ async fn main() {
         eprintln!("warning: failed to enable bracketed paste: {e}");
     }
 
+    // Composer history persistence — opt-in via `SYLVANDER_HISTORY_PATH`.
+    // Default: `$XDG_CACHE_HOME/sylvander-tui/history.json` (or
+    // `~/.cache/...` on macOS). Set to an empty string to disable.
+    let history_path = std::env::var("SYLVANDER_HISTORY_PATH")
+        .ok()
+        .and_then(|s| if s.is_empty() { None } else { Some(s.into()) })
+        .or_else(|| {
+            let base = std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| std::path::PathBuf::from(h).join(".cache"))
+                })?;
+            Some(base.join("sylvander-tui").join("history.json"))
+        });
+
     // App state (single-threaded, owned by main)
-    let mut state = AppState::new();
+    let mut state = AppState::with_history_path(history_path);
 
     // ---- Input channel (keys + bracketed paste) ----
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
@@ -120,6 +138,10 @@ async fn main() {
 
         // 6. Quit check.
         if state.should_quit {
+            // Persist any composer history one last time (covers the path
+            // where the last action was a SendFeedback or palette /quit
+            // that does not go through Alt+Enter).
+            state.save_history();
             // Restore terminal cleanly: ratatui::restore() runs its
             // shutdown hooks (which already includes LeaveAlternateScreen),
             // but bracketed paste and raw mode are managed by us so we

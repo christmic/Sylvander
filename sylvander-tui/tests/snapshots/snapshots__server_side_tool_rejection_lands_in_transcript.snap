@@ -1,0 +1,26 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&s, 80, 22)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
+You: try `rm -rf /`                                                             
+◐ bash                                                                          
+  command  rm -rf /                                                             
+  tool bash rejected: destructive commands blocked by policy                    
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+>                                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+Enter:send  Esc:quit

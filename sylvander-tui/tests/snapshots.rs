@@ -400,3 +400,19 @@ fn layout_too_small_renders_resize_message() {
     let s = seed_state();
     insta::assert_snapshot!(render_buf(&s, 40, 20));
 }
+
+#[test]
+fn server_side_tool_rejection_lands_in_transcript() {
+    let mut s = AppState::new();
+    s.messages
+        .push(ChatMessage::User("try `rm -rf /`".into()));
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "bash".into(),
+        input: serde_json::json!({"command": "rm -rf /"}),
+    });
+    s.apply(DomainEvent::ToolRejected {
+        tool_name: "bash".into(),
+        reason: "destructive commands blocked by policy".into(),
+    });
+    insta::assert_snapshot!(render_buf(&s, 80, 22));
+}

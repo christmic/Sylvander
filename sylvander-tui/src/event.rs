@@ -63,6 +63,13 @@ pub enum DomainEvent {
         multi_select: bool,
     },
 
+    /// Server rejected a tool call (its policy disallows it). Surface
+    /// the reason so the user can adjust or report.
+    ToolRejected {
+        tool_name: String,
+        reason: String,
+    },
+
     /// Tick — heartbeat from the main loop (for spinner / time displays).
     Tick,
 }

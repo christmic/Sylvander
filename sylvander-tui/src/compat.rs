@@ -109,4 +109,36 @@ mod tests {
         assert!(Breakpoint::Wide.composer_attachment_strip());
         assert!(!Breakpoint::Narrow.composer_attachment_strip());
     }
+
+    #[test]
+    fn compact_help_wide_carries_full_shortcuts_per_mode() {
+        // Wide breakpoint must surface full shortcuts so power users can
+        // discover them inline. Each mode's line is asserted to mention a
+        // mode-specific cue (so we catch a regression where the wide
+        // branch collapses too eagerly).
+        let normal = compact_help_for(Breakpoint::Wide, "Normal");
+        assert!(normal.contains("Alt+Enter"));
+        let ap = compact_help_for(Breakpoint::Wide, "ApprovalPending");
+        assert!(ap.contains("approve") || ap.contains('Y'));
+        let ask = compact_help_for(Breakpoint::Wide, "AskPending");
+        assert!(ask.contains("Space"));
+    }
+
+    #[test]
+    fn compact_help_collapses_at_narrow() {
+        // Narrow + below must reduce to `Enter:send  Esc:quit`.
+        let narrow = compact_help_for(Breakpoint::Narrow, "Normal");
+        let too_small = compact_help_for(Breakpoint::TooSmall, "Normal");
+        assert_eq!(narrow, too_small);
+        assert!(narrow.starts_with("Enter:send"));
+    }
+
+    #[test]
+    fn compact_help_standard_drops_full_shortcut_block() {
+        // Standard widens again compared to Narrow but still drops full
+        // multi-shortcut help → caller compresses to a single short line.
+        let std_n = compact_help_for(Breakpoint::Standard, "Normal");
+        assert!(std_n.starts_with("Enter:send"));
+        assert!(!std_n.contains("Alt+Enter"));
+    }
 }
