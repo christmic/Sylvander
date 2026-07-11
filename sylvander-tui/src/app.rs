@@ -338,6 +338,19 @@ impl AppState {
             return None;
         }
 
+        // 3b. `/` opens the command palette (UX §12) — only when the composer
+        //     is empty and no modal is on top.
+        if key.code == crossterm::event::KeyCode::Char('/')
+            && key.modifiers == crossterm::event::KeyModifiers::NONE
+            && self.composer.is_empty()
+            && self.modals.is_empty()
+        {
+            use crate::modal::palette::CommandPalette;
+            self.modals.push(Box::new(CommandPalette::new()));
+            self.dirty.mark();
+            return None;
+        }
+
         // 4. Esc cancels current mode or quits.
         if key.code == crossterm::event::KeyCode::Esc {
             if !self.modals.is_empty() {

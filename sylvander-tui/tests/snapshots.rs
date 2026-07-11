@@ -331,3 +331,31 @@ fn sessions_overlay_with_filter_match() {
     state.handle_key(&key);
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
+
+#[test]
+fn palette_empty_filter_shows_all() {
+    let mut state = AppState::new();
+    // `/` opens the palette when composer is empty.
+    state.handle_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('/'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    assert_eq!(state.modals.len(), 1);
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
+}
+
+#[test]
+fn palette_with_no_match() {
+    let mut state = AppState::new();
+    state.handle_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('/'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    // Type more letters that no command matches.
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c, m| KeyEvent::new(c, m);
+    for ch in "xyz".chars() {
+        state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
+}

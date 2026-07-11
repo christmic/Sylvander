@@ -1,0 +1,26 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 90, 22)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                    ┌ Commands ─────────────────────────────────────┐                     
+                    │/xyz_                                          │                     
+                    │───────────────────────────────────────────────│                     
+                    │  (no commands match)                          │                     
+────────────────────│                                               │─────────────────────
+>                   │                                               │                     
+                    │                                               │                     
+                    │                                               │                     
+                    │                                               │                     
+                    │                                               │                     
+                    │                                               │                     
+                    └───────────────────────────────────────────────┘                     
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+Enter:send  Esc:quit  Ctrl+C:quit
