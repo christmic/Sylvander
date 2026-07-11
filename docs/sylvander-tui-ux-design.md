@@ -951,10 +951,168 @@ An approval becomes invalid if command text, arguments, working directory, envir
 
 Decision history records requested action, effective rule, actor, result, execution correlation, and revocation. Secrets are redacted before presentation and storage. Tool provenance is shown as Built-in, Skill, MCP, or external provider.
 
-## 25. Version History
+## 25. Transcript Navigation, Checkpoints, and Context
+
+### 25.1 Search and semantic navigation
+
+Transcript search is a temporary top layer that preserves the underlying scroll position. It supports plain text, exact phrase, and filters:
+
+- Author: user, main agent, named subagent.
+- Kind: message, tool, diff, approval, error, checkpoint.
+- Resource: file path, command, MCP server, URL.
+- Time and turn range.
+
+Keyboard navigation includes next/previous match, next/previous user turn, next failure, next decision, and return to live. When the user is reading history, new events accumulate behind a stable `3 new events · return to live` indicator.
+
+### 25.2 Checkpoints and forks
+
+A checkpoint names a stable conversational and workspace reference. It records session cursor, plan, context summary, changed-file snapshot metadata, and verification state.
+
+Forking from a turn creates a new durable session with explicit ancestry. It does not silently copy or roll back the filesystem. The fork dialog therefore offers:
+
+- Same current workspace state.
+- New Git branch from checkpoint commit, when available.
+- New worktree.
+- Conversation-only fork with no filesystem claim.
+
+Session comparison shows divergent user instructions, agent decisions, file changes, and verification results.
+
+### 25.3 Export and provenance
+
+Sessions export to readable Markdown and lossless JSON. Export options independently include thinking, tool inputs, tool output, diffs, approvals, and environment metadata. Secret redaction is enabled by default and reported in the export summary.
+
+### 25.4 Context and compaction
+
+Context display explains state rather than showing an unexplained percentage:
+
+```text
+context 72% · 118k / 164k usable · compaction after this turn
+```
+
+Users can inspect the projected context: system instructions, durable summary, recent turns, attachments, and tool artifacts. Automatic compaction creates a visible checkpoint with a summary of what was retained, collapsed, or excluded.
+
+Manual `/compact` previews the intended boundary. A compaction failure preserves the previous context and offers model switch, attachment removal, or a new session fork.
+
+### 25.5 Model and mode switching
+
+The model picker reports provider, context capacity, tool/thinking/image support, latency class, and availability. Switching during a turn is queued unless the user explicitly interrupts. Unsupported capabilities are described before confirmation.
+
+Plan, Normal, and Autonomous modes show a short behavior description and permission impact near the composer. Mode changes are transcript events when they affect execution policy.
+
+### 25.6 Specialized tool and artifact presentation
+
+Generic tool rhythm is retained, with specialized summaries:
+
+| Tool | Compact evidence |
+|---|---|
+| Read | Path and line range |
+| Search | Query, scope, match count |
+| Edit | Files and `+/-` line summary |
+| Command | Command, exit code, duration, working directory |
+| Web | Domain, title, retrieval time, citation count |
+| MCP | Server, tool, trust source, duration |
+| Subagent | Name, objective, progress, handoff state |
+| Image/artifact | Type, dimensions/size, path, preview availability |
+
+Ghostty may offer Quick Look or open-in-editor actions for artifacts, while the TUI retains a textual fallback and canonical path. Terminal image protocols are enhancements, never required for understanding.
+
+## 26. Composer, CJK/IME, and Advanced Input
+
+### 26.1 IME composition
+
+IME composition is a distinct input state. Enter confirms a candidate while composition is active and must never send the prompt. The candidate window anchors to the caret where the platform permits; otherwise it anchors to the first composer line.
+
+Cursor movement, selection, deletion, and wrapping operate on grapheme clusters and terminal cell width, not bytes or scalar values. Test coverage must include Chinese punctuation, mixed CJK/Latin text, emoji sequences, combining marks, and full-width characters.
+
+### 26.2 Composer editing model
+
+- Undo/redo spans typing, paste, attachment insertion, mention completion, and history restore.
+- Drafts save per session after a short idle interval and on every view switch.
+- Optional Emacs and Vi bindings apply only inside the composer and expose their current mode.
+- Multiline selection, clipboard operations, Home/End semantics, and word navigation follow platform expectations.
+- Bracketed paste prevents control-sequence interpretation.
+- Large pastes are parsed off the render path and can be cancelled.
+
+### 26.3 Mentions and templates
+
+Composer completion recognizes:
+
+- `@file` and `@folder` for workspace context.
+- `@agent` for delegation or directed questions.
+- `@session` for referencing prior work.
+- `/command` for UI actions.
+- Prompt templates with named parameters.
+
+Completion inserts typed objects, not fragile display strings. Missing resources remain visible with an error state and replacement action.
+
+### 26.4 Attachments and drag/drop
+
+Files dropped into Ghostty become composer attachments after path, type, size, permission, and workspace-boundary validation. Directories become scoped references rather than recursively embedded content. Images show a small preview only when supported; the path and dimensions remain primary.
+
+Before sending, the composer warns about very large context contribution, unsupported media, secrets detected in pasted text, and resources outside the permitted workspace.
+
+### 26.5 Prompt history and draft conflicts
+
+History search defaults to the current session and can expand to workspace or global scope. Restoring a prompt creates an undo point. If the same session has drafts from two clients, the composer offers compare, keep both, or choose one; it never silently overwrites.
+
+## 27. Resilience, Operations, and Trust
+
+### 27.1 Failure ownership
+
+Failures are classified by owner so recovery actions are accurate:
+
+| Owner | Examples | Recovery surface |
+|---|---|---|
+| TUI | render panic, terminal restore | Local recovery screen |
+| Ghostty PTY | child exit, shell failure | Main session view with restart action |
+| Server | crash, unavailable socket | Persistent reconnect banner and diagnostics |
+| Provider | auth, rate limit, outage | Turn-level failure with model/provider options |
+| Tool/MCP | timeout, malformed output | Tool row and server isolation controls |
+| Storage | SQLite lock/corruption | Read-only recovery and backup/repair workflow |
+
+### 27.2 Crash and reconnect
+
+Terminal state restoration runs on normal exit, interrupt, and panic. After restart, the client reloads the last durable event cursor, reconciles incomplete tools, restores drafts, and labels uncertain external actions instead of replaying them automatically.
+
+Reconnect backoff remains visible but quiet. Users can retry now, work on a draft offline, copy the draft, switch server, or open diagnostics.
+
+### 27.3 Performance degradation
+
+- High-frequency streaming is coalesced into perceptually smooth frames without losing events.
+- Tool output over a threshold switches to a bounded live tail plus durable artifact.
+- Long transcripts use semantic virtualization and retain search/index capability.
+- Slow storage or network shows which subsystem is delayed.
+- If rendering pauses, the UI says `output continues · display catching up` and reports buffered event count.
+- Sidebar updates are batched so hundreds of sessions do not reorder beneath selection.
+
+### 27.4 Diagnostics and safe mode
+
+Diagnostics summarizes client/server versions, connection, session ID, terminal capabilities, renderer performance, storage health, provider state, and recent redacted errors. Users can copy a redacted bundle or save it explicitly.
+
+Safe mode disables third-party MCP servers, custom shaders, skills, and nonessential plugins while preserving session access. The UI identifies which extension caused isolation when known.
+
+### 27.5 Security and trust
+
+The status/inspection system exposes workspace root, sandbox mode, network policy, approval mode, active skills, MCP provenance, and remote environment. Untrusted external content and prompt-injection risk are labeled near the affected tool evidence.
+
+Secrets are masked in transcript, tool output, notifications, diagnostics, and exports. Revealing a secret is a deliberate local action that is never persisted in revealed form.
+
+Completion claims distinguish:
+
+- **Verified:** supporting command/test evidence exists.
+- **Completed, unverified:** work ended without verification.
+- **Partial:** requested scope remains.
+- **Blocked:** external decision or unavailable dependency is required.
+
+### 27.6 Updates and compatibility
+
+Update notices are non-modal unless a protocol incompatibility prevents connection. Client and server negotiate protocol versions; incompatible combinations explain which component must update. Updates never interrupt an active turn and require an explicit restart boundary.
+
+## 28. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 4.0 | 2026-07-11 | Added advanced session scale, execution control, Permission Center, search/checkpoint/fork, context/model/tool/artifact behavior, CJK/IME composer, resilience, diagnostics, security, multi-window, and performance specifications |
 | 3.0 | 2026-07-11 | Replaced gray boxed transcript treatment with immersive canvas output, replaced Ghostty top tabs with a left session sidebar, added compact Sylvander brand mark, and split mockups by design level |
 | 2.0 | 2026-07-11 | Added design synthesis, information architecture, Ghostty desktop detail, recovery/accessibility requirements, and editable design artifacts |
 | 1.0 | 2026-07-11 | Approved initial TUI experience and Ghostty integration direction |
