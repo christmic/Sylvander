@@ -1,0 +1,59 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "meta": {
+    "name": "Sylvander Quiet Technical Confidence",
+    "version": "2.0",
+    "target": "terminal UI and Ghostty desktop shell"
+  },
+  "color": {
+    "canvas": { "$value": "#111315", "$type": "color" },
+    "surface": { "$value": "#171A1D", "$type": "color" },
+    "surfaceRaised": { "$value": "#1E2226", "$type": "color" },
+    "border": { "$value": "#343A40", "$type": "color" },
+    "borderStrong": { "$value": "#4A535C", "$type": "color" },
+    "text": { "$value": "#ECE7DE", "$type": "color" },
+    "textMuted": { "$value": "#989B9D", "$type": "color" },
+    "textFaint": { "$value": "#666C72", "$type": "color" },
+    "coral": { "$value": "#E8796A", "$type": "color" },
+    "blue": { "$value": "#75A7E8", "$type": "color" },
+    "teal": { "$value": "#72C7B1", "$type": "color" },
+    "amber": { "$value": "#D9AF62", "$type": "color" },
+    "red": { "$value": "#E06C75", "$type": "color" },
+    "purple": { "$value": "#B59BE6", "$type": "color" }
+  },
+  "spacing": {
+    "xs": { "$value": "4px", "$type": "dimension" },
+    "sm": { "$value": "8px", "$type": "dimension" },
+    "md": { "$value": "12px", "$type": "dimension" },
+    "lg": { "$value": "16px", "$type": "dimension" },
+    "xl": { "$value": "24px", "$type": "dimension" },
+    "2xl": { "$value": "32px", "$type": "dimension" }
+  },
+  "radius": {
+    "interactive": { "$value": "8px", "$type": "dimension" },
+    "card": { "$value": "6px", "$type": "dimension" },
+    "tab": { "$value": "5px", "$type": "dimension" }
+  },
+  "typography": {
+    "terminal": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
+        "fontSize": "15px",
+        "fontWeight": 400,
+        "letterSpacing": "0px",
+        "lineHeight": 1.55
+      }
+    },
+    "terminalSmall": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
+        "fontSize": "13px",
+        "fontWeight": 400,
+        "letterSpacing": "0px",
+        "lineHeight": 1.45
+      }
+    }
+  }
+}
