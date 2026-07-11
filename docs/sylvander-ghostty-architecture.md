@@ -4,6 +4,14 @@
 > why it's structured the way it is, where every hook lives, and
 > where our F2-F6 work is supposed to plug in.
 
+> **Product direction update (2026-07-11):**
+> [`sylvander-tui-ux-design.md`](./sylvander-tui-ux-design.md) is the
+> source of truth for the agent conversation experience. Ghostty hosts
+> the unchanged `sylvander-tui` binary in PTY-backed tabs; the earlier
+> native Swift agent-workbench direction in this document is retained
+> only as historical architecture analysis and must not drive new UI
+> implementation.
+
 Last audited against the **`b14d92383`** upstream Ghostty commit
 embedded in this repo (F1.12). Update this file if you re-sync
 (`git subtree pull`) and the surface area changes.

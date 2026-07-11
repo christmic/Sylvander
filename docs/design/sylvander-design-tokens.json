@@ -1,0 +1,102 @@
+{
+  "$schema": "https://design-tokens.github.io/community-group/format/",
+  "meta": {
+    "name": "Sylvander Quiet Technical Confidence",
+    "version": "2.0",
+    "target": "terminal UI and Ghostty desktop shell"
+  },
+  "color": {
+    "canvas": { "$value": "#111315", "$type": "color" },
+    "sidebar": { "$value": "#0D0F11", "$type": "color" },
+    "overlay": { "$value": "#1A1E22", "$type": "color" },
+    "focusWash": { "$value": "#E8796A0A", "$type": "color" },
+    "border": { "$value": "#343A40", "$type": "color" },
+    "borderStrong": { "$value": "#4A535C", "$type": "color" },
+    "text": { "$value": "#ECE7DE", "$type": "color" },
+    "textMuted": { "$value": "#989B9D", "$type": "color" },
+    "textFaint": { "$value": "#666C72", "$type": "color" },
+    "coral": { "$value": "#E8796A", "$type": "color" },
+    "blue": { "$value": "#75A7E8", "$type": "color" },
+    "teal": { "$value": "#72C7B1", "$type": "color" },
+    "amber": { "$value": "#D9AF62", "$type": "color" },
+    "red": { "$value": "#E06C75", "$type": "color" },
+    "purple": { "$value": "#B59BE6", "$type": "color" }
+  },
+  "spacing": {
+    "xs": { "$value": "4px", "$type": "dimension" },
+    "sm": { "$value": "8px", "$type": "dimension" },
+    "md": { "$value": "12px", "$type": "dimension" },
+    "lg": { "$value": "16px", "$type": "dimension" },
+    "xl": { "$value": "24px", "$type": "dimension" },
+    "2xl": { "$value": "32px", "$type": "dimension" }
+  },
+  "radius": {
+    "interactive": { "$value": "8px", "$type": "dimension" },
+    "overlay": { "$value": "8px", "$type": "dimension" },
+    "sidebarItem": { "$value": "4px", "$type": "dimension" }
+  },
+  "typography": {
+    "terminal": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
+        "fontSize": "15px",
+        "fontWeight": 400,
+        "letterSpacing": "0px",
+        "lineHeight": 1.55
+      }
+    },
+    "terminalSmall": {
+      "$type": "typography",
+      "$value": {
+        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
+        "fontSize": "13px",
+        "fontWeight": 400,
+        "letterSpacing": "0px",
+        "lineHeight": 1.45
+      }
+    }
+  },
+  "terminal": {
+    "cellSpacing": {
+      "inlineGap": { "$value": 1, "$type": "number" },
+      "childIndent": { "$value": 2, "$type": "number" },
+      "turnGapRows": { "$value": 1, "$type": "number" },
+      "majorGapRows": { "$value": 2, "$type": "number" }
+    },
+    "breakpointColumns": {
+      "wide": { "$value": 120, "$type": "number" },
+      "standard": { "$value": 100, "$type": "number" },
+      "compact": { "$value": 80, "$type": "number" },
+      "narrow": { "$value": 60, "$type": "number" },
+      "minimum": { "$value": 40, "$type": "number" }
+    },
+    "contentColumns": {
+      "conversationPreferred": { "$value": 104, "$type": "number" },
+      "conversationMinimum": { "$value": 60, "$type": "number" },
+      "sidebarPreferred": { "$value": 28, "$type": "number" },
+      "sidebarMinimum": { "$value": 22, "$type": "number" },
+      "sidebarRail": { "$value": 3, "$type": "number" }
+    },
+    "motion": {
+      "spinnerFps": { "$value": 5, "$type": "number" },
+      "streamingMaxFps": { "$value": 30, "$type": "number" },
+      "toolCompletionHoldMs": { "$value": 500, "$type": "duration" },
+      "toastDurationMs": { "$value": 2500, "$type": "duration" }
+    },
+    "symbols": {
+      "brandUnicode": { "$value": "◖S◗", "$type": "string" },
+      "brandAscii": { "$value": "[S]", "$type": "string" },
+      "workingUnicode": { "$value": "◐", "$type": "string" },
+      "workingAscii": { "$value": "~", "$type": "string" },
+      "successUnicode": { "$value": "✓", "$type": "string" },
+      "successAscii": { "$value": "OK", "$type": "string" },
+      "failure": { "$value": "!", "$type": "string" }
+    },
+    "colorTier": {
+      "preferred": { "$value": "truecolor", "$type": "string" },
+      "fallback": { "$value": "ansi256", "$type": "string" },
+      "minimum": { "$value": "monochrome", "$type": "string" }
+    }
+  }
+}
