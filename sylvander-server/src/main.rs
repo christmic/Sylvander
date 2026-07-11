@@ -43,12 +43,11 @@ async fn main() {
 
     info!("sylvander server starting");
 
-    // API key + base URL are MANDATORY env vars — never hardcoded. Operators
-    // pick the upstream gateway (the official Anthropic API, an internal
-    // proxy, or a self-hosted /v1/messages-compatible endpoint); we do not
-    // bake any default into the binary. Required at startup so a missing
-    // configuration fails fast instead of mid-flight.
-    let model_name = env_or("SYLVANDER_MODEL", "claude-sonnet-5-20260601");
+    // API key + base URL + model are MANDATORY env vars — never hardcoded.
+    // Operators pick the upstream gateway AND the model id (different
+    // gateways expose different model name sets). Required at startup so a
+    // missing or wrong configuration fails fast instead of mid-flight.
+    let model_name = require_env("SYLVANDER_MODEL");
     let api_key = require_env("ANTHROPIC_API_KEY");
     let base_url = require_env("ANTHROPIC_BASE_URL");
     let client = AnthropicClient::builder()
