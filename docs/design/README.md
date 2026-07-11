@@ -14,6 +14,10 @@
 - `10-transcript-navigation.svg` — search, checkpoints, forks, context, compaction, model, and mode.
 - `11-composer-ime.svg` — Chinese IME, CJK editing, attachments, mentions, history, and draft recovery.
 - `12-resilience-operations.svg` — reconnect, diagnostics, performance degradation, trust, and verification.
+- `13-primary-journeys.svg` — start/resume, plan, permission, interrupt, reconnect, and fork journeys.
+- `14-interaction-contract.svg` — blocking focus, shortcut ownership, and state ownership.
+- `15-responsive-accessibility.svg` — terminal-cell breakpoints and capability fallbacks.
+- `16-event-component-handoff.svg` — event/component lifecycle and replayable design QA.
 - `07-session-management.svg` — large session collections, notification policy, linked views, and draft conflict.
 - `08-execution-control.svg` — steer, queue, interrupt boundaries, and non-interruptible work.
 - `09-permission-center.svg` — pending decisions, scoped permission rules, audit history, and revocation.
@@ -48,6 +52,10 @@ SVG import preserves text, vectors, colors, borders, and groups. Figma may not p
 10. **Navigation/context** — long-session retrieval, branching, and context lifecycle.
 11. **Advanced input** — multilingual composition and durable drafting.
 12. **Operations** — failure ownership, recovery, diagnostics, performance, and trust.
+13. **Journeys** — end-to-end transition, recovery, and exit behavior.
+14. **Interaction contract** — deterministic focus and state boundaries.
+15. **Responsive/accessibility** — measurable cell layouts and fallbacks.
+16. **Implementation handoff** — protocol-to-component mapping and QA cases.
 7. **Session management** — scale, attention, linked views, and multi-window consistency.
 8. **Execution control** — steering, queued prompts, interruption, and safe boundaries.
 9. **Permission center** — decision lifecycle, reusable scopes, revocation, and audit.
