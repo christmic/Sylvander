@@ -7,8 +7,9 @@
   },
   "color": {
     "canvas": { "$value": "#111315", "$type": "color" },
-    "surface": { "$value": "#171A1D", "$type": "color" },
-    "surfaceRaised": { "$value": "#1E2226", "$type": "color" },
+    "sidebar": { "$value": "#0D0F11", "$type": "color" },
+    "overlay": { "$value": "#1A1E22", "$type": "color" },
+    "focusWash": { "$value": "#E8796A0A", "$type": "color" },
     "border": { "$value": "#343A40", "$type": "color" },
     "borderStrong": { "$value": "#4A535C", "$type": "color" },
     "text": { "$value": "#ECE7DE", "$type": "color" },
@@ -31,8 +32,8 @@
   },
   "radius": {
     "interactive": { "$value": "8px", "$type": "dimension" },
-    "card": { "$value": "6px", "$type": "dimension" },
-    "tab": { "$value": "5px", "$type": "dimension" }
+    "overlay": { "$value": "8px", "$type": "dimension" },
+    "sidebarItem": { "$value": "4px", "$type": "dimension" }
   },
   "typography": {
     "terminal": {
