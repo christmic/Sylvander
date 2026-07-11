@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 sylvander-protocol = { path = "../sylvander-protocol" }
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -231,6 +231,13 @@ impl AppState {
         None
     }
 
+    /// Handle a paste event from the terminal (M-T2). Forwards to the
+    /// composer which decides inline-vs-attachment per design §12.4.
+    pub fn handle_paste(&mut self, text: &str) {
+        self.composer.paste(text);
+        self.dirty.mark();
+    }
+
     /// Handle a keyboard event. Returns an Action if a side effect is
     /// required (e.g. user pressed Enter and we need to send a chat).
     pub fn handle_key(&mut self, key: &crossterm::event::KeyEvent) -> Option<Action> {
