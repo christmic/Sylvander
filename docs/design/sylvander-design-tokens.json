@@ -56,5 +56,34 @@
         "lineHeight": 1.45
       }
     }
+  },
+  "terminal": {
+    "cellSpacing": {
+      "inlineGap": { "$value": 1, "$type": "number" },
+      "childIndent": { "$value": 2, "$type": "number" },
+      "turnGapRows": { "$value": 1, "$type": "number" },
+      "majorGapRows": { "$value": 2, "$type": "number" }
+    },
+    "breakpointColumns": {
+      "wide": { "$value": 120, "$type": "number" },
+      "standard": { "$value": 100, "$type": "number" },
+      "compact": { "$value": 80, "$type": "number" },
+      "narrow": { "$value": 60, "$type": "number" },
+      "minimum": { "$value": 40, "$type": "number" }
+    },
+    "symbols": {
+      "brandUnicode": { "$value": "◖S◗", "$type": "string" },
+      "brandAscii": { "$value": "[S]", "$type": "string" },
+      "workingUnicode": { "$value": "◐", "$type": "string" },
+      "workingAscii": { "$value": "~", "$type": "string" },
+      "successUnicode": { "$value": "✓", "$type": "string" },
+      "successAscii": { "$value": "OK", "$type": "string" },
+      "failure": { "$value": "!", "$type": "string" }
+    },
+    "colorTier": {
+      "preferred": { "$value": "truecolor", "$type": "string" },
+      "fallback": { "$value": "ansi256", "$type": "string" },
+      "minimum": { "$value": "monochrome", "$type": "string" }
+    }
   }
 }

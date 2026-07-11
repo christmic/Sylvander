@@ -1,8 +1,8 @@
 # Sylvander TUI Experience Design
 
-> Status: Design baseline
+> Status: Implementation-ready design baseline
 >
-> Version: 4.1
+> Version: 5.0
 >
 > Date: 2026-07-11
 >
@@ -22,6 +22,10 @@ Editable design artifacts:
 - [`design/10-transcript-navigation.svg`](./design/10-transcript-navigation.svg) — search, filters, checkpoints, forks, context, and compaction.
 - [`design/11-composer-ime.svg`](./design/11-composer-ime.svg) — Chinese IME, attachments, mentions, templates, and draft recovery.
 - [`design/12-resilience-operations.svg`](./design/12-resilience-operations.svg) — crashes, reconnect, diagnostics, performance, security, and updates.
+- [`design/13-primary-journeys.svg`](./design/13-primary-journeys.svg) — end-to-end start, plan, approve, interrupt, reconnect, and fork journeys.
+- [`design/14-interaction-contract.svg`](./design/14-interaction-contract.svg) — focus precedence, shortcut ownership, and state ownership.
+- [`design/15-responsive-accessibility.svg`](./design/15-responsive-accessibility.svg) — exact terminal breakpoints, monochrome/ASCII, CJK, and reduced-motion behavior.
+- [`design/16-event-component-handoff.svg`](./design/16-event-component-handoff.svg) — protocol event to UI component lifecycle and retry contract.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -1110,7 +1114,7 @@ Update notices are non-modal unless a protocol incompatibility prevents connecti
 
 ## 28. Gap Audit
 
-The v4 report covers the intended product surface, but breadth alone does not make the design implementation-ready. The following gaps are the active design backlog and must be closed in priority order.
+The v4 audit identified the following implementation-readiness gaps. v5 closes them through Sections 30–34 and editable artifacts 13–16; the table remains as the traceable rationale for those additions.
 
 | Priority | Gap | Current risk | Required evidence |
 |---|---|---|---|
@@ -1146,18 +1150,121 @@ Connection loss does not dismiss ranks 1–3. Their actions become unavailable w
 
 | Phase | Scope | Exit criteria | Status |
 |---|---|---|---|
-| P0 — Audit and consistency | Inventory report, artifacts, indexes, and interrupted work | All links resolve; XML and JSON validate; gaps are recorded | In progress |
-| P1 — Missing interaction artifacts | Complete session, execution, permission, navigation, composer/IME, and resilience boards | Sections 22–27 each have editable visual evidence | In progress |
-| P2 — Journeys and state contracts | Add primary journeys, precedence, focus, shortcut, ownership, responsive, and fallback matrices | Every primary journey has entry, transition, recovery, and exit | Pending |
-| P3 — Implementation handoff | Define terminal-cell tokens, event/component mapping, persistence boundaries, and component contracts | Engineers can implement without inventing product behavior | Pending |
-| P4 — Design verification | Render all boards; test links, XML/JSON, narrow widths, monochrome/ASCII, CJK, and scenario coverage | Verification report records pass/fail evidence and remaining risks | Pending |
+| P0 — Audit and consistency | Inventory report, artifacts, indexes, and interrupted work | All links resolve; XML and JSON validate; gaps are recorded | Complete |
+| P1 — Missing interaction artifacts | Complete session, execution, permission, navigation, composer/IME, and resilience boards | Sections 22–27 each have editable visual evidence | Complete |
+| P2 — Journeys and state contracts | Add primary journeys, precedence, focus, shortcut, ownership, responsive, and fallback matrices | Every primary journey has entry, transition, recovery, and exit | Complete |
+| P3 — Implementation handoff | Define terminal-cell tokens, event/component mapping, persistence boundaries, and component contracts | Engineers can implement without inventing product behavior | Complete |
+| P4 — Design verification | Render all boards; test links, XML/JSON, narrow widths, monochrome/ASCII, CJK, and scenario coverage | Verification report records pass/fail evidence and remaining risks | Complete |
 
 Each phase updates this report first, then its editable artifacts and handoff index. A phase is not complete merely because prose exists; its exit evidence must be present and verified.
 
-## 30. Version History
+## 30. Primary End-to-End Journeys
+
+The design is evaluated as journeys, not isolated screens. Each journey defines entry, progress, recovery, and terminal outcome.
+
+| Journey | Entry | Critical transitions | Recovery | Exit |
+|---|---|---|---|---|
+| Start/resume | Launcher or sidebar | Workspace resolve → history load → draft restore | Missing workspace, incompatible protocol, storage read-only | Composer focused with verified session identity |
+| Plan-to-execute | User requests planning | Inspect → propose → edit → approve → execute | Plan scope changed, approval withdrawn | Verified completion or explicit partial/blocked state |
+| Permission | Tool requests capability | Queue → review → decide → execute | Disconnect, timeout, changed action, remote decision | Audited result and resumed agent boundary |
+| Interrupt | User requests replacement | Signal → tool cancellation → reconcile → inspect changes | Non-interruptible action, uncertain remote state | Replacement turn or preserved stopped state |
+| Reconnect | Transport/server lost | Preserve view → retry → cursor reconcile → restore live state | Protocol mismatch, server crash, orphan tool | Live session or read-only recovery |
+| Fork | User selects turn/checkpoint | Choose filesystem semantics → create ancestry → project context | Missing commit/worktree conflict | New named session with explicit origin |
+
+No journey focuses the composer until session history and ownership have been reconciled. No recovery action silently replays external mutation.
+
+## 31. Focus, Shortcut, and State Ownership Contract
+
+### 31.1 Keyboard ownership
+
+| Context | Keys owned by Ghostty shell | Keys owned by TUI | Conflict rule |
+|---|---|---|---|
+| Normal desktop | `Cmd+T`, `Cmd+K`, `Cmd+W`, `Cmd+Shift+S` | Composer/navigation/control keys | Command modifiers remain native |
+| Sidebar focused | Search, arrows, Enter, context menu | PTY receives nothing | Escape returns focus to previous TUI target |
+| Composer | No unreserved text keys | Text, IME, history, send | IME composition overrides send |
+| Blocking decision | Window management only | Decision navigation/confirm/deny | Decision outranks composer and transcript |
+| Transcript inspect | Window management only | Search, hunk/object navigation, copy | Streaming cannot steal selection |
+
+Shortcut help is generated from active context and configuration. A shortcut collision disables the lower-priority binding and explains the resolution in settings.
+
+### 31.2 State ownership
+
+| State | Owner | Persistence | Reconciliation |
+|---|---|---|---|
+| Agent execution and tool lifecycle | Server | Durable event cursor | Client resumes from last acknowledged cursor |
+| Session history, plan, checkpoint | Server | Durable store | Server is authoritative |
+| Draft content and versions | Server-backed, client-edited | Per-session durable draft | Merge on linked-view conflict |
+| Sidebar order, collapse, selected view | Ghostty window | Per-window preferences | Local window state |
+| Transcript scroll, selection, expansion | TUI view | Per-view session state | Restore on view switch |
+| Permission rules and audit | Server | Durable policy store | Decisions broadcast to all clients |
+| IME composition | OS/input client | Ephemeral | Never persisted as committed draft text |
+
+### 31.3 Blocking focus precedence
+
+Destructive approval → AskUser → draft/recovery conflict → temporary overlay → composer → transcript. Connection loss freezes server-dependent actions without dismissing their layer. Returning from any temporary layer restores exact focus, selection, and scroll anchor.
+
+## 32. Responsive and Accessibility Matrix
+
+### 32.1 Width breakpoints
+
+| Columns | Header | Transcript | Composer/status | Ghostty sidebar |
+|---|---|---|---|---|
+| 120+ | Two-line full metadata | Full evidence columns | Full hints | 28–32 cols |
+| 100–119 | Short model/session metadata | Result summaries retained | Reduced hints | 24–28 cols |
+| 80–99 | One-line title + path | Durations may move below | One status row | 22–24 cols or collapsed |
+| 60–79 | Compact mark and title | Single-column tool evidence | Context/mode only | State rail in desktop |
+| 40–59 | `S ›` identity | Aggressive path middle-elision | One-line composer + overlay help | Hidden/temporary rail |
+| <40 | Resize/recovery view | No corrupted partial UI | Draft remains accessible | Hidden |
+
+Minimum height is 12 rows. Below 18 rows, header metadata and persistent help collapse before transcript or composer. Resize never changes semantic selection or live-follow state.
+
+### 32.2 Fallback tiers
+
+| Capability | Preferred | Fallback |
+|---|---|---|
+| Truecolor | Design-token RGB | ANSI 256 nearest color |
+| ANSI color only | Semantic ANSI palette | Monochrome icon + label |
+| Unicode | `◖S◗`, `◐`, `✓`, box drawing | `[S]`, `~`, `OK`, ASCII rules |
+| Animation | Spinner/progress update | Static `working` + elapsed time |
+| Images | Kitty/iTerm/Sixel preview | Type, size, dimensions, path |
+| Screen reader | Stable semantic regions | Linear event narration, no rewrite animation |
+
+All truncation preserves the unique suffix for IDs and filenames where it carries more meaning; paths use middle elision. CJK and emoji measurements use terminal cells, and layouts are tested with mixed-width production-shaped content.
+
+## 33. Event-to-Component Handoff
+
+| Public/server event | Component | Update behavior | Terminal state | Retry/recovery |
+|---|---|---|---|---|
+| SessionCreated/Loaded | Header + transcript + composer | Bind identity, then hydrate | Ready | Open read-only or retry load |
+| TextDelta | Live assistant region | Coalesce frame updates | Done promotes one message | Resume by cursor, no duplicate text |
+| ToolCall/Progress | Borderless tool rhythm | Insert/update by call ID | Result/interrupted/orphan | Inspect, retry only through agent |
+| ToolApprovalRequired | Decision layer + sidebar badge | Queue by dependency | Approved/denied/expired/invalidated | New request if action changes |
+| AskUser | Decision layer | Preserve question and options | Answered/deferred | Resume pending question after reconnect |
+| PlanUpdated | Inline plan region | Diff by stable step ID | Approved/replaced/cancelled | Renew approval after material change |
+| ContextUpdated | Status + context inspect | Throttled metrics | Compacted/failure | Preview, retry, switch, fork |
+| ConnectionChanged | Banner + sidebar | Never clear transcript/draft | Connected/offline/failed | Backoff, retry, diagnostics |
+| SessionCompleted | Transcript evidence + sidebar | Promote verified state | Verified/unverified/partial/blocked | Continue as new turn |
+
+Component state machines use stable IDs and idempotent updates. No renderer infers completion solely from silence or connection close.
+
+## 34. Design QA Scenarios
+
+Implementation handoff is accepted when replayable scenarios pass:
+
+- Given an active IME composition, when Enter is pressed, then the candidate commits and no prompt is sent.
+- Given a user reading old history, when 100 events stream, then scroll and selection remain fixed and an unread counter appears.
+- Given an approved command, when its arguments change, then approval invalidates and execution does not begin.
+- Given a non-interruptible remote action, when interrupt is requested, then replacement work waits for reconciliation.
+- Given two linked drafts, when either client saves, then neither draft is silently overwritten.
+- Given a 40-column monochrome terminal, when approval is requested, then action, risk, and choices remain understandable.
+- Given a server reconnect, when the last event cursor overlaps, then the transcript contains no duplicate delta or tool row.
+- Given 300 sessions updating, when selection is on one row, then background sorting does not move selection.
+
+## 35. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 5.0 | 2026-07-11 | Closed implementation-readiness gaps with end-to-end journeys, keyboard/focus/state ownership contracts, exact responsive and accessibility matrices, event-component lifecycle mapping, and replayable design QA scenarios |
 | 4.1 | 2026-07-11 | Recorded the implementation-readiness gap audit, blocking-interaction precedence, and phased design iteration plan; synchronized the advanced design artifact set |
 | 4.0 | 2026-07-11 | Added advanced session scale, execution control, Permission Center, search/checkpoint/fork, context/model/tool/artifact behavior, CJK/IME composer, resilience, diagnostics, security, multi-window, and performance specifications |
 | 3.0 | 2026-07-11 | Replaced gray boxed transcript treatment with immersive canvas output, replaced Ghostty top tabs with a left session sidebar, added compact Sylvander brand mark, and split mockups by design level |
