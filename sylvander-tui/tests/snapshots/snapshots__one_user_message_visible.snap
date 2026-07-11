@@ -1,0 +1,28 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 80, 24)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
+hi there                                                                        
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+>                                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+Enter:send  Esc:quit  Ctrl+C:quit

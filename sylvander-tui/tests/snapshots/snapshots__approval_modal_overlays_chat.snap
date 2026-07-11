@@ -1,0 +1,28 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 80, 24)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
+You: rm -rf /                                                                   
+[ ] bash({"command":"rm -rf /"})                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                  ┌ Tool Approval ───────────────────────────┐                  
+                  └──────────────────────────────────────────┘                  
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+[y/n]                                                                           
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+y:approve  n:reject  Esc:cancel

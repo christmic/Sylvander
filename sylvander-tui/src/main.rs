@@ -1,17 +1,7 @@
 //! Sylvander TUI — terminal client for Sylvander agents.
 //!
-//! Connects to a Sylvander server over Unix socket (M21e will wire this up;
-//! until then the TUI runs locally with keyboard-only state changes).
-
-mod app;
-mod client;
-mod component;
-mod dirty;
-mod event;
-mod input;
-mod modal;
-mod panel;
-mod ui;
+//! Connects to a Sylvander server over Unix socket. Library surface in
+//! `lib.rs`; this file is the binary entry point.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -19,9 +9,12 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyEvent, KeyEventKind};
 use tokio::sync::mpsc;
 
-use app::AppState;
-use client::{ClientEvent, UnixClient};
-use event::Action;
+use sylvander_tui::{
+    app::AppState,
+    client::{parse_server_msg, ClientEvent, ClientMsg, UnixClient},
+    event::{Action, DomainEvent},
+    ui,
+};
 
 const SOCKET_PATH: &str = "/tmp/sylvander.sock";
 const TICK_MS: u64 = 50;
@@ -56,7 +49,7 @@ async fn main() {
     let mut event_rx = event_rx;
     // Try to connect; failure is non-fatal — we surface "Disconnected" in UI.
     if let Err(e) = client.connect().await {
-        let _ = state.apply(event::DomainEvent::Disconnected {
+        let _ = state.apply(DomainEvent::Disconnected {
             reason: e.to_string(),
         });
     }
@@ -101,7 +94,7 @@ async fn main() {
         // 7. Smart wait: wake on next event, fallback tick for animations.
         let _ = ticker.tick().await;
         // Heartbeat so spinners can advance.
-        state.apply(event::DomainEvent::Tick);
+        state.apply(DomainEvent::Tick);
     }
 }
 
@@ -112,15 +105,15 @@ async fn handle_client_event(
 ) {
     match ev {
         ClientEvent::Connected => {
-            state.apply(event::DomainEvent::Connected);
+            state.apply(DomainEvent::Connected);
         }
         ClientEvent::Disconnected => {
-            state.apply(event::DomainEvent::Disconnected {
+            state.apply(DomainEvent::Disconnected {
                 reason: "server closed".into(),
             });
         }
         ClientEvent::Message(msg) => {
-            if let Some(ev) = client::parse_server_msg(msg) {
+            if let Some(ev) = parse_server_msg(msg) {
                 state.apply(ev);
             }
         }
@@ -130,13 +123,13 @@ async fn handle_client_event(
 async fn dispatch_action(action: Action, client: &mut UnixClient, _state: &mut AppState) {
     match action {
         Action::SendChat { text, session_id } => {
-            let _ = client.send(&client::ClientMsg::Chat { text, session_id }).await;
+            let _ = client.send(&ClientMsg::Chat { text, session_id }).await;
         }
         Action::SendApprove { call_id, approved } => {
-            let _ = client.send(&client::ClientMsg::Approve { call_id, approved }).await;
+            let _ = client.send(&ClientMsg::Approve { call_id, approved }).await;
         }
         Action::SendAnswer { call_id, answer } => {
-            let _ = client.send(&client::ClientMsg::Answer { call_id, answer }).await;
+            let _ = client.send(&ClientMsg::Answer { call_id, answer }).await;
         }
         Action::Quit => {
             // handle_key sets state.should_quit instead.
