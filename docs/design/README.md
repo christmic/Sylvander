@@ -8,6 +8,18 @@
 - `04-ghostty-sidebar.svg` — Ghostty desktop with left session sidebar.
 - `05-responsive-recovery.svg` — narrow, first-run, disconnected, and recovery states.
 - `06-component-spec.svg` — brand mark and component anatomy.
+- `07-session-management.svg` — large-scale sessions, notifications, multi-window, and draft conflicts.
+- `08-execution-control.svg` — steer, queue, interrupt, and non-interruptible work.
+- `09-permission-center.svg` — permission scopes, pending decisions, rules, and invalidation.
+- `10-transcript-navigation.svg` — search, checkpoints, forks, context, compaction, model, and mode.
+- `11-composer-ime.svg` — Chinese IME, CJK editing, attachments, mentions, history, and draft recovery.
+- `12-resilience-operations.svg` — reconnect, diagnostics, performance degradation, trust, and verification.
+- `07-session-management.svg` — large session collections, notification policy, linked views, and draft conflict.
+- `08-execution-control.svg` — steer, queue, interrupt boundaries, and non-interruptible work.
+- `09-permission-center.svg` — pending decisions, scoped permission rules, audit history, and revocation.
+- `10-transcript-navigation.svg` — transcript search, checkpoints, forks, context, and compaction.
+- `11-composer-ime.svg` — IME composition, mentions, attachments, templates, and draft recovery.
+- `12-resilience-operations.svg` — reconnect, crash ownership, diagnostics, safe mode, and degraded performance.
 - `sylvander-design-tokens.json` — shared visual tokens for the TUI and Ghostty shell.
 - `../sylvander-tui-ux-design.md` — product and interaction source of truth.
 
@@ -30,6 +42,18 @@ SVG import preserves text, vectors, colors, borders, and groups. Figma may not p
 4. **Ghostty desktop** — persistent left session sidebar hosting the same terminal UI.
 5. **Responsive/recovery** — compact and exceptional states.
 6. **Component spec** — reusable anatomy, state, logo, and spacing references.
+7. **Session system** — scale, combined state, notification, and linked views.
+8. **Execution control** — active-turn message semantics and cancellation boundaries.
+9. **Permission system** — durable policy and auditable decisions.
+10. **Navigation/context** — long-session retrieval, branching, and context lifecycle.
+11. **Advanced input** — multilingual composition and durable drafting.
+12. **Operations** — failure ownership, recovery, diagnostics, performance, and trust.
+7. **Session management** — scale, attention, linked views, and multi-window consistency.
+8. **Execution control** — steering, queued prompts, interruption, and safe boundaries.
+9. **Permission center** — decision lifecycle, reusable scopes, revocation, and audit.
+10. **Transcript navigation** — search, checkpoints, forks, context, and compaction.
+11. **Composer and IME** — mixed-width editing, completion, attachments, and draft conflicts.
+12. **Resilience and operations** — subsystem failures, recovery, diagnostics, and trust signals.
 
 ## Editing rules
 
