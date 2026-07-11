@@ -289,3 +289,45 @@ fn ask_user_free_text_mode() {
     }
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
+
+#[test]
+fn sessions_overlay_empty() {
+    let mut state = AppState::new();
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+    state.handle_key(&key);
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
+}
+
+#[test]
+fn sessions_overlay_with_filter_match() {
+    let mut state = AppState::new();
+    // Inject three sessions into the local cache directly.
+    state.sessions.push(sylvander_tui::modal::SessionEntry {
+        id: "a1b2c3d4".into(),
+        label: "auth-refactor".into(),
+        status: sylvander_tui::modal::SessionStatus::Working,
+        workspace: "~/Projects/acme-api".into(),
+        last_seen_secs: 120,
+    });
+    state.sessions.push(sylvander_tui::modal::SessionEntry {
+        id: "e5f6g7h8".into(),
+        label: "auth-debug".into(),
+        status: sylvander_tui::modal::SessionStatus::Waiting,
+        workspace: "~/Projects/acme-api".into(),
+        last_seen_secs: 3600,
+    });
+    state.sessions.push(sylvander_tui::modal::SessionEntry {
+        id: "i9j0k1l2".into(),
+        label: "login-tests".into(),
+        status: sylvander_tui::modal::SessionStatus::Complete,
+        workspace: "~/Projects/web".into(),
+        last_seen_secs: 86_400,
+    });
+    let key = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('p'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
+    state.handle_key(&key);
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
+}

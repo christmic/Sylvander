@@ -1,0 +1,521 @@
+//! Sessions overlay — UX §10.
+//!
+//! Triggered by `Ctrl+P`. Provides a search-filtered list of known
+//! sessions with status badges, working directory, and relative time.
+//! In standalone TUI mode (this binary), "opening" a session replaces
+//! the current view (the Agent switch happens server-side via Chat with
+//! session_id set).
+//!
+//! Data is populated locally as events flow in (each new SessionCreated
+//! pushes an entry). Server-side ListSessions is wired through but
+//! not yet returned by the server (channel-unix logs it as a no-op).
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    Frame,
+};
+
+use crate::app::{AppMode, AppState};
+use crate::event::Action;
+use crate::modal::{Consumed, Modal};
+
+/// Status badge for a session row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStatus {
+    Working,
+    Waiting,
+    Complete,
+    Failed,
+    Disconnected,
+}
+
+impl SessionStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Complete => "complete",
+            Self::Failed => "failed",
+            Self::Disconnected => "disconnected",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Working => Color::Yellow,
+            Self::Waiting => Color::Cyan,
+            Self::Complete => Color::Green,
+            Self::Failed => Color::Red,
+            Self::Disconnected => Color::DarkGray,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionEntry {
+    pub id: String,
+    pub label: String,
+    pub status: SessionStatus,
+    pub workspace: String,
+    pub last_seen_secs: u64,
+}
+
+impl SessionEntry {
+    pub fn format_time(&self) -> String {
+        let s = self.last_seen_secs;
+        if s < 60 {
+            format!("{s}s ago")
+        } else if s < 3600 {
+            format!("{}m ago", s / 60)
+        } else if s < 86_400 {
+            format!("{}h ago", s / 3600)
+        } else {
+            format!("{}d ago", s / 86_400)
+        }
+    }
+}
+
+pub struct SessionsOverlay {
+    /// All known sessions, newest first.
+    pub entries: Vec<SessionEntry>,
+    /// Currently selected index in `entries` (after filtering).
+    pub cursor: usize,
+    /// Filter input.
+    pub filter: String,
+    /// True when the filter text is focused (typing).
+    pub filter_focused: bool,
+    /// When in delete-confirm mode: index of the entry pending delete.
+    pub pending_delete: Option<usize>,
+}
+
+impl SessionsOverlay {
+    pub fn new(entries: Vec<SessionEntry>) -> Self {
+        Self {
+            entries,
+            cursor: 0,
+            filter: String::new(),
+            filter_focused: true,
+            pending_delete: None,
+        }
+    }
+
+    /// Entries that pass the filter (case-insensitive substring match).
+    pub fn filtered(&self) -> Vec<(usize, &SessionEntry)> {
+        let needle = self.filter.to_lowercase();
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                needle.is_empty()
+                    || e.label.to_lowercase().contains(&needle)
+                    || e.workspace.to_lowercase().contains(&needle)
+                    || e.id.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+}
+
+impl Modal for SessionsOverlay {
+    fn active(&self) -> bool {
+        true
+    }
+
+    fn title(&self) -> &str {
+        "Sessions"
+    }
+
+    fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
+        let popup_area = centered_rect(70, 16, parent);
+        frame.render_widget(Clear, popup_area);
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Sessions ")
+                .title_style(Style::default().fg(Color::Magenta)),
+            popup_area,
+        );
+
+        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // search
+                Constraint::Length(1), // spacer
+                Constraint::Min(8),    // list
+                Constraint::Length(1), // footer
+            ])
+            .split(inner);
+
+        // 1. Filter input
+        let search_line = if self.filter_focused {
+            Line::from(vec![
+                Span::styled("Search sessions… ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&self.filter, Style::default()),
+                Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                format!("Search sessions… {}", self.filter),
+                Style::default().fg(Color::DarkGray),
+            ))
+        };
+        frame.render_widget(Paragraph::new(search_line), layout[0]);
+
+        // 2. Spacer
+        frame.render_widget(Paragraph::new("─".repeat(layout[1].width as usize)), layout[1]);
+
+        // 3. List
+        let filtered = self.filtered();
+        let mut lines: Vec<Line> = Vec::new();
+        if filtered.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  (no sessions match)",
+                Style::default().fg(Color::DarkGray).italic(),
+            )));
+        } else {
+            for (row_i, (orig_idx, entry)) in filtered.iter().enumerate() {
+                let is_active = state
+                    .session_id
+                    .as_deref()
+                    .map(|sid| sid == entry.id.as_str())
+                    .unwrap_or(false);
+                let is_cursor = row_i == self.cursor;
+                let cursor_marker = if is_cursor { "  › " } else { "    " };
+                let active_marker = if is_active { "● " } else { "  " };
+                let color = if is_cursor { Color::Cyan } else { Color::Gray };
+
+                let status_color = entry.status.color();
+                lines.push(Line::from(vec![
+                    Span::styled(cursor_marker, Style::default().fg(color)),
+                    Span::styled(active_marker, Style::default().fg(entry.status.color())),
+                    Span::styled(
+                        format!("{:<24}", truncate(&entry.label, 24)),
+                        Style::default().fg(color),
+                    ),
+                    Span::styled(
+                        format!("{:<10}", entry.status.label()),
+                        Style::default().fg(status_color),
+                    ),
+                    Span::styled(
+                        format!("{:<30}", truncate(&entry.workspace, 30)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        entry.format_time(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                let _ = orig_idx; // surfacing only used in confirm-delete
+            }
+        }
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), layout[2]);
+
+        // 4. Footer
+        let footer = if self.pending_delete.is_some() {
+            Line::from(vec![
+                Span::styled("Delete this session? ", Style::default().fg(Color::Red)),
+                Span::styled("[y] confirm  [n/Esc] cancel", Style::default().fg(Color::DarkGray)),
+            ])
+        } else if self.filter_focused {
+            Line::from(Span::styled(
+                "type to filter   ↓/↑ select   enter open   ctrl+n new   r rename   d delete   esc close",
+                Style::default().fg(Color::DarkGray),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "↓/↑ select   enter open   ctrl+n new   r rename   d delete   / filter   esc close",
+                Style::default().fg(Color::DarkGray),
+            ))
+        };
+        frame.render_widget(Paragraph::new(footer), layout[3]);
+
+        // Hardware cursor in filter when focused.
+        if self.filter_focused {
+            let cursor_x = inner.x
+                + 17
+                + self.filter.chars().count() as u16;
+            let cursor_y = inner.y;
+            if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
+        // Delete-confirm layer wins.
+        if let Some(idx) = self.pending_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if idx < self.entries.len() {
+                        self.entries.remove(idx);
+                    }
+                    self.pending_delete = None;
+                    let new_len = self.filtered().len();
+                    if self.cursor >= new_len && new_len > 0 {
+                        self.cursor = new_len - 1;
+                    }
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: false };
+                }
+                _ => {
+                    // Anything else (Esc / n / etc.) cancels.
+                    self.pending_delete = None;
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: false };
+                }
+            }
+        }
+
+        // Key routing.
+        match key.code {
+            KeyCode::Esc => {
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl+P closes too.
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // ctrl+n: new session — synthesize a request.
+                state.pending_actions.push(Action::SendChat {
+                    text: String::new(),
+                    session_id: None,
+                });
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
+            KeyCode::Char('/') => {
+                self.filter_focused = true;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Enter if !self.filter_focused => {
+                // Open the session — set session_id locally; the agent
+                // picks up on next message.
+                if let Some((_, entry)) = self.filtered().get(self.cursor) {
+                    state.session_id = Some(entry.id.clone());
+                    state.status = format!("Switched to {}", entry.label);
+                    state.mode = AppMode::Normal;
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: true };
+                }
+                Consumed::Ignored
+            }
+            KeyCode::Up => {
+                if !self.filter_focused && self.cursor > 0 {
+                    self.cursor -= 1;
+                    state.dirty.mark();
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Down => {
+                if !self.filter_focused {
+                    let len = self.filtered().len();
+                    if self.cursor + 1 < len {
+                        self.cursor += 1;
+                        state.dirty.mark();
+                    }
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('r') if !self.filter_focused => {
+                // Rename: TODO M-T6 — drop into inline edit, for now no-op.
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('d') if !self.filter_focused => {
+                if let Some((_, _entry)) = self.filtered().get(self.cursor) {
+                    self.pending_delete = Some(self.cursor);
+                    state.dirty.mark();
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Backspace if self.filter_focused => {
+                if !self.filter.is_empty() {
+                    self.filter.pop();
+                    self.cursor = 0;
+                    state.dirty.mark();
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Tab => {
+                self.filter_focused = !self.filter_focused;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char(c) if self.filter_focused => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                {
+                    self.filter.push(c);
+                    self.cursor = 0;
+                    state.dirty.mark();
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Enter if self.filter_focused => {
+                // Enter while typing jumps to the list.
+                self.filter_focused = false;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            _ => Consumed::Ignored,
+        }
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(parent.height.saturating_sub(height) / 2),
+            Constraint::Length(height.min(parent.height)),
+            Constraint::Length(parent.height.saturating_sub(height) / 2),
+        ])
+        .split(parent);
+    let h = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x.min(95)) / 2),
+            Constraint::Percentage(percent_x.min(95)),
+            Constraint::Percentage((100 - percent_x.min(95)) / 2),
+        ])
+        .split(v[1]);
+    h[1]
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(id: &str, label: &str, status: SessionStatus, ago: u64) -> SessionEntry {
+        SessionEntry {
+            id: id.into(),
+            label: label.into(),
+            status,
+            workspace: format!("/p/{label}"),
+            last_seen_secs: ago,
+        }
+    }
+
+    fn key(c: KeyCode, m: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(c, m)
+    }
+
+    #[test]
+    fn empty_session_list_renders_no_match_line() {
+        let overlay = SessionsOverlay::new(vec![]);
+        let filtered = overlay.filtered();
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn filter_is_case_insensitive_substring() {
+        let overlay = SessionsOverlay::new(vec![
+            entry("a", "Auth-Refactor", SessionStatus::Working, 120),
+            entry("b", "JWT-Research", SessionStatus::Complete, 7200),
+        ]);
+        assert_eq!(overlay.filtered().len(), 2);
+        let mut o = overlay;
+        o.filter = "auth".into();
+        assert_eq!(o.filtered().len(), 1);
+        o.filter = "AUTH".into();
+        assert_eq!(o.filtered().len(), 1);
+        o.filter = "zzz".into();
+        assert_eq!(o.filtered().len(), 0);
+    }
+
+    #[test]
+    fn enter_switches_session_id() {
+        // Construct a fresh overlay, call handle_key directly with Enter
+        // after putting cursor on row 1; session_id should land on row 1.
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![
+            entry("a", "Auth-Refactor", SessionStatus::Working, 120),
+            entry("b", "Login-Tests", SessionStatus::Complete, 7200),
+        ]);
+        overlay.filter_focused = false;
+        overlay.cursor = 1;
+        let _ = overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        assert_eq!(state.session_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn delete_confirm_cancels_on_n() {
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![entry(
+            "a",
+            "Foo",
+            SessionStatus::Working,
+            60,
+        )]);
+        overlay.pending_delete = Some(0);
+        let result = overlay.handle_key(&key(KeyCode::Char('n'), KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Consumed::Yes { dismiss: false }));
+        assert!(overlay.pending_delete.is_none());
+    }
+
+    #[test]
+    fn delete_confirm_removes_entry_on_y() {
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![entry(
+            "a",
+            "Foo",
+            SessionStatus::Working,
+            60,
+        )]);
+        overlay.pending_delete = Some(0);
+        let result = overlay.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Consumed::Yes { dismiss: false }));
+        assert_eq!(overlay.entries.len(), 0);
+    }
+
+    #[test]
+    fn new_session_action_emitted_on_ctrl_n() {
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![]);
+        let result = overlay.handle_key(
+            &key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            &mut state,
+        );
+        assert!(matches!(result, Consumed::Yes { dismiss: true }));
+        assert_eq!(state.pending_actions.len(), 1);
+        assert!(matches!(
+            state.pending_actions[0],
+            Action::SendChat { ref text, session_id: None } if text.is_empty()
+        ));
+    }
+
+    #[test]
+    fn tab_toggles_filter_focus() {
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![]);
+        assert!(overlay.filter_focused);
+        let _ = overlay.handle_key(&key(KeyCode::Tab, KeyModifiers::NONE), &mut state);
+        assert!(!overlay.filter_focused);
+    }
+}

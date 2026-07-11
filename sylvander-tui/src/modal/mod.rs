@@ -104,6 +104,8 @@ impl Default for ModalStack {
 
 pub mod approval;
 pub mod ask_user;
+pub mod sessions;
 
 pub use approval::ApprovalModal;
 pub use ask_user::AskUserModal;
+pub use sessions::{SessionEntry, SessionStatus, SessionsOverlay};
