@@ -452,3 +452,34 @@ fn tasks_summary_line_compacts_running_and_done() {
     });
     insta::assert_snapshot!(render_buf(&s, 80, 22));
 }
+
+#[test]
+fn full_panel_at_user_terminal_size_140x40() {
+    // Captures the same dimensions the user's screenshot used (~140×40)
+    // so the visual output is directly comparable to docs/
+    // sylvander-tui-ux-design.md §5 (Canonical Conversation Screen).
+    let mut s = AppState::new();
+    s.apply(DomainEvent::Connected);
+    s.messages
+        .push(ChatMessage::User("Add JWT auth middleware".into()));
+    s.apply(DomainEvent::TextChunk {
+        delta: "Inspecting the existing router to understand the auth surface.".into(),
+    });
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "bash".into(),
+        input: serde_json::json!({"command": "ls src/http"}),
+    });
+    s.apply(DomainEvent::ToolFinished {
+        tool_name: "bash".into(),
+        output: "router.rs\nmiddleware.rs".into(),
+        is_error: false,
+    });
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "read".into(),
+        input: serde_json::json!({"path": "src/http/middleware.rs"}),
+    });
+    s.apply(DomainEvent::TextChunk {
+        delta: " I see we have a `TokenGuard` already — let me check it covers Bearer + API-key.".into(),
+    });
+    insta::assert_snapshot!(render_buf(&s, 140, 40));
+}
