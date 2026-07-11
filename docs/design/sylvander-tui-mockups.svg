@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2920" height="2750" viewBox="0 0 2920 2750">
+  <title>Sylvander TUI and Ghostty editable design mockups</title>
+  <desc>Five editable artboards covering main conversation, approval, sessions and tasks, Ghostty desktop tabs, and narrow responsive layout.</desc>
+  <defs>
+    <style>
+      .bg{fill:#0B0D0F}.canvas{fill:#111315}.surface{fill:#171A1D}.raised{fill:#1E2226}.line{stroke:#343A40;stroke-width:1}.strong{stroke:#4A535C;stroke-width:1}.coral-line{stroke:#E8796A;stroke-width:2}.txt{fill:#ECE7DE;font-family:'SFMono-Regular','Menlo',monospace;font-size:15px}.small{fill:#989B9D;font-family:'SFMono-Regular','Menlo',monospace;font-size:13px}.tiny{fill:#666C72;font-family:'SFMono-Regular','Menlo',monospace;font-size:11px}.title{fill:#ECE7DE;font-family:'SFMono-Regular','Menlo',monospace;font-size:17px;font-weight:700}.label{fill:#989B9D;font-family:'SFMono-Regular','Menlo',monospace;font-size:12px;font-weight:700;letter-spacing:1px}.coral{fill:#E8796A}.blue{fill:#75A7E8}.teal{fill:#72C7B1}.amber{fill:#D9AF62}.red{fill:#E06C75}.purple{fill:#B59BE6}.muted{fill:#989B9D}.faint{fill:#666C72}.card{fill:#171A1D;stroke:#343A40;stroke-width:1}.focus{fill:#171A1D;stroke:#E8796A;stroke-width:1.5}.shadow{filter:drop-shadow(0 12px 24px rgba(0,0,0,.38))}
+    </style>
+  </defs>
+  <rect class="bg" width="2920" height="1900"/>
+
+  <g id="artboard-main" transform="translate(40 60)">
+    <text class="label coral" x="0" y="-18">01 · MAIN / WORKING · 120 × 36</text>
+    <rect class="canvas shadow" width="1360" height="820" rx="12"/>
+    <g id="component-header">
+      <rect class="surface" x="18" y="18" width="1324" height="78" rx="7"/>
+      <rect class="line" fill="none" x="18.5" y="18.5" width="1323" height="77" rx="7"/>
+      <text class="title" x="40" y="48"><tspan class="coral">Sylvander 🦀</tspan><tspan dx="22">auth-refactor</tspan></text>
+      <text class="small" x="40" y="76">~/Projects/acme-api  ·  feat/auth-refactor  ·  session 8f21</text>
+      <text class="small" text-anchor="end" x="1318" y="49">claude-sonnet-5  ▾</text>
+      <text class="small blue" text-anchor="end" x="1318" y="76">plan mode</text>
+    </g>
+    <g id="transcript" transform="translate(48 130)">
+      <text class="label" x="0" y="0">YOU</text>
+      <text class="txt" x="0" y="28">Add JWT authentication. Inspect the current middleware and propose a plan</text>
+      <text class="txt" x="0" y="51">before changing anything.</text>
+      <text class="label coral" x="0" y="98">ORACULO</text>
+      <text class="txt" x="0" y="126">I’ll trace the authentication boundary and identify where token validation belongs.</text>
+      <g id="component-tool-group" transform="translate(0 154)">
+        <rect class="card" x="0" y="0" width="1264" height="184" rx="6"/>
+        <circle class="blue" cx="22" cy="27" r="5"/>
+        <text class="txt" x="38" y="32">Exploring the codebase</text>
+        <text class="small" text-anchor="end" x="1238" y="31">00:12</text>
+        <text class="small teal" x="24" y="69">✓</text><text class="small" x="48" y="69">Read</text><text class="small muted" x="112" y="69">src/http/router.rs</text><text class="tiny" text-anchor="end" x="1238" y="69">126 lines</text>
+        <text class="small teal" x="24" y="99">✓</text><text class="small" x="48" y="99">Search</text><text class="small muted" x="112" y="99">“middleware” in src/</text><text class="tiny" text-anchor="end" x="1238" y="99">14 matches</text>
+        <text class="small teal" x="24" y="129">✓</text><text class="small" x="48" y="129">Read</text><text class="small muted" x="112" y="129">src/auth/mod.rs</text><text class="tiny" text-anchor="end" x="1238" y="129">82 lines</text>
+        <text class="small blue" x="24" y="159">◐</text><text class="small" x="48" y="159">Inspect</text><text class="small muted" x="112" y="159">tests/auth_test.rs</text><text class="tiny blue" text-anchor="end" x="1238" y="159">running…</text>
+      </g>
+      <text class="txt" x="0" y="382">The existing cookie flow already exposes a reusable identity boundary.</text>
+      <text class="txt" x="0" y="409">JWT support can implement the same contract without changing route handlers.</text>
+      <text class="title" x="0" y="454">Proposed plan</text>
+      <text class="small teal" x="0" y="485">✓  1. Inspect the current authentication boundary</text>
+      <text class="small blue" x="0" y="513">●  2. Define the shared identity extraction contract</text>
+      <text class="small" x="0" y="541">○  3. Implement JWT verification and middleware</text>
+      <text class="small" x="0" y="569">○  4. Add unit and integration coverage</text>
+    </g>
+    <g id="component-composer" transform="translate(30 666)">
+      <rect class="focus" width="1300" height="92" rx="8"/>
+      <text class="small" x="20" y="31">Ask Sylvander…</text>
+      <text class="tiny" x="20" y="68">Type while I work — your message can steer, queue, or interrupt.</text>
+    </g>
+    <g id="component-status" transform="translate(34 782)">
+      <text class="small blue" x="0" y="0">working</text><text class="small" x="75" y="0">· context 24% · 3 tools · main</text>
+      <text class="tiny" text-anchor="end" x="1292" y="0">↵ send   ⇧↵ newline   esc interrupt   / commands   ? help</text>
+    </g>
+  </g>
+
+  <g id="artboard-approval" transform="translate(1440 60)">
+    <text class="label amber" x="0" y="-18">02 · DECISION / APPROVAL</text>
+    <rect class="canvas shadow" width="1360" height="820" rx="12"/>
+    <g opacity="0.35">
+      <rect class="surface" x="18" y="18" width="1324" height="78" rx="7"/><text class="title" x="40" y="50">Sylvander 🦀  auth-refactor</text>
+      <text class="txt" x="48" y="162">I’m ready to verify the workspace. This requires running the test suite.</text>
+      <rect class="card" x="48" y="196" width="1264" height="134" rx="6"/>
+      <text class="small" x="72" y="240">✓ Read src/auth/mod.rs</text><text class="small" x="72" y="275">✓ Edited src/auth/jwt.rs</text><text class="small" x="72" y="310">○ Run cargo test --workspace</text>
+      <rect class="line" fill="none" x="30" y="666" width="1300" height="92" rx="8"/>
+    </g>
+    <rect fill="#0B0D0F" opacity="0.42" width="1360" height="820" rx="12"/>
+    <g id="component-approval-card" class="shadow" transform="translate(210 142)">
+      <rect class="raised" width="940" height="536" rx="10"/>
+      <rect fill="none" stroke="#D9AF62" stroke-width="1.5" x="0.75" y="0.75" width="938.5" height="534.5" rx="10"/>
+      <text class="label amber" x="28" y="38">PERMISSION REQUIRED</text>
+      <text class="title" x="28" y="82">Run command</text>
+      <rect class="canvas" x="28" y="105" width="884" height="58" rx="6"/>
+      <text class="txt" x="48" y="141">cargo test --workspace</text>
+      <text class="label" x="28" y="205">WORKING DIRECTORY</text>
+      <text class="small" x="28" y="234">~/Projects/acme-api</text>
+      <text class="label" x="28" y="282">EFFECT</text>
+      <text class="small" x="28" y="311">Runs project tests and writes build artifacts inside target/.</text>
+      <g transform="translate(28 346)">
+        <rect class="focus" width="884" height="46" rx="6"/><text class="txt" x="18" y="29"><tspan class="coral">› 1.</tspan> Allow once</text>
+        <text class="txt" x="18" y="76"><tspan class="muted">  2.</tspan> Allow commands beginning with “cargo test”</text>
+        <text class="txt" x="18" y="122"><tspan class="muted">  3.</tspan> Reject and tell Sylvander what to do</text>
+      </g>
+      <text class="tiny" x="28" y="507">↑↓ choose   enter confirm   esc reject</text>
+    </g>
+  </g>
+
+  <g id="artboard-sessions" transform="translate(40 970)">
+    <text class="label purple" x="0" y="-18">03 · SESSIONS / TASKS</text>
+    <rect class="canvas shadow" width="1360" height="820" rx="12"/>
+    <g id="overlay-sessions" transform="translate(48 50)">
+      <rect class="raised" width="1264" height="432" rx="9"/>
+      <rect class="strong" fill="none" x="0.5" y="0.5" width="1263" height="431" rx="9"/>
+      <text class="title" x="24" y="40">Sessions</text>
+      <rect class="canvas" x="24" y="60" width="1216" height="48" rx="6"/>
+      <text class="small" x="42" y="90">Search sessions…  auth_</text>
+      <g transform="translate(24 130)">
+        <rect fill="#252A2F" width="1216" height="54" rx="6"/><rect class="coral" width="3" height="54" rx="2"/>
+        <text class="small blue" x="18" y="33">◐</text><text class="txt" x="48" y="34">auth-refactor</text><text class="small" x="310" y="34">working</text><text class="small muted" x="500" y="34">~/Projects/acme-api</text><text class="tiny" text-anchor="end" x="1192" y="33">2m ago</text>
+        <text class="small amber" x="18" y="91">●</text><text class="txt" x="48" y="92">auth-debug</text><text class="small" x="310" y="92">waiting</text><text class="small muted" x="500" y="92">~/Projects/acme-api</text><text class="tiny" text-anchor="end" x="1192" y="91">1h ago</text>
+        <text class="small teal" x="18" y="149">✓</text><text class="txt" x="48" y="150">login-tests</text><text class="small" x="310" y="150">complete</text><text class="small muted" x="500" y="150">~/Projects/web</text><text class="tiny" text-anchor="end" x="1192" y="149">yesterday</text>
+        <text class="small" x="48" y="208">jwt-research</text><text class="small" x="310" y="208">idle</text><text class="small muted" x="500" y="208">~/Notes</text><text class="tiny" text-anchor="end" x="1192" y="207">Jul 9</text>
+      </g>
+      <text class="tiny" x="24" y="408">enter open   ctrl+enter new tab   ctrl+n new   r rename   d delete session</text>
+    </g>
+    <g id="overlay-tasks" transform="translate(48 518)">
+      <text class="label" x="0" y="0">BACKGROUND TASKS</text>
+      <rect class="card" x="0" y="20" width="1264" height="226" rx="7"/>
+      <text class="small blue" x="24" y="62">●</text><text class="txt" x="52" y="63">main</text><text class="small" x="176" y="63">Implement JWT middleware</text><text class="tiny" text-anchor="end" x="1238" y="62">working · 00:42</text>
+      <text class="tiny muted" x="176" y="88">editing src/auth/jwt.rs</text>
+      <text class="small teal" x="24" y="126">✓</text><text class="txt" x="52" y="127">explorer</text><text class="small" x="176" y="127">Compare authentication paths</text><text class="tiny" text-anchor="end" x="1238" y="126">report ready</text>
+      <text class="tiny muted" x="176" y="152">8 files inspected</text>
+      <text class="small blue" x="24" y="190">◐</text><text class="txt" x="52" y="191">tester</text><text class="small" x="176" y="191">Authentication integration tests</text><text class="tiny" text-anchor="end" x="1238" y="190">11 / 18</text>
+      <text class="tiny muted" x="176" y="216">test_refresh_token running</text>
+    </g>
+  </g>
+
+  <g id="artboard-ghostty" transform="translate(1440 970)">
+    <text class="label coral" x="0" y="-18">04 · GHOSTTY DESKTOP / MULTI-SESSION</text>
+    <rect class="canvas shadow" width="1360" height="820" rx="12"/>
+    <g id="ghostty-native-tabs">
+      <rect fill="#0E1012" width="1360" height="58" rx="12"/>
+      <g transform="translate(16 10)"><rect class="surface" width="232" height="38" rx="6"/><text class="small blue" x="14" y="24">◐</text><text class="small" x="38" y="24">auth-refactor</text><rect class="coral" x="0" y="36" width="232" height="2"/></g>
+      <g transform="translate(254 10)"><text class="small amber" x="12" y="24">●</text><text class="small" x="36" y="24">api-review</text></g>
+      <g transform="translate(466 10)"><text class="small teal" x="12" y="24">✓</text><text class="small" x="36" y="24">release-notes</text></g>
+      <text class="small" text-anchor="end" x="1330" y="34">＋    ⌘K</text>
+    </g>
+    <g transform="translate(18 76)">
+      <rect class="surface" width="1324" height="68" rx="7"/>
+      <text class="title" x="22" y="31"><tspan class="coral">Sylvander 🦀</tspan><tspan dx="20">auth-refactor</tspan></text>
+      <text class="small" x="22" y="53">~/Projects/acme-api · feat/auth-refactor</text>
+      <text class="small" text-anchor="end" x="1300" y="31">claude-sonnet-5</text>
+    </g>
+    <g transform="translate(48 186)">
+      <text class="label" y="0">YOU</text><text class="txt" y="29">Review the public API before we publish the release.</text>
+      <text class="label coral" y="78">ORACULO</text><text class="txt" y="107">I found two compatibility risks. I’m tracing their callers now.</text>
+      <rect class="card" y="140" width="1264" height="166" rx="6"/>
+      <text class="small blue" x="22" y="175">●</text><text class="txt" x="46" y="176">Reviewing public surface</text><text class="tiny" text-anchor="end" x="1238" y="175">00:31</text>
+      <text class="small teal" x="24" y="218">✓</text><text class="small" x="50" y="218">Compare exported types</text>
+      <text class="small blue" x="24" y="258">◐</text><text class="small" x="50" y="258">Trace deprecated method callers</text><text class="tiny blue" text-anchor="end" x="1238" y="258">working…</text>
+    </g>
+    <g transform="translate(30 654)"><rect class="focus" width="1300" height="92" rx="8"/><text class="small" x="20" y="32">Ask Sylvander…</text><text class="tiny" x="20" y="67">Drafts persist with the session when you switch tabs.</text></g>
+    <text class="small blue" x="34" y="784">working</text><text class="small" x="108" y="784">· context 31% · 2 tools</text><text class="tiny" text-anchor="end" x="1328" y="784">esc interrupt · ctrl+t tasks</text>
+  </g>
+
+  <g id="artboard-narrow" transform="translate(40 1870)">
+    <text class="label blue" x="0" y="-18">05 · NARROW / &lt;80 COLS</text>
+    <rect class="canvas shadow" width="440" height="820" rx="12"/>
+    <rect class="surface" x="14" y="14" width="412" height="72" rx="7"/>
+    <text class="title" x="30" y="43"><tspan class="coral">Sylvander 🦀</tspan></text><text class="small" x="30" y="69">auth-refactor · feat/auth</text>
+    <g transform="translate(28 124)">
+      <text class="label" y="0">YOU</text><text class="txt" y="28">Add JWT authentication.</text>
+      <text class="label coral" y="78">ORACULO</text><text class="txt" y="106">I’ll inspect the existing</text><text class="txt" y="130">middleware first.</text>
+      <rect class="card" y="164" width="384" height="150" rx="6"/>
+      <text class="small blue" x="16" y="194">● Exploring</text>
+      <text class="small teal" x="18" y="230">✓ Read router.rs</text>
+      <text class="small teal" x="18" y="260">✓ Read auth/mod.rs</text>
+      <text class="small blue" x="18" y="290">◐ Search callers</text>
+      <text class="txt" y="360">The cookie flow already has a</text><text class="txt" y="384">reusable identity boundary.</text>
+    </g>
+    <g transform="translate(14 666)"><rect class="focus" width="412" height="92" rx="8"/><text class="small" x="16" y="31">Ask Sylvander…</text><text class="tiny" x="16" y="66">⇧↵ newline</text></g>
+    <text class="small blue" x="18" y="791">working</text><text class="small" x="90" y="791">· ctx 24%</text><text class="tiny" text-anchor="end" x="422" y="791">esc interrupt</text>
+  </g>
+</svg>
