@@ -2,7 +2,7 @@
 
 > Status: Design baseline
 >
-> Version: 2.0
+> Version: 3.0
 >
 > Date: 2026-07-11
 >
@@ -10,7 +10,12 @@
 
 Editable design artifacts:
 
-- [`design/sylvander-tui-mockups.svg`](./design/sylvander-tui-mockups.svg) — multi-artboard mockup, editable in Figma, Penpot, Sketch, Illustrator, and Inkscape.
+- [`design/01-experience-map.svg`](./design/01-experience-map.svg) — product-level experience and surface map.
+- [`design/02-tui-immersive.svg`](./design/02-tui-immersive.svg) — canonical immersive TUI.
+- [`design/03-interaction-states.svg`](./design/03-interaction-states.svg) — plan, approval, AskUser, diff, command, paste, and history states.
+- [`design/04-ghostty-sidebar.svg`](./design/04-ghostty-sidebar.svg) — Ghostty desktop with left session sidebar.
+- [`design/05-responsive-recovery.svg`](./design/05-responsive-recovery.svg) — narrow, empty, disconnected, and recovery states.
+- [`design/06-component-spec.svg`](./design/06-component-spec.svg) — component anatomy and visual states.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -21,18 +26,18 @@ Sylvander has one canonical conversation interface: `sylvander-tui`.
 The same TUI runs in two environments:
 
 1. Directly in any compatible terminal.
-2. In a PTY hosted by a Sylvander Ghostty tab.
+2. In a PTY hosted by the Sylvander Ghostty desktop workspace.
 
-Ghostty manages windows, tabs, PTYs, and process lifecycle. It does not implement a second native conversation UI and does not contain agent business logic. `sylvander-server` owns agents, tools, approvals, session history, and persistence.
+Ghostty manages the desktop window, left session sidebar, PTYs, and process lifecycle. It does not implement a second conversation renderer and does not contain agent business logic. `sylvander-server` owns agents, tools, approvals, session history, and persistence.
 
 ```text
 Normal terminal                  Sylvander Desktop
-┌─────────────────────┐          ┌──────────────────────────┐
-│ sylvander-tui       │          │ Ghostty window           │
-│ one active session  │          │ ├─ tab: session A → TUI  │
-└──────────┬──────────┘          │ ├─ tab: session B → TUI  │
-           │                     │ └─ tab: session C → TUI  │
-           │                     └────────────┬─────────────┘
+┌─────────────────────┐          ┌──────────────────────────────┐
+│ sylvander-tui       │          │ sessions │ Ghostty PTY/TUI   │
+│ one active session  │          │ A active │ active session    │
+└──────────┬──────────┘          │ B work   │ immersive output  │
+           │                     │ C done   │                    │
+           │                     └──────────────┬───────────────┘
            └──────────────┬───────────────────┘
                           ▼
                  sylvander-server
@@ -65,18 +70,49 @@ The desired aesthetic is **quiet technical confidence**:
 - Soft ivory primary text instead of harsh white.
 - Coral accent for identity and selection, used sparingly.
 - Teal for verified success and blue for active work.
-- Rounded terminal borders only for interactive surfaces and decisions.
-- Strong alignment and whitespace; very few heavy separators.
+- Conversation and tool output sit directly on the canvas without gray containers.
+- Borders are reserved for input focus, decisions, menus, and inspectable overlays.
+- Strong alignment, indentation, and whitespace replace heavy separators and cards.
 - Symbols always paired with text so meaning survives monochrome terminals.
 
-### 2.2 Design synthesis from leading agents
+### 2.2 Brand mark and session entry
+
+Sylvander uses a compact mark rather than a large ASCII-art banner. The goal is the clarity of Codex/Qwen entry screens without copying their geometry or consuming the conversation viewport.
+
+The mark is a minimal crab-shell symbol: two open claws around a central `S`. It expresses crab energy at small sizes and remains recognizable in monochrome.
+
+```text
+  ◖S◗  SYLVANDER
+       intelligent terminal workspace
+
+       ~/Projects/acme-api
+       What are we building today?
+```
+
+| Context | Mark | Rule |
+|---|---|---|
+| Ghostty/native vector | Two coral claw arcs + central shell | May use vector curves; no enclosing badge |
+| Unicode terminal | `◖S◗ SYLVANDER` | Primary terminal wordmark |
+| ASCII fallback | `[S] SYLVANDER` | Used when glyph width is uncertain |
+| Active session header | `◖S◗` or `Sylvander` | Never show the full welcome lockup inside a conversation |
+| Narrow terminal | `S ›` | One-cell identity plus prompt direction |
+
+Rules:
+
+- Maximum welcome lockup height is five terminal rows.
+- Brand appears once on entry, not before every assistant response.
+- No gradient-filled badge, giant block letters, mascot illustration, or animated logo loop.
+- Coral is limited to the mark; `SYLVANDER` uses primary text color.
+- Version, model, workspace, and permission mode appear as quiet metadata below the welcome prompt, not inside the logo.
+
+### 2.3 Design synthesis from leading agents
 
 Sylvander does not copy one product wholesale. It combines proven strengths and deliberately rejects their weaker patterns.
 
 | Source | Strength adopted | Sylvander interpretation | Pattern not adopted |
 |---|---|---|---|
 | Claude Code | Calm conversation flow, concise tool narration, plan-first collaboration | Transcript remains primary; agent explains intent before tool groups | Tool activity becoming difficult to revisit after long runs |
-| Codex CLI | Clear working state, approvals, plan tracking, steering while running | Stable execution blocks, explicit interruption, evidence-oriented completion | Excess status chrome competing with the conversation |
+| Codex CLI | Clear working state, approvals, plan tracking, steering while running | Explicit interruption and evidence-oriented completion | Gray boxed output and excess status chrome competing with immersion |
 | Gemini CLI | Discoverable commands and rich interactive controls | Contextual slash palette and mode-aware help | Dense permanent footer instructions |
 | Kimi Code | Session continuity, compact long-running-agent behavior | Persistent sessions, resumable drafts, background task summaries | Hidden state that requires reading raw logs |
 | Qwen Code | Subagent and team visibility | Task overlay showing owner, progress, and latest activity | Treating orchestration as a separate primary workspace |
@@ -91,15 +127,15 @@ The resulting hierarchy is:
 4. Session and environment context.
 5. On-demand navigation, tools, tasks, and diagnostics.
 
-### 2.3 Experience principles
+### 2.4 Experience principles
 
 1. **Conversation before machinery.** Tool internals appear only when they help understanding, trust, or recovery.
 2. **Stable surfaces.** Header, transcript, composer, and footer do not jump as content streams.
-3. **Progressive disclosure.** One-line summaries expand into full inputs, diffs, output, timing, and provenance.
+3. **Progressive disclosure.** Borderless one-line summaries expand into aligned full inputs, diffs, output, timing, and provenance.
 4. **Evidence at completion.** “Done” includes tests, changed files, or other concrete verification when applicable.
 5. **Risk near the decision.** Approval cards place action, effect, scope, and working directory together.
 6. **Keyboard fluency without memorization.** Common actions are fast; contextual hints teach them in place.
-7. **Session continuity.** A tab is a view; a session is durable work. Closing one never silently destroys the other.
+7. **Session continuity.** A sidebar item is a view onto durable work. Hiding or closing a view never silently destroys its session.
 8. **Graceful degradation.** Narrow terminals, low color, missing Unicode, and lost connections remain usable.
 
 ## 3. Information Architecture
@@ -107,14 +143,15 @@ The resulting hierarchy is:
 Sylvander uses four persistent regions and three temporary layers.
 
 ```text
-┌──────────────── Header: identity + session + environment ────────────────┐
-│                                                                          │
-│  Transcript viewport                                                     │
-│  conversation · plans · tool groups · decisions · errors                 │
-│                                                                          │
-├──────────────── Composer: draft + attachments + steering ────────────────┤
-│ Status: mode · activity · context · permissions · connection              │
-└──────────────── Contextual key hints ─────────────────────────────────────┘
+  Header: identity · session · environment
+
+  Transcript viewport
+  conversation · plans · tools · decisions · errors
+  no surrounding panel and no per-turn gray card
+
+  ─ Composer: draft · attachments · steering ─
+  Status: mode · activity · context · permissions · connection
+  Contextual key hints
 
 Temporary layers:
   palette/switcher     approval/ask decision     inspect/detail drawer
@@ -127,7 +164,7 @@ Temporary layers:
 | Workspace | Files and execution boundary | Durable | Header and session metadata |
 | Session | One resumable body of work | Durable | Transcript and session switcher |
 | Turn | One user instruction and agent response cycle | Durable | Transcript grouping |
-| Plan | Agreed sequence of work | Session or turn | Inline progress card |
+| Plan | Agreed sequence of work | Session or turn | Inline progress region |
 | Tool operation | Read, edit, command, search, MCP, or external action | Turn | Collapsible execution row |
 | Decision | Permission or answer required from user | Until resolved | Focused decision card |
 | Task | Main-agent, subagent, or background activity | Until resolved | Compact summary and task overlay |
@@ -141,7 +178,7 @@ Temporary layers:
 - `/` opens commands scoped to the current state.
 - `Ctrl+O` inspects the selected transcript object.
 - `Esc` always moves one layer back before it can interrupt or exit.
-- Ghostty tabs provide desktop-level parallel visibility; the TUI session switcher provides application-level search and resume.
+- Ghostty's left sidebar provides desktop-level parallel visibility; the TUI session switcher provides search and resume in ordinary terminals.
 
 ## 4. Evidence from the Current Repository
 
@@ -164,10 +201,9 @@ Temporary layers:
 The reference viewport is 120 columns by 36 rows.
 
 ```text
-┌─ Sylvander 🦀 ───────────────────────────────────────────────────────────────┐
-│ auth-refactor                                            claude-sonnet-5  ▾ │
-│ ~/Projects/acme-api · feat/auth-refactor · session 8f21                    │
-└─────────────────────────────────────────────────────────────────────────────┘
+  Sylvander 🦀  auth-refactor                     claude-sonnet-5 · plan
+  ~/Projects/acme-api · feat/auth-refactor · session 8f21
+  ───────────────────────────────────────────────────────────────────────────
 
   You
   Add JWT authentication. First inspect the existing middleware and propose
@@ -178,10 +214,10 @@ The reference viewport is 120 columns by 36 rows.
   belongs.
 
   ● Exploring the codebase                                            12s
-    ├─ ✓ Read  src/http/router.rs
-    ├─ ✓ Search "middleware" in src/
-    ├─ ✓ Read  src/auth/mod.rs
-    └─ ◐ Inspecting tests/auth_test.rs
+     ✓ Read     src/http/router.rs                              126 lines
+     ✓ Search   "middleware" in src/                           14 matches
+     ✓ Read     src/auth/mod.rs                                 82 lines
+     ◐ Inspect  tests/auth_test.rs                              running…
 
   The project already has session-cookie authentication in `src/auth/mod.rs`.
   JWT support can share its identity extraction layer.
@@ -195,17 +231,17 @@ The reference viewport is 120 columns by 36 rows.
 
   No files have been changed yet.
 
-╭─────────────────────────────────────────────────────────────────────────────╮
-│ Ask Sylvander…                                                              │
-│                                                                             │
-╰─────────────────────────────────────────────────────────────────────────────╯
+  ───────────────────────────────────────────────────────────────────────────
+  Ask Sylvander…
+  │
+  ───────────────────────────────────────────────────────────────────────────
   normal · plan mode   context 24%   3 tools   main
   ↵ send   ⇧↵ newline   esc interrupt   ctrl+r history   / commands   ? help
 ```
 
 ### 5.1 Header
 
-The header occupies at most three rows and shows:
+The header is a quiet two-line text region plus one hairline separator. It has no surrounding panel. It shows:
 
 - Session name.
 - Workspace path.
@@ -217,7 +253,7 @@ Secondary metadata collapses before it wraps. The header must never displace the
 
 ### 5.2 Transcript
 
-The transcript is semantic rather than a raw event log. It contains user messages, assistant messages, execution groups, plans, errors, and decisions.
+The transcript is semantic rather than a raw event log. It sits directly on the terminal canvas, with no outer container and no gray box around turns. It contains user messages, assistant messages, execution groups, plans, errors, and decisions.
 
 Rules:
 
@@ -225,6 +261,8 @@ Rules:
 - Completed streaming content becomes one transcript entry.
 - Thinking is collapsed by default and must be visually distinct.
 - Tool events belonging to one agent step are grouped.
+- Grouping uses indentation, alignment, symbols, and whitespace—not filled cards.
+- A faint vertical guide may connect active child operations; it disappears after completion unless focused.
 - Successful low-information operations remain one line.
 - Failures remain visible until acknowledged or superseded.
 - The viewport follows the bottom unless the user scrolls upward.
@@ -232,7 +270,7 @@ Rules:
 
 ### 5.3 Composer
 
-The composer is multiline and remains anchored above the status rows.
+The composer is multiline and remains anchored above the status rows. Its resting state uses whitespace and horizontal rules; a subtle accent outline appears only while focused, receiving a paste, or requesting a steering decision.
 
 Required behavior:
 
@@ -247,7 +285,7 @@ Required behavior:
 
 ## 6. Active Execution
 
-Tool work is grouped into one live execution block.
+Tool work is grouped into one live execution rhythm without a surrounding container.
 
 ```text
   Oraculo
@@ -262,9 +300,9 @@ Tool work is grouped into one live execution block.
 
   ───────────────────────────────────────────────────────────────────────────
 
-╭─────────────────────────────────────────────────────────────────────────────╮
-│ You can type while I work. Your message will steer the current turn…       │
-╰─────────────────────────────────────────────────────────────────────────────╯
+  You can type while I work. Your message will steer the current turn…
+  │
+  ───────────────────────────────────────────────────────────────────────────
   working · esc interrupt   shift+tab switch mode   ctrl+t tasks
 ```
 
@@ -286,18 +324,16 @@ Routine results are compact:
   ✓ cargo test auth                                      18 passed
 ```
 
-Selected items expand in place:
+Selected items expand in place. Diff detail uses syntax color and aligned gutters, not a gray card:
 
 ```text
   ▾ Edited src/auth/jwt.rs                              +48  -3
-    ┌─────────────────────────────────────────────────────────────────────┐
-  41│+ pub struct JwtVerifier {
-  42│+     decoding_key: DecodingKey,
-  43│+     validation: Validation,
-    │
-  67│- validate_session_cookie(cookie)
-  67│+ authenticate_request(request).await
-    └─────────────────────────────────────────────────────────────────────┘
+  41 │ + pub struct JwtVerifier {
+  42 │ +     decoding_key: DecodingKey,
+  43 │ +     validation: Validation,
+     │
+  67 │ - validate_session_cookie(cookie)
+  67 │ + authenticate_request(request).await
 ```
 
 Long command output is collapsed by default:
@@ -379,7 +415,7 @@ The plan updates in place during implementation. Completed, active, pending, blo
 ╰─────────────────────────────────────────────────────────────────────────────╯
 ```
 
-In a normal terminal, opening a session replaces the current view. In the Sylvander Ghostty desktop, the shell may intercept an explicit open-in-new-tab action. Closing a tab stops its TUI process but does not delete the persisted session.
+In a normal terminal, opening a session replaces the current view. In the Sylvander Ghostty desktop, selection activates the session in the main PTY region and the previous session continues independently. Hiding a sidebar item does not delete the persisted session.
 
 Session state values are `working`, `waiting`, `complete`, `failed`, and `disconnected`. Destructive deletion always requires confirmation.
 
@@ -445,6 +481,54 @@ Initial command set:
 
 Commands may be unavailable based on capability or state. Unavailable commands remain discoverable and explain why they cannot run.
 
+### 12.1 AskUser variants
+
+AskUser uses the same focused decision layer as approval but has three content modes:
+
+- **Single select:** arrow keys choose, number keys jump, Enter confirms.
+- **Multi select:** Space toggles choices, Enter confirms the set.
+- **Free text:** Composer behavior is reused, including multiline input and paste handling.
+
+The original question remains visible after answering as a compact transcript decision with the selected answer. Deferring a question is distinct from rejecting the agent's work.
+
+### 12.2 Plan review and editing
+
+Plan review begins as an immersive inline region. The selected step receives a faint coral wash; the plan does not gain a surrounding gray panel.
+
+- Enter approves the plan.
+- `e` edits the selected step inline.
+- `a` adds a step after the selection.
+- `d` removes a step with undo.
+- Drag/mouse or `Alt+↑/↓` reorders steps.
+- A changed plan shows who changed it and waits for renewed approval if scope materially changed.
+
+### 12.3 Diff and tool inspection
+
+Expanded diffs retain the transcript background. Line numbers form a muted gutter; additions and removals use text color without full-width green/red backgrounds. Large diffs open in an inspect layer with file and hunk navigation, but collapsing returns to the same scroll position.
+
+Command output follows the same rule: compact summary first, borderless aligned lines second, dedicated inspect layer only for long or interactive output.
+
+### 12.4 Paste, attachments, and prompt history
+
+- Pasted content under eight lines stays inline.
+- Larger pastes become a one-line object: kind, line count, byte size, and preview action.
+- File/image references appear as removable tokens above the draft, never inside the transcript before sending.
+- `Ctrl+R` searches per-session prompt history; a second shortcut expands search across sessions.
+- Restoring a historical prompt never overwrites the current draft without keeping an undo snapshot.
+
+### 12.5 Session/workspace launch flow
+
+```text
+New session
+  → choose recent workspace / folder / no workspace
+  → choose new session or resume matching session
+  → create sidebar item (Ghostty) or replace view (standalone)
+  → restore history and draft
+  → focus composer only after restoration completes
+```
+
+Failures remain in the launcher with an actionable explanation. The user never lands in an empty conversation that silently lost its intended workspace.
+
 ## 13. Responsive Layout
 
 Below approximately 80 columns, secondary metadata collapses and labels shorten:
@@ -474,7 +558,7 @@ Responsive rules:
 
 - Wide: 100 columns and above; full metadata and descriptions.
 - Standard: 80–99 columns; compact metadata and tool summaries.
-- Narrow: below 80 columns; single-column cards and minimal status.
+- Narrow: below 80 columns; single-column semantic regions and minimal status.
 - Minimum supported viewport: 50 columns by 12 rows.
 - Below the minimum, show a clear resize message without corrupting terminal state.
 
@@ -527,60 +611,61 @@ All meaning must remain understandable with color disabled. Respect `NO_COLOR` a
 
 ## 16. Ghostty Desktop Experience
 
-Each Sylvander Ghostty agent tab owns a PTY child process running `sylvander-tui` with an explicit session identity and workspace.
+Each visible Ghostty session view owns a PTY child process running `sylvander-tui` with an explicit session identity and workspace. Views are selected from a persistent left sidebar rather than a top tab strip.
 
 The desktop shell is intentionally thin but visually coherent with the TUI:
 
 ```text
-┌──────────────────────────────── Sylvander ─────────────────────────────────┐
-│ ◐ auth-refactor   ● api-review   ✓ release-notes                 ＋   ⌘K   │
-├────────────────────────────────────────────────────────────────────────────┤
-│ ┌─ Sylvander 🦀 ─────────────────────────────────────────────────────────┐ │
-│ │ api-review                             claude-sonnet-5 · plan mode     │ │
-│ │ ~/Projects/acme-api · feat/api-review                                │ │
-│ └────────────────────────────────────────────────────────────────────────┘ │
-│                                                                            │
-│   You                                                                      │
-│   Review the public API before we publish the release.                     │
-│                                                                            │
-│   Oraculo                                                                  │
-│   I found two compatibility risks. I’m tracing their callers now.          │
-│                                                                            │
-│   ● Reviewing public surface                                        00:31  │
-│     ├─ ✓ Compare exported types                                            │
-│     └─ ◐ Trace deprecated method callers                                   │
-│                                                                            │
-│ ╭────────────────────────────────────────────────────────────────────────╮ │
-│ │ Ask Sylvander…                                                         │ │
-│ ╰────────────────────────────────────────────────────────────────────────╯ │
-│   working · context 31% · 2 tools · esc interrupt                          │
-└────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────── Sylvander ───────────────────────────────┐
+│ SESSIONS              │  Sylvander 🦀  api-review           sonnet · plan │
+│                       │  ~/Projects/acme-api · feat/api-review             │
+│ ＋ New session         │  ────────────────────────────────────────────────  │
+│                       │                                                    │
+│ ◐ auth-refactor       │  You                                               │
+│ ● api-review          │  Review the public API before release.             │
+│ ✓ release-notes       │                                                    │
+│   jwt-research        │  Oraculo                                           │
+│                       │  I found two compatibility risks.                   │
+│ WORKSPACES            │                                                    │
+│ ▾ acme-api            │  ● Reviewing public surface                 00:31  │
+│   ▸ web               │     ✓ Compare exported types                       │
+│                       │     ◐ Trace deprecated method callers              │
+│                       │                                                    │
+│                       │  ────────────────────────────────────────────────  │
+│ ⚙ Settings            │  Ask Sylvander…                                    │
+│                       │  ────────────────────────────────────────────────  │
+│                       │  working · context 31% · 2 tools                    │
+└───────────────────────┴────────────────────────────────────────────────────┘
 ```
 
-### 16.1 Tab semantics
+### 16.1 Sidebar semantics
 
-- One tab displays one session; a session may later be opened in more than one view, but only through an explicit duplicate-view action.
-- Tab title uses the user-defined session name, falling back to a concise generated task name.
+- The sidebar is 24–32 terminal columns wide and can collapse to a 3-column state rail.
+- Sessions are grouped by workspace, with a flat recent list above optional workspace groups.
+- One selected sidebar item displays one session in the main PTY region.
+- Session title uses the user-defined name, falling back to a concise generated task name.
 - Leading state indicator: `◐` working, `●` waiting for user, `✓` completed, `!` failed, no icon when idle.
-- Working indicators update without changing tab width or moving neighboring tabs.
+- Working indicators update without moving neighboring rows.
 - Unsaved composer drafts receive a subtle dot independent of agent activity.
-- Closing a tab closes the view. Session deletion is a separate action with confirmation.
-- Reopening the desktop restores previously open tab/session associations and the selected tab.
+- Hiding a view or switching sessions never deletes or interrupts the session.
+- Sidebar search replaces the list in place; it does not cover the active transcript.
+- Reopening the desktop restores sidebar expansion, ordering, selected session, scroll position, and drafts.
+- Focus mode collapses the sidebar; moving the pointer to the left edge or pressing `Cmd+Shift+S` reveals it temporarily.
 
 ### 16.2 Desktop-level actions
 
 | Action | Default | Result |
 |---|---|---|
-| New session tab | `Cmd+T` | Opens workspace/session launcher, then starts the TUI |
-| Reopen closed tab | `Shift+Cmd+T` | Restores the previous session view and draft |
-| Search sessions | `Cmd+K` | Opens the native quick switcher; selecting focuses or opens a tab |
-| Next/previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Changes view without affecting agent execution |
-| Close view | `Cmd+W` | Graceful TUI shutdown; session continues if work is server-side |
-| Duplicate view | command palette | Opens the same session in another tab with a clear linked-view marker |
+| New session | `Cmd+T` | Opens workspace/session launcher and adds a sidebar item |
+| Toggle sidebar | `Cmd+Shift+S` | Expands, collapses, or temporarily reveals the session sidebar |
+| Search sessions | `Cmd+K` | Focuses sidebar search; selection changes the active session view |
+| Next/previous session | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Moves through sidebar recency without affecting execution |
+| Hide view | `Cmd+W` | Removes the item from the visible recent list; session remains durable |
+| Reopen hidden view | `Shift+Cmd+T` | Restores the previous session and its draft |
 
 ### 16.3 Workspace/session launcher
 
-New-tab flow is fast for repeat work and explanatory for first-time use:
+New-session flow is fast for repeat work and explanatory for first-time use:
 
 ```text
 ╭─ New Sylvander session ────────────────────────────────────────────────────╮
@@ -594,14 +679,14 @@ New-tab flow is fast for repeat work and explanatory for first-time use:
 ╰───────────────────────────────────────────────────────────────────────────╯
 ```
 
-After workspace selection, the tab is created immediately and the TUI owns the rest of the interaction. The native shell does not add a second composer, transcript, permission sheet, or agent status model.
+After workspace selection, the session appears in the sidebar immediately and the TUI owns the rest of the interaction. The native shell does not add a second composer, transcript, permission sheet, or agent status model.
 
 ### 16.4 Native/TUI visual relationship
 
 - Ghostty chrome uses the same warm-neutral background family as the TUI but is one luminance step darker.
-- Active tab uses a coral underline, not a filled bright tab.
+- Active sidebar item uses a slim coral leading rule and brighter text, not a filled gray rectangle.
 - Native controls disappear in fullscreen/focus mode; the TUI remains fully operable.
-- Window vibrancy, if enabled, is restricted to the title/tab region so transcript contrast remains stable.
+- Window vibrancy, if enabled, is restricted to the sidebar and title region so transcript contrast remains stable.
 - The terminal grid determines all conversation spacing; the shell never overlays content inside it.
 
 Conceptual launch forms:
@@ -613,10 +698,10 @@ sylvander-tui --session <session-id>
 
 The native shell may:
 
-- Create and close tabs.
-- Restore tabs by persisted session identifier.
-- Reflect session state in tab titles and indicators.
-- Open a selected session in a new tab.
+- Show, hide, reorder, and search session views in the sidebar.
+- Restore sidebar items by persisted session identifier.
+- Reflect session state in sidebar indicators.
+- Open a selected session in the main PTY region.
 - Request a graceful TUI shutdown before terminating the PTY.
 
 The native shell must not:
@@ -630,10 +715,11 @@ The native shell must not:
 
 ### 17.1 First launch
 
-The first launch avoids a blank chat box. It provides one sentence of orientation and three low-pressure starting actions:
+The first launch avoids a blank chat box. It uses the compact Sylvander wordmark, one question, and three low-pressure starting actions:
 
 ```text
-                         Sylvander 🦀
+                         ◖S◗  SYLVANDER
+                              intelligent terminal workspace
 
                  What are we building today?
 
@@ -657,7 +743,7 @@ An interrupted turn remains in history with its partial response and a clear ter
 ### 17.4 Failure hierarchy
 
 - Inline row: individual tool failure with a recoverable next step.
-- Transcript card: turn-level failure requiring user attention.
+- Emphasized transcript region: turn-level failure requiring user attention, without a filled gray card.
 - Banner: connection, authentication, or server availability problem.
 - Full-screen recovery: terminal capability or state restoration failure only.
 
@@ -668,7 +754,7 @@ An interrupted turn remains in history with its partial response and a clear ter
 - Reduced-motion mode replaces spinners with textual state changes.
 - `NO_COLOR` is honored.
 - ASCII fallback replaces box drawing and Unicode state icons.
-- Screen-reader mode linearizes cards and avoids in-place animated rewriting.
+- Screen-reader mode linearizes semantic regions and avoids in-place animated rewriting.
 - High-contrast themes preserve at least three distinguishable luminance levels.
 - Mouse targets never replace keyboard equivalents.
 - Copy mode exposes transcript text without decorative prefixes where possible.
@@ -689,8 +775,8 @@ The baseline design is complete when:
 - Background tasks and subagents are inspectable.
 - Disconnects preserve the draft and session identity and offer reconnect.
 - The layout works at wide, standard, and narrow widths.
-- The exact same TUI binary works in regular terminals and Sylvander Ghostty tabs.
-- Closing a Ghostty tab does not delete its session.
+- The exact same TUI binary works in regular terminals and the Sylvander Ghostty workspace.
+- Hiding or switching a Ghostty session view does not delete its session.
 - Terminal state is restored after normal exit, panic, disconnect, and interrupt.
 
 ## 20. Design-to-Delivery Sequence
@@ -703,8 +789,8 @@ The baseline design is complete when:
 6. Add session switcher, history restoration, and reconnect.
 7. Add commands, tasks, subagent visibility, and context status.
 8. Verify responsive behavior and terminal compatibility.
-9. Integrate the unchanged TUI binary into Ghostty PTY tabs.
-10. Add desktop tab restoration and session-state indicators.
+9. Integrate the unchanged TUI binary into the Ghostty session workspace.
+10. Add desktop sidebar restoration and session-state indicators.
 
 ## 21. Non-Goals for the Baseline
 
@@ -712,12 +798,13 @@ The baseline design is complete when:
 - Agent execution or tool logic inside Ghostty.
 - Pixel-identical rendering across terminal fonts.
 - Mouse-only interactions.
-- A permanently visible session sidebar.
+- A permanently visible session sidebar in the standalone TUI. The Ghostty desktop intentionally has a collapsible left session sidebar.
 - Rich GUI widgets that cannot degrade to terminal cells.
 
 ## 22. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 3.0 | 2026-07-11 | Replaced gray boxed transcript treatment with immersive canvas output, replaced Ghostty top tabs with a left session sidebar, added compact Sylvander brand mark, and split mockups by design level |
 | 2.0 | 2026-07-11 | Added design synthesis, information architecture, Ghostty desktop detail, recovery/accessibility requirements, and editable design artifacts |
 | 1.0 | 2026-07-11 | Approved initial TUI experience and Ghostty integration direction |
