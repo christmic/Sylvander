@@ -11,7 +11,7 @@ use crate::component::Component;
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
-use crate::modal::ModalStack;
+use crate::modal::{ModalStack, SessionEntry, SessionStatus, SessionsOverlay};
 use crate::panel;
 
 // ===========================================================================
@@ -28,10 +28,15 @@ pub struct AppState {
     pub status: String,
     pub mode: AppMode,
 
+    /// Local cache of known sessions (newest first) — populated as
+    /// `SessionCreated` events arrive. Survives reconnects so the user
+    /// can switch back to a previous session even after a server restart.
+    pub sessions: Vec<SessionEntry>,
+
     // ---- component registration ----
     /// Layout order is `panels[0]` top, last entry bottom.
     pub panels: Vec<Box<dyn Component>>,
-    /// Floating layers (approval, ask, toast).
+    /// Floating layers (approval, ask, sessions, toast).
     pub modals: ModalStack,
 
     // ---- focused input ----
@@ -58,6 +63,7 @@ impl AppState {
             connected: false,
             status: "Connecting...".into(),
             mode: AppMode::Normal,
+            sessions: Vec::new(),
             panels: Vec::new(),
             modals: ModalStack::new(),
             composer: Composer::default(),
@@ -161,6 +167,29 @@ impl AppState {
                 self.messages.push(ChatMessage::Info(format!("Disconnected: {reason}")));
             }
             DomainEvent::SessionCreated { session_id } => {
+                // First time we see this id — push a local session entry.
+                // De-dup by id so reconnects don't create dup rows.
+                if !self.sessions.iter().any(|e| e.id == session_id) {
+                    let label = short_session_label(&session_id);
+                    self.sessions.insert(
+                        0,
+                        SessionEntry {
+                            id: session_id.clone(),
+                            label,
+                            status: SessionStatus::Working,
+                            workspace: std::env::current_dir()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|_| "/".to_string()),
+                            last_seen_secs: 0,
+                        },
+                    );
+                } else {
+                    // Mark existing as working + refresh its seen-time.
+                    if let Some(e) = self.sessions.iter_mut().find(|e| e.id == session_id) {
+                        e.status = SessionStatus::Working;
+                        e.last_seen_secs = 0;
+                    }
+                }
                 self.session_id = Some(session_id);
             }
             DomainEvent::TextChunk { delta } => {
@@ -291,7 +320,25 @@ impl AppState {
             // fall through to composer handler; it will ignore Ctrl+C.
         }
 
-        // 3. Esc cancels current mode or quits.
+        // 3. Ctrl+P toggles the sessions overlay (UX §10).
+        let is_ctrl_p = key.code == crossterm::event::KeyCode::Char('p')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl_p {
+            // If there's an existing modal on top, the modal's own keymap
+            // handles Ctrl+P (closes itself). So we only open when nothing
+            // is on top.
+            if self.modals.is_empty() {
+                let overlay = SessionsOverlay::new(self.sessions.clone());
+                self.modals.push(Box::new(overlay));
+                self.mode = AppMode::Normal; // overlay isn't modal-blocked
+                self.dirty.mark();
+            }
+            return None;
+        }
+
+        // 4. Esc cancels current mode or quits.
         if key.code == crossterm::event::KeyCode::Esc {
             if !self.modals.is_empty() {
                 self.modals.pop();
@@ -495,4 +542,38 @@ mod tests {
             Action::SendApprove { ref call_id, approved: true } if call_id == "c1"
         ));
     }
+
+    #[test]
+    fn ctrl_p_pushes_sessions_overlay() {
+        let mut s = AppState::new();
+        let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        s.handle_key(&key);
+        assert_eq!(s.modals.len(), 1);
+        // Press Ctrl+P again — top is overlay, which handles its own keys.
+        s.handle_key(&key);
+        // Overlay's handler closes on Ctrl+P.
+        assert!(s.modals.is_empty());
+    }
+
+    #[test]
+    fn session_created_populates_sessions_cache() {
+        let mut s = AppState::new();
+        s.apply(DomainEvent::SessionCreated {
+            session_id: "abc-123".into(),
+        });
+        assert_eq!(s.sessions.len(), 1);
+        assert_eq!(s.sessions[0].id, "abc-123");
+        assert_eq!(s.session_id.as_deref(), Some("abc-123"));
+        // Re-creating the same id should NOT add a dup row.
+        s.apply(DomainEvent::SessionCreated {
+            session_id: "abc-123".into(),
+        });
+        assert_eq!(s.sessions.len(), 1);
+    }
+}
+
+/// Build a short human label from a session uuid.
+fn short_session_label(id: &str) -> String {
+    let first8: String = id.chars().take(8).collect();
+    first8
 }
