@@ -75,9 +75,10 @@ impl Component for ChatPanel {
             frame.render_widget(line.clone(), line_area);
         }
 
-        // If we're in AskPending mode with an empty input, render a hint.
-        if matches!(state.mode, AppMode::AskPending) && state.input.buffer.is_empty() {
-            // The popup will overlay this, so nothing extra needed here.
+        // If we're in AskPending mode with an empty composer, render a hint.
+        // Currently the AskUser popup overlays this region, so we skip.
+        if matches!(state.mode, AppMode::AskPending) && state.composer.is_empty() {
+            // placeholder for future inline hint
         }
     }
 }
