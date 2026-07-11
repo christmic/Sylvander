@@ -25,7 +25,10 @@ impl InputPanel {
 
 impl Component for InputPanel {
     fn height(&self) -> Constraint {
-        Constraint::Length(1)
+        // We can't know the composer row count here (static API), so we
+        // request a generous fixed budget and let ratatui truncate. The
+        // InputPanel render() re-computes the actual visible row count.
+        Constraint::Length(8)
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
