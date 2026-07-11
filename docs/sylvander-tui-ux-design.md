@@ -2,7 +2,7 @@
 
 > Status: Design baseline
 >
-> Version: 4.0
+> Version: 4.1
 >
 > Date: 2026-07-11
 >
@@ -1108,10 +1108,57 @@ Completion claims distinguish:
 
 Update notices are non-modal unless a protocol incompatibility prevents connection. Client and server negotiate protocol versions; incompatible combinations explain which component must update. Updates never interrupt an active turn and require an explicit restart boundary.
 
-## 28. Version History
+## 28. Gap Audit
+
+The v4 report covers the intended product surface, but breadth alone does not make the design implementation-ready. The following gaps are the active design backlog and must be closed in priority order.
+
+| Priority | Gap | Current risk | Required evidence |
+|---|---|---|---|
+| P0 | Report and artifact drift | The report references files that may not exist or are absent from the handoff index | Link check, numbered artifact inventory, and rendered contact sheet |
+| P0 | End-to-end journeys are implicit | Individual states do not prove that entry, transition, recovery, and exit form a coherent flow | Journey maps for start/resume, plan-to-execute, approve, interrupt, reconnect, and fork |
+| P0 | Execution and decision states overlap | Approval, AskUser, queue, steer, interrupt, and disconnect can compete for focus | One precedence table and deterministic focus/notification rules |
+| P1 | Keyboard contract is distributed | Shortcuts can conflict across composer, overlay, transcript, shell, and IME | Context-keyed shortcut matrix with conflict resolution and discoverability behavior |
+| P1 | State ownership is underspecified | TUI, Ghostty, and server may each appear to own draft, view, or execution state | Event/state ownership table including persistence and reconciliation |
+| P1 | Responsive behavior lacks cell metrics | Visual mockups do not define exact collapse thresholds or minimum usable dimensions | Layout table at 120, 100, 80, 60, and 40 columns plus height constraints |
+| P1 | Destructive recovery lacks full confirmation paths | Delete, revoke, revert, force-stop, and workspace escape can be misunderstood | Before/during/after/error states with explicit irreversible effects |
+| P1 | Accessibility is mostly normative text | ASCII, monochrome, screen-reader, reduced-motion, and CJK behavior are not all shown | Paired fallback examples and test cases |
+| P2 | Components are not mapped to protocol events | Implementation could invent inconsistent loading, terminal, and error states | Event-to-component matrix with payload, update, terminal, and retry behavior |
+| P2 | Visual tokens are not terminal tokens | Pixel spacing and colors do not yet resolve to terminal cells and capability tiers | Ratatui-oriented cell, style, symbol, and color fallback tokens |
+| P2 | Acceptance criteria are feature-level | They are difficult to replay as design QA scenarios | Given/When/Then scenario suite with artifact references |
+| P3 | Real-content stress cases are thin | Long paths, large diffs, bursty streams, 300+ sessions, and mixed-width text may break hierarchy | Stress renders and truncation/wrapping rules using production-shaped content |
+
+### 28.1 Interaction precedence
+
+Only one blocking interaction owns keyboard focus. Lower-priority activity remains visible but cannot steal focus.
+
+| Rank | State | Focus rule |
+|---|---|---|
+| 1 | Destructive approval or invalidated approval | Focus decision; preserve composer draft; `Esc` denies only after confirmation when execution consequences exist |
+| 2 | AskUser required to continue | Focus answer control; queued prompts remain parked |
+| 3 | Draft conflict or recovery choice | Focus reconciliation; never select a destructive default |
+| 4 | Command palette, switcher, search, inspect | Temporary overlay; `Esc` returns to the exact prior focus and scroll anchor |
+| 5 | Composer | Default focus when no blocking layer exists |
+| 6 | Transcript navigation | Explicitly entered; streaming never steals focus or scroll position |
+
+Connection loss does not dismiss ranks 1–3. Their actions become unavailable with a clear `reconnect to decide` status until server state is reconciled.
+
+## 29. Iteration Plan
+
+| Phase | Scope | Exit criteria | Status |
+|---|---|---|---|
+| P0 — Audit and consistency | Inventory report, artifacts, indexes, and interrupted work | All links resolve; XML and JSON validate; gaps are recorded | In progress |
+| P1 — Missing interaction artifacts | Complete session, execution, permission, navigation, composer/IME, and resilience boards | Sections 22–27 each have editable visual evidence | In progress |
+| P2 — Journeys and state contracts | Add primary journeys, precedence, focus, shortcut, ownership, responsive, and fallback matrices | Every primary journey has entry, transition, recovery, and exit | Pending |
+| P3 — Implementation handoff | Define terminal-cell tokens, event/component mapping, persistence boundaries, and component contracts | Engineers can implement without inventing product behavior | Pending |
+| P4 — Design verification | Render all boards; test links, XML/JSON, narrow widths, monochrome/ASCII, CJK, and scenario coverage | Verification report records pass/fail evidence and remaining risks | Pending |
+
+Each phase updates this report first, then its editable artifacts and handoff index. A phase is not complete merely because prose exists; its exit evidence must be present and verified.
+
+## 30. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 4.1 | 2026-07-11 | Recorded the implementation-readiness gap audit, blocking-interaction precedence, and phased design iteration plan; synchronized the advanced design artifact set |
 | 4.0 | 2026-07-11 | Added advanced session scale, execution control, Permission Center, search/checkpoint/fork, context/model/tool/artifact behavior, CJK/IME composer, resilience, diagnostics, security, multi-window, and performance specifications |
 | 3.0 | 2026-07-11 | Replaced gray boxed transcript treatment with immersive canvas output, replaced Ghostty top tabs with a left session sidebar, added compact Sylvander brand mark, and split mockups by design level |
 | 2.0 | 2026-07-11 | Added design synthesis, information architecture, Ghostty desktop detail, recovery/accessibility requirements, and editable design artifacts |
