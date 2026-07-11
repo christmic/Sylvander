@@ -416,3 +416,38 @@ fn server_side_tool_rejection_lands_in_transcript() {
     });
     insta::assert_snapshot!(render_buf(&s, 80, 22));
 }
+
+#[test]
+fn plan_block_renders_with_progress_markers() {
+    let mut s = AppState::new();
+    s.messages
+        .push(ChatMessage::User("set up auth".into()));
+    s.apply(DomainEvent::PlanReceived {
+        plan_id: "p-1".into(),
+        steps: vec![
+            "Inspect the current authentication boundary".into(),
+            "Define the JWT verification interface".into(),
+            "Implement verifier and middleware".into(),
+            "Add unit and integration tests".into(),
+            "Run workspace verification".into(),
+        ],
+        current: 1,
+    });
+    insta::assert_snapshot!(render_buf(&s, 90, 24));
+}
+
+#[test]
+fn tasks_summary_line_compacts_running_and_done() {
+    let mut s = AppState::new();
+    s.apply(DomainEvent::TaskStarted {
+        task_id: "t1".into(),
+        owner: "explorer".into(),
+        purpose: "scan auth middleware".into(),
+    });
+    s.apply(DomainEvent::TaskStarted {
+        task_id: "t2".into(),
+        owner: "coder".into(),
+        purpose: "draft verifier".into(),
+    });
+    insta::assert_snapshot!(render_buf(&s, 80, 22));
+}

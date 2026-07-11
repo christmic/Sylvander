@@ -185,6 +185,51 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                 Style::default().fg(Color::DarkGray),
             )));
         }
+        ChatMessage::Plan {
+            plan_id: _,
+            steps,
+            current,
+        } => {
+            // UX §9: plan renders as a numbered list with ✓ ● ○ markers.
+            // Header says "Proposed plan" so the user can scan the
+            // transcript and find it later.
+            lines.push(Line::from(Span::styled(
+                "Proposed plan",
+                Style::default().fg(Color::Yellow).bold(),
+            )));
+            for (i, step) in steps.iter().enumerate() {
+                let (marker, color) = if i < *current {
+                    ("✓", Color::Green)
+                } else if i == *current {
+                    ("●", Color::Cyan)
+                } else {
+                    ("○", Color::DarkGray)
+                };
+                let label = format!("{marker} {}. {}", i + 1, step);
+                lines.push(Line::from(Span::styled(
+                    format!("  {label}"),
+                    Style::default().fg(color),
+                )));
+            }
+        }
+        ChatMessage::TaskList { tasks } => {
+            // Compact one-liner per UX §11: `▶ n/m done · <owner> <purpose>`.
+            // Drops per-task lines (the agent loop verbose form) — too noisy
+            // for the immersive transcript.
+            let total = tasks.len();
+            let done = tasks
+                .iter()
+                .filter(|t| t.state == crate::app::TaskState::Done)
+                .count();
+            let running = tasks
+                .iter()
+                .filter(|t| t.state == crate::app::TaskState::Running)
+                .count();
+            lines.push(Line::from(Span::styled(
+                format!("▶ tasks {done}/{total} done · {running} running"),
+                Style::default().fg(Color::Magenta),
+            )));
+        }
     }
 }
 
