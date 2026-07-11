@@ -70,6 +70,16 @@ pub enum ServerMsg {
         batch_id: String,
         tools: Vec<ToolInfoMsg>,
     },
+    /// Agent asks the user a clarifying question. UX §12.1:
+    /// multi_select=false → single choice + free-text fallback;
+    /// multi_select=true → multi-select checkboxes + free-text fallback.
+    AskUser {
+        session_id: String,
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
     Pong,
 }
 
@@ -246,6 +256,18 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         } => DomainEvent::ApprovalRequested {
             batch_id,
             tools: tools.into_iter().map(Into::into).collect(),
+        },
+        ServerMsg::AskUser {
+            call_id,
+            question,
+            options,
+            multi_select,
+            ..
+        } => DomainEvent::AskUserRequested {
+            call_id,
+            question,
+            options,
+            multi_select,
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,

@@ -229,3 +229,63 @@ fn approval_modal_with_queue_header() {
     });
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
+
+#[test]
+fn ask_user_single_select_open() {
+    let mut state = AppState::new();
+    state.messages.push(ChatMessage::User("change it".into()));
+    state.apply(DomainEvent::AskUserRequested {
+        call_id: "q1".into(),
+        question: "Which style do you prefer?".into(),
+        options: vec![
+            "Minimalist".into(),
+            "Colorful".into(),
+            "Monochrome".into(),
+        ],
+        multi_select: false,
+    });
+    assert_eq!(state.mode, AppMode::AskPending);
+    insta::assert_snapshot!(render_buf(&state, 90, 24));
+}
+
+#[test]
+fn ask_user_multi_select_with_toggles() {
+    let mut state = AppState::new();
+    state.apply(DomainEvent::AskUserRequested {
+        call_id: "q2".into(),
+        question: "Tags for this issue?".into(),
+        options: vec![
+            "urgent".into(),
+            "bug".into(),
+            "feature".into(),
+            "needs-review".into(),
+        ],
+        multi_select: true,
+    });
+    // Toggle first option with Space, then write some free-text.
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c, m| KeyEvent::new(c, m);
+    state.handle_key(&k(KeyCode::Char(' '), KeyModifiers::NONE));
+    state.handle_key(&k(KeyCode::Char(' '), KeyModifiers::NONE));
+    for ch in "edge case".chars() {
+        state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    insta::assert_snapshot!(render_buf(&state, 90, 26));
+}
+
+#[test]
+fn ask_user_free_text_mode() {
+    let mut state = AppState::new();
+    state.apply(DomainEvent::AskUserRequested {
+        call_id: "q3".into(),
+        question: "Describe the bug in your own words:".into(),
+        options: vec![],
+        multi_select: false,
+    });
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let k = |c, m| KeyEvent::new(c, m);
+    for ch in "the loader hangs on cold start".chars() {
+        state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    insta::assert_snapshot!(render_buf(&state, 90, 22));
+}

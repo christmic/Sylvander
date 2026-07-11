@@ -1,0 +1,30 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 90, 26)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Agent asks (multi-select) ─────────────────────────┐                  
+                  │Tags for this issue?                                │                  
+                  │                                                    │                  
+                  │☑ [1] urgent                                        │                  
+                  │☐ [2] bug                                           │                  
+                  │☐ [3] feature                                       │                  
+──────────────────│☐ [4] needs-review                                  │──────────────────
+?                 │                                                    │                  
+                  │Or type a free-text reply:                          │                  
+                  │> edgecase                                          │                  
+                  │                                                    │                  
+                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+Enter:submit  Esc:cancel
