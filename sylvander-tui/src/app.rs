@@ -155,6 +155,35 @@ pub enum ChatMessage {
     },
     Thinking(String),
     Info(String),
+    /// Plan block — ordered list of step descriptions with a cursor.
+    /// `current` is the index of the step currently being executed (●);
+    /// steps before it render as ✓; steps after it render as ○.
+    Plan {
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
+    /// Compact task list line — one ChatMessage line per UI slot,
+    /// updated by replacing the most recent TaskList entry on each
+    /// `TaskStarted` event (de-duplicated by task_id).
+    TaskList {
+        tasks: Vec<TaskEntry>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskEntry {
+    pub task_id: String,
+    pub owner: String,
+    pub purpose: String,
+    pub state: TaskState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskState {
+    Running,
+    Done,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,6 +334,68 @@ impl AppState {
                 self.messages.push(ChatMessage::Info(format!(
                     "tool {tool_name} rejected: {reason}"
                 )));
+            }
+            DomainEvent::PlanReceived {
+                plan_id,
+                steps,
+                current,
+            } => {
+                self.messages.push(ChatMessage::Plan {
+                    plan_id: plan_id.clone(),
+                    steps: steps.clone(),
+                    current,
+                });
+                // Push a review modal — UX §9 wants explicit user
+                // approval before file edits, so we surface a modal.
+                let modal = crate::modal::plan::PlanReviewModal::new(
+                    plan_id,
+                    steps,
+                    current,
+                    self.session_id.clone(),
+                );
+                self.modals.push(Box::new(modal));
+                self.mode = AppMode::Normal;
+            }
+            DomainEvent::TaskStarted {
+                task_id,
+                owner,
+                purpose,
+            } => {
+                // Find or create the trailing TaskList block. Adding
+                // a new running task refreshes that line in place so
+                // the transcript stays compact.
+                let entry = TaskEntry {
+                    task_id,
+                    owner,
+                    purpose,
+                    state: TaskState::Running,
+                };
+                let mut updated_tasks: Vec<TaskEntry> = Vec::new();
+                let mut found = false;
+                if let Some(ChatMessage::TaskList { tasks }) = self.messages.last_mut() {
+                    for t in tasks.iter() {
+                        if t.task_id == entry.task_id {
+                            // Replace existing entry if it re-emits.
+                            updated_tasks.push(entry.clone());
+                            found = true;
+                        } else {
+                            updated_tasks.push(t.clone());
+                        }
+                    }
+                }
+                if !found {
+                    updated_tasks.push(entry);
+                }
+                match self.messages.last_mut() {
+                    Some(ChatMessage::TaskList { tasks }) => {
+                        *tasks = updated_tasks;
+                    }
+                    _ => {
+                        self.messages.push(ChatMessage::TaskList {
+                            tasks: updated_tasks,
+                        });
+                    }
+                }
             }
             DomainEvent::Tick => {
                 // No state change — only used to wake the render loop.

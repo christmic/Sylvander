@@ -1,0 +1,26 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&s, 80, 22)"
+---
+Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
+▶ tasks 0/2 done · 2 running                                                    
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+>                                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+Enter:send  Esc:quit

@@ -70,6 +70,25 @@ pub enum DomainEvent {
         reason: String,
     },
 
+    /// Agent is presenting a plan before doing more work (UX §9). The
+    /// TUI renders the plan inline in the transcript and pushes a
+    /// `PlanReviewModal` so the user can approve / edit / cancel.
+    PlanReceived {
+        plan_id: String,
+        steps: Vec<String>,
+        /// Currently-active step index (the ◉ in the marker row).
+        current: usize,
+    },
+
+    /// Agent kicked off a background task / subagent (UX §11). Surfaces
+    /// as a `TaskList` line in the transcript and tracks in-flight vs
+    /// completed count via repeated `TaskProgress` events.
+    TaskStarted {
+        task_id: String,
+        owner: String,
+        purpose: String,
+    },
+
     /// Tick — heartbeat from the main loop (for spinner / time displays).
     Tick,
 }
