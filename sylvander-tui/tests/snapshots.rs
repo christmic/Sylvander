@@ -359,3 +359,44 @@ fn palette_with_no_match() {
     }
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
+
+// ---------------------------------------------------------------------------
+// Responsive breakpoint snapshots (UX §13).
+// ---------------------------------------------------------------------------
+
+fn seed_state() -> AppState {
+    let mut s = AppState::new();
+    s.apply(DomainEvent::Connected);
+    s.messages.push(ChatMessage::User("Add JWT auth.".into()));
+    s.apply(DomainEvent::TextChunk {
+        delta: "Inspecting router.".into(),
+    });
+    s.apply(DomainEvent::AgentDone {
+        final_text: "Inspecting router.".into(),
+    });
+    s
+}
+
+#[test]
+fn layout_wide_breakpoint() {
+    let s = seed_state();
+    insta::assert_snapshot!(render_buf(&s, 132, 30));
+}
+
+#[test]
+fn layout_standard_breakpoint() {
+    let s = seed_state();
+    insta::assert_snapshot!(render_buf(&s, 88, 24));
+}
+
+#[test]
+fn layout_narrow_breakpoint_drops_meta() {
+    let s = seed_state();
+    insta::assert_snapshot!(render_buf(&s, 70, 22));
+}
+
+#[test]
+fn layout_too_small_renders_resize_message() {
+    let s = seed_state();
+    insta::assert_snapshot!(render_buf(&s, 40, 20));
+}

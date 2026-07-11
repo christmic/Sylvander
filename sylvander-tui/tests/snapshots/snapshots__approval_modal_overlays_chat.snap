@@ -25,4 +25,4 @@ You: rm -rf /
                                                                                 
                                                                                 
                                                                                 
-y:approve  n:reject  Esc:cancel
+Enter:send  Esc:quit

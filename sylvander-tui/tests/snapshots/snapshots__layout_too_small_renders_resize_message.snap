@@ -1,0 +1,24 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&s, 40, 20)"
+---
+┌ Sylvander — please resize ───────────┐
+│Terminal too small — minimum supported│
+│viewport is 50 columns × 12           │
+│rows.Resize the window to continue.   │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+└──────────────────────────────────────┘
