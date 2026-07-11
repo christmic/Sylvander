@@ -2,10 +2,10 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 24)"
 ---
-Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+◖S◗  Sylvander  new session                                                        — · ask
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
+──────────────────────────────────────────────────────────────────────────────────────────
 You: change it                                                                            
-                                                                                          
-                                                                                          
                                                                                           
                                                                                           
                   ┌ Agent asks (single-select) ────────────────────────┐                  
@@ -13,16 +13,16 @@ You: change it
                   │                                                    │                  
                   │ ›  Minimalist                                      │                  
                   │    Colorful                                        │                  
-──────────────────│    Monochrome                                      │──────────────────
-?                 │                                                    │                  
-                  │Or type a free-text reply:                          │                  
-                  │>                                                   │                  
-                  │                                                    │                  
-                  └────────────────────────────────────────────────────┘                  
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-Enter:send  Esc:quit
+                  │    Monochrome                                      │                  
+──────────────────│                                                    │──────────────────
+│Ask Sylvander…   │Or type a free-text reply:                          │                 │
+│                 │>                                                   │                 │
+│                 │                                                    │                 │
+│                 └────────────────────────────────────────────────────┘                 │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│Answering this question clears this draft.                                              │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────

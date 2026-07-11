@@ -2,27 +2,27 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 80, 24)"
 ---
-Sylvander · deepseek-v4-flash · Disconnected · Connecting...                    
+◖S◗  Sylvander  new session                                         — · approval
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
+────────────────────────────────────────────────────────────────────────────────
 You: rm -rf /                                                                   
-◐ bash                                                                          
-  command  rm -rf /                                                             
-                                                                                
-                ┌ Tool Approval ───────────────────────────────┐                
+● Run `rm`     00s                                                              
+│ ◐ $ rm -rf /  ┌ Tool Approval ───────────────────────────────┐                
                 │Agent wants to run:                           │                
                 │  >> 1. bash  {"command":"rm -rf /"}          │                
                 │                                              │                
                 │Tool 1/1  y=approve  n=reject  Y=all  N=reject│                
                 │                                              │                
+                │                                              │                
 ────────────────│                                              │────────────────
-[y/n]           │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                └──────────────────────────────────────────────┘                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-Enter:send  Esc:quit
+│Ask Sylvander… │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               │                                              │               │
+│               └──────────────────────────────────────────────┘               │
+│                                                                              │
+│                                                                              │
+│Approving tools clears this draft.                                            │
+└──────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────

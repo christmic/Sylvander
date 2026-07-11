@@ -11,4 +11,5 @@ pub mod event;
 pub mod input;
 pub mod modal;
 pub mod panel;
+pub mod theme;
 pub mod ui;

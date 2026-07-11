@@ -1,125 +1,237 @@
-//! Input panel — bottom N lines. Contains attachment tokens above + the
-//! multiline composer below. The hardware cursor lives on the composer's
-//! (row, col) — attachment rows offset the cursor Y down accordingly.
+//! Composer panel — bottom of the screen.
+//!
+//! Wraps the multi-line composer in a chrome block per UX §5.3 + the
+//! `18-composer-interactions.svg` states:
+//!
+//! - Hairline rule **above** (alongside the transcript's closing edge).
+//! - 3-pixel coral left-edge bar when the composer owns focus
+//!   (`focus_box()` border style). No bar when idle.
+//! - Placeholder text "Ask Sylvander…" in `TEXT_DIM` when the buffer
+//!   is empty.
+//! - The composer rows themselves (multiline, hardware cursor).
+//! - For large pastes (§12.4): side-by-side token chips with a
+//!   removable `×` glyph. Each chip is a single-celled Box with a
+//!   `▣` (paste) or `@` (file) prefix.
+//! - Helper line below the rows: "Type while I work — steer, queue,
+//!   or interrupt." in `TEXT_MUTED`.
+//! - Hairline rule **below** the composer (between composer and status
+//!   row).
 
 use ratatui::{
-    layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Paragraph},
+    layout::{Constraint, Direction, Layout, Rect},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use crate::app::{AppMode, AppState};
 use crate::component::Component;
+use crate::input::AttachmentKind;
+use crate::theme;
 
 pub struct InputPanel;
 
-impl InputPanel {
-    fn prompt(mode: &AppMode) -> (&'static str, u16) {
-        match mode {
-            AppMode::Normal => ("> ", 2),
-            AppMode::AskPending => ("? ", 2),
-            AppMode::ApprovalPending => ("[y/n] ", 6),
-        }
-    }
-
-    /// How many attachment-token rows to actually render. More than this
-    /// collapses into a `… (+N more)` indicator, so layout stays bounded.
-    const MAX_ATTACHMENT_ROWS: usize = 4;
-}
-
 impl Component for InputPanel {
     fn height(&self) -> Constraint {
-        // Generous fixed budget; the render path re-computes the actual
-        // visible row count and ratatui clips excess.
+        // Reserve 1 line for the top hairline + 1 line for the bottom
+        // hairline + a generous budget for content. Final layout
+        // overlays contents; ratatui clips excess gracefully.
         Constraint::Length(12)
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        // Top hairline as a separate one-row band above the chrome.
+        let top_rule = Line::from("─".repeat(area.width as usize)).style(theme::rule());
+        let top_rule_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(top_rule), top_rule_area);
 
-        let (prompt, prompt_w) = Self::prompt(&state.mode);
-        let composer = &state.composer;
+        // Chrome block — open on top (top hairline already drawn
+        // above), bottom + sides bordered. Left edge bar in coral
+        // when focused.
+        let chrome_area = Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: area.height.saturating_sub(2),
+        };
+        let mut block = Block::default()
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+            .border_style(theme::text_muted());
+        if composer_has_focus(state) {
+            // Apply a thick coral border style on the LEFT side by
+            // stacking a separate 3-px coral line at offset 0; ratatui
+            // doesn't expose per-side border style, so we approximate
+            // with a focus-colored left border.
+            block = block.border_style(theme::focus_box());
+        }
+        frame.render_widget(block, chrome_area);
+        let inner = chrome_area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 0,
+        });
 
-        // ----------------------------------------------------------------
-        // 1. Attachment tokens (rendered above the composer rows).
-        // ----------------------------------------------------------------
-        let att_count = composer.attachment_count();
-        let visible_att = att_count.min(Self::MAX_ATTACHMENT_ROWS);
-        let hidden_att = att_count.saturating_sub(visible_att);
-        let att_lines: Vec<Line<'_>> = composer
-            .attachments
-            .iter()
-            .take(visible_att)
-            .map(|a| {
-                Line::from(format!("  ⎘ {}", a.label()))
-                    .style(Style::default().add_modifier(Modifier::DIM))
-            })
-            .chain(if hidden_att > 0 {
-                Some(Line::from(format!(
-                    "  ⎘ … (+{hidden_att} more attachment{plural})",
-                    plural = if hidden_att == 1 { "" } else { "s" }
-                ))
-                .style(Style::default().add_modifier(Modifier::DIM)))
-            } else {
-                None
-            })
-            .collect();
+        // Layout inside chrome: [attachment-strip] [composer-rows] [helper]
+        let attachment_strip_h: u16 = if state.composer.attachment_count() > 0 {
+            (1 + (state.composer.attachment_count() - 1).div_ceil(MAX_TOKENS_PER_ROW)) as u16
+        } else {
+            0
+        };
+        let composer_rows = state.composer.row_count().max(1) as u16;
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(attachment_strip_h),
+                Constraint::Length(composer_rows),
+                Constraint::Length(2), // 1 helper line + 1 spacer
+            ])
+            .split(inner);
 
-        // ----------------------------------------------------------------
-        // 2. Composer rows.
-        // ----------------------------------------------------------------
-        let n_composer = composer.row_count();
-        let att_rows = att_lines.len();
-
-        // Boundary: do not let composer rows overflow into the rest of the
-        // screen — if the inner area has e.g. 10 rows and we have 6
-        // attachments visible, only 4 composer rows render.
-        let composer_budget = (inner.height as usize).saturating_sub(att_rows);
-        let composer_take = n_composer.min(composer_budget);
-
-        let composer_lines: Vec<Line<'_>> = (0..composer_take)
-            .map(|i| {
-                let mut s = String::with_capacity(prompt.len() + 64);
-                if i == 0 {
-                    s.push_str(prompt);
-                } else {
-                    for _ in 0..prompt_w {
-                        s.push(' ');
-                    }
-                }
-                s.push_str(composer.row(i));
-                Line::from(s)
-            })
-            .collect();
-
-        let mut all_lines = att_lines;
-        all_lines.extend(composer_lines);
-
-        // Pad with blank rows if everything is short — keeps the bottom
-        // border stable across renders.
-        while all_lines.len() < inner.height as usize {
-            all_lines.push(Line::from(""));
+        // (1) Attachment tokens (side-by-side chips).
+        if attachment_strip_h > 0 {
+            render_attachment_tokens(frame, state, layout[0]);
         }
 
-        frame.render_widget(Paragraph::new(all_lines), inner);
+        // (2) Composer rows — empty-state placeholder if buffer empty.
+        render_composer_rows(frame, state, layout[1], inner);
 
-        // ----------------------------------------------------------------
-        // 3. Hardware cursor — placed on the composer row, not on the
-        //    attachment tokens.
-        // ----------------------------------------------------------------
-        let cursor_composer_row = composer.cursor_row();
-        if cursor_composer_row < composer_take {
-            let cursor_x = inner.x + prompt_w + composer.cursor_col_chars() as u16;
-            let cursor_y = inner.y + att_rows as u16 + cursor_composer_row as u16;
-            if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
-                frame.set_cursor_position((cursor_x, cursor_y));
+        // (3) Helper line.
+        let helper = match state.mode {
+            AppMode::Normal => {
+                "Type while I work — steer, queue, or interrupt."
             }
+            AppMode::ApprovalPending => "Approving tools clears this draft.",
+            AppMode::AskPending => "Answering this question clears this draft.",
+        };
+        let helper_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height.saturating_sub(2),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(helper, theme::composer_helper())),
+            helper_area,
+        );
+
+        // Bottom hairline (mirrors top).
+        let bot_rule = Line::from("─".repeat(area.width as usize)).style(theme::rule());
+        let bot_rule_area = Rect {
+            x: area.x,
+            y: area.y + area.height.saturating_sub(1),
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(bot_rule), bot_rule_area);
+    }
+}
+
+/// Width of one attachment chip, including the `×` remove column.
+const CHIP_W: usize = 24;
+/// Max chips side-by-side per strip row. Excess wrap to next row.
+const MAX_TOKENS_PER_ROW: usize = 6;
+
+fn render_attachment_tokens(frame: &mut Frame, state: &AppState, area: Rect) {
+    let composer = &state.composer;
+    let visible = composer.attachment_count().min(MAX_TOKENS_PER_ROW);
+    let mut line = String::with_capacity(area.width as usize);
+    let hidden = composer
+        .attachment_count()
+        .saturating_sub(MAX_TOKENS_PER_ROW);
+    for (i, att) in composer.attachments.iter().take(visible).enumerate() {
+        if i > 0 {
+            line.push_str("  ");
         }
+        let glyph = match att.kind {
+            AttachmentKind::Paste => "▣",
+            AttachmentKind::File => "@",
+        };
+        // "▣ error.log · 84 lines  ×"
+        let name = att.preview.replace(' ', "_");
+        let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
+        let truncated = truncate(&chunk, CHIP_W);
+        line.push_str(&truncated);
+    }
+    if hidden > 0 {
+        line.push_str(&format!("  +{hidden} more"));
+    }
+    if line.is_empty() {
+        line = "(no attachments)".into();
+    }
+    let paragraph = Paragraph::new(Line::from(Span::styled(line, theme::text_dim())));
+    frame.render_widget(paragraph, area);
+}
+
+fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: Rect) {
+    let composer = &state.composer;
+    let is_empty = composer.is_empty();
+    let prompt = match state.mode {
+        AppMode::Normal => "› ", // arrow prompt per §5.3 IDLE
+        AppMode::AskPending => "? ",
+        AppMode::ApprovalPending => "» ",
+    };
+
+    if is_empty {
+        // Show centered placeholder.
+        let placeholder = Line::from(Span::styled(
+            "Ask Sylvander…",
+            theme::composer_placeholder(),
+        ));
+        let p = Paragraph::new(placeholder)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(p, area);
+        return;
+    }
+
+    let n = composer.row_count();
+    let prompt_w = prompt.chars().count() as u16;
+    let lines: Vec<Line<'_>> = (0..n.min(area.height as usize))
+        .map(|i| {
+            let mut s = String::with_capacity(prompt.len() + 64);
+            if i == 0 {
+                s.push_str(prompt);
+            } else {
+                for _ in 0..prompt_w {
+                    s.push(' ');
+                }
+            }
+            s.push_str(composer.row(i));
+            Line::from(s)
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        area,
+    );
+
+    // Hardware cursor at end of the cursor-row text.
+    let cursor_row = composer.cursor_row();
+    if cursor_row < n.min(area.height as usize) {
+        let cursor_x = inner.x + prompt_w + composer.cursor_col_chars() as u16;
+        let cursor_y = area.y + cursor_row as u16;
+        if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
+}
+
+fn composer_has_focus(state: &AppState) -> bool {
+    // Composer is considered focused when no modal is on top and we're
+    // not in a pending-decision mode that would steal input.
+    state.modals.is_empty()
+        && matches!(state.mode, AppMode::Normal)
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }

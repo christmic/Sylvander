@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 22)"
 ---
-Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
-                                                                                          
-                                                                                          
+◖S◗  Sylvander  auth-refactor                                   ~/Projects/acme-api · main
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
+──────────────────────────────────────────────────────────────────────────────────────────
               ┌ Sessions ───────────────────────────────────────────────────┐             
               │Search sessions… _                                           │             
               │─────────────────────────────────────────────────────────────│             
               │  ›   auth-refactor           working   ~/Projects/acme-api  │             
               │        2m ago                                               │             
               │      auth-debug              waiting   ~/Projects/acme-api  │             
-──────────────│        1h ago                                               │─────────────
->             │      login-tests             complete  ~/Projects/web       │             
-              │        1d ago                                               │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │type to filter   ↓/↑ select   enter open   ctrl+n new   r ren│             
-              └─────────────────────────────────────────────────────────────┘             
-                                                                                          
-                                                                                          
-Enter:send  Esc:quit
+              │        1h ago                                               │             
+──────────────│      login-tests             complete  ~/Projects/web       │─────────────
+│Ask Sylvander│        1d ago                                               │            │
+│             │                                                             │            │
+│             │                                                             │            │
+│             │                                                             │            │
+│             │                                                             │            │
+│             │                                                             │            │
+│             │type to filter   ↓/↑ select   enter open   ctrl+n new   r ren│            │
+│             └─────────────────────────────────────────────────────────────┘            │
+│Type while I work — steer, queue, or interrupt.                                         │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────

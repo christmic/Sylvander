@@ -2,13 +2,13 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 140, 40)"
 ---
-Sylvander · deepseek-v4-flash · Connected · Connected                                                                                       
+◖S◗  Sylvander  new session                                                                                                         — · main
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                                           
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 You: Add JWT auth middleware                                                                                                                
-✓ bash                                                                                                                                      
-  command  ls src/http                                                                                                                      
-  + bash: router.rsmiddleware.rs                                                                                                            
-◐ read                                                                                                                                      
-  path  src/http/middleware.rs                                                                                                              
+● Run `ls`     00s                                                                                                                          
+│ ✓ $ ls src/http  router.rs                                                                                                                
+│ ◐ read src/http/middleware.rs                                                                                                             
 Inspecting the existing router to understand the auth surface. I see we have a `TokenGuard` already — let me check it covers Bearer + API-  
 key.                                                                                                                                        
                                                                                                                                             
@@ -29,16 +29,16 @@ key.
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
+                                                                                                                                            
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                                                           
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-Enter:send  Shift+Enter:newline  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command
+│Ask Sylvander…                                                                                                                            │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│Type while I work — steer, queue, or interrupt.                                                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

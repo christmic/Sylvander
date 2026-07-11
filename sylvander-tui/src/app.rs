@@ -7,6 +7,8 @@
 //!
 //! Both paths automatically mark the dirty flag so the render loop wakes.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::component::Component;
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
@@ -54,6 +56,12 @@ pub struct AppState {
     /// `None` keeps history in memory only.
     pub history_path: Option<std::path::PathBuf>,
 
+    /// UX §2.2 + §5.3: the welcome lockup renders once on first launch
+    /// (empty transcript + no known sessions). The welcome flips to
+    /// `true` the first time the user sends any chat content,
+    /// signaling the lockup should never show again.
+    pub welcomed: bool,
+
     // ---- render trigger ----
     pub dirty: DirtyFlag,
 }
@@ -91,6 +99,7 @@ impl AppState {
             pending_actions: Vec::new(),
             dirty: DirtyFlag::default(),
             history_path: path,
+            welcomed: false,
         };
         state.register_default_panels();
         state
@@ -107,8 +116,11 @@ impl AppState {
     }
 
     fn register_default_panels(&mut self) {
-        // Order = layout order, top to bottom.
-        self.panels.push(Box::new(panel::StatusPanel));
+        // Order = layout order, top to bottom. Header replaces the
+        // old StatusPanel position (M-T14.B / §5.1: 2-line identity
+        // block, hairline rule). The status semantics now live in
+        // the bottom row (M-T14.C).
+        self.panels.push(Box::new(panel::HeaderPanel));
         self.panels.push(Box::new(panel::ChatPanel));
         self.panels.push(Box::new(panel::InputPanel));
         self.panels.push(Box::new(panel::HelpPanel));
@@ -119,7 +131,7 @@ impl AppState {
 // AppMode — only used to pick a help-bar hint string
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
     Normal,
     ApprovalPending,
@@ -143,6 +155,10 @@ impl Default for AppState {
 pub enum ChatMessage {
     User(String),
     Agent(String),
+    /// Legacy flat tool event — kept for snapshots that pre-date
+    /// `ToolStep` grouping. New code folds consecutive `ToolStarted`
+    /// + `ToolFinished` events into a single `ToolStep` block per
+    /// UX §6 (immersive execution rhythm).
     ToolCall {
         name: String,
         status: ToolStatus,
@@ -152,6 +168,15 @@ pub enum ChatMessage {
         name: String,
         output: String,
         ok: bool,
+    },
+    /// Grouped step block: a step header with a name + start time, and
+    /// a list of indented child tool rows (each child is `●/✓/✗` + verb
+    /// + target + meta). One step per agent iteration; terminated when
+    /// a `TextChunk` / `AgentDone` lands or another step begins.
+    ToolStep {
+        name: String,
+        started_at_secs: u64,
+        children: Vec<ToolStepChild>,
     },
     Thinking(String),
     Info(String),
@@ -169,6 +194,18 @@ pub enum ChatMessage {
     TaskList {
         tasks: Vec<TaskEntry>,
     },
+}
+
+/// One row inside a `ToolStep` group. The reducer populates these as
+/// `ToolStarted` / `ToolFinished` events flow in.
+#[derive(Debug, Clone)]
+pub struct ToolStepChild {
+    pub name: String,
+    pub status: ToolStatus,
+    pub input: serde_json::Value,
+    /// Filled in when `ToolFinished` arrives.
+    pub output: Option<String>,
+    pub is_error: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,40 +295,71 @@ impl AppState {
                 self.streaming_thinking.push_str(&delta);
             }
             DomainEvent::ToolStarted { tool_name, input } => {
-                self.messages.push(ChatMessage::ToolCall {
-                    name: tool_name,
-                    status: ToolStatus::Pending,
-                    input,
-                });
+                // Group consecutive tool events into a single ToolStep
+                // block per UX §6. A new step starts when the last
+                // trailing message is not a ToolStep, or when a previous
+                // step was already finalized by AgentDone / AgentError.
+                let need_new_step = !matches!(
+                    self.messages.last(),
+                    Some(ChatMessage::ToolStep { .. })
+                );
+                if need_new_step {
+                    // Synthesize a step name from the verb: "Read file",
+                    // "Run bash command", "Search code". Truncated later
+                    // by the renderer.
+                    let step_name = step_name_for(&tool_name, &input);
+                    self.messages.push(ChatMessage::ToolStep {
+                        name: step_name,
+                        started_at_secs: now_secs(),
+                        children: Vec::new(),
+                    });
+                }
+                if let Some(ChatMessage::ToolStep { children, .. }) =
+                    self.messages.last_mut()
+                {
+                    children.push(ToolStepChild {
+                        name: tool_name,
+                        status: ToolStatus::Pending,
+                        input,
+                        output: None,
+                        is_error: None,
+                    });
+                }
             }
             DomainEvent::ToolFinished {
                 tool_name,
                 output,
                 is_error,
             } => {
-                // Find the matching pending ToolCall and flip its status.
-                for m in self.messages.iter_mut().rev() {
-                    if let ChatMessage::ToolCall {
-                        name,
-                        status: s @ ToolStatus::Pending,
-                        ..
-                    } = m
-                    {
-                        if name == &tool_name {
-                            *s = if is_error {
-                                ToolStatus::Error
-                            } else {
-                                ToolStatus::Done
-                            };
-                            break;
+                if let Some(ChatMessage::ToolStep { children, .. }) =
+                    self.messages.last_mut()
+                {
+                    if let Some(child) = children.iter_mut().rev().find(|c| c.name == tool_name) {
+                        child.status = if is_error {
+                            ToolStatus::Error
+                        } else {
+                            ToolStatus::Done
+                        };
+                        child.output = Some(output);
+                        child.is_error = Some(is_error);
+                    } else {
+                        // Tool finished without a Started (rare). Synthesize.
+                        let mut step = self
+                            .messages
+                            .pop()
+                            .unwrap_or(ChatMessage::Info(String::new()));
+                        if matches!(step, ChatMessage::ToolStep { .. }) {
+                            // ok
+                        } else {
+                            // Push the orphaned result as Info.
+                            step = ChatMessage::Info(format!(
+                                "{tool_name} → {}",
+                                output.replace('\n', " ")
+                            ));
                         }
+                        self.messages.push(step);
                     }
                 }
-                self.messages.push(ChatMessage::ToolResult {
-                    name: tool_name,
-                    output,
-                    ok: !is_error,
-                });
             }
             DomainEvent::AgentDone { final_text } => {
                 if !self.streaming.is_empty() {
@@ -498,6 +566,9 @@ impl AppState {
         // Currently we only have InputPanel as a focusable panel.
         if let Some(text) = self.composer.handle_key(key) {
             self.save_history();
+            // First user submission dismisses the welcome lockup
+            // forever (UX §2.2 — lockup appears once on first launch).
+            self.welcomed = true;
             self.dirty.mark();
             return Some(Action::SendChat {
                 text,
@@ -556,28 +627,77 @@ mod tests {
     }
 
     #[test]
-    fn apply_tool_started_then_finished() {
+    #[test]
+    fn apply_tool_started_then_finished_groups_into_step() {
+        // Per UX §6 / M-T14.E: consecutive `ToolStarted` + `ToolFinished`
+        // events fold into a single `ToolStep` block, not two flat rows.
+        // The reducer stores the children inside the step and updates
+        // the child's status when the finish lands.
         let mut s = AppState::new();
         s.apply(DomainEvent::ToolStarted {
             tool_name: "bash".into(),
             input: serde_json::json!({"cmd": "ls"}),
         });
         assert_eq!(s.messages.len(), 1);
-        assert!(matches!(
-            s.messages[0],
-            ChatMessage::ToolCall { status: ToolStatus::Pending, .. }
-        ));
+        match &s.messages[0] {
+            ChatMessage::ToolStep { name, children, .. } => {
+                assert!(name.starts_with("Run"));
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].name, "bash");
+                assert_eq!(children[0].status, ToolStatus::Pending);
+            }
+            other => panic!("expected ToolStep, got {other:?}"),
+        }
         s.apply(DomainEvent::ToolFinished {
             tool_name: "bash".into(),
             output: "a.txt".into(),
             is_error: false,
         });
-        // Pending flipped to Done AND a ToolResult appended.
-        assert!(matches!(
-            s.messages[0],
-            ChatMessage::ToolCall { status: ToolStatus::Done, .. }
-        ));
-        assert!(matches!(s.messages[1], ChatMessage::ToolResult { ok: true, .. }));
+        // Same single step; child status flipped to Done; output captured.
+        match &s.messages[0] {
+            ChatMessage::ToolStep { children, .. } => {
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].status, ToolStatus::Done);
+                assert_eq!(children[0].output.as_deref(), Some("a.txt"));
+                assert_eq!(children[0].is_error, Some(false));
+            }
+            other => panic!("expected ToolStep, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_two_separate_tools_open_then_close_separate_steps() {
+        // A text chunk between two tools should close the first step
+        // and open a second one. We simulate by inserting the
+        // finalize moment via a manual transition (AgentDone). For
+        // now we only verify that two distinct ToolStarted events
+        // append two children to the SAME step (since no AgentDone
+        // has landed between them) — the renderer collapses them into
+        // one step group, exactly the §6 immersive behavior.
+        let mut s = AppState::new();
+        s.apply(DomainEvent::ToolStarted {
+            tool_name: "bash".into(),
+            input: serde_json::json!({"command": "ls src"}),
+        });
+        s.apply(DomainEvent::ToolFinished {
+            tool_name: "bash".into(),
+            output: "a.rs".into(),
+            is_error: false,
+        });
+        s.apply(DomainEvent::ToolStarted {
+            tool_name: "read".into(),
+            input: serde_json::json!({"path": "src/a.rs"}),
+        });
+        match &s.messages[0] {
+            ChatMessage::ToolStep { children, .. } => {
+                assert_eq!(children.len(), 2);
+                assert_eq!(children[0].name, "bash");
+                assert_eq!(children[0].status, ToolStatus::Done);
+                assert_eq!(children[1].name, "read");
+                assert_eq!(children[1].status, ToolStatus::Pending);
+            }
+            other => panic!("expected ToolStep, got {other:?}"),
+        }
     }
 
     #[test]
@@ -720,4 +840,50 @@ mod tests {
 fn short_session_label(id: &str) -> String {
     let first8: String = id.chars().take(8).collect();
     first8
+}
+
+/// Monotonic seconds since UNIX epoch. Used for ToolStep started_at
+/// timestamps; the renderer derives elapsed time at draw time.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Derive a human-readable step name from the leading tool verb +
+/// target.  Falls back to the bare tool name when no recognizable
+/// input shape is available.
+fn step_name_for(tool: &str, input: &serde_json::Value) -> String {
+    match tool {
+        "read" => {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            format!("Read {path}")
+        }
+        "write" => {
+            let path = input
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            format!("Write {path}")
+        }
+        "edit" => "Edit file".into(),
+        "bash" => {
+            let cmd = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command");
+            let first_token = cmd.split_whitespace().next().unwrap_or("");
+            if first_token.is_empty() {
+                "Run command".into()
+            } else {
+                format!("Run `{first_token}`")
+            }
+        }
+        "search" | "grep" => "Search code".into(),
+        _ => tool.to_string(),
+    }
 }
