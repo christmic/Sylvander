@@ -483,3 +483,53 @@ fn full_panel_at_user_terminal_size_140x40() {
     });
     insta::assert_snapshot!(render_buf(&s, 140, 40));
 }
+
+// ---------------------------------------------------------------------------
+// M-T14 parity snapshots — captures the design-ground-truth visual states.
+// Reference: docs/design/02-tui-immersive.svg + 18-composer-interactions.svg.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn design_canonical_welcome_lockup_120x36() {
+    // 120 columns × 36 rows is §5's reference viewport. Welcome
+    // lockup (§2.2) appears once on first launch when the
+    // transcript + sessions cache are empty.
+    let state = AppState::new();
+    insta::assert_snapshot!(render_buf(&state, 120, 36));
+}
+
+#[test]
+fn design_canonical_with_tool_step_grouped_120x36() {
+    // All M-T14 visual primitives exercised together: header bar
+    // with crab mark + workspace meta, tool rhythm (UX §6), and
+    // bottom status row showing the Working mode glyph + tool count.
+    let mut s = AppState::new();
+    s.apply(DomainEvent::Connected);
+    s.messages
+        .push(ChatMessage::User("Review the auth middleware".into()));
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "bash".into(),
+        input: serde_json::json!({"command": "ls src/http"}),
+    });
+    s.apply(DomainEvent::ToolFinished {
+        tool_name: "bash".into(),
+        output: "router.rs\nmiddleware.rs".into(),
+        is_error: false,
+    });
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "read".into(),
+        input: serde_json::json!({"path": "src/http/middleware.rs"}),
+    });
+    insta::assert_snapshot!(render_buf(&s, 120, 36));
+}
+
+#[test]
+fn design_disconnected_state_120x36() {
+    // Status row switches to Disconnected mode (`!` glyph + amber
+    // `disconnected` label) — see 18-composer-interactions.svg
+    // ADAPTIVE STATUS panel.
+    let mut s = AppState::new();
+    s.messages.push(ChatMessage::User("any draft here".into()));
+    // Do NOT call Connected → AppState.connected stays false.
+    insta::assert_snapshot!(render_buf(&s, 120, 36));
+}

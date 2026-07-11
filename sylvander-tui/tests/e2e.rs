@@ -9,8 +9,10 @@
 //! 3. Drive `AppState::apply` with the parsed `DomainEvent` and assert
 //!    the state machine reacts (`Connected` → `text_chunk` accumulates).
 //!
-//! This covers everything the user-facing smoke test exercises
-//! (manual `nc -U /tmp/sylvander.sock`) but in CI, reproducible.
+//! Tests serialize via `E2E_LOCK` so the listener doesn't see two
+//! clients racing to bind on the same path. Even with the lock,
+//! `connect_with_retry` makes the client tolerant of the brief window
+//! between bind and `accept` returning on the stub side.
 //!
 //! Scope limitation: this is a *transport + state machine* e2e; it does
 //! not exercise the actual `sylvander-server` binary or its LLM call. A
@@ -20,13 +22,17 @@
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::UnixStream;
 
 use sylvander_tui::app::AppState;
 use sylvander_tui::client::{parse_server_msg, ServerMsg};
+
+/// Serializes e2e tests so they don't fight over the listener port.
+static E2E_LOCK: Mutex<()> = Mutex::new(());
 
 fn unique_socket_path() -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -39,16 +45,43 @@ fn unique_socket_path() -> PathBuf {
     ))
 }
 
+/// Retry a socket connect with backoff. The stub server takes ~10ms
+/// after `bind` before `accept` is ready, so an eager client can race
+/// ahead of the kernel.
+async fn connect_with_retry(path: &std::path::Path) -> UnixStream {
+    for attempt in 0..20 {
+        match UnixStream::connect(path).await {
+            Ok(s) => return s,
+            Err(_) if attempt < 19 => {
+                tokio::time::sleep(Duration::from_millis(20 + attempt * 10)).await;
+            }
+            Err(e) => panic!("connect failed after 20 attempts: {e}"),
+        }
+    }
+    unreachable!()
+}
+
 /// Stub server: accepts one client and replies with the canned 4-message
 /// sequence (Pong + session_created + text_delta + done) for every line
 /// the client sends. Keeps replying as long as the client has anything
-/// to say, so the test loop can ask for "4 messages after one Chat"
-/// without worrying about stub timing.
+/// to say.
 fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
     let path = path.to_path_buf();
     std::thread::spawn(move || {
+        // Give the previous test (if any) some time to finish unlinking
+        // the stale socket before we bind a fresh one.
+        std::thread::sleep(Duration::from_millis(50));
         let _ = std::fs::remove_file(&path);
-        let listener = UnixListener::bind(&path).expect("bind unix socket");
+        let listener = match UnixListener::bind(&path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("stub: bind {path:?} failed: {e}");
+                return;
+            }
+        };
+        // Refuse backlogs so two parallel stub listeners don't both
+        // bind the same path on Windows-style retry semantics.
+        let _ = listener.set_nonblocking(false);
         let (mut stream, _) = match listener.accept() {
             Ok(s) => s,
             Err(_) => return,
@@ -58,8 +91,6 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         let mut buf = String::new();
         while reader.read_line(&mut buf).unwrap_or(0) > 0 {
             buf.clear();
-            // Always emit the same 4-line reply; the test loop only needs
-            // the first 4 after its single outgoing Chat.
             for line in [
                 r#"{"type":"pong"}"#,
                 r#"{"type":"session_created","session_id":"e2e-1"}"#,
@@ -74,32 +105,38 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
     })
 }
 
+/// Read the next line from a `BufReader<ReadHalf>` (or anything AsyncBufRead)
+/// with a 500 ms timeout. Used by both e2e tests.
+async fn read_line_with_timeout<R>(reader: &mut R) -> String
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut s = String::new();
+    let read = tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut s))
+        .await
+        .expect("timeout")
+        .expect("stream eof");
+    assert!(read > 0, "server closed before sending a line");
+    s
+}
+
 #[tokio::test]
 async fn e2e_handshake_ping_returns_pong() {
+    let _guard = E2E_LOCK.lock().unwrap();
     let path = unique_socket_path();
     let _server = spawn_stub_server(&path);
-    // Give the listener a beat to start.
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // Connect via tokio's UnixStream directly (no need for the full
-    // UnixClient — we're testing the wire format and parsing).
-    let mut stream = UnixStream::connect(&path).await.expect("connect");
+    let mut stream = connect_with_retry(&path).await;
     let (read, mut write) = stream.split();
-    let mut reader = BufReader::new(read).lines();
+    let mut reader = BufReader::new(read);
 
-    // Send Ping.
     use tokio::io::AsyncWriteExt;
     write
         .write_all(b"{\"type\":\"ping\"}\n")
         .await
         .expect("write ping");
 
-    // Read Pong.
-    let line = tokio::time::timeout(Duration::from_millis(500), reader.next_line())
-        .await
-        .expect("timeout")
-        .expect("stream eof")
-        .expect("line");
+    let line = read_line_with_timeout(&mut reader).await;
     let pong: ServerMsg = serde_json::from_str(&line).expect("parse pong");
     assert!(matches!(pong, ServerMsg::Pong));
 
@@ -108,13 +145,13 @@ async fn e2e_handshake_ping_returns_pong() {
 
 #[tokio::test]
 async fn e2e_state_machine_progresses_through_stream() {
+    let _guard = E2E_LOCK.lock().unwrap();
     let path = unique_socket_path();
     let _server = spawn_stub_server(&path);
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let mut stream = UnixStream::connect(&path).await.expect("connect");
+    let mut stream = connect_with_retry(&path).await;
     let (read, mut write) = stream.split();
-    let mut reader = BufReader::new(read).lines();
+    let mut reader = BufReader::new(read);
 
     use tokio::io::AsyncWriteExt;
     write
@@ -122,22 +159,14 @@ async fn e2e_state_machine_progresses_through_stream() {
         .await
         .expect("write chat");
 
-    // Drive each ServerMsg through AppState. IterationStart, Pong, etc.
-    // are intentionally skipped by parse_server_msg (None is expected).
     let mut state = AppState::new();
     for _ in 0..4 {
-        let line = tokio::time::timeout(Duration::from_millis(500), reader.next_line())
-            .await
-            .expect("timeout")
-            .expect("eof")
-            .expect("line");
+        let line = read_line_with_timeout(&mut reader).await;
         let msg: ServerMsg = serde_json::from_str(&line).expect("parse");
         if let Some(event) = parse_server_msg(msg) {
             let _ = state.apply(event);
         }
     }
-    // After session_created + text_delta + done, Done promoted the
-    // streaming buffer into messages, so the streaming String is empty.
     assert!(state.streaming.is_empty(), "stream should be promoted");
     assert!(
         !state.messages.is_empty(),

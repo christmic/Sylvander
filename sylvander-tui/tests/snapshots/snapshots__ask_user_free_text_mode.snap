@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 22)"
 ---
-Sylvander · deepseek-v4-flash · Disconnected · Connecting...                              
+◖S◗  Sylvander  new session                                                        — · ask
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
+──────────────────────────────────────────────────────────────────────────────────────────
                                                                                           
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
+◖S◗  SYLVANDER                                                                            
+      intelligent terminal workspace                                                      
                   ┌ Agent asks (free text) ────────────────────────────┐                  
-                  │Describe the bug in your own words:                 │                  
-                  │                                                    │                  
-──────────────────│Type your answer:                                   │──────────────────
-?                 │> the loader hangs on cold start                    │                  
-                  │                                                    │                  
-                  │Enter: submit   Esc: cancel                         │                  
-                  │                                                    │                  
-                  └────────────────────────────────────────────────────┘                  
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-                                                                                          
-Enter:send  Esc:quit
+      /Users/chris│Describe the bug in your own words:                 │                  
+      What are we │                                                    │                  
+                  │Type your answer:                                   │                  
+──────────────────│> the loader hangs on cold start                    │──────────────────
+│Ask Sylvander…   │                                                    │                 │
+│                 │Enter: submit   Esc: cancel                         │                 │
+│                 │                                                    │                 │
+│                 └────────────────────────────────────────────────────┘                 │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│Answering this question clears this draft.                                              │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────────────────────

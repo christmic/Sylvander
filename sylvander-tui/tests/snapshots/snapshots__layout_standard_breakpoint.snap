@@ -2,7 +2,9 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 88, 24)"
 ---
-Sylvander · deepseek-v4-flash · Connected · Connected                                   
+◖S◗  Sylvander  new session                                                     — · main
+/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                       
+────────────────────────────────────────────────────────────────────────────────────────
 You: Add JWT auth.                                                                      
 Inspecting router.                                                                      
                                                                                         
@@ -12,17 +14,15 @@ Inspecting router.
                                                                                         
                                                                                         
                                                                                         
-                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────
->                                                                                       
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-                                                                                        
-Enter:send  Esc:quit
+│Ask Sylvander…                                                                        │
+│                                                                                      │
+│                                                                                      │
+│                                                                                      │
+│                                                                                      │
+│                                                                                      │
+│                                                                                      │
+│                                                                                      │
+│Type while I work — steer, queue, or interrupt.                                       │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────────────────────────────────────────────────
