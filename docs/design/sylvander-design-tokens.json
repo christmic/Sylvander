@@ -71,6 +71,19 @@
       "narrow": { "$value": 60, "$type": "number" },
       "minimum": { "$value": 40, "$type": "number" }
     },
+    "contentColumns": {
+      "conversationPreferred": { "$value": 104, "$type": "number" },
+      "conversationMinimum": { "$value": 60, "$type": "number" },
+      "sidebarPreferred": { "$value": 28, "$type": "number" },
+      "sidebarMinimum": { "$value": 22, "$type": "number" },
+      "sidebarRail": { "$value": 3, "$type": "number" }
+    },
+    "motion": {
+      "spinnerFps": { "$value": 5, "$type": "number" },
+      "streamingMaxFps": { "$value": 30, "$type": "number" },
+      "toolCompletionHoldMs": { "$value": 500, "$type": "duration" },
+      "toastDurationMs": { "$value": 2500, "$type": "duration" }
+    },
     "symbols": {
       "brandUnicode": { "$value": "◖S◗", "$type": "string" },
       "brandAscii": { "$value": "[S]", "$type": "string" },
