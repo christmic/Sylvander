@@ -67,7 +67,7 @@ completed backend feature.
 - [x] Edits/writes use a real multi-file unified-diff renderer.
 - [x] Search results group matches by file with counts and line numbers.
 - [x] MCP and unknown tools have a bounded, safe fallback presentation.
-- [ ] MCP/web/resource tools have dedicated typed presentations.
+- [x] MCP/web/resource tools have dedicated typed presentations.
 - [ ] Parallel calls, retries, timeouts, cancellation, and partial output render.
 - [ ] Long output supports expand, focused inspection, copy, and search.
 - [x] ANSI/control sequences are sanitized and secrets are masked.
