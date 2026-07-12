@@ -73,7 +73,14 @@ enum RangeKey: String, CaseIterable, Identifiable {
         let (fromK, toK) = range(now: now, calendar: calendar)
         switch self {
         case .week, .lastWeek:
-            return "\(fromK) ~ \(toK)"
+            guard let start = Fmt.parseDateKey(fromK, calendar: calendar),
+                  let end = calendar.date(byAdding: .day, value: 6, to: start)
+            else { return "\(fromK)–\(toK)" }
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "M.d"
+            return "\(formatter.string(from: start))—\(formatter.string(from: end))"
         case .month:
             return monthTitle(now: now, calendar: calendar)
         case .year:

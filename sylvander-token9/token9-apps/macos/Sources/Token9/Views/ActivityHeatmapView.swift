@@ -46,7 +46,6 @@ struct ActivityHeatmapView: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
                 content
-                legend
             }
         }
     }
@@ -54,15 +53,18 @@ struct ActivityHeatmapView: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("每日用量")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(T.textPrimary)
-            Text(range.heatmapTitle(now: now))
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(T.textTertiary)
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("每日用量")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(T.textPrimary)
+                Text(range.heatmapTitle(now: now))
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(T.textTertiary)
+            }
+            Spacer()
+            legend
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Geometry dispatch
@@ -83,14 +85,18 @@ struct ActivityHeatmapView: View {
 
     private var weekStrip: some View {
         HStack(spacing: 4) {
-            ForEach(orderedDays) { d in
+            ForEach(Array(weekSlots.enumerated()), id: \.offset) { index, day in
                 VStack(spacing: 4) {
-                    Text(weekdayLabel(for: d.date))
+                    Text(weekdayLabel(for: weekSlotDates[index]))
                         .font(.system(size: 8))
                         .foregroundStyle(T.textTertiary)
-                    cell(level: level(for: d), size: 14)
-                        .help(tooltip(d))
-                        .accessibilityLabel(accessibilityLabel(d))
+                    if let day {
+                        cell(level: level(for: day), size: 16)
+                            .help(tooltip(day))
+                            .accessibilityLabel(accessibilityLabel(day))
+                    } else {
+                        placeholder(size: 16)
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -165,7 +171,7 @@ struct ActivityHeatmapView: View {
                             HStack(spacing: gap) {
                                 ForEach(0..<weeks.count, id: \.self) { wk in
                                     let d: DailyUsage? = (dayIdx < weeks[wk].count) ? weeks[wk][dayIdx] : nil
-                                    cellOrPlaceholder(d, size: cellSize)
+                                    cellOrPlaceholder(d, size: cellSize, showPlaceholder: true)
                                 }
                             }
                         }
@@ -193,14 +199,25 @@ struct ActivityHeatmapView: View {
     // MARK: Cell
 
     @ViewBuilder
-    private func cellOrPlaceholder(_ d: DailyUsage?, size: CGFloat) -> some View {
+    private func cellOrPlaceholder(_ d: DailyUsage?, size: CGFloat, showPlaceholder: Bool = false) -> some View {
         if let d {
             cell(level: level(for: d), size: size)
                 .help(tooltip(d))
                 .accessibilityLabel(accessibilityLabel(d))
         } else {
-            Rectangle().fill(Color.clear).frame(width: size, height: size)
+            if showPlaceholder { placeholder(size: size) }
+            else { Color.clear.frame(width: size, height: size) }
         }
+    }
+
+    private func placeholder(size: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(Color.white.opacity(0.035))
+            .overlay(
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .stroke(Color.white.opacity(0.045), lineWidth: 0.5)
+            )
+            .frame(width: size, height: size)
     }
 
     private func cell(level: Int, size: CGFloat) -> some View {
@@ -222,6 +239,17 @@ struct ActivityHeatmapView: View {
     /// Days in the order they should render — preserves API order so
     /// the heatmap and the underlying DailyUsage array stay aligned.
     private var orderedDays: [DailyUsage] { daily }
+
+    private var weekSlotDates: [Date] {
+        let from = range.range(now: now).from
+        guard let start = Fmt.parseDateKey(from) else { return orderedDays.map(\.date) }
+        return (0..<7).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    private var weekSlots: [DailyUsage?] {
+        let byKey = Dictionary(uniqueKeysWithValues: orderedDays.map { ($0.dateKey, $0) })
+        return weekSlotDates.map { byKey[Fmt.dateKey($0)] }
+    }
 
     /// Month cells ordered as a flat array of size N×7, pre-padded so
     /// the first day of the month lands on the calendar's first

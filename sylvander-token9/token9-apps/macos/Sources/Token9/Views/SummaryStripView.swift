@@ -17,7 +17,7 @@ struct SummaryStripView: View {
             )
             card(
                 icon: "number",
-                tint: palette.accent,
+                tint: palette.secondary,
                 label: "请求",
                 value: "\(summary.requests)"
             )
@@ -58,7 +58,7 @@ struct SummaryStripView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     Spacer(minLength: 0)
-                    CacheRing(value: summary.cacheHitPercent, tint: palette.accent, lineWidth: 4)
+                    CacheRing(value: summary.cacheHitPercent, tint: palette.tertiary, lineWidth: 4)
                         .frame(width: 30, height: 30)
                 }
             }

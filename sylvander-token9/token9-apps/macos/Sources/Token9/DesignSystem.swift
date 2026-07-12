@@ -48,13 +48,28 @@ enum DashboardTheme: String {
 struct DashboardPalette {
     let accent: Color
     let accentStrong: Color
+    let secondary: Color
+    let tertiary: Color
     let backgroundTop: Color
     let backgroundBottom: Color
     let heatmapLevels: [Color]
+    let dataColors: [Color]
+
+    func dataColor(_ index: Int) -> Color {
+        dataColors[index % dataColors.count]
+    }
+
+    func groupColor(_ name: String) -> Color {
+        var hash = 5381
+        for byte in name.utf8 { hash = ((hash << 5) &+ hash) &+ Int(byte) }
+        return dataColor(abs(hash) % dataColors.count)
+    }
 
     static let warm = DashboardPalette(
         accent: T.seedOrange,
         accentStrong: T.seedOrangeDeep,
+        secondary: Color(red: 0.90, green: 0.64, blue: 0.29),
+        tertiary: Color(red: 0.96, green: 0.70, blue: 0.52),
         backgroundTop: Color(red: 0.20, green: 0.12, blue: 0.09),
         backgroundBottom: Color(red: 0.08, green: 0.06, blue: 0.055),
         heatmapLevels: [
@@ -63,12 +78,20 @@ struct DashboardPalette {
             Color(red: 0.52, green: 0.25, blue: 0.16),
             T.seedOrangeDeep,
             T.seedOrange,
+        ],
+        dataColors: [
+            T.seedOrange,
+            Color(red: 0.90, green: 0.64, blue: 0.29),
+            T.seedOrangeDeep,
+            Color(red: 0.96, green: 0.70, blue: 0.52),
         ]
     )
 
     static let cool = DashboardPalette(
         accent: T.coreViolet,
         accentStrong: T.electricBlue,
+        secondary: T.electricBlue,
+        tertiary: Color(red: 0.61, green: 0.54, blue: 0.90),
         backgroundTop: Color(red: 0.08, green: 0.10, blue: 0.20),
         backgroundBottom: Color(red: 0.045, green: 0.05, blue: 0.09),
         heatmapLevels: [
@@ -77,6 +100,12 @@ struct DashboardPalette {
             Color(red: 0.28, green: 0.22, blue: 0.55),
             T.coreViolet,
             T.electricBlue,
+        ],
+        dataColors: [
+            T.coreViolet,
+            T.electricBlue,
+            Color(red: 0.37, green: 0.46, blue: 0.88),
+            Color(red: 0.61, green: 0.54, blue: 0.90),
         ]
     )
 }
@@ -174,7 +203,11 @@ struct Panel<Content: View>: View {
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .background(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(palette.accent.opacity(0.045))
+                    .fill(LinearGradient(
+                        colors: [palette.accent.opacity(0.09), palette.secondary.opacity(0.035)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
@@ -248,7 +281,11 @@ struct RangeTabs: View {
                         .font(.system(size: 12, weight: on ? .semibold : .regular))
                         .foregroundStyle(on ? T.textPrimary : T.textSecondary)
                     Rectangle()
-                        .fill(on ? palette.accent : .clear)
+                        .fill(on ? AnyShapeStyle(LinearGradient(
+                            colors: [palette.accent, palette.secondary],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )) : AnyShapeStyle(Color.clear))
                         .frame(height: 2)
                 }
                 .frame(maxWidth: .infinity)
@@ -281,7 +318,11 @@ struct DimensionToggle: View {
                         .font(.system(size: 11, weight: on ? .semibold : .regular))
                         .foregroundStyle(on ? palette.accent : T.textTertiary)
                     Rectangle()
-                        .fill(on ? palette.accent : .clear)
+                        .fill(on ? AnyShapeStyle(LinearGradient(
+                            colors: [palette.accent, palette.secondary],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )) : AnyShapeStyle(Color.clear))
                         .frame(height: 2)
                         .frame(maxWidth: d.rawValue.count > 2 ? 28 : 18)
                 }

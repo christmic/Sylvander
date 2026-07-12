@@ -15,7 +15,7 @@ struct GroupRowView: View {
     var allTotal: Int64
     var largestTotal: Int64
     @Environment(\.dashboardPalette) private var palette
-    private var tint: Color { palette.accent }
+    private var tint: Color { palette.groupColor(card.name) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,7 +34,11 @@ struct GroupRowView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: L.rowRadius, style: .continuous)
-                .strokeBorder(tint.opacity(0.55), lineWidth: L.hairline)
+                .strokeBorder(LinearGradient(
+                    colors: [tint.opacity(0.72), palette.secondary.opacity(0.32)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ), lineWidth: L.hairline)
         )
     }
 
@@ -75,7 +79,11 @@ struct GroupRowView: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.07))
                 Capsule()
-                    .fill(tint)
+                    .fill(LinearGradient(
+                        colors: [tint, palette.secondary],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ))
                     .frame(width: max(0, geo.size.width * fraction))
             }
         }
@@ -96,12 +104,12 @@ struct GroupRowView: View {
     private var metricGrid: some View {
         let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
         return LazyVGrid(columns: cols, alignment: .leading, spacing: 10) {
-            metric("arrow.down", "输入",    Fmt.tokens(card.input), palette.accent)
-            metric("arrow.up",   "输出",    Fmt.tokens(card.output), palette.accent)
-            metric("bolt.fill",  "缓存读",  Fmt.tokens(card.cacheRead), palette.accent)
-            metric("tray.fill",  "缓存写",  Fmt.tokens(card.cacheWrite), palette.accent)
-            metric("number",     "请求",    "\(card.requests)", palette.accent)
-            metric("percent",    "命中", Fmt.percent(card.cacheRatio * 100), palette.accent)
+            metric("arrow.down", "输入", Fmt.tokens(card.input), palette.dataColor(0))
+            metric("arrow.up", "输出", Fmt.tokens(card.output), palette.dataColor(1))
+            metric("bolt.fill", "缓存读", Fmt.tokens(card.cacheRead), palette.dataColor(2))
+            metric("tray.fill", "缓存写", Fmt.tokens(card.cacheWrite), palette.dataColor(3))
+            metric("number", "请求", "\(card.requests)", palette.dataColor(1))
+            metric("percent", "命中", Fmt.percent(card.cacheRatio * 100), palette.dataColor(0))
         }
     }
 
