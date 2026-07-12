@@ -204,6 +204,19 @@ pub enum StreamEvent {
     TurnInterrupted {
         reason: String,
     },
+    PlanProposed {
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum PlanDecision {
+    Approved,
+    Revised { steps: Vec<String> },
+    Rejected { reason: String },
 }
 
 /// Info about a single tool call.
@@ -256,6 +269,10 @@ pub enum SystemMessage {
     /// Agent process and therefore affects every session it serves.
     InterruptTurn {
         session_id: SessionId,
+    },
+    ResolvePlan {
+        plan_id: String,
+        decision: PlanDecision,
     },
 }
 

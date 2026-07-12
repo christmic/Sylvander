@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use sylvander_agent::prelude::*;
-use sylvander_agent::bus::StreamEvent;
+use sylvander_agent::bus::{PlanDecision, StreamEvent};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
 use wiremock::matchers::{method, path};
@@ -166,11 +166,115 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::AskUser { .. } => "AskUser",
                 StreamEvent::UserAnswer { .. } => "UserAnswer",
                 StreamEvent::TurnInterrupted { .. } => "TurnInterrupted",
+                StreamEvent::PlanProposed { .. } => "PlanProposed",
             }),
             _ => None,
         })
         .map(String::from)
         .collect()
+}
+
+#[tokio::test]
+async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_plan",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "plan_001",
+                "name": "present_plan",
+                "input": {"steps": ["inspect", "implement", "verify"]}
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 8}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_done",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Starting the approved work."}],
+            "usage": {"input_tokens": 15, "output_tokens": 5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let bus = Arc::new(InProcessMessageBus::new());
+    let spec = AgentSpec::builder()
+        .id("plan-test")
+        .name("Plan Test")
+        .model_name("claude-sonnet-5-20260601")
+        .build()
+        .expect("spec");
+    let tools = ToolRegistry::new().register(PresentPlanTool::new());
+    let run = AgentRun::builder(spec, mock_client(&server))
+        .bus(bus.clone())
+        .model_capabilities(ModelCapabilities::TOOL_USE)
+        .override_tools(tools)
+        .build()
+        .expect("build");
+    let agent_id = run.id().clone();
+    let inbox = bus.subscribe(run.subscription_filter()).await.expect("inbox");
+    let task = tokio::spawn(run.run(inbox));
+    let mut events = subscribe_stream(&bus).await;
+    let sid = SessionId::new("plan-session");
+    bus.publish(BusMessage::system_join_session(
+        agent_id.clone(),
+        sid.clone(),
+        SessionMetadata {
+            workspace: "/tmp".into(),
+            name: "plan".into(),
+            user_id: "user-1".into(),
+        },
+    )).await.expect("join");
+    bus.publish(BusMessage::user_chat(sid.clone(), "user-1", "make a plan"))
+        .await
+        .expect("chat");
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event");
+            if matches!(message.kind, MessageKind::Stream(StreamEvent::PlanProposed { .. })) {
+                break;
+            }
+        }
+    }).await.expect("plan proposal");
+
+    bus.publish(BusMessage {
+        session_id: sid.clone(),
+        sender: Sender::System,
+        recipient: Recipient::Agent(agent_id.clone()),
+        kind: MessageKind::System(SystemMessage::ResolvePlan {
+            plan_id: "plan_001".into(),
+            decision: PlanDecision::Approved,
+        }),
+        payload: String::new(),
+        timestamp: sylvander_agent::session::now_secs(),
+        id: MessageId::new(),
+    }).await.expect("resolve");
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event");
+            if matches!(message.kind, MessageKind::Stream(StreamEvent::Done { .. })) {
+                break;
+            }
+        }
+    }).await.expect("done after approval");
+    bus.publish(BusMessage::system_stop(agent_id)).await.expect("stop");
+    task.await.expect("agent task");
 }
 
 // --- tests ---

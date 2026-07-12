@@ -61,6 +61,8 @@ pub struct AgentLoop {
     pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
     /// Optional AskUser gate — called for `ask_user` tool (M18).
     pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
+    /// Optional plan gate — called for the `present_plan` marker tool.
+    pub(crate) plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
     /// Invocation context handed to every tool call.
     /// Defaults to a placeholder (system user) if the caller doesn't
     /// supply one — keeps tests / examples working unchanged.
@@ -105,6 +107,7 @@ pub struct AgentLoopBuilder {
     system_prompt: Option<String>,
     approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
     ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
+    plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
     tool_context: Option<ToolContext>,
 }
 
@@ -120,6 +123,7 @@ impl Default for AgentLoopBuilder {
             system_prompt: None,
             approval_gate: None,
             ask_user_gate: None,
+            plan_gate: None,
             tool_context: None,
         }
     }
@@ -232,6 +236,13 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the typed plan-review gate. The marker tool is never executed.
+    #[must_use]
+    pub fn plan_gate(mut self, gate: Arc<dyn crate::plan_gate::PlanGate>) -> Self {
+        self.plan_gate = Some(gate);
+        self
+    }
+
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
@@ -275,6 +286,7 @@ impl AgentLoopBuilder {
             system_prompt: self.system_prompt,
             approval_gate: self.approval_gate,
             ask_user_gate: self.ask_user_gate,
+            plan_gate: self.plan_gate,
             tool_context,
         })
     }
@@ -552,16 +564,33 @@ pub fn run_stream(
                 // The loop PAUSES here if the gate waits for external input.
                 let decisions: Vec<crate::approval::ApprovalDecision> =
                     if let Some(gate) = &config.approval_gate {
+                        // `present_plan` is itself the consent UI. Requiring a
+                        // tool approval before showing it would create two
+                        // consecutive prompts for one decision.
                         let requests: Vec<crate::approval::ToolUseRequest> = tool_blocks
                             .iter()
+                            .filter(|t| t.name != "present_plan")
                             .map(|t| crate::approval::ToolUseRequest {
                                 call_id: t.id.clone(),
                                 tool_name: t.name.clone(),
                                 input: t.input.clone(),
                             })
                             .collect();
-                        let result = gate.check_batch(&requests).await;
-                        result.decisions
+                        let mut gated = gate.check_batch(&requests).await.decisions.into_iter();
+                        tool_blocks
+                            .iter()
+                            .map(|tool| {
+                                if tool.name == "present_plan" {
+                                    crate::approval::ApprovalDecision::Approved
+                                } else {
+                                    gated.next().unwrap_or_else(|| {
+                                        crate::approval::ApprovalDecision::Rejected {
+                                            reason: "approval gate returned no decision".into(),
+                                        }
+                                    })
+                                }
+                            })
+                            .collect()
                     } else {
                         // No gate → auto-approve all (backward compatible)
                         vec![
@@ -634,6 +663,61 @@ pub fn run_stream(
                                         tool_use.id.clone(),
                                         answer.join(", "),
                                     ),
+                                ));
+                                continue;
+                            }
+
+                            if tool_use.name == "present_plan" {
+                                let steps: Vec<String> = tool_use.input["steps"]
+                                    .as_array()
+                                    .map(|values| {
+                                        values
+                                            .iter()
+                                            .filter_map(|value| value.as_str().map(String::from))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let plan_id = tool_use.id.clone();
+
+                                yield AgentEvent::PlanProposed {
+                                    plan_id: plan_id.clone(),
+                                    steps: steps.clone(),
+                                };
+                                let decision = if let Some(gate) = &config.plan_gate {
+                                    gate.review(&plan_id, steps.clone()).await
+                                } else {
+                                    sylvander_protocol::PlanDecision::Approved
+                                };
+                                yield AgentEvent::PlanResolved {
+                                    plan_id: plan_id.clone(),
+                                    decision: decision.clone(),
+                                };
+
+                                let (output, is_error) = match decision {
+                                    sylvander_protocol::PlanDecision::Approved => (
+                                        "Plan approved. Continue with the proposed steps.".into(),
+                                        false,
+                                    ),
+                                    sylvander_protocol::PlanDecision::Revised { steps } => (
+                                        format!(
+                                            "Plan revised by the user. Continue with these steps:\n- {}",
+                                            steps.join("\n- ")
+                                        ),
+                                        false,
+                                    ),
+                                    sylvander_protocol::PlanDecision::Rejected { reason } => (
+                                        format!("Plan rejected by the user: {reason}"),
+                                        true,
+                                    ),
+                                };
+                                yield AgentEvent::ToolCallEnd {
+                                    id: plan_id.clone(),
+                                    name: "present_plan".into(),
+                                    output: output.clone(),
+                                    is_error,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(plan_id, output).with_error(is_error),
                                 ));
                                 continue;
                             }
