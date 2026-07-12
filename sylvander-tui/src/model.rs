@@ -62,6 +62,7 @@ pub enum ChatMessage {
 
 #[derive(Debug, Clone)]
 pub struct ToolStepChild {
+    pub call_id: String,
     pub name: String,
     pub status: ToolStatus,
     pub input: serde_json::Value,
@@ -96,4 +97,12 @@ pub struct ToolInfo {
     pub call_id: String,
     pub tool_name: String,
     pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub id: String,
+    pub label: String,
+    pub workspace: String,
+    pub last_seen_secs: u64,
 }

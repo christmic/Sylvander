@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-agent = { path = "../sylvander-agent" }
+sylvander-protocol = { path = "../sylvander-protocol" }
 async-trait = "0.1"
 tokio = { workspace = true }
 tokio-stream = "0.1"

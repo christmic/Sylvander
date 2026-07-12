@@ -28,14 +28,13 @@
 //! ```
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{
@@ -60,6 +59,10 @@ enum ClientMsg {
         call_id: String,
         approved: bool,
     },
+    Answer {
+        call_id: String,
+        answer: String,
+    },
     ListSessions,
     Ping,
 }
@@ -67,23 +70,62 @@ enum ClientMsg {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
-    SessionCreated { session_id: String },
-    TextDelta { session_id: String, delta: String },
-    ThinkingDelta { session_id: String, delta: String },
-    ToolCall { session_id: String, tool_name: String },
+    SessionCreated {
+        session_id: String,
+    },
+    TextDelta {
+        session_id: String,
+        delta: String,
+    },
+    ThinkingDelta {
+        session_id: String,
+        delta: String,
+    },
+    ToolCall {
+        session_id: String,
+        call_id: String,
+        tool_name: String,
+        input: serde_json::Value,
+    },
     ToolResult {
         session_id: String,
+        call_id: String,
         tool_name: String,
         output: String,
         is_error: bool,
     },
-    IterationStart { session_id: String, iteration: u32 },
-    Done { session_id: String, text: String },
-    Error { session_id: String, message: String },
+    IterationStart {
+        session_id: String,
+        iteration: u32,
+    },
+    IterationEnd {
+        session_id: String,
+        iteration: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
+    Done {
+        session_id: String,
+        text: String,
+    },
+    Error {
+        session_id: String,
+        message: String,
+    },
     ApprovalRequest {
         session_id: String,
         batch_id: String,
         tools: Vec<ToolInfo>,
+    },
+    AskUser {
+        session_id: String,
+        call_id: String,
+        question: String,
+        options: Vec<String>,
+        multi_select: bool,
+    },
+    SessionsList {
+        sessions: Vec<SessionInfo>,
     },
     Pong,
 }
@@ -93,6 +135,14 @@ struct ToolInfo {
     call_id: String,
     tool_name: String,
     input: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionInfo {
+    id: String,
+    label: String,
+    workspace: String,
+    last_seen_secs: u64,
 }
 
 // ===========================================================================
@@ -262,31 +312,35 @@ async fn handle_client_msg(
                     if let MessageKind::Stream(ev) = msg.kind {
                         let s = &msg.session_id;
                         let out = match ev {
-                            StreamEvent::TextDelta { delta } => {
-                                Some(ServerMsg::TextDelta {
-                                    session_id: s.0.clone(),
-                                    delta,
-                                })
-                            }
+                            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
+                                session_id: s.0.clone(),
+                                delta,
+                            }),
                             StreamEvent::ThinkingDelta { delta } => {
                                 Some(ServerMsg::ThinkingDelta {
                                     session_id: s.0.clone(),
                                     delta,
                                 })
                             }
-                            StreamEvent::ToolCall { tool_name, .. } => {
-                                Some(ServerMsg::ToolCall {
-                                    session_id: s.0.clone(),
-                                    tool_name,
-                                })
-                            }
+                            StreamEvent::ToolCall {
+                                call_id,
+                                tool_name,
+                                input,
+                            } => Some(ServerMsg::ToolCall {
+                                session_id: s.0.clone(),
+                                call_id,
+                                tool_name,
+                                input,
+                            }),
                             StreamEvent::ToolResult {
+                                call_id,
                                 tool_name,
                                 output,
                                 is_error,
                                 ..
                             } => Some(ServerMsg::ToolResult {
                                 session_id: s.0.clone(),
+                                call_id,
                                 tool_name,
                                 output,
                                 is_error,
@@ -297,6 +351,16 @@ async fn handle_client_msg(
                                     iteration,
                                 })
                             }
+                            StreamEvent::IterationEnd {
+                                iteration,
+                                input_tokens,
+                                output_tokens,
+                            } => Some(ServerMsg::IterationEnd {
+                                session_id: s.0.clone(),
+                                iteration,
+                                input_tokens,
+                                output_tokens,
+                            }),
                             StreamEvent::ToolApprovalRequired { batch_id, tools } => {
                                 Some(ServerMsg::ApprovalRequest {
                                     session_id: s.0.clone(),
@@ -311,6 +375,18 @@ async fn handle_client_msg(
                                         .collect(),
                                 })
                             }
+                            StreamEvent::AskUser {
+                                call_id,
+                                question,
+                                options,
+                                multi_select,
+                            } => Some(ServerMsg::AskUser {
+                                session_id: s.0.clone(),
+                                call_id,
+                                question,
+                                options,
+                                multi_select,
+                            }),
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -335,10 +411,21 @@ async fn handle_client_msg(
                     session_id: SessionId::new("").into(), // agent-level
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool {
-                        call_id,
-                        approved,
-                    }),
+                    kind: MessageKind::System(SystemMessage::ApproveTool { call_id, approved }),
+                    payload: String::new(),
+                    timestamp: sylvander_agent::session::now_secs(),
+                    id: sylvander_agent::bus::MessageId::new(),
+                })
+                .await;
+        }
+        ClientMsg::Answer { call_id, answer } => {
+            let _ = ctx
+                .bus
+                .publish(BusMessage {
+                    session_id: SessionId::new("").into(),
+                    sender: sylvander_agent::bus::Sender::System,
+                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                    kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
                     payload: String::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
@@ -346,9 +433,37 @@ async fn handle_client_msg(
                 .await;
         }
         ClientMsg::ListSessions => {
-            // Sessions are stored in agent's internal state, not in bus.
-            // For now, just acknowledge.
-            info!("unix: client listed sessions (not implemented in detail)");
+            let caller = sylvander_protocol::SessionContext::new(
+                "unix-client",
+                agent_id.clone(),
+                "__session_list__",
+            );
+            let filter = sylvander_agent::session_store::SessionFilter {
+                identity: Some(caller.identity.clone()),
+                limit: Some(100),
+                ..Default::default()
+            };
+            match ctx.sessions.list(&caller, filter).await {
+                Ok(sessions) => {
+                    let now = sylvander_agent::session::now_secs();
+                    let sessions = sessions
+                        .into_iter()
+                        .map(|session| SessionInfo {
+                            id: session.id.0,
+                            label: if session.name.is_empty() {
+                                "untitled session".into()
+                            } else {
+                                session.name
+                            },
+                            workspace: session.metadata.workspace.display().to_string(),
+                            last_seen_secs: u64::try_from(now.saturating_sub(session.created_at))
+                                .unwrap_or(0),
+                        })
+                        .collect();
+                    let _ = tx.send(ServerMsg::SessionsList { sessions });
+                }
+                Err(error) => warn!(error = %error, "unix: failed to list sessions"),
+            }
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
