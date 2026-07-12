@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Visual effect (kept from v1)
+
 /// Blurred window background (macOS HUD material).
 struct VisualEffect: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
@@ -13,301 +15,80 @@ struct VisualEffect: NSViewRepresentable {
     func updateNSView(_ v: NSVisualEffectView, context: Context) {}
 }
 
-/// Centralized design tokens: colors, radii, spacing, text tiers.
-enum Theme {
-    // per-tool tints
-    static let claude = Color(red: 0.92, green: 0.52, blue: 0.40)
-    static let codex = Color(red: 0.42, green: 0.68, blue: 0.98)
-    static let gemini = Color(red: 0.62, green: 0.52, blue: 0.92)
-    static let grok = Color(red: 0.65, green: 0.68, blue: 0.75)
-    static let qoder = Color(red: 0.90, green: 0.75, blue: 0.35)
-    static let syleander = Color(red: 0.40, green: 0.82, blue: 0.60)
-    static let other = Color(red: 0.60, green: 0.62, blue: 0.68)
+// MARK: - Design tokens
 
-    static let cardRadius: CGFloat = 16
-    static let outerPad: CGFloat = 15
+/// Color tokens. Single source of truth for the dashboard v2 palette.
+enum T {
+    // Backgrounds
+    static let bgPrimary      = Color(red: 0.067, green: 0.075, blue: 0.098)  // #111319
+    static let bgElevated     = Color.white.opacity(0.05)
+    static let borderSubtle   = Color.white.opacity(0.08)
 
-    static let tPrimary = Color.white.opacity(0.97)
-    static let tSecondary = Color.white.opacity(0.82)
-    static let tTertiary = Color.white.opacity(0.58)
+    // Brand
+    static let seedOrange     = Color(red: 0.945, green: 0.541, blue: 0.404)  // #F18A67
+    static let seedOrangeDeep = Color(red: 0.784, green: 0.353, blue: 0.239)  // #C85A3D
+    static let coreViolet     = Color(red: 0.463, green: 0.341, blue: 0.839)  // #7657D6
+    static let electricBlue   = Color(red: 0.263, green: 0.529, blue: 0.898)  // #4387E5
+    static let healthyMint    = Color(red: 0.345, green: 0.831, blue: 0.608)  // #58D49B
+    static let warningAmber   = Color.orange
 
-    /// Window background per theme mode.
-    static func bg(_ mode: ThemeMode) -> LinearGradient {
-        switch mode {
-        case .warm:
-            return LinearGradient(
-                colors: [
-                    Color(red: 0.22, green: 0.18, blue: 0.16).opacity(0.94),
-                    Color(red: 0.13, green: 0.10, blue: 0.09).opacity(0.96),
-                ],
-                startPoint: .top, endPoint: .bottom)
-        case .cool:
-            return LinearGradient(
-                colors: [
-                    Color(red: 0.16, green: 0.18, blue: 0.23).opacity(0.94),
-                    Color(red: 0.09, green: 0.11, blue: 0.15).opacity(0.96),
-                ],
-                startPoint: .top, endPoint: .bottom)
-        }
-    }
+    // Text tiers
+    static let textPrimary    = Color.white.opacity(0.98)
+    static let textSecondary  = Color.white.opacity(0.73)
+    static let textTertiary   = Color.white.opacity(0.53)
 
-    /// Neutral accent (title icon, refresh, non-entity chrome) per theme mode.
-    static func accent(_ mode: ThemeMode) -> Color {
-        mode == .warm ? claude : codex
-    }
-
-    /// Map a logical tool label to its accent color.
-    static func toolTint(_ label: String) -> Color {
-        switch label.lowercased() {
-        case let l where l.contains("claude"): return claude
-        case let l where l.contains("codex"): return codex
-        case let l where l.contains("gemini"): return gemini
-        case let l where l.contains("grok"): return grok
-        case let l where l.contains("qoder"): return qoder
-        case let l where l.contains("syleander") || l.contains("sylvander"): return syleander
-        default: return other
-        }
-    }
-
-    private static let palette: [Color] = [
-        claude, codex, gemini, syleander, qoder,
-        Color(red: 0.85, green: 0.45, blue: 0.68),  // rose
-        Color(red: 0.55, green: 0.75, blue: 0.90),  // sky
-        Color(red: 0.74, green: 0.58, blue: 0.95),  // violet
+    // Heatmap 5-level scale (graphite → seed orange). Public for the
+    // ActivityHeatmapView's pure-function tests.
+    static let heatmapLevels: [Color] = [
+        Color(red: 0.18, green: 0.20, blue: 0.24),                              // graphite
+        Color(red: 0.18, green: 0.12, blue: 0.32),                              // deep violet
+        Color(red: 0.46, green: 0.34, blue: 0.84),                              // core violet
+        Color(red: 0.26, green: 0.53, blue: 0.90),                              // electric blue
+        Color(red: 0.95, green: 0.54, blue: 0.40),                              // seed orange
     ]
-
-    /// Deterministic color for an arbitrary name (used for model grouping).
-    static func paletteColor(_ name: String) -> Color {
-        var h: UInt64 = 1469598103934665603
-        for b in name.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
-        return palette[Int(h % UInt64(palette.count))]
-    }
 }
 
-/// Two moods: warm (coding energy) and cool (calm, Codex-like).
-enum ThemeMode: String, CaseIterable {
-    case warm, cool
-    var next: ThemeMode { self == .warm ? .cool : .warm }
-    var icon: String { self == .warm ? "flame.fill" : "snowflake" }
+/// Layout constants. Per IMPLEMENTATION_CHECKLIST.md §3 A2.
+enum L {
+    static let popoverW:  CGFloat = 480
+    static let popoverH:  CGFloat = 660
+    static let outerPad:  CGFloat = 16
+    static let majorGap:  CGFloat = 14
+    static let cardRadius:CGFloat = 12
+    static let rowRadius: CGFloat = 12
+    static let hairline:  CGFloat = 0.75
+
+    static let logoSize:  CGFloat = 34
+    static let rowMinHit: CGFloat = 44
 }
 
-/// Floating card: layered fill + tint wash + top highlight + gradient stroke + soft shadow + hover.
-struct Card<Content: View>: View {
-    var tint: Color
-    @ViewBuilder var content: () -> Content
-    @State private var hover = false
+// MARK: - Primitives
+
+/// Small filled circle: online/offline indicator.
+struct StatusDot: View {
+    var active: Bool
     var body: some View {
-        content()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(15)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                    .fill(Color.black.opacity(0.26))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                            .fill(tint.opacity(0.08))
-                    )
-                    .overlay(alignment: .top) {
-                        RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                            .fill(LinearGradient(
-                                colors: [Color.white.opacity(0.05), .clear],
-                                startPoint: .top, endPoint: .center))
-                    }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [tint.opacity(0.38), tint.opacity(0.05)],
-                            startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: 0.75)
-            )
-            .shadow(color: Color.black.opacity(hover ? 0.42 : 0.30),
-                    radius: hover ? 16 : 12, x: 0, y: hover ? 9 : 6)
-            .scaleEffect(hover ? 1.012 : 1)
-            .onHover { hover = $0 }
-            .animation(.easeOut(duration: 0.18), value: hover)
+        Circle()
+            .fill(active ? T.healthyMint : T.warningAmber)
+            .frame(width: 8, height: 8)
     }
 }
 
-/// 2-column layout where each row's cards share the tallest height.
-struct EqualHeightGrid: Layout {
-    var columns = 2
-    var hSpacing: CGFloat = 13
-    var vSpacing: CGFloat = 13
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard !subviews.isEmpty else { return .zero }
-        let total = proposal.width ?? 700
-        let colW = colWidth(in: total)
-        var h: CGFloat = 0
-        for row in stride(from: 0, to: subviews.count, by: columns) {
-            if row > 0 { h += vSpacing }
-            h += rowHeight(row: row, colW: colW, subviews: subviews)
-        }
-        return CGSize(width: total, height: h)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let colW = colWidth(in: bounds.width)
-        var y = bounds.minY
-        for row in stride(from: 0, to: subviews.count, by: columns) {
-            let rh = rowHeight(row: row, colW: colW, subviews: subviews)
-            for i in row..<min(row + columns, subviews.count) {
-                let x = bounds.minX + CGFloat(i - row) * (colW + hSpacing)
-                subviews[i].place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                                  proposal: .init(width: colW, height: rh))
-            }
-            y += rh + vSpacing
-        }
-    }
-
-    private func colWidth(in total: CGFloat) -> CGFloat {
-        (total - hSpacing * CGFloat(columns - 1)) / CGFloat(columns)
-    }
-    private func rowHeight(row: Int, colW: CGFloat, subviews: Subviews) -> CGFloat {
-        (row..<min(row + columns, subviews.count)).map {
-            subviews[$0].sizeThatFits(.init(width: colW, height: nil)).height
-        }.max() ?? 0
-    }
-}
-
-/// Big headline number + caption.
-struct Headline: View {
-    var value: String
-    var caption: String
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 7) {
-            Text(value)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .contentTransition(.numericText())
-            Text(caption)
-                .font(.system(size: 10))
-                .foregroundStyle(Theme.tTertiary)
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-/// Icon + label + monospaced value.
-struct MetricCell: View {
-    var icon: String
-    var label: String
-    var value: String
-    var tint: Color
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 9.5, weight: .bold))
-                .foregroundStyle(tint)
-                .frame(width: 21, height: 21)
-                .background(Circle().fill(tint.opacity(0.10)))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 9.5)).foregroundStyle(Theme.tTertiary)
-                Text(value)
-                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Theme.tPrimary)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-/// Small ring + label + percentage (cache hit).
-struct RingMetricCell: View {
-    var value: Double
-    var label: String
-    var tint: Color
-    var body: some View {
-        HStack(spacing: 8) {
-            ZStack {
-                Circle().stroke(Color.primary.opacity(0.10), lineWidth: 2.5)
-                Circle()
-                    .trim(from: 0, to: max(0.001, min(1, value / 100)))
-                    .stroke(tint.gradient, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 21, height: 21)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 9.5)).foregroundStyle(Theme.tTertiary)
-                Text("\(Int(value.rounded()))%")
-                    .font(.system(size: 12.5, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Theme.tPrimary)
-            }
-            Spacer(minLength: 0)
-        }
-        .animation(.easeOut(duration: 0.5), value: value)
-    }
-}
-
-/// Thin progress bar (rate limits).
-struct MiniBar: View {
-    var value: Double  // 0...100
-    var tint: Color
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.09))
-                Capsule()
-                    .fill(tint.gradient)
-                    .frame(width: max(3, geo.size.width * min(1, value / 100)))
-            }
-        }
-        .frame(height: 5)
-        .animation(.easeOut(duration: 0.45), value: value)
-    }
-}
-
-/// Sliding segmented control for the time range.
-struct SegmentedTabs: View {
-    @Binding var sel: RangeKey
-    @Namespace private var ns
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(RangeKey.allCases) { k in
-                let on = k == sel
-                Text(k.label)
-                    .font(.system(size: 12, weight: on ? .semibold : .regular))
-                    .foregroundStyle(on ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 5)
-                    .background {
-                        if on {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
-                                .matchedGeometryEffect(id: "seg", in: ns)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { sel = k }
-                    }
-            }
-        }
-        .padding(3)
-        .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
-            .fill(Color.primary.opacity(0.06)))
-    }
-}
-
-/// Hover-highlight icon button.
+/// Plain icon button — hover changes opacity, never scales.
 struct IconButton: View {
-    var icon: String
+    var systemName: String
     var action: () -> Void
     @State private var hover = false
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon)
+            Image(systemName: systemName)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(hover ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .foregroundStyle(hover ? T.textPrimary : T.textSecondary)
                 .frame(width: 28, height: 24)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(hover ? 0.10 : 0)))
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(hover ? Color.white.opacity(0.08) : .clear)
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -315,16 +96,125 @@ struct IconButton: View {
     }
 }
 
-/// Small rounded pill badge.
-struct Pill: View {
-    var text: String
+/// Elevated surface: subtle fill + hairline border, no shadow, no scale.
+struct Panel<Content: View>: View {
+    var radius: CGFloat = L.cardRadius
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(T.bgElevated)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(T.borderSubtle, lineWidth: L.hairline)
+            )
+    }
+}
+
+/// Small circular icon background + tinted glyph. Used in metric cells.
+struct MetricIcon: View {
+    var systemName: String
     var tint: Color
     var body: some View {
-        Text(text)
-            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        Image(systemName: systemName)
+            .font(.system(size: 10, weight: .bold))
             .foregroundStyle(tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.15)))
+            .frame(width: 22, height: 22)
+            .background(Circle().fill(tint.opacity(0.15)))
+    }
+}
+
+/// Thin progress bar (rate limits, cache, share). Capsule, 5pt high.
+struct MiniBar: View {
+    var value: Double   // 0...100
+    var tint: Color
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.08))
+                Capsule()
+                    .fill(tint)
+                    .frame(width: max(2, geo.size.width * min(1, max(0, value) / 100)))
+            }
+        }
+        .frame(height: 5)
+        .animation(.easeOut(duration: 0.45), value: value)
+    }
+}
+
+/// Ring-shaped cache hit % indicator.
+struct CacheRing: View {
+    var value: Double   // 0...100
+    var tint: Color = T.seedOrange
+    var lineWidth: CGFloat = 3
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.10), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: max(0.001, min(1, value / 100)))
+                .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .animation(.easeOut(duration: 0.5), value: value)
+    }
+}
+
+/// Time-range tabs. Six cases in order: yesterday / today / week /
+/// lastWeek / month / year. Selected tab uses a seed-orange underline,
+/// not a full-width pill (per checklist §3 A3 DimensionToggle parallel —
+/// the range tabs follow the same restrained pattern).
+struct RangeTabs: View {
+    @Binding var sel: RangeKey
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(RangeKey.allCases) { k in
+                let on = k == sel
+                VStack(spacing: 4) {
+                    Text(k.label)
+                        .font(.system(size: 12, weight: on ? .semibold : .regular))
+                        .foregroundStyle(on ? T.textPrimary : T.textSecondary)
+                    Rectangle()
+                        .fill(on ? T.seedOrange : .clear)
+                        .frame(height: 2)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .contentShape(Rectangle())
+                .onTapGesture { sel = k }
+            }
+        }
+    }
+}
+
+/// Tool/model dimension toggle. Two text labels with seed-orange
+/// underline on the selected one. **Not** a segmented control.
+struct DimensionToggle: View {
+    enum Dimension: String, CaseIterable, Identifiable {
+        case tool = "工具"
+        case model = "模型"
+        var id: String { rawValue }
+    }
+    @Binding var sel: Dimension
+    var body: some View {
+        HStack(spacing: 18) {
+            ForEach(Dimension.allCases) { d in
+                let on = d == sel
+                VStack(spacing: 3) {
+                    Text(d.rawValue)
+                        .font(.system(size: 11, weight: on ? .semibold : .regular))
+                        .foregroundStyle(on ? T.seedOrange : T.textTertiary)
+                    Rectangle()
+                        .fill(on ? T.seedOrange : .clear)
+                        .frame(height: 2)
+                        .frame(maxWidth: d.rawValue.count > 2 ? 28 : 18)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { sel = d }
+            }
+        }
     }
 }
