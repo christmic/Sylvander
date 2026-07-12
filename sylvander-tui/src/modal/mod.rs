@@ -1,7 +1,7 @@
 //! Modal trait + stack — floating layers that overlay the panels and
 //! capture keyboard input.
 
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 use crate::app::AppState;
 
@@ -23,11 +23,7 @@ pub trait Modal {
 
     /// Process a key. Return whether the key was consumed and whether
     /// the modal wants to be dismissed.
-    fn handle_key(
-        &mut self,
-        key: &crossterm::event::KeyEvent,
-        state: &mut AppState,
-    ) -> Consumed;
+    fn handle_key(&mut self, key: &crossterm::event::KeyEvent, state: &mut AppState) -> Consumed;
 }
 
 /// Result of `Modal::handle_key`.
@@ -104,12 +100,14 @@ impl Default for ModalStack {
 
 pub mod approval;
 pub mod ask_user;
+pub mod help;
 pub mod palette;
 pub mod plan;
 pub mod sessions;
 
 pub use approval::ApprovalModal;
 pub use ask_user::AskUserModal;
-pub use palette::{Command, CommandPalette, COMMANDS};
+pub use help::HelpModal;
+pub use palette::{COMMANDS, Command, CommandPalette};
 pub use plan::PlanReviewModal;
 pub use sessions::{SessionEntry, SessionStatus, SessionsOverlay};

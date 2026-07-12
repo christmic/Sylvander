@@ -44,6 +44,16 @@ impl FromStr for ThemeName {
     }
 }
 
+impl std::fmt::Display for ThemeName {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Sylvander => "sylvander",
+            Self::Midnight => "midnight",
+            Self::HighContrast => "high-contrast",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub canvas: Color,
@@ -110,6 +120,7 @@ pub const HIGH_CONTRAST: Palette = Palette {
 };
 
 static ACTIVE: RwLock<Palette> = RwLock::new(SYLVANDER);
+static ACTIVE_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::Sylvander);
 
 pub fn palette_for(name: ThemeName) -> Palette {
     match name {
@@ -123,6 +134,15 @@ pub fn configure(name: ThemeName) {
     *ACTIVE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = palette_for(name);
+    *ACTIVE_NAME
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+}
+
+pub fn active_name() -> ThemeName {
+    *ACTIVE_NAME
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn palette() -> Palette {

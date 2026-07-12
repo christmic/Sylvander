@@ -22,6 +22,7 @@ enum Wake {
     Service(Option<DomainEvent>),
     Frame,
     Animation,
+    Reconnect,
 }
 
 const MAX_INPUT_BATCH: usize = 64;
@@ -59,6 +60,8 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     frame_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut animation_clock = tokio::time::interval(config.animation_interval);
     animation_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut reconnect_clock = tokio::time::interval(config.reconnect_interval);
+    reconnect_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut input_open = true;
     let mut service_open = true;
 
@@ -68,6 +71,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
             event = service.recv(), if service_open => Wake::Service(event),
             _ = frame_clock.tick() => Wake::Frame,
             _ = animation_clock.tick() => Wake::Animation,
+            _ = reconnect_clock.tick() => Wake::Reconnect,
         };
 
         let render_immediately = matches!(&wake, Wake::Input(Some(_)));
@@ -79,6 +83,12 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
             Wake::Service(None) => service_open = false,
             Wake::Frame => {}
             Wake::Animation => application.apply(DomainEvent::Tick),
+            Wake::Reconnect => {
+                if !application.state.connected {
+                    let connection = service.connect().await;
+                    application.apply(connection);
+                }
+            }
         }
 
         // Coalesce bursts without delaying the first input event.

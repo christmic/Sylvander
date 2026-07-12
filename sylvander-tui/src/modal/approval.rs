@@ -17,6 +17,7 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, AppState, ToolInfo};
+use crate::approval_presenter::{RiskLevel, summarize};
 use crate::event::Action;
 use crate::modal::{Consumed, Modal};
 use crate::theme;
@@ -120,8 +121,8 @@ impl Modal for ApprovalModal {
 
 impl ApprovalModal {
     fn render_navigate(&self, frame: &mut Frame, parent: Rect) {
-        let height = (12 + self.tools.len() as u16 * 2).min(parent.height.saturating_sub(2));
-        let popup_area = centered_rect(60, height, parent);
+        let height = (7 + self.tools.len() as u16 * 2).min(parent.height.saturating_sub(2));
+        let popup_area = centered_rect(72, height, parent);
         frame.render_widget(Clear, popup_area);
 
         let title = if self.queue_total > 1 {
@@ -145,7 +146,7 @@ impl ApprovalModal {
         let inner = Block::default().borders(Borders::ALL).inner(popup_area);
 
         let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from("Agent wants to run:".bold()));
+        lines.push(Line::from("Review the requested capabilities:".bold()));
 
         for (i, tool) in self.tools.iter().enumerate() {
             let is_current = i == self.current;
@@ -157,22 +158,33 @@ impl ApprovalModal {
                 (Decision::Reject, _) => palette.danger,
                 (Decision::Pending, _) => palette.text_dim,
             };
-            let tool_label = format!(
-                "{}. {}  {}",
-                i + 1,
-                tool.tool_name,
-                truncate_for_display(&tool.input.to_string(), 40)
-            );
+            let summary = summarize(&tool.tool_name, &tool.input);
+            let risk_style = match summary.risk {
+                RiskLevel::Low => theme::verified(),
+                RiskLevel::Medium => theme::active(),
+                RiskLevel::High => theme::warning(),
+                RiskLevel::Critical => theme::danger().bold(),
+            };
             lines.push(Line::from(vec![
                 Span::styled(marker, Style::default().fg(marker_color)),
-                Span::styled(tool_label, Style::default().fg(marker_color)),
+                Span::styled(format!("{}. ", i + 1), Style::default().fg(marker_color)),
+                Span::styled(format!("{:<9}", summary.risk.label()), risk_style),
+                Span::styled(
+                    truncate_for_display(&summary.action, 58),
+                    Style::default().fg(marker_color),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw("       "),
+                Span::styled("scope  ", theme::text_muted()),
+                Span::styled(truncate_for_display(&summary.scope, 58), theme::text_dim()),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(
-                "Tool {}/{}  y=approve  n=reject  Y=all  N=reject all  ← back  esc=cancel",
+                "{}/{}  ↵/y approve · n reject · a all · N none · esc deny",
                 self.current + 1,
                 self.tools.len()
             ),
@@ -184,11 +196,15 @@ impl ApprovalModal {
 
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('y'), KeyModifiers::NONE) => {
+            (KeyCode::Enter, _)
+            | (KeyCode::Char('y'), KeyModifiers::NONE)
+            | (KeyCode::Char('1'), KeyModifiers::NONE) => {
                 self.decisions[self.current] = Decision::Approve;
                 advance(self, state)
             }
-            (KeyCode::Char('n'), KeyModifiers::NONE) => {
+            (KeyCode::Char('n'), KeyModifiers::NONE)
+            | (KeyCode::Char('r'), KeyModifiers::NONE)
+            | (KeyCode::Char('2'), KeyModifiers::NONE) => {
                 self.decisions[self.current] = Decision::Reject;
                 // Drop into feedback capture for this rejection.
                 self.mode = ApprovalMode::RejectFeedback;
@@ -197,7 +213,8 @@ impl ApprovalModal {
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
-            (KeyCode::Char('Y'), KeyModifiers::SHIFT) => {
+            (KeyCode::Char('Y'), KeyModifiers::SHIFT)
+            | (KeyCode::Char('a'), KeyModifiers::NONE) => {
                 // Approve all remaining including current.
                 for d in &mut self.decisions[self.current..] {
                     if *d == Decision::Pending {
@@ -241,14 +258,8 @@ impl ApprovalModal {
                 }
                 Consumed::Yes { dismiss: false }
             }
-            (KeyCode::Esc, _) => {
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
-            }
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
-            }
+            (KeyCode::Esc, _) => reject_pending_and_finish(self, state),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => reject_pending_and_finish(self, state),
             _ => Consumed::Ignored,
         }
     }
@@ -369,7 +380,20 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
 fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     let decisions = std::mem::take(&mut modal.decisions);
     let tools = std::mem::take(&mut modal.tools);
-    state.mode = AppMode::Normal;
+    state.mode = if state
+        .modals
+        .iter()
+        .any(|modal| modal.title() == "Tool Approval")
+    {
+        AppMode::ApprovalPending
+    } else {
+        AppMode::Normal
+    };
+    let approved_count = decisions
+        .iter()
+        .filter(|decision| matches!(decision, Decision::Approve))
+        .count();
+    let rejected_count = decisions.len().saturating_sub(approved_count);
     for (tool, decision) in tools.iter().zip(decisions.iter()) {
         let approved = matches!(decision, Decision::Approve);
         state.pending_actions.push(Action::SendApprove {
@@ -377,7 +401,19 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
             approved,
         });
     }
+    state.messages.push(crate::app::ChatMessage::Info(format!(
+        "approval · {approved_count} approved · {rejected_count} rejected"
+    )));
     Consumed::Yes { dismiss: true }
+}
+
+fn reject_pending_and_finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
+    for decision in &mut modal.decisions {
+        if *decision == Decision::Pending {
+            *decision = Decision::Reject;
+        }
+    }
+    finish(modal, state)
 }
 
 fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
@@ -470,6 +506,23 @@ mod tests {
             s.pending_actions[1],
             Action::SendApprove { ref call_id, approved: true } if call_id == "c1"
         ));
+    }
+
+    #[test]
+    fn escape_rejects_pending_calls_instead_of_abandoning_the_agent() {
+        let mut modal = build_modal_with_n_tools(2);
+        let mut state = AppState::new();
+        let consumed =
+            modal.handle_navigate_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+        assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
+        assert_eq!(state.pending_actions.len(), 2);
+        assert!(state.pending_actions.iter().all(|action| matches!(
+            action,
+            Action::SendApprove {
+                approved: false,
+                ..
+            }
+        )));
     }
 
     #[test]
