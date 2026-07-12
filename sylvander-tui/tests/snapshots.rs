@@ -400,6 +400,16 @@ fn palette_with_no_match() {
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
 
+#[test]
+fn file_mention_picker_is_a_focused_workspace_surface() {
+    let mut state = AppState::new();
+    state.handle_key(&crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('@'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    insta::assert_snapshot!(render_buf(&state, 90, 24));
+}
+
 // ---------------------------------------------------------------------------
 // Responsive breakpoint snapshots (UX §13).
 // ---------------------------------------------------------------------------

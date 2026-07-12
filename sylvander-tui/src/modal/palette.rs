@@ -105,7 +105,12 @@ impl Modal for CommandPalette {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let desired_height = (self.filtered.len() as u16).saturating_add(4).clamp(8, 18);
+        // Keep the palette above the composer/status rows. Longer registries
+        // scroll around the cursor instead of covering the input surface.
+        let max_height = parent.height.saturating_sub(5).min(17).max(8);
+        let desired_height = (self.filtered.len() as u16)
+            .saturating_add(4)
+            .clamp(8, max_height);
         let popup_area = centered_rect(55, desired_height, parent);
         frame.render_widget(Clear, popup_area);
         frame.render_widget(
@@ -160,12 +165,15 @@ impl Modal for CommandPalette {
         } else {
             let visible_rows = layout[2].height.max(1) as usize;
             let start = self.cursor.saturating_add(1).saturating_sub(visible_rows);
+            let needs_more_row = self.filtered.len() > start + visible_rows;
+            let command_rows = visible_rows.saturating_sub(usize::from(needs_more_row));
+            let hidden_below = self.filtered.len().saturating_sub(start + command_rows);
             for (row_i, &cmd_idx) in self
                 .filtered
                 .iter()
                 .enumerate()
                 .skip(start)
-                .take(visible_rows)
+                .take(command_rows)
             {
                 let cmd = &COMMANDS[cmd_idx];
                 let is_cursor = row_i == self.cursor;
@@ -187,6 +195,12 @@ impl Modal for CommandPalette {
                     ),
                     Span::styled(cmd.description, Style::default().fg(color)),
                 ]));
+            }
+            if hidden_below > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("    ↓ {hidden_below} more"),
+                    theme::text_muted(),
+                )));
             }
         }
         frame.render_widget(Paragraph::new(lines), layout[2]);

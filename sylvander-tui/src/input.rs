@@ -41,6 +41,8 @@ pub struct Attachment {
     pub byte_count: usize,
     /// Truncated preview shown in the token (e.g. "lorem ipsum dolor sit amet…").
     pub preview: String,
+    pub name: String,
+    pub mime_type: String,
 }
 
 impl Attachment {
@@ -58,6 +60,51 @@ impl Attachment {
             line_count,
             byte_count,
             preview,
+            name: "pasted text".into(),
+            mime_type: "text/plain".into(),
+        }
+    }
+
+    pub fn from_file(workspace: &std::path::Path, path: &std::path::Path) -> Result<Self, String> {
+        const MAX_FILE_BYTES: u64 = 512 * 1024;
+        let root = workspace.canonicalize().map_err(|error| error.to_string())?;
+        let absolute = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
+        let absolute = absolute.canonicalize().map_err(|error| error.to_string())?;
+        if !absolute.starts_with(&root) {
+            return Err("file mention must stay inside the workspace".into());
+        }
+        let metadata = absolute.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() { return Err("file mention is not a regular file".into()); }
+        if metadata.len() > MAX_FILE_BYTES {
+            return Err(format!("file is larger than {} KiB", MAX_FILE_BYTES / 1024));
+        }
+        let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
+        let content = String::from_utf8(bytes).map_err(|_| "binary files require image attachment support".to_string())?;
+        let relative = absolute.strip_prefix(&root).unwrap_or(&absolute).display().to_string();
+        let line_count = content.lines().count();
+        let byte_count = content.len();
+        Ok(Self {
+            kind: AttachmentKind::File,
+            preview: relative.clone(),
+            name: relative.clone(),
+            mime_type: mime_for_path(&relative).into(),
+            content,
+            line_count,
+            byte_count,
+        })
+    }
+
+    pub fn to_message_attachment(&self, index: usize) -> sylvander_protocol::MessageAttachment {
+        sylvander_protocol::MessageAttachment {
+            id: format!("composer-attachment-{}", index + 1),
+            kind: match self.kind {
+                AttachmentKind::Paste => sylvander_protocol::AttachmentKind::Paste,
+                AttachmentKind::File => sylvander_protocol::AttachmentKind::File,
+            },
+            name: self.name.clone(),
+            mime_type: self.mime_type.clone(),
+            content: sylvander_protocol::AttachmentContent::Text { text: self.content.clone() },
+            byte_count: self.byte_count,
         }
     }
 
@@ -105,6 +152,7 @@ pub struct Composer {
     pub(crate) history_idx: Option<usize>,
     /// Collapsed payloads above the draft.
     pub attachments: Vec<Attachment>,
+    submitted_attachments: Vec<sylvander_protocol::MessageAttachment>,
     /// UX §18 IDLE/FOCUSED: whether the user has interacted with this
     /// composer at least once. `false` until the first state-mutating
     /// keystroke (or paste) flips it permanently to `true`. Until then
@@ -123,6 +171,7 @@ impl Default for Composer {
             history: VecDeque::new(),
             history_idx: None,
             attachments: Vec::new(),
+            submitted_attachments: Vec::new(),
             interacted: false,
         }
     }
@@ -164,39 +213,27 @@ impl Composer {
         char_count(&self.rows[self.cursor_row][..self.cursor_col])
     }
 
+    pub fn can_open_file_mention(&self) -> bool {
+        if self.cursor_col == 0 { return true; }
+        self.rows[self.cursor_row][..self.cursor_col]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_whitespace)
+    }
+
     /// Cursor `x` in chars (for rendering offset within the current row).
     pub fn row_char_len(&self, row: usize) -> usize {
         char_count(&self.rows[row])
     }
 
     /// Drain the current buffer, returning it, and clear composer state.
-    /// Attachments are concatenated as fenced blocks above the draft text;
-    /// on submit both the draft and the attachments are cleared.
+    /// Attachments are moved to a separate typed submission payload.
     pub fn take_submit(&mut self) -> String {
         let draft = self.text();
-        let mut composed = String::new();
-
-        if !self.attachments.is_empty() {
-            composed.push_str("[attachments]\n");
-            for (i, att) in self.attachments.iter().enumerate() {
-                composed.push_str(&format!(
-                    "--- attachment {} ({:?}, {} lines, {} bytes) ---\n",
-                    i + 1,
-                    att.kind,
-                    att.line_count,
-                    att.byte_count
-                ));
-                composed.push_str(&att.content);
-                if !att.content.ends_with('\n') {
-                    composed.push('\n');
-                }
-            }
-            composed.push_str("[/attachments]\n");
-        }
-
-        if !draft.is_empty() {
-            composed.push_str(&draft);
-        }
+        let composed = draft;
+        self.submitted_attachments = self.attachments.iter().enumerate()
+            .map(|(index, attachment)| attachment.to_message_attachment(index))
+            .collect();
 
         // History dedup only when the **whole** composed payload is identical
         // to the last submission (paste content makes collisions rarer).
@@ -220,6 +257,29 @@ impl Composer {
         self.history_idx = None;
         self.attachments.clear();
         composed
+    }
+
+    pub fn take_submitted_attachments(&mut self) -> Vec<sylvander_protocol::MessageAttachment> {
+        std::mem::take(&mut self.submitted_attachments)
+    }
+
+    pub fn attach_file(&mut self, workspace: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
+        self.attachments.push(Attachment::from_file(workspace, path)?);
+        self.mark_focused();
+        Ok(())
+    }
+
+    pub fn remove_attachment(&mut self, index: usize) -> bool {
+        if index >= self.attachments.len() { return false; }
+        self.attachments.remove(index);
+        true
+    }
+
+    pub fn move_attachment(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.attachments.len() || to >= self.attachments.len() { return false; }
+        let attachment = self.attachments.remove(from);
+        self.attachments.insert(to, attachment);
+        true
     }
 
     /// Handle a paste event from the terminal. Per design §12.4:
@@ -354,7 +414,7 @@ impl Composer {
 
         match key.code {
             KeyCode::Enter if submit => {
-                if self.is_empty() {
+                if self.is_empty() && self.attachments.is_empty() {
                     return None;
                 }
                 self.anchor = None;
@@ -717,6 +777,26 @@ fn human_bytes(n: usize) -> String {
     }
 }
 
+fn mime_for_path(path: &str) -> &'static str {
+    match std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rs" => "text/x-rust",
+        "ts" | "tsx" => "text/typescript",
+        "js" | "jsx" => "text/javascript",
+        "py" => "text/x-python",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "application/yaml",
+        _ => "text/plain",
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -922,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_with_attachment_embeds_content() {
+    fn submit_keeps_attachment_typed_and_out_of_visible_history() {
         let mut c = Composer::default();
         c.paste(&(1..=15).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
         c.handle_key(&key(KeyCode::Char('q'), KeyModifiers::NONE));
@@ -931,12 +1011,15 @@ mod tests {
         // Plain Enter submits in the new convention.
         let submitted = c.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE));
         let submitted = submitted.expect("submit");
-        // Order: [attachments] block first, then the draft.
-        assert!(submitted.contains("[attachments]"));
-        assert!(submitted.contains("[/attachments]"));
-        assert!(submitted.contains("L1\n"));
-        assert!(submitted.contains("\nL15")); // body preserved
-        assert!(submitted.ends_with("que"));
+        assert_eq!(submitted, "que");
+        let attachments = c.take_submitted_attachments();
+        assert_eq!(attachments.len(), 1);
+        assert!(matches!(
+            &attachments[0].content,
+            sylvander_protocol::AttachmentContent::Text { text }
+                if text.starts_with("L1\n") && text.ends_with("L15")
+        ));
+        assert_eq!(c.history.back().map(String::as_str), Some("que"));
         // Everything cleared on submit.
         assert!(c.is_empty());
         assert_eq!(c.attachment_count(), 0);
@@ -962,6 +1045,27 @@ mod tests {
             c.paste(&(1..=10).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n"));
         }
         assert_eq!(c.attachment_count(), 3);
+    }
+
+    #[test]
+    fn workspace_file_attachment_is_scoped_typed_and_reorderable() {
+        let root = tempdir();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let mut composer = Composer::default();
+        composer.attach_file(&root, std::path::Path::new("src/main.rs")).unwrap();
+        composer.attachments.push(Attachment::new_paste("one\ntwo".into()));
+        assert_eq!(composer.attachments[0].mime_type, "text/x-rust");
+        assert!(composer.move_attachment(1, 0));
+        assert_eq!(composer.attachments[0].kind, AttachmentKind::Paste);
+        assert!(composer.remove_attachment(0));
+        assert_eq!(composer.attachments[0].name, "src/main.rs");
+
+        let outside = root.parent().unwrap().join("outside-secret.txt");
+        std::fs::write(&outside, "secret").unwrap();
+        assert!(composer.attach_file(&root, &outside).is_err());
+        std::fs::remove_file(outside).ok();
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

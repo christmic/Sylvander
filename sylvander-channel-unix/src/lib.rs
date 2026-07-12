@@ -53,6 +53,8 @@ enum ClientMsg {
     Chat {
         text: String,
         #[serde(default)]
+        attachments: Vec<sylvander_protocol::MessageAttachment>,
+        #[serde(default)]
         session_id: Option<String>,
         #[serde(default)]
         workspace: Option<String>,
@@ -336,6 +338,7 @@ async fn handle_client_msg(
     match msg {
         ClientMsg::Chat {
             text,
+            attachments,
             session_id,
             workspace,
         } => {
@@ -389,7 +392,9 @@ async fn handle_client_msg(
             // Send user message
             let _ = ctx
                 .bus
-                .publish(BusMessage::user_chat(sid.clone(), "unix-client", &text))
+                .publish(BusMessage::user_chat_with_attachments(
+                    sid.clone(), "unix-client", &text, attachments,
+                ))
                 .await;
 
             // Notify client of session
@@ -1034,5 +1039,44 @@ mod tests {
             MessageKind::System(SystemMessage::CancelTask { session_id, task_id })
                 if session_id.0 == "session-1" && task_id == "task-1"
         ));
+    }
+
+    #[tokio::test]
+    async fn chat_forwards_typed_attachments_without_flattening() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let mut events = bus.subscribe(SubscriptionFilter::all()).await.expect("subscribe");
+        let agent_id = AgentId::new("agent-1");
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::Chat {
+                text: "review".into(),
+                attachments: vec![sylvander_protocol::MessageAttachment {
+                    id: "a1".into(),
+                    kind: sylvander_protocol::AttachmentKind::File,
+                    name: "src/main.rs".into(),
+                    mime_type: "text/x-rust".into(),
+                    content: sylvander_protocol::AttachmentContent::Text { text: "fn main() {}".into() },
+                    byte_count: 12,
+                }],
+                session_id: Some("session-1".into()),
+                workspace: Some("/repo".into()),
+            },
+            &context,
+            &agent_id,
+            &tx,
+        ).await;
+
+        let chat = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let message = events.recv().await.expect("bus event");
+                if matches!(message.kind, MessageKind::Chat) { break message; }
+            }
+        }).await.expect("chat");
+        assert_eq!(chat.attachments.len(), 1);
+        assert_eq!(chat.attachments[0].name, "src/main.rs");
     }
 }

@@ -43,6 +43,7 @@ pub struct AppState {
     /// Prompts accepted while a turn is active. They are sent one at a time
     /// only after the previous turn reaches a terminal event.
     pub queued_prompts: VecDeque<String>,
+    pub queued_prompt_attachments: VecDeque<Vec<sylvander_protocol::MessageAttachment>>,
     /// Whether tool inputs and multi-line results are expanded in transcript.
     pub tool_details_expanded: bool,
 
@@ -115,6 +116,7 @@ impl AppState {
             turn_active: false,
             interrupt_requested: false,
             queued_prompts: VecDeque::new(),
+            queued_prompt_attachments: VecDeque::new(),
             tool_details_expanded: false,
             sessions: Vec::new(),
             modals: ModalStack::new(),
@@ -200,6 +202,7 @@ impl AppState {
 
     fn start_next_queued_prompt(&mut self) -> Option<Action> {
         let text = self.queued_prompts.pop_front()?;
+        let attachments = self.queued_prompt_attachments.pop_front().unwrap_or_default();
         if let Some(message) = self
             .messages
             .iter_mut()
@@ -216,6 +219,7 @@ impl AppState {
         };
         Some(Action::SendChat {
             text,
+            attachments,
             session_id: self.session_id.clone(),
             workspace: self.metadata.workspace.display().to_string(),
         })
@@ -309,6 +313,7 @@ impl AppState {
                 self.turn_active = false;
                 self.interrupt_requested = false;
                 self.queued_prompts.clear();
+                self.queued_prompt_attachments.clear();
                 self.chat_scroll = 0;
                 self.unread_events = 0;
                 self.welcomed = !self.messages.is_empty();
@@ -743,6 +748,17 @@ impl AppState {
             return None;
         }
 
+        if key.code == crossterm::event::KeyCode::Char('@')
+            && key.modifiers.is_empty()
+            && self.composer.can_open_file_mention()
+        {
+            self.modals.push(Box::new(crate::modal::FileMentionModal::new(
+                self.metadata.workspace.clone(),
+            )));
+            self.dirty.mark();
+            return None;
+        }
+
         // Transcript navigation is global while no decision layer owns focus.
         // Returning to the bottom clears the stable unread indicator.
         match key.code {
@@ -770,6 +786,7 @@ impl AppState {
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
         if let Some(text) = self.composer.handle_key(key) {
+            let attachments = self.composer.take_submitted_attachments();
             self.save_history();
             // First submission establishes the Welcome as this session's
             // transcript prelude. It remains above the appended turn.
@@ -780,6 +797,7 @@ impl AppState {
             if self.turn_active {
                 self.messages.push(ChatMessage::QueuedUser(text.clone()));
                 self.queued_prompts.push_back(text);
+                self.queued_prompt_attachments.push_back(attachments);
                 self.status = format!("Working · {} queued", self.queued_prompts.len());
                 self.chat_scroll = 0;
                 self.unread_events = 0;
@@ -794,6 +812,7 @@ impl AppState {
             self.dirty.mark();
             return Some(Action::SendChat {
                 text,
+                attachments,
                 session_id: self.session_id.clone(),
                 workspace: self.metadata.workspace.display().to_string(),
             });
@@ -1322,6 +1341,14 @@ mod tests {
             ChatMessage::Plan { current: 1, .. }
         ));
         assert!(s.modals.is_empty());
+    }
+
+    #[test]
+    fn at_sign_at_token_boundary_opens_file_picker_instead_of_mutating_draft() {
+        let mut s = AppState::new();
+        s.handle_key(&KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
+        assert_eq!(s.modals.top().map(|modal| modal.title()), Some("Mention file"));
+        assert!(s.composer.is_empty());
     }
 }
 
