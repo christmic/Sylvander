@@ -103,6 +103,9 @@ enum ClientMsg {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     },
+    SelectPermissions {
+        profile: sylvander_protocol::PermissionProfile,
+    },
     Ping,
 }
 
@@ -240,6 +243,7 @@ enum ServerMsg {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
         models: Vec<sylvander_protocol::ModelDescriptor>,
+        permissions: sylvander_protocol::PermissionProfile,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -288,6 +292,7 @@ pub struct RuntimeInfo {
     pub model: String,
     pub reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub models: Vec<sylvander_protocol::ModelDescriptor>,
+    pub permissions: sylvander_protocol::PermissionProfile,
     pub capabilities: u8,
     pub approval_enabled: bool,
     pub max_attachment_bytes: usize,
@@ -302,6 +307,7 @@ impl UnixChannel {
                 model: "unknown".into(),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models: Vec::new(),
+                permissions: sylvander_protocol::PermissionProfile::default(),
                 capabilities: 0,
                 approval_enabled: false,
                 max_attachment_bytes: 512 * 1024,
@@ -982,6 +988,11 @@ async fn handle_client_msg(
                     models: runtime.models.clone(),
                 }
             };
+            let permissions = if let Some(control) = runtime_control {
+                control.permission_profile().await
+            } else {
+                runtime.permissions.clone()
+            };
             let capabilities = model_info
                 .models
                 .iter()
@@ -991,6 +1002,7 @@ async fn handle_client_msg(
                 model: model_info.current_model,
                 reasoning_effort: model_info.reasoning_effort,
                 models: model_info.models,
+                permissions,
                 capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
@@ -1018,6 +1030,7 @@ async fn handle_client_msg(
                         model: model_info.current_model,
                         reasoning_effort: model_info.reasoning_effort,
                         models: model_info.models,
+                        permissions: control.permission_profile().await,
                         capabilities,
                         approval_enabled: runtime.approval_enabled,
                         max_attachment_bytes: runtime.max_attachment_bytes,
@@ -1026,6 +1039,40 @@ async fn handle_client_msg(
                 Err(message) => {
                     let _ = tx.send(ServerMsg::OperationError {
                         operation: "select_model".into(),
+                        message,
+                    });
+                }
+            }
+        }
+        ClientMsg::SelectPermissions { profile } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::OperationError {
+                    operation: "select_permissions".into(),
+                    message: "runtime permission control is unavailable".into(),
+                });
+                return;
+            };
+            match control.select_permissions(profile).await {
+                Ok(permissions) => {
+                    let model_info = control.runtime_model_info().await;
+                    let capabilities = model_info
+                        .models
+                        .iter()
+                        .find(|entry| entry.id == model_info.current_model)
+                        .map_or(0, |entry| entry.capabilities);
+                    let _ = tx.send(ServerMsg::RuntimeInfo {
+                        model: model_info.current_model,
+                        reasoning_effort: model_info.reasoning_effort,
+                        models: model_info.models,
+                        permissions,
+                        capabilities,
+                        approval_enabled: runtime.approval_enabled,
+                        max_attachment_bytes: runtime.max_attachment_bytes,
+                    });
+                }
+                Err(message) => {
+                    let _ = tx.send(ServerMsg::OperationError {
+                        operation: "select_permissions".into(),
                         message,
                     });
                 }
@@ -1115,6 +1162,7 @@ mod tests {
                 capabilities: 0b101,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
             }],
+            permissions: sylvander_protocol::PermissionProfile::default(),
             capabilities: 0b101,
             approval_enabled: true,
             max_attachment_bytes: 1024,
@@ -1173,6 +1221,11 @@ mod tests {
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models,
+                permissions: sylvander_protocol::PermissionProfile {
+                    file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
+                    network_access: sylvander_protocol::NetworkAccess::Denied,
+                    approval_policy: sylvander_protocol::ApprovalPolicy::Allow,
+                },
                 capabilities: 0b101,
                 approval_enabled: true,
                 max_attachment_bytes: 1024,
@@ -1233,6 +1286,33 @@ mod tests {
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
                 ..
             }) if model == "thinking-model"
+        ));
+
+        handle_client_msg(
+            ClientMsg::SelectPermissions {
+                profile: sylvander_protocol::PermissionProfile {
+                    file_access: sylvander_protocol::FileAccess::ReadOnly,
+                    network_access: sylvander_protocol::NetworkAccess::Denied,
+                    approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            Some(&run),
+        )
+        .await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::RuntimeInfo {
+                permissions: sylvander_protocol::PermissionProfile {
+                    file_access: sylvander_protocol::FileAccess::ReadOnly,
+                    approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+                    ..
+                },
+                ..
+            })
         ));
     }
 

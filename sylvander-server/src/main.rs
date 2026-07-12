@@ -221,6 +221,15 @@ async fn main() {
                 model: model.id.clone(),
                 reasoning_effort: sylvander_agent::bus::ReasoningEffort::Off,
                 models: Vec::new(),
+                permissions: sylvander_agent::bus::PermissionProfile {
+                    file_access: sylvander_agent::bus::FileAccess::WorkspaceWrite,
+                    network_access: sylvander_agent::bus::NetworkAccess::Denied,
+                    approval_policy: if approval_enabled {
+                        sylvander_agent::bus::ApprovalPolicy::Ask
+                    } else {
+                        sylvander_agent::bus::ApprovalPolicy::Allow
+                    },
+                },
                 capabilities: model.capabilities.bits(),
                 approval_enabled,
                 max_attachment_bytes: 512 * 1024,
