@@ -201,6 +201,10 @@ At narrow widths, low-priority metadata disappears before primary state.
 
 ## 9. Scrolling and resize
 
+- `↑` and `↓` belong to the Composer for draft movement and submitted-input
+  history; they do not scroll the transcript.
+- Mouse-wheel up/down belongs exclusively to the transcript and never changes
+  Composer history or cursor position.
 - Live-follow keeps the newest transcript content visible.
 - PageUp detaches; incoming output does not move the user's reading position.
 - PageDown or Ctrl+End returns to live output.
