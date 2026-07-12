@@ -11,7 +11,7 @@ use sylvander_agent::prelude::*;
 use sylvander_agent::bus::{PlanDecision, StreamEvent};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // --- helpers ---
@@ -167,6 +167,11 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::UserAnswer { .. } => "UserAnswer",
                 StreamEvent::TurnInterrupted { .. } => "TurnInterrupted",
                 StreamEvent::PlanProposed { .. } => "PlanProposed",
+                StreamEvent::TaskStarted { .. } => "TaskStarted",
+                StreamEvent::TaskProgress { .. } => "TaskProgress",
+                StreamEvent::TaskCompleted { .. } => "TaskCompleted",
+                StreamEvent::TaskFailed { .. } => "TaskFailed",
+                StreamEvent::TaskCancelled { .. } => "TaskCancelled",
             }),
             _ => None,
         })
@@ -273,6 +278,133 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
             }
         }
     }).await.expect("done after approval");
+    bus.publish(BusMessage::system_stop(agent_id)).await.expect("stop");
+    task.await.expect("agent task");
+}
+
+#[tokio::test]
+async fn background_task_is_real_read_only_work_and_cancels_independently() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "messages": [{"role": "user", "content": "delegate"}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_spawn",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "task_tool_1",
+                "name": "start_background_task",
+                "input": {"purpose": "inspect", "prompt": "inspect only"}
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "messages": [{"role": "user", "content": "inspect only"}]
+        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(5))
+                .set_body_json(json!({
+                    "id": "msg_background",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-5-20260601",
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "late result"}],
+                    "usage": {"input_tokens": 10, "output_tokens": 3}
+                })),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_main_done",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": "Main work continues."}],
+            "usage": {"input_tokens": 12, "output_tokens": 4}
+        })))
+        .mount(&server)
+        .await;
+
+    let bus = Arc::new(InProcessMessageBus::new());
+    let spec = AgentSpec::builder()
+        .id("background-test")
+        .name("Background Test")
+        .model_name("claude-sonnet-5-20260601")
+        .build()
+        .expect("spec");
+    let tools = ToolRegistry::new().register(StartBackgroundTaskTool::new());
+    let run = AgentRun::builder(spec, mock_client(&server))
+        .bus(bus.clone())
+        .model_capabilities(ModelCapabilities::TOOL_USE)
+        .override_tools(tools)
+        .build()
+        .expect("build");
+    let agent_id = run.id().clone();
+    let inbox = bus.subscribe(run.subscription_filter()).await.expect("inbox");
+    let task = tokio::spawn(run.run(inbox));
+    let mut events = subscribe_stream(&bus).await;
+    let sid = SessionId::new("background-session");
+    bus.publish(BusMessage::system_join_session(
+        agent_id.clone(),
+        sid.clone(),
+        SessionMetadata {
+            workspace: "/tmp".into(),
+            name: "background".into(),
+            user_id: "user-1".into(),
+        },
+    )).await.expect("join");
+    bus.publish(BusMessage::user_chat(sid.clone(), "user-1", "delegate"))
+        .await
+        .expect("chat");
+
+    let expected_task_id = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event");
+            if let MessageKind::Stream(StreamEvent::TaskStarted { task_id, .. }) = message.kind {
+                break task_id;
+            }
+        }
+    }).await.expect("task start");
+    bus.publish(BusMessage {
+        session_id: sid.clone(),
+        sender: Sender::System,
+        recipient: Recipient::Agent(agent_id.clone()),
+        kind: MessageKind::System(SystemMessage::CancelTask {
+            session_id: sid.clone(),
+            task_id: expected_task_id.clone(),
+        }),
+        payload: String::new(),
+        timestamp: sylvander_agent::session::now_secs(),
+        id: MessageId::new(),
+    }).await.expect("cancel");
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event");
+            if matches!(
+                message.kind,
+                MessageKind::Stream(StreamEvent::TaskCancelled { ref task_id, .. })
+                    if task_id == &expected_task_id
+            ) {
+                break;
+            }
+        }
+    }).await.expect("task cancellation");
     bus.publish(BusMessage::system_stop(agent_id)).await.expect("stop");
     task.await.expect("agent task");
 }

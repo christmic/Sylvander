@@ -63,6 +63,8 @@ pub struct AgentLoop {
     pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
     /// Optional plan gate — called for the `present_plan` marker tool.
     pub(crate) plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
+    /// Optional isolated background-task executor.
+    pub(crate) task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
     /// Invocation context handed to every tool call.
     /// Defaults to a placeholder (system user) if the caller doesn't
     /// supply one — keeps tests / examples working unchanged.
@@ -108,6 +110,7 @@ pub struct AgentLoopBuilder {
     approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
     ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
     plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
+    task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
     tool_context: Option<ToolContext>,
 }
 
@@ -124,6 +127,7 @@ impl Default for AgentLoopBuilder {
             approval_gate: None,
             ask_user_gate: None,
             plan_gate: None,
+            task_gate: None,
             tool_context: None,
         }
     }
@@ -243,6 +247,12 @@ impl AgentLoopBuilder {
         self
     }
 
+    #[must_use]
+    pub fn task_gate(mut self, gate: Arc<dyn crate::task_gate::TaskGate>) -> Self {
+        self.task_gate = Some(gate);
+        self
+    }
+
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
@@ -287,6 +297,7 @@ impl AgentLoopBuilder {
             approval_gate: self.approval_gate,
             ask_user_gate: self.ask_user_gate,
             plan_gate: self.plan_gate,
+            task_gate: self.task_gate,
             tool_context,
         })
     }
@@ -569,7 +580,9 @@ pub fn run_stream(
                         // consecutive prompts for one decision.
                         let requests: Vec<crate::approval::ToolUseRequest> = tool_blocks
                             .iter()
-                            .filter(|t| t.name != "present_plan")
+                            .filter(|t| {
+                                t.name != "present_plan" && t.name != "start_background_task"
+                            })
                             .map(|t| crate::approval::ToolUseRequest {
                                 call_id: t.id.clone(),
                                 tool_name: t.name.clone(),
@@ -580,7 +593,9 @@ pub fn run_stream(
                         tool_blocks
                             .iter()
                             .map(|tool| {
-                                if tool.name == "present_plan" {
+                                if tool.name == "present_plan"
+                                    || tool.name == "start_background_task"
+                                {
                                     crate::approval::ApprovalDecision::Approved
                                 } else {
                                     gated.next().unwrap_or_else(|| {
@@ -718,6 +733,40 @@ pub fn run_stream(
                                 };
                                 tool_result_blocks.push(UserContentBlock::ToolResult(
                                     ToolResultBlock::new(plan_id, output).with_error(is_error),
+                                ));
+                                continue;
+                            }
+
+                            if tool_use.name == "start_background_task" {
+                                let purpose = tool_use.input["purpose"]
+                                    .as_str()
+                                    .unwrap_or("Background investigation")
+                                    .to_string();
+                                let prompt = tool_use.input["prompt"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
+                                let result = if let Some(gate) = &config.task_gate {
+                                    gate.start(purpose, prompt).await
+                                } else {
+                                    Err("background task runtime is unavailable".into())
+                                };
+                                let (output, is_error) = match result {
+                                    Ok(task_id) => (
+                                        format!("Background task `{task_id}` started."),
+                                        false,
+                                    ),
+                                    Err(error) => (error, true),
+                                };
+                                yield AgentEvent::ToolCallEnd {
+                                    id: tool_use.id.clone(),
+                                    name: tool_use.name.clone(),
+                                    output: output.clone(),
+                                    is_error,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(tool_use.id.clone(), output)
+                                        .with_error(is_error),
                                 ));
                                 continue;
                             }

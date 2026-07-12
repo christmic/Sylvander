@@ -209,6 +209,27 @@ pub enum StreamEvent {
         steps: Vec<String>,
         current: usize,
     },
+    TaskStarted {
+        task_id: String,
+        owner: String,
+        purpose: String,
+    },
+    TaskProgress {
+        task_id: String,
+        message: String,
+    },
+    TaskCompleted {
+        task_id: String,
+        summary: String,
+    },
+    TaskFailed {
+        task_id: String,
+        error: String,
+    },
+    TaskCancelled {
+        task_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +294,10 @@ pub enum SystemMessage {
     ResolvePlan {
         plan_id: String,
         decision: PlanDecision,
+    },
+    CancelTask {
+        session_id: SessionId,
+        task_id: String,
     },
 }
 
