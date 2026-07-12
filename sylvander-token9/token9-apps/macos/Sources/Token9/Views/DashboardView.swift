@@ -6,6 +6,7 @@ import SwiftUI
 /// offline-no-cache, offline-with-cached-data, and rate-limit warning.
 struct DashboardView: View {
     @StateObject private var vm = DashboardViewModel()
+    @AppStorage("token9.dashboardTheme") private var themeRaw = DashboardTheme.cool.rawValue
     private var dimensionBinding: Binding<DimensionToggle.Dimension> {
         Binding(
             get: { vm.groupBy == .tool ? .tool : .model },
@@ -15,6 +16,8 @@ struct DashboardView: View {
 
     private var allTotal: Int64 { vm.cards.reduce(0) { $0 + $1.totalTokens } }
     private var largestTotal: Int64 { vm.cards.map(\.totalTokens).max() ?? 0 }
+    private var theme: DashboardTheme { DashboardTheme(rawValue: themeRaw) ?? .cool }
+    private var palette: DashboardPalette { theme == .warm ? .warm : .cool }
 
     /// Initial load failed and we have no cached data — show offline
     /// error instead of the row list.
@@ -33,7 +36,12 @@ struct DashboardView: View {
     var body: some View {
         ZStack {
             VisualEffect().ignoresSafeArea()
-            T.bgPrimary.ignoresSafeArea()
+            LinearGradient(
+                colors: [palette.backgroundTop.opacity(0.82), palette.backgroundBottom.opacity(0.78)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: L.majorGap) {
                 header
@@ -58,6 +66,7 @@ struct DashboardView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(width: L.popoverW, height: L.popoverH)
+        .environment(\.dashboardPalette, palette)
         .onAppear { vm.start() }
         .onDisappear { vm.stop() }
     }
@@ -71,8 +80,6 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("token9").font(.system(size: 15, weight: .bold))
                     .foregroundStyle(T.textPrimary)
-                Text("本地 LLM 网关").font(.system(size: 10))
-                    .foregroundStyle(T.textTertiary)
                 HStack(spacing: 5) {
                     StatusDot(active: vm.error == nil)
                     Text(vm.error == nil ? "在线 · 127.0.0.1:9527" : "离线 · 127.0.0.1:9527")
@@ -81,6 +88,9 @@ struct DashboardView: View {
                 }
             }
             Spacer()
+            IconButton(systemName: theme.icon) {
+                withAnimation(.easeInOut(duration: 0.2)) { themeRaw = theme.next.rawValue }
+            }
             IconButton(systemName: "arrow.clockwise") { vm.reload() }
         }
     }
@@ -172,8 +182,7 @@ struct DashboardView: View {
                     GroupRowView(
                         card: card,
                         allTotal: allTotal,
-                        largestTotal: largestTotal,
-                        subTitle: vm.groupBy.subTitle
+                        largestTotal: largestTotal
                     )
                 }
             }

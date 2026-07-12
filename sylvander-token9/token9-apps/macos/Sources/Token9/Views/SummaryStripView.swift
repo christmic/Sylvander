@@ -5,18 +5,19 @@ import SwiftUI
 /// no second API request, no decorative sparklines.
 struct SummaryStripView: View {
     var summary: DashboardSummary
+    @Environment(\.dashboardPalette) private var palette
 
     var body: some View {
         HStack(spacing: 10) {
             card(
                 icon: "sum",
-                tint: T.seedOrange,
+                tint: palette.accent,
                 label: "总流量",
                 value: Fmt.tokens(summary.totalTokens)
             )
             card(
                 icon: "number",
-                tint: T.electricBlue,
+                tint: palette.accent,
                 label: "请求",
                 value: "\(summary.requests)"
             )
@@ -57,7 +58,7 @@ struct SummaryStripView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     Spacer(minLength: 0)
-                    CacheRing(value: summary.cacheHitPercent, tint: T.coreViolet, lineWidth: 4)
+                    CacheRing(value: summary.cacheHitPercent, tint: palette.accent, lineWidth: 4)
                         .frame(width: 30, height: 30)
                 }
             }

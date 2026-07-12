@@ -14,8 +14,8 @@ struct GroupRowView: View {
     var card: GroupCard
     var allTotal: Int64
     var largestTotal: Int64
-    var subTitle: String
-    private var tint: Color { T.groupTint(card.name) }
+    @Environment(\.dashboardPalette) private var palette
+    private var tint: Color { palette.accent }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -87,9 +87,6 @@ struct GroupRowView: View {
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             metricGrid
-            if !card.subs.isEmpty {
-                subDisclosure
-            }
             if !card.rateLimits.isEmpty {
                 rateLimitBars
             }
@@ -99,52 +96,28 @@ struct GroupRowView: View {
     private var metricGrid: some View {
         let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
         return LazyVGrid(columns: cols, alignment: .leading, spacing: 10) {
-            metric("arrow.down", "输入",    Fmt.tokens(card.input),       T.electricBlue)
-            metric("arrow.up",   "输出",    Fmt.tokens(card.output),      T.coreViolet)
-            metric("bolt.fill",  "缓存读",  Fmt.tokens(card.cacheRead),   T.healthyMint)
-            metric("tray.fill",  "缓存写",  Fmt.tokens(card.cacheWrite),  T.warningAmber)
-            metric("number",     "请求",    "\(card.requests)",          T.textSecondary)
-            metric("percent",    "缓存命中", Fmt.percent(card.cacheRatio * 100), T.textSecondary)
+            metric("arrow.down", "输入",    Fmt.tokens(card.input), palette.accent)
+            metric("arrow.up",   "输出",    Fmt.tokens(card.output), palette.accent)
+            metric("bolt.fill",  "缓存读",  Fmt.tokens(card.cacheRead), palette.accent)
+            metric("tray.fill",  "缓存写",  Fmt.tokens(card.cacheWrite), palette.accent)
+            metric("number",     "请求",    "\(card.requests)", palette.accent)
+            metric("percent",    "命中", Fmt.percent(card.cacheRatio * 100), palette.accent)
         }
     }
 
     private func metric(_ icon: String, _ label: String, _ value: String, _ tint: Color) -> some View {
         HStack(spacing: 6) {
             MetricIcon(systemName: icon, tint: tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.system(size: 9.5)).foregroundStyle(T.textTertiary)
-                Text(value)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(T.textPrimary)
-                    .lineLimit(1)
-            }
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(T.textPrimary)
+                .lineLimit(1)
             Spacer(minLength: 0)
         }
-    }
-
-    private var subDisclosure: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(subTitle) (\(card.subs.count))")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(T.textTertiary)
-            ForEach(card.subs) { s in
-                HStack(spacing: 8) {
-                    Text(s.name)
-                        .font(.system(size: 11))
-                        .foregroundStyle(T.textSecondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(Fmt.tokens(s.tokens))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(T.textPrimary)
-                    Text(Fmt.percent(s.cacheRatio * 100))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(T.textTertiary)
-                        .frame(width: 38, alignment: .trailing)
-                }
-            }
-        }
-        .padding(.top, 2)
+        .help(label)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(value)
     }
 
     private var rateLimitBars: some View {

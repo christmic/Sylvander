@@ -39,6 +39,7 @@ struct ActivityHeatmapView: View {
     var range: RangeKey
     var daily: [DailyUsage]
     var now: Date = Date()
+    @Environment(\.dashboardPalette) private var palette
 
     var body: some View {
         Panel {
@@ -213,7 +214,7 @@ struct ActivityHeatmapView: View {
     }
 
     private func color(for level: Int) -> Color {
-        T.heatmapLevels[max(0, min(T.heatmapLevels.count - 1, level))]
+        palette.heatmapLevels[max(0, min(palette.heatmapLevels.count - 1, level))]
     }
 
     // MARK: Data shaping

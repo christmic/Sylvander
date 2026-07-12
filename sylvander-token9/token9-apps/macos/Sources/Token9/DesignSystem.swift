@@ -37,23 +37,58 @@ enum T {
     static let textSecondary  = Color.white.opacity(0.73)
     static let textTertiary   = Color.white.opacity(0.53)
 
-    // Heatmap 5-level scale (graphite → seed orange). Public for the
-    // ActivityHeatmapView's pure-function tests.
-    static let heatmapLevels: [Color] = [
-        Color(red: 0.18, green: 0.20, blue: 0.24),                              // graphite
-        Color(red: 0.18, green: 0.12, blue: 0.32),                              // deep violet
-        Color(red: 0.46, green: 0.34, blue: 0.84),                              // core violet
-        Color(red: 0.26, green: 0.53, blue: 0.90),                              // electric blue
-        Color(red: 0.95, green: 0.54, blue: 0.40),                              // seed orange
-    ]
+}
 
-    static func groupTint(_ name: String) -> Color {
-        let value = name.lowercased()
-        if value.contains("claude") { return seedOrange }
-        if value.contains("codex") { return coreViolet }
-        if value.contains("sylvander") { return electricBlue }
-        if value.contains("deepseek") { return electricBlue }
-        return coreViolet
+enum DashboardTheme: String {
+    case warm, cool
+    var next: DashboardTheme { self == .warm ? .cool : .warm }
+    var icon: String { self == .warm ? "sun.max.fill" : "moon.fill" }
+}
+
+struct DashboardPalette {
+    let accent: Color
+    let accentStrong: Color
+    let backgroundTop: Color
+    let backgroundBottom: Color
+    let heatmapLevels: [Color]
+
+    static let warm = DashboardPalette(
+        accent: T.seedOrange,
+        accentStrong: T.seedOrangeDeep,
+        backgroundTop: Color(red: 0.20, green: 0.12, blue: 0.09),
+        backgroundBottom: Color(red: 0.08, green: 0.06, blue: 0.055),
+        heatmapLevels: [
+            Color.white.opacity(0.07),
+            Color(red: 0.30, green: 0.15, blue: 0.10),
+            Color(red: 0.52, green: 0.25, blue: 0.16),
+            T.seedOrangeDeep,
+            T.seedOrange,
+        ]
+    )
+
+    static let cool = DashboardPalette(
+        accent: T.coreViolet,
+        accentStrong: T.electricBlue,
+        backgroundTop: Color(red: 0.08, green: 0.10, blue: 0.20),
+        backgroundBottom: Color(red: 0.045, green: 0.05, blue: 0.09),
+        heatmapLevels: [
+            Color.white.opacity(0.07),
+            Color(red: 0.14, green: 0.11, blue: 0.30),
+            Color(red: 0.28, green: 0.22, blue: 0.55),
+            T.coreViolet,
+            T.electricBlue,
+        ]
+    )
+}
+
+private struct DashboardPaletteKey: EnvironmentKey {
+    static let defaultValue = DashboardPalette.cool
+}
+
+extension EnvironmentValues {
+    var dashboardPalette: DashboardPalette {
+        get { self[DashboardPaletteKey.self] }
+        set { self[DashboardPaletteKey.self] = newValue }
     }
 }
 
@@ -131,18 +166,21 @@ struct IconButton: View {
 struct Panel<Content: View>: View {
     var radius: CGFloat = L.cardRadius
     @ViewBuilder var content: () -> Content
+    @Environment(\.dashboardPalette) private var palette
     var body: some View {
         content()
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
             .background(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(T.bgElevated)
+                    .fill(palette.accent.opacity(0.045))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(T.borderSubtle, lineWidth: L.hairline)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: L.hairline)
             )
+            .shadow(color: Color.black.opacity(0.16), radius: 10, y: 4)
     }
 }
 
@@ -200,6 +238,7 @@ struct CacheRing: View {
 /// the range tabs follow the same restrained pattern).
 struct RangeTabs: View {
     @Binding var sel: RangeKey
+    @Environment(\.dashboardPalette) private var palette
     var body: some View {
         HStack(spacing: 0) {
             ForEach(RangeKey.allCases) { k in
@@ -209,7 +248,7 @@ struct RangeTabs: View {
                         .font(.system(size: 12, weight: on ? .semibold : .regular))
                         .foregroundStyle(on ? T.textPrimary : T.textSecondary)
                     Rectangle()
-                        .fill(on ? T.seedOrange : .clear)
+                        .fill(on ? palette.accent : .clear)
                         .frame(height: 2)
                 }
                 .frame(maxWidth: .infinity)
@@ -232,6 +271,7 @@ struct DimensionToggle: View {
         var id: String { rawValue }
     }
     @Binding var sel: Dimension
+    @Environment(\.dashboardPalette) private var palette
     var body: some View {
         HStack(spacing: 18) {
             ForEach(Dimension.allCases) { d in
@@ -239,9 +279,9 @@ struct DimensionToggle: View {
                 VStack(spacing: 3) {
                     Text(d.rawValue)
                         .font(.system(size: 11, weight: on ? .semibold : .regular))
-                        .foregroundStyle(on ? T.seedOrange : T.textTertiary)
+                        .foregroundStyle(on ? palette.accent : T.textTertiary)
                     Rectangle()
-                        .fill(on ? T.seedOrange : .clear)
+                        .fill(on ? palette.accent : .clear)
                         .frame(height: 2)
                         .frame(maxWidth: d.rawValue.count > 2 ? 28 : 18)
                 }
