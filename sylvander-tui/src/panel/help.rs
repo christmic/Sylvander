@@ -10,10 +10,10 @@
 //! status-row expansion.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     text::Line,
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::app::AppState;
@@ -22,7 +22,7 @@ use crate::component::Component;
 pub struct HelpPanel;
 
 impl Component for HelpPanel {
-    fn height(&self) -> Constraint {
+    fn height(&self, _state: &AppState, _viewport_width: u16) -> Constraint {
         // Reserved space — the status panel currently owns the
         // contextual hints. Keeping this slot at height 0 means the
         // chat panel gets an extra row rather than a dead bar.

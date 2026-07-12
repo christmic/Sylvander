@@ -13,11 +13,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::{AppMode, AppState};
@@ -31,7 +31,7 @@ enum PlanMode {
 }
 
 pub struct PlanReviewModal {
-    plan_id: String,
+    _plan_id: String,
     steps: Vec<String>,
     cursor: usize,
     /// Step currently being edited (only when `mode == Edit`).
@@ -50,7 +50,7 @@ impl PlanReviewModal {
         session_id: Option<String>,
     ) -> Self {
         Self {
-            plan_id,
+            _plan_id: plan_id,
             steps,
             cursor: current.min(0),
             edit_step: 0,
@@ -76,7 +76,11 @@ impl PlanReviewModal {
                     Span::styled(marker, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("{}. {}", i + 1, step),
-                        Style::default().fg(if is_cursor { ratatui::style::Color::White } else { ratatui::style::Color::Gray }),
+                        Style::default().fg(if is_cursor {
+                            ratatui::style::Color::White
+                        } else {
+                            ratatui::style::Color::Gray
+                        }),
                     ),
                 ])
             })
@@ -129,10 +133,7 @@ impl Modal for PlanReviewModal {
                 "Editing a step. Enter commits; Esc discards the edit and returns to review."
             }
         });
-        frame.render_widget(
-            Paragraph::new(intro).wrap(Wrap { trim: false }),
-            layout[0],
-        );
+        frame.render_widget(Paragraph::new(intro).wrap(Wrap { trim: false }), layout[0]);
 
         // 2. Steps
         self.render_steps(layout[1], frame);
@@ -151,14 +152,10 @@ impl Modal for PlanReviewModal {
             // Best-effort cursor positioning — modal is centered so the
             // exact row depends on layout; we just put it on layout[2]'s
             // first row.
-            let y_abs = inner.y
-                + layout[0].height
-                + layout[1].height
-                + (layout[2].height / 2).min(0);
+            let y_abs =
+                inner.y + layout[0].height + layout[1].height + (layout[2].height / 2).min(0);
             let _ = cursor_y;
-            if cursor_x < inner.x + inner.width
-                && y_abs < inner.y + inner.height
-            {
+            if cursor_x < inner.x + inner.width && y_abs < inner.y + inner.height {
                 frame.set_cursor_position((cursor_x, y_abs));
             }
         }
@@ -169,10 +166,7 @@ impl Modal for PlanReviewModal {
             PlanMode::Edit => "enter=commit  esc=cancel edit",
         };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                footer,
-                theme::text_muted(),
-            )),
+            Paragraph::new(Span::styled(footer, theme::text_muted())),
             layout[3],
         );
     }
@@ -185,8 +179,8 @@ impl Modal for PlanReviewModal {
     }
 }
 
-use ratatui::style::Modifier;
 use crate::theme;
+use ratatui::style::Modifier;
 
 impl PlanReviewModal {
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
@@ -235,7 +229,8 @@ impl PlanReviewModal {
             }
             KeyCode::Char('a') => {
                 // Add a step after the cursor.
-                self.steps.insert(self.cursor + 1, String::from("(new step)"));
+                self.steps
+                    .insert(self.cursor + 1, String::from("(new step)"));
                 self.cursor += 1;
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }

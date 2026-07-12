@@ -9,37 +9,92 @@ use ratatui::style::{Color, Modifier, Style};
 
 // Palette constants — derived from the 02-tui-immersive.svg <style>.
 
-pub const BG: Color = Color::Rgb(0x11, 0x13, 0x15);
+pub const BG: Color = Color::Rgb(0x00, 0x00, 0x00);
 pub const TEXT: Color = Color::Rgb(0xEC, 0xE7, 0xDE);
 pub const TEXT_DIM: Color = Color::Rgb(0x98, 0x9B, 0x9D);
 pub const TEXT_MUTED: Color = Color::Rgb(0x66, 0x6C, 0x72);
 pub const CORAL: Color = Color::Rgb(0xE8, 0x79, 0x6A);
+pub const BRAND_WARM: Color = Color::Rgb(0xF0, 0xBE, 0x72);
+pub const BRAND_VIOLET: Color = Color::Rgb(0x9B, 0x72, 0xFF);
 pub const BLUE: Color = Color::Rgb(0x75, 0xA7, 0xE8);
 pub const TEAL: Color = Color::Rgb(0x72, 0xC7, 0xB1);
 pub const AMBER: Color = Color::Rgb(0xD9, 0xAF, 0x62);
 pub const RULE: Color = Color::Rgb(0x34, 0x3A, 0x40);
 pub const GUIDE: Color = Color::Rgb(0x4A, 0x53, 0x5C);
 
-pub fn text() -> Style { Style::default().fg(TEXT) }
-pub fn text_on_canvas() -> Style { Style::default().fg(TEXT).bg(BG) }
-pub fn text_dim() -> Style { Style::default().fg(TEXT_DIM) }
-pub fn text_muted() -> Style { Style::default().fg(TEXT_MUTED) }
-pub fn header() -> Style { Style::default().fg(TEXT).add_modifier(Modifier::BOLD) }
-pub fn coral() -> Style { Style::default().fg(CORAL).add_modifier(Modifier::BOLD) }
-pub fn active() -> Style { Style::default().fg(BLUE) }
-pub fn active_bold() -> Style { Style::default().fg(BLUE).add_modifier(Modifier::BOLD) }
-pub fn verified() -> Style { Style::default().fg(TEAL) }
-pub fn warning() -> Style { Style::default().fg(AMBER) }
-pub fn rule() -> Style { Style::default().fg(RULE) }
-pub fn guide() -> Style { Style::default().fg(GUIDE) }
-pub fn focus_box() -> Style { Style::default().fg(CORAL) }
-pub fn composer_idle_border() -> Style { Style::default().fg(TEXT_MUTED) }
-pub fn composer_placeholder() -> Style { Style::default().fg(TEXT_DIM) }
-pub fn composer_helper() -> Style { Style::default().fg(TEXT_MUTED).add_modifier(Modifier::ITALIC) }
-pub fn thinking_text() -> Style { Style::default().fg(TEXT_MUTED).add_modifier(Modifier::ITALIC) }
+pub fn text() -> Style {
+    Style::default().fg(TEXT)
+}
+pub fn text_on_canvas() -> Style {
+    Style::default().fg(TEXT).bg(BG)
+}
+pub fn text_dim() -> Style {
+    Style::default().fg(TEXT_DIM)
+}
+pub fn text_muted() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
+pub fn header() -> Style {
+    Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+}
+pub fn coral() -> Style {
+    Style::default().fg(CORAL).add_modifier(Modifier::BOLD)
+}
+pub fn brand_warm() -> Style {
+    Style::default().fg(BRAND_WARM)
+}
+pub fn brand_violet() -> Style {
+    Style::default().fg(BRAND_VIOLET)
+}
+pub fn brand_wordmark() -> Style {
+    Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+}
+pub fn brand_tagline() -> Style {
+    Style::default()
+        .fg(BRAND_VIOLET)
+        .add_modifier(Modifier::ITALIC)
+}
+pub fn active() -> Style {
+    Style::default().fg(BLUE)
+}
+pub fn active_bold() -> Style {
+    Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+}
+pub fn verified() -> Style {
+    Style::default().fg(TEAL)
+}
+pub fn warning() -> Style {
+    Style::default().fg(AMBER)
+}
+pub fn rule() -> Style {
+    Style::default().fg(RULE)
+}
+pub fn guide() -> Style {
+    Style::default().fg(GUIDE)
+}
+pub fn focus_box() -> Style {
+    Style::default().fg(CORAL)
+}
+pub fn composer_idle_border() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
+pub fn composer_placeholder() -> Style {
+    Style::default().fg(TEXT_DIM)
+}
+pub fn composer_helper() -> Style {
+    Style::default()
+        .fg(TEXT_MUTED)
+        .add_modifier(Modifier::ITALIC)
+}
+pub fn thinking_text() -> Style {
+    Style::default()
+        .fg(TEXT_MUTED)
+        .add_modifier(Modifier::ITALIC)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusMode {
+    Connecting,
     Idle,
     Working,
     WaitingApproval,
@@ -50,6 +105,7 @@ pub enum StatusMode {
 impl StatusMode {
     pub fn glyph(self) -> &'static str {
         match self {
+            Self::Connecting => "◌",
             Self::Idle => "\u{00b7}",
             Self::Working => "\u{25cc}",
             Self::WaitingApproval => "\u{25cf}",
@@ -59,6 +115,7 @@ impl StatusMode {
     }
     pub fn label(self) -> &'static str {
         match self {
+            Self::Connecting => "connecting",
             Self::Idle => "idle",
             Self::Working => "working",
             Self::WaitingApproval => "approval",
@@ -68,6 +125,7 @@ impl StatusMode {
     }
     pub fn style(self) -> Style {
         match self {
+            Self::Connecting => active(),
             Self::Idle | Self::Asking => text_dim(),
             Self::Working => active(),
             Self::WaitingApproval | Self::Disconnected => warning(),
@@ -75,9 +133,7 @@ impl StatusMode {
     }
 }
 
-pub fn tool_status_glyph_and_style(
-    status: crate::app::ToolStatus,
-) -> (&'static str, Style) {
+pub fn tool_status_glyph_and_style(status: crate::app::ToolStatus) -> (&'static str, Style) {
     use crate::app::ToolStatus;
     match status {
         ToolStatus::Pending => ("\u{25cc}", active()),
@@ -94,31 +150,44 @@ pub fn tool_status_style(status: crate::app::ToolStatus) -> Style {
     tool_status_glyph_and_style(status).1
 }
 
-pub fn plan_step_glyph_and_style(
-    completed: bool,
-    current: bool,
-) -> (&'static str, Style) {
-    if completed { ("\u{2713}", verified()) }
-    else if current { ("\u{25cf}", active()) }
-    else { ("\u{25cb}", rule()) }
+pub fn plan_step_glyph_and_style(completed: bool, current: bool) -> (&'static str, Style) {
+    if completed {
+        ("\u{2713}", verified())
+    } else if current {
+        ("\u{25cf}", active())
+    } else {
+        ("\u{25cb}", rule())
+    }
 }
 
 pub fn user_speaker() -> Style {
     Style::default().fg(TEXT_DIM).add_modifier(Modifier::BOLD)
 }
 pub fn agent_speaker() -> Style {
-    Style::default().fg(CORAL).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(BRAND_VIOLET)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn modal_title_coral() -> Style {
     Style::default().fg(CORAL).add_modifier(Modifier::BOLD)
 }
-pub fn task_summary_line() -> Style { Style::default().fg(CORAL) }
-pub fn selected() -> Style { Style::default().fg(CORAL) }
-pub fn dimmed() -> Style { Style::default().fg(TEXT_MUTED) }
+pub fn task_summary_line() -> Style {
+    Style::default().fg(CORAL)
+}
+pub fn selected() -> Style {
+    Style::default().fg(CORAL)
+}
+pub fn dimmed() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
 
-pub fn kv_label() -> Style { Style::default().fg(TEXT_MUTED) }
-pub fn kv_value() -> Style { Style::default().fg(TEXT) }
+pub fn kv_label() -> Style {
+    Style::default().fg(TEXT_MUTED)
+}
+pub fn kv_value() -> Style {
+    Style::default().fg(TEXT)
+}
 
 pub fn compact_workspace(path: &std::path::Path, max_chars: usize) -> String {
     let s = path.display().to_string();
@@ -149,6 +218,7 @@ mod tests {
     #[test]
     fn status_mode_glyph_label_style_triple() {
         for m in [
+            StatusMode::Connecting,
             StatusMode::Idle,
             StatusMode::Working,
             StatusMode::WaitingApproval,
@@ -200,9 +270,7 @@ mod tests {
 
     #[test]
     fn compact_workspace_long_path_collapses() {
-        let p = std::path::PathBuf::from(
-            "/Users/christmix/OraculoSpace/Sylvander/sylvander-tui",
-        );
+        let p = std::path::PathBuf::from("/Users/christmix/OraculoSpace/Sylvander/sylvander-tui");
         let s = compact_workspace(&p, 25);
         assert!(
             s.starts_with("~/.../") || s.starts_with(".../"),

@@ -11,11 +11,11 @@
 //! No business logic lives here — just pure orchestration.
 
 use ratatui::{
+    Frame,
     layout::Layout,
     style::{Color, Modifier, Style, Stylize},
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::AppState;
@@ -38,7 +38,10 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
         let msg = Line::from(vec![
             Span::styled("Terminal too small", Style::default().fg(Color::Red).bold()),
             Span::raw(" — minimum supported viewport is "),
-            Span::styled("50 columns × 12 rows", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "50 columns × 12 rows",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw("."),
             Span::raw("\n\nResize the window to continue."),
         ]);
@@ -49,8 +52,15 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
     }
 
     // 1. Panel layer.
-    let constraints: Vec<ratatui::layout::Constraint> =
-        state.panels.iter().map(|p| p.height()).collect();
+    // Paint one warm-neutral canvas first. Individual widgets may leave
+    // whitespace intentionally; that whitespace is still part of the UI.
+    frame.render_widget(Block::default().style(crate::theme::text_on_canvas()), area);
+
+    let constraints: Vec<ratatui::layout::Constraint> = state
+        .panels
+        .iter()
+        .map(|p| p.height(state, area.width))
+        .collect();
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(constraints)

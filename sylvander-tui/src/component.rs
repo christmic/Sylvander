@@ -4,7 +4,7 @@
 //! draw into it. They do NOT receive keys (modals do). To accept user
 //! input, build a Modal or wire into the focused input panel.
 
-use ratatui::{layout::Constraint, layout::Rect, Frame};
+use ratatui::{Frame, layout::Constraint, layout::Rect};
 
 use crate::app::AppState;
 
@@ -12,7 +12,7 @@ use crate::app::AppState;
 pub trait Component {
     /// Vertical height hint used by the dispatcher when splitting the
     /// screen. Use `Constraint::Min(0)` for the area that should grow.
-    fn height(&self) -> Constraint;
+    fn height(&self, state: &AppState, viewport_width: u16) -> Constraint;
 
     /// Draw into the given area. Called by the dispatcher once per dirty
     /// frame. Implementations must NOT mutate `state` or call into the

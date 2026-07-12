@@ -9,11 +9,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 use crate::app::{AppMode, AppState, ToolInfo};
@@ -326,9 +326,7 @@ impl ApprovalModal {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Char(c) => {
-                if !key
-                    .modifiers
-                    .contains(KeyModifiers::CONTROL)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
                 {
                     self.feedback.push(c);
@@ -430,7 +428,8 @@ mod tests {
     }
 
     fn build_modal_with_n_tools(n: usize) -> ApprovalModal {
-        let mut m = ApprovalModal::new("b".into(), (0..n).map(|i| tool(&format!("c{i}"))).collect());
+        let mut m =
+            ApprovalModal::new("b".into(), (0..n).map(|i| tool(&format!("c{i}"))).collect());
         m.queue_total = 1;
         m
     }
@@ -483,10 +482,7 @@ mod tests {
         assert!(s.pending_actions.is_empty());
         // Type feedback + Enter.
         for c in "use docker".chars() {
-            m.handle_feedback_key(
-                &key(KeyCode::Char(c), KeyModifiers::NONE),
-                &mut s,
-            );
+            m.handle_feedback_key(&key(KeyCode::Char(c), KeyModifiers::NONE), &mut s);
         }
         let consumed = m.handle_feedback_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
@@ -499,7 +495,10 @@ mod tests {
         ));
         assert!(matches!(
             s.pending_actions[1],
-            Action::SendApprove { approved: false, .. }
+            Action::SendApprove {
+                approved: false,
+                ..
+            }
         ));
     }
 
@@ -507,10 +506,7 @@ mod tests {
     fn shift_y_approves_all_remaining() {
         let mut m = build_modal_with_n_tools(3);
         let mut s = AppState::new();
-        let consumed = m.handle_navigate_key(
-            &key(KeyCode::Char('Y'), KeyModifiers::SHIFT),
-            &mut s,
-        );
+        let consumed = m.handle_navigate_key(&key(KeyCode::Char('Y'), KeyModifiers::SHIFT), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         // All decisions are now Approve.
         assert_eq!(
@@ -537,23 +533,19 @@ mod tests {
     fn shift_n_rejects_all_and_enters_feedback() {
         let mut m = build_modal_with_n_tools(3);
         let mut s = AppState::new();
-        let consumed = m.handle_navigate_key(
-            &key(KeyCode::Char('N'), KeyModifiers::SHIFT),
-            &mut s,
-        );
+        let consumed = m.handle_navigate_key(&key(KeyCode::Char('N'), KeyModifiers::SHIFT), &mut s);
         // Reject-all keeps the modal open in RejectFeedback mode.
         assert!(matches!(consumed, Consumed::Yes { dismiss: false }));
         assert_eq!(m.mode, ApprovalMode::RejectFeedback);
         // All three decisions are now Reject.
         assert!(m.decisions.iter().all(|d| *d == Decision::Reject));
-        assert!(s.pending_actions.is_empty(),
-            "no SendApprove should fire yet — feedback still pending");
+        assert!(
+            s.pending_actions.is_empty(),
+            "no SendApprove should fire yet — feedback still pending"
+        );
         // Finish via Enter in feedback mode.
         for ch in "too destructive".chars() {
-            let _ = m.handle_feedback_key(
-                &key(KeyCode::Char(ch), KeyModifiers::NONE),
-                &mut s,
-            );
+            let _ = m.handle_feedback_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &mut s);
         }
         let consumed = m.handle_feedback_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
@@ -562,7 +554,15 @@ mod tests {
         let reject_count = s
             .pending_actions
             .iter()
-            .filter(|a| matches!(a, Action::SendApprove { approved: false, .. }))
+            .filter(|a| {
+                matches!(
+                    a,
+                    Action::SendApprove {
+                        approved: false,
+                        ..
+                    }
+                )
+            })
             .count();
         assert_eq!(reject_count, 3);
         assert!(s.pending_actions.iter().any(|a| matches!(
