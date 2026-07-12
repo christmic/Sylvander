@@ -14,11 +14,11 @@ expression: "render_buf(&state, 80, 24)"
            │  >> 1. CRITICAL $ rm -rf /                             │           
            │       scope  current workspace                         │           
            │                                                        │           
-           │1/1  ↵/y approve · n reject · a all · N none · esc deny │           
+           │1/1  ↵/y once · s session · p always · n reject         │           
+           │     a all once · N none · esc deny                     │           
            │                                                        │           
            │                                                        │           
            └────────────────────────────────────────────────────────┘           
-                                                                                
                                                                                 
                                                                                 
                                                                                 

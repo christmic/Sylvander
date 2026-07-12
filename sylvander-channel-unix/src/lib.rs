@@ -62,6 +62,8 @@ enum ClientMsg {
     Approve {
         call_id: String,
         approved: bool,
+        #[serde(default)]
+        scope: sylvander_protocol::ApprovalScope,
     },
     Answer {
         call_id: String,
@@ -171,6 +173,7 @@ enum ServerMsg {
         session_id: String,
         batch_id: String,
         tools: Vec<ToolInfo>,
+        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
     },
     AskUser {
         session_id: String,
@@ -579,20 +582,23 @@ async fn handle_client_msg(
                                 input_tokens,
                                 output_tokens,
                             }),
-                            StreamEvent::ToolApprovalRequired { batch_id, tools } => {
-                                Some(ServerMsg::ApprovalRequest {
-                                    session_id: s.0.clone(),
-                                    batch_id,
-                                    tools: tools
-                                        .iter()
-                                        .map(|t| ToolInfo {
-                                            call_id: t.call_id.clone(),
-                                            tool_name: t.tool_name.clone(),
-                                            input: t.input.clone(),
-                                        })
-                                        .collect(),
-                                })
-                            }
+                            StreamEvent::ToolApprovalRequired {
+                                batch_id,
+                                tools,
+                                allowed_scopes,
+                            } => Some(ServerMsg::ApprovalRequest {
+                                session_id: s.0.clone(),
+                                batch_id,
+                                tools: tools
+                                    .iter()
+                                    .map(|t| ToolInfo {
+                                        call_id: t.call_id.clone(),
+                                        tool_name: t.tool_name.clone(),
+                                        input: t.input.clone(),
+                                    })
+                                    .collect(),
+                                allowed_scopes,
+                            }),
                             StreamEvent::AskUser {
                                 call_id,
                                 question,
@@ -685,7 +691,11 @@ async fn handle_client_msg(
                 }
             });
         }
-        ClientMsg::Approve { call_id, approved } => {
+        ClientMsg::Approve {
+            call_id,
+            approved,
+            scope,
+        } => {
             // Forward approval to bus for any waiting agent
             let _ = ctx
                 .bus
@@ -693,7 +703,11 @@ async fn handle_client_msg(
                     session_id: SessionId::new("").into(), // agent-level
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool { call_id, approved }),
+                    kind: MessageKind::System(SystemMessage::ApproveTool {
+                        call_id,
+                        approved,
+                        scope,
+                    }),
                     payload: String::new(),
                     attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
@@ -1481,6 +1495,44 @@ mod tests {
                 plan_id,
                 decision: sylvander_protocol::PlanDecision::Revised { steps },
             }) if plan_id == "plan-1" && steps == ["inspect", "verify"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn approval_scope_is_forwarded_without_transport_interpretation() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let agent_id = AgentId::new("agent-1");
+        let mut inbox = bus
+            .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
+            .await
+            .expect("subscribe");
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::Approve {
+                call_id: "call-1".into(),
+                approved: true,
+                scope: sylvander_protocol::ApprovalScope::Session,
+            },
+            &context,
+            &agent_id,
+            &tx,
+            &runtime_info(),
+            None,
+        )
+        .await;
+
+        let message = inbox.recv().await.expect("agent message");
+        assert!(matches!(
+            message.kind,
+            MessageKind::System(SystemMessage::ApproveTool {
+                call_id,
+                approved: true,
+                scope: sylvander_protocol::ApprovalScope::Session,
+            }) if call_id == "call-1"
         ));
     }
 

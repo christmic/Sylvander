@@ -26,7 +26,7 @@ use crate::theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Pending,
-    Approve,
+    Approve(sylvander_protocol::ApprovalScope),
     Reject,
 }
 
@@ -52,6 +52,8 @@ pub struct ApprovalModal {
     pub stack_position: usize,
     /// Total modal count when this modal was pushed.
     pub queue_total: usize,
+    /// Server-advertised scopes. The modal never invents a broader grant.
+    pub allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
 }
 
 impl ApprovalModal {
@@ -66,7 +68,23 @@ impl ApprovalModal {
             feedback: String::new(),
             stack_position: 0,
             queue_total: 1,
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
         }
+    }
+
+    pub fn with_allowed_scopes(
+        mut self,
+        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
+    ) -> Self {
+        self.allowed_scopes = allowed_scopes;
+        if !self
+            .allowed_scopes
+            .contains(&sylvander_protocol::ApprovalScope::Once)
+        {
+            self.allowed_scopes
+                .insert(0, sylvander_protocol::ApprovalScope::Once);
+        }
+        self
     }
 
     /// Per-row decision labels for rendering.
@@ -74,13 +92,13 @@ impl ApprovalModal {
         if is_current {
             match d {
                 Decision::Pending => "  >> ",
-                Decision::Approve => "  ✓> ",
+                Decision::Approve(_) => "  ✓> ",
                 Decision::Reject => "  ✗> ",
             }
         } else {
             match d {
                 Decision::Pending => "     ",
-                Decision::Approve => "  ✓  ",
+                Decision::Approve(_) => "  ✓  ",
                 Decision::Reject => "  ✗  ",
             }
         }
@@ -121,7 +139,7 @@ impl Modal for ApprovalModal {
 
 impl ApprovalModal {
     fn render_navigate(&self, frame: &mut Frame, parent: Rect) {
-        let height = (7 + self.tools.len() as u16 * 2).min(parent.height.saturating_sub(2));
+        let height = (8 + self.tools.len() as u16 * 2).min(parent.height.saturating_sub(2));
         let popup_area = centered_rect(72, height, parent);
         frame.render_widget(Clear, popup_area);
 
@@ -154,7 +172,7 @@ impl ApprovalModal {
             let palette = theme::palette();
             let marker_color = match (self.decisions[i], is_current) {
                 (_, true) => palette.waiting,
-                (Decision::Approve, _) => palette.verified,
+                (Decision::Approve(_), _) => palette.verified,
                 (Decision::Reject, _) => palette.danger,
                 (Decision::Pending, _) => palette.text_dim,
             };
@@ -182,12 +200,31 @@ impl ApprovalModal {
         }
 
         lines.push(Line::from(""));
+        let mut actions = vec!["↵/y once"];
+        if self
+            .allowed_scopes
+            .contains(&sylvander_protocol::ApprovalScope::Session)
+        {
+            actions.push("s session");
+        }
+        if self
+            .allowed_scopes
+            .contains(&sylvander_protocol::ApprovalScope::Persistent)
+        {
+            actions.push("p always");
+        }
+        actions.push("n reject");
         lines.push(Line::from(Span::styled(
             format!(
-                "{}/{}  ↵/y approve · n reject · a all · N none · esc deny",
+                "{}/{}  {}",
                 self.current + 1,
-                self.tools.len()
+                self.tools.len(),
+                actions.join(" · ")
             ),
+            theme::text_muted(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "     a all once · N none · esc deny",
             theme::text_muted(),
         )));
 
@@ -199,8 +236,15 @@ impl ApprovalModal {
             (KeyCode::Enter, _)
             | (KeyCode::Char('y'), KeyModifiers::NONE)
             | (KeyCode::Char('1'), KeyModifiers::NONE) => {
-                self.decisions[self.current] = Decision::Approve;
+                self.decisions[self.current] =
+                    Decision::Approve(sylvander_protocol::ApprovalScope::Once);
                 advance(self, state)
+            }
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                self.approve_with_scope(sylvander_protocol::ApprovalScope::Session, state)
+            }
+            (KeyCode::Char('p'), KeyModifiers::NONE) => {
+                self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
             }
             (KeyCode::Char('n'), KeyModifiers::NONE)
             | (KeyCode::Char('r'), KeyModifiers::NONE)
@@ -218,7 +262,7 @@ impl ApprovalModal {
                 // Approve all remaining including current.
                 for d in &mut self.decisions[self.current..] {
                     if *d == Decision::Pending {
-                        *d = Decision::Approve;
+                        *d = Decision::Approve(sylvander_protocol::ApprovalScope::Once);
                     }
                 }
                 finish(self, state)
@@ -262,6 +306,20 @@ impl ApprovalModal {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => reject_pending_and_finish(self, state),
             _ => Consumed::Ignored,
         }
+    }
+
+    fn approve_with_scope(
+        &mut self,
+        scope: sylvander_protocol::ApprovalScope,
+        state: &mut AppState,
+    ) -> Consumed {
+        if !self.allowed_scopes.contains(&scope) {
+            state.status = format!("{} approval is disabled by the server", scope_label(scope));
+            state.dirty.mark();
+            return Consumed::Yes { dismiss: false };
+        }
+        self.decisions[self.current] = Decision::Approve(scope);
+        advance(self, state)
     }
 }
 
@@ -370,7 +428,7 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     // Last tool or all decided — fill remaining pending as approve (default).
     for d in modal.decisions.iter_mut() {
         if *d == Decision::Pending {
-            *d = Decision::Approve;
+            *d = Decision::Approve(sylvander_protocol::ApprovalScope::Once);
         }
     }
     finish(modal, state)
@@ -391,20 +449,33 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     };
     let approved_count = decisions
         .iter()
-        .filter(|decision| matches!(decision, Decision::Approve))
+        .filter(|decision| matches!(decision, Decision::Approve(_)))
         .count();
     let rejected_count = decisions.len().saturating_sub(approved_count);
     for (tool, decision) in tools.iter().zip(decisions.iter()) {
-        let approved = matches!(decision, Decision::Approve);
+        let approved = matches!(decision, Decision::Approve(_));
+        let scope = match decision {
+            Decision::Approve(scope) => *scope,
+            Decision::Pending | Decision::Reject => sylvander_protocol::ApprovalScope::Once,
+        };
         state.pending_actions.push(Action::SendApprove {
             call_id: tool.call_id.clone(),
             approved,
+            scope,
         });
     }
     state.messages.push(crate::app::ChatMessage::Info(format!(
         "approval · {approved_count} approved · {rejected_count} rejected"
     )));
     Consumed::Yes { dismiss: true }
+}
+
+fn scope_label(scope: sylvander_protocol::ApprovalScope) -> &'static str {
+    match scope {
+        sylvander_protocol::ApprovalScope::Once => "one-shot",
+        sylvander_protocol::ApprovalScope::Session => "session",
+        sylvander_protocol::ApprovalScope::Persistent => "persistent",
+    }
 }
 
 fn reject_pending_and_finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
@@ -484,7 +555,10 @@ mod tests {
             &key(KeyCode::Char('y'), KeyModifiers::NONE),
             &mut AppState::new(),
         );
-        assert_eq!(m.decisions[0], Decision::Approve);
+        assert_eq!(
+            m.decisions[0],
+            Decision::Approve(sylvander_protocol::ApprovalScope::Once)
+        );
         assert_eq!(m.current, 1);
     }
 
@@ -500,12 +574,46 @@ mod tests {
         assert_eq!(s.pending_actions.len(), 2);
         assert!(matches!(
             s.pending_actions[0],
-            Action::SendApprove { ref call_id, approved: true } if call_id == "c0"
+            Action::SendApprove { ref call_id, approved: true, .. } if call_id == "c0"
         ));
         assert!(matches!(
             s.pending_actions[1],
-            Action::SendApprove { ref call_id, approved: true } if call_id == "c1"
+            Action::SendApprove { ref call_id, approved: true, .. } if call_id == "c1"
         ));
+    }
+
+    #[test]
+    fn session_scope_is_emitted_only_when_server_allows_it() {
+        let mut modal = build_modal_with_n_tools(1).with_allowed_scopes(vec![
+            sylvander_protocol::ApprovalScope::Once,
+            sylvander_protocol::ApprovalScope::Session,
+        ]);
+        let mut state = AppState::new();
+        let consumed =
+            modal.handle_navigate_key(&key(KeyCode::Char('s'), KeyModifiers::NONE), &mut state);
+        assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [Action::SendApprove {
+                approved: true,
+                scope: sylvander_protocol::ApprovalScope::Session,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn unavailable_persistent_scope_stays_open_and_sends_nothing() {
+        let mut modal = build_modal_with_n_tools(1);
+        let mut state = AppState::new();
+        let consumed =
+            modal.handle_navigate_key(&key(KeyCode::Char('p'), KeyModifiers::NONE), &mut state);
+        assert!(matches!(consumed, Consumed::Yes { dismiss: false }));
+        assert!(state.pending_actions.is_empty());
+        assert_eq!(
+            state.status,
+            "persistent approval is disabled by the server"
+        );
     }
 
     #[test]

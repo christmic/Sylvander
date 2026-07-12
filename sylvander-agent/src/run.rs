@@ -22,7 +22,8 @@
 //! tasks. Per-session locks prevent concurrent execution on the same
 //! session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
@@ -82,6 +83,9 @@ pub(crate) struct AgentRunInner {
     approval_rules: Vec<crate::approval::ApprovalRule>,
     /// Pending approval requests (shared with BusApprovalGate).
     pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    /// Agent-owned approval memory. Session grants are isolated by session;
+    /// persistent grants exist only when the operator configured a store.
+    approval_memory: Arc<Mutex<ApprovalMemory>>,
     /// Pending AskUser answers (shared with BusAskUserGate).
     pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
     /// Pending typed plan decisions (shared with BusPlanGate).
@@ -100,7 +104,126 @@ pub(crate) struct AgentRunInner {
 
 struct PendingApproval {
     session_id: SessionId,
+    fingerprint: String,
+    allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
     sender: oneshot::Sender<crate::approval::ApprovalDecision>,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct PersistentApprovalFile {
+    #[serde(default)]
+    fingerprints: Vec<String>,
+}
+
+struct ApprovalMemory {
+    sessions: HashMap<SessionId, HashSet<String>>,
+    persistent: HashSet<String>,
+    path: Option<PathBuf>,
+}
+
+impl ApprovalMemory {
+    fn load(path: Option<PathBuf>) -> Result<Self, AgentRunError> {
+        let persistent = match path.as_deref() {
+            Some(path) if path.exists() => {
+                let bytes = std::fs::read(path).map_err(|error| {
+                    AgentRunError::Build(format!(
+                        "failed to read approval store {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                serde_json::from_slice::<PersistentApprovalFile>(&bytes)
+                    .map_err(|error| {
+                        AgentRunError::Build(format!(
+                            "failed to parse approval store {}: {error}",
+                            path.display()
+                        ))
+                    })?
+                    .fingerprints
+                    .into_iter()
+                    .collect()
+            }
+            _ => HashSet::new(),
+        };
+        Ok(Self {
+            sessions: HashMap::new(),
+            persistent,
+            path,
+        })
+    }
+
+    fn allowed_scopes(&self) -> Vec<sylvander_protocol::ApprovalScope> {
+        let mut scopes = vec![
+            sylvander_protocol::ApprovalScope::Once,
+            sylvander_protocol::ApprovalScope::Session,
+        ];
+        if self.path.is_some() {
+            scopes.push(sylvander_protocol::ApprovalScope::Persistent);
+        }
+        scopes
+    }
+
+    fn contains(&self, session_id: &SessionId, fingerprint: &str) -> bool {
+        self.persistent.contains(fingerprint)
+            || self
+                .sessions
+                .get(session_id)
+                .is_some_and(|entries| entries.contains(fingerprint))
+    }
+
+    async fn remember(
+        &mut self,
+        session_id: &SessionId,
+        fingerprint: String,
+        scope: sylvander_protocol::ApprovalScope,
+    ) -> Result<(), String> {
+        match scope {
+            sylvander_protocol::ApprovalScope::Once => Ok(()),
+            sylvander_protocol::ApprovalScope::Session => {
+                self.sessions
+                    .entry(session_id.clone())
+                    .or_default()
+                    .insert(fingerprint);
+                Ok(())
+            }
+            sylvander_protocol::ApprovalScope::Persistent => {
+                let path = self.path.clone().ok_or_else(|| {
+                    "persistent approvals are disabled by the operator".to_string()
+                })?;
+                let inserted = self.persistent.insert(fingerprint.clone());
+                if let Err(error) = persist_approval_fingerprints(&path, &self.persistent).await {
+                    if inserted {
+                        self.persistent.remove(&fingerprint);
+                    }
+                    return Err(error);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+async fn persist_approval_fingerprints(
+    path: &Path,
+    fingerprints: &HashSet<String>,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("failed to create approval store directory: {error}"))?;
+    }
+    let mut entries = fingerprints.iter().cloned().collect::<Vec<_>>();
+    entries.sort();
+    let bytes = serde_json::to_vec_pretty(&PersistentApprovalFile {
+        fingerprints: entries,
+    })
+    .map_err(|error| format!("failed to encode approval store: {error}"))?;
+    let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&temporary, bytes)
+        .await
+        .map_err(|error| format!("failed to write approval store: {error}"))?;
+    tokio::fs::rename(&temporary, path)
+        .await
+        .map_err(|error| format!("failed to replace approval store: {error}"))
 }
 
 struct PendingAnswer {
@@ -263,6 +386,12 @@ impl AgentRun {
     /// Leave a session.
     pub async fn leave_session(&self, session_id: &SessionId) {
         self.inner.sessions.write().await.remove(session_id);
+        self.inner
+            .approval_memory
+            .lock()
+            .await
+            .sessions
+            .remove(session_id);
     }
 
     /// List all sessions.
@@ -337,6 +466,12 @@ impl AgentRun {
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         self.inner.sessions.write().await.remove(session_id);
+                        self.inner
+                            .approval_memory
+                            .lock()
+                            .await
+                            .sessions
+                            .remove(session_id);
                         let mut tasks = self.inner.background_tasks.lock().await;
                         let task_ids = tasks
                             .iter()
@@ -353,11 +488,35 @@ impl AgentRun {
                     SystemMessage::StatusUpdate { .. } => {}
 
                     // M12: forward approval response to the waiting task
-                    SystemMessage::ApproveTool { call_id, approved } => {
-                        let mut pending = self.inner.pending_approvals.lock().await;
-                        if let Some(request) = pending.remove(call_id) {
+                    SystemMessage::ApproveTool {
+                        call_id,
+                        approved,
+                        scope,
+                    } => {
+                        let request = self.inner.pending_approvals.lock().await.remove(call_id);
+                        if let Some(request) = request {
                             let decision = if *approved {
-                                crate::approval::ApprovalDecision::Approved
+                                if !request.allowed_scopes.contains(scope) {
+                                    crate::approval::ApprovalDecision::Rejected {
+                                        reason: format!(
+                                            "approval scope `{scope:?}` is not permitted"
+                                        ),
+                                    }
+                                } else {
+                                    match self
+                                        .inner
+                                        .approval_memory
+                                        .lock()
+                                        .await
+                                        .remember(&request.session_id, request.fingerprint, *scope)
+                                        .await
+                                    {
+                                        Ok(()) => crate::approval::ApprovalDecision::Approved,
+                                        Err(reason) => {
+                                            crate::approval::ApprovalDecision::Rejected { reason }
+                                        }
+                                    }
+                                }
                             } else {
                                 crate::approval::ApprovalDecision::Rejected {
                                     reason: "rejected by user".into(),
@@ -509,6 +668,7 @@ struct BusApprovalGate {
     agent_id: AgentId,
     session_id: SessionId,
     pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    approval_memory: Arc<Mutex<ApprovalMemory>>,
 }
 
 struct DenyAllApprovalGate;
@@ -531,53 +691,102 @@ impl ApprovalGate for DenyAllApprovalGate {
 impl ApprovalGate for BusApprovalGate {
     async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult {
         let batch_id = uuid::Uuid::new_v4().to_string();
-        let mut receivers: Vec<(String, tokio::sync::oneshot::Receiver<ApprovalDecision>)> =
-            Vec::new();
+        let mut decisions = vec![None; tools.len()];
+        let mut receivers = Vec::new();
+        let allowed_scopes = self.approval_memory.lock().await.allowed_scopes();
+        let mut requested_tools = Vec::new();
 
-        for tool in tools {
+        for (index, tool) in tools.iter().enumerate() {
+            let fingerprint = approval_fingerprint(tool);
+            if self
+                .approval_memory
+                .lock()
+                .await
+                .contains(&self.session_id, &fingerprint)
+            {
+                decisions[index] = Some(ApprovalDecision::Approved);
+                continue;
+            }
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.pending_approvals.lock().await.insert(
                 tool.call_id.clone(),
                 PendingApproval {
                     session_id: self.session_id.clone(),
+                    fingerprint,
+                    allowed_scopes: allowed_scopes.clone(),
                     sender: tx,
                 },
             );
-            receivers.push((tool.call_id.clone(), rx));
+            receivers.push((index, tool.call_id.clone(), rx));
+            requested_tools.push(tool);
         }
 
-        // Publish batch approval request
-        let _ = self
-            .bus
-            .publish(BusMessage::stream_event(
-                self.session_id.clone(),
-                self.agent_id.clone(),
-                StreamEvent::ToolApprovalRequired {
-                    batch_id,
-                    tools: tools
-                        .iter()
-                        .map(|t| ToolCallInfo {
-                            call_id: t.call_id.clone(),
-                            tool_name: t.tool_name.clone(),
-                            input: t.input.clone(),
-                        })
-                        .collect(),
-                },
-            ))
-            .await;
+        if !requested_tools.is_empty() {
+            let _ = self
+                .bus
+                .publish(BusMessage::stream_event(
+                    self.session_id.clone(),
+                    self.agent_id.clone(),
+                    StreamEvent::ToolApprovalRequired {
+                        batch_id,
+                        tools: requested_tools
+                            .into_iter()
+                            .map(|tool| ToolCallInfo {
+                                call_id: tool.call_id.clone(),
+                                tool_name: tool.tool_name.clone(),
+                                input: tool.input.clone(),
+                            })
+                            .collect(),
+                        allowed_scopes,
+                    },
+                ))
+                .await;
+        }
 
         // Wait for all decisions (120s timeout each)
-        let mut decisions = Vec::new();
-        for (call_id, rx) in receivers {
-            match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
-                Ok(Ok(d)) => decisions.push(d),
-                _ => decisions.push(ApprovalDecision::Rejected {
+        for (index, call_id, rx) in receivers {
+            let decision = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await
+            {
+                Ok(Ok(decision)) => decision,
+                _ => ApprovalDecision::Rejected {
                     reason: "approval timeout".into(),
-                }),
-            }
+                },
+            };
+            decisions[index] = Some(decision);
             self.pending_approvals.lock().await.remove(&call_id);
         }
-        ApprovalBatchResult { decisions }
+        ApprovalBatchResult {
+            decisions: decisions
+                .into_iter()
+                .map(|decision| decision.expect("every approval decision must settle"))
+                .collect(),
+        }
+    }
+}
+
+fn approval_fingerprint(tool: &ToolUseRequest) -> String {
+    format!(
+        "{}:{}",
+        tool.tool_name,
+        serde_json::to_string(&canonical_json(&tool.input)).unwrap_or_default()
+    )
+}
+
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonical_json).collect())
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys = map.keys().collect::<Vec<_>>();
+            keys.sort();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), canonical_json(&map[key])))
+                    .collect(),
+            )
+        }
+        scalar => scalar.clone(),
     }
 }
 
@@ -1013,6 +1222,7 @@ impl AgentRunInner {
                     agent_id: self.id.clone(),
                     session_id: session_id.clone(),
                     pending_approvals: self.pending_approvals.clone(),
+                    approval_memory: self.approval_memory.clone(),
                 });
                 let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
                     bus_gate
@@ -1428,6 +1638,7 @@ pub struct AgentRunBuilder {
     available_models: Vec<ModelInfo>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
+    approval_store_path: Option<PathBuf>,
 }
 
 impl AgentRunBuilder {
@@ -1444,6 +1655,7 @@ impl AgentRunBuilder {
             available_models: Vec::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
+            approval_store_path: None,
         }
     }
 
@@ -1504,6 +1716,15 @@ impl AgentRunBuilder {
         self
     }
 
+    /// Enable durable exact-request approvals. Without this explicit store,
+    /// the Agent advertises only one-shot and session scopes.
+    #[must_use]
+    pub fn approval_store(mut self, path: impl Into<PathBuf>) -> Self {
+        self.approval_enabled = true;
+        self.approval_store_path = Some(path.into());
+        self
+    }
+
     pub fn override_compression(
         mut self,
         pipeline: crate::compress::pipeline::CompressionPipeline,
@@ -1519,6 +1740,7 @@ impl AgentRunBuilder {
             .bus
             .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
 
+        let approval_memory = ApprovalMemory::load(self.approval_store_path.clone())?;
         let memory = if self.memory.is_some() {
             self.memory
         } else {
@@ -1593,6 +1815,7 @@ impl AgentRunBuilder {
                 approval_enabled: self.approval_enabled,
                 approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
+                approval_memory: Arc::new(Mutex::new(approval_memory)),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 pending_plans: Arc::new(Mutex::new(HashMap::new())),
                 background_tasks: Arc::new(Mutex::new(HashMap::new())),
@@ -1958,6 +2181,63 @@ mod tests {
         assert_eq!(run.list_sessions().await.len(), 1);
         run.leave_session(&sid).await;
         assert!(run.list_sessions().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_memory_is_session_isolated_and_persistent_only_with_a_store() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("approvals.json");
+        let first = SessionId::new("session-1");
+        let second = SessionId::new("session-2");
+        let fingerprint = "write:{\"file_path\":\"a.rs\"}".to_string();
+
+        let mut memory = ApprovalMemory::load(Some(path.clone())).expect("load");
+        assert_eq!(
+            memory.allowed_scopes(),
+            vec![
+                sylvander_protocol::ApprovalScope::Once,
+                sylvander_protocol::ApprovalScope::Session,
+                sylvander_protocol::ApprovalScope::Persistent,
+            ]
+        );
+        memory
+            .remember(
+                &first,
+                fingerprint.clone(),
+                sylvander_protocol::ApprovalScope::Session,
+            )
+            .await
+            .expect("session grant");
+        assert!(memory.contains(&first, &fingerprint));
+        assert!(!memory.contains(&second, &fingerprint));
+
+        let durable = "read:{\"file_path\":\"README.md\"}".to_string();
+        memory
+            .remember(
+                &first,
+                durable.clone(),
+                sylvander_protocol::ApprovalScope::Persistent,
+            )
+            .await
+            .expect("persistent grant");
+        let reloaded = ApprovalMemory::load(Some(path)).expect("reload");
+        assert!(reloaded.contains(&second, &durable));
+        assert!(!reloaded.contains(&first, &fingerprint));
+    }
+
+    #[test]
+    fn approval_fingerprint_is_stable_across_json_key_order() {
+        let first = ToolUseRequest {
+            call_id: "a".into(),
+            tool_name: "write".into(),
+            input: serde_json::json!({"content": "x", "file_path": "a.rs"}),
+        };
+        let second = ToolUseRequest {
+            call_id: "b".into(),
+            tool_name: "write".into(),
+            input: serde_json::json!({"file_path": "a.rs", "content": "x"}),
+        };
+        assert_eq!(approval_fingerprint(&first), approval_fingerprint(&second));
     }
 
     #[tokio::test]

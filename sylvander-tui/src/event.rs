@@ -117,6 +117,7 @@ pub enum DomainEvent {
     ApprovalRequested {
         batch_id: String,
         tools: Vec<ToolInfo>,
+        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
     },
 
     /// Agent asks the user a clarifying question (UX §12.1).
@@ -201,6 +202,7 @@ pub enum Action {
     SendApprove {
         call_id: String,
         approved: bool,
+        scope: sylvander_protocol::ApprovalScope,
     },
     /// Answer an AskUser question.
     SendAnswer {

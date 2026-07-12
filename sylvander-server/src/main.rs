@@ -169,6 +169,9 @@ async fn main() {
     let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();
     if approval_enabled {
         run_builder = run_builder.enable_approval();
+        if let Ok(path) = std::env::var("SYLVANDER_APPROVAL_STORE") {
+            run_builder = run_builder.approval_store(path);
+        }
     }
 
     let run = run_builder.build().expect("agent build");

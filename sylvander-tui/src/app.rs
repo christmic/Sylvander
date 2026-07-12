@@ -603,7 +603,11 @@ impl AppState {
                     .push(ChatMessage::Info(format!("Turn interrupted: {reason}")));
                 return self.start_next_queued_prompt();
             }
-            DomainEvent::ApprovalRequested { batch_id, tools } => {
+            DomainEvent::ApprovalRequested {
+                batch_id,
+                tools,
+                allowed_scopes,
+            } => {
                 if tools.is_empty() {
                     self.messages.push(ChatMessage::Info(
                         "approval request contained no tools".into(),
@@ -611,7 +615,8 @@ impl AppState {
                     return None;
                 }
                 use crate::modal::approval::ApprovalModal;
-                let mut modal = ApprovalModal::new(batch_id, tools);
+                let mut modal =
+                    ApprovalModal::new(batch_id, tools).with_allowed_scopes(allowed_scopes);
                 modal.stack_position = self.modals.len();
                 modal.queue_total = self.modals.len() + 1;
                 self.modals.push(Box::new(modal));
@@ -1298,6 +1303,7 @@ mod tests {
         let mut s = AppState::new();
         s.apply(DomainEvent::ApprovalRequested {
             batch_id: "b1".into(),
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
             tools: vec![ToolInfo {
                 call_id: "c1".into(),
                 tool_name: "bash".into(),
@@ -1487,6 +1493,7 @@ mod tests {
         let mut s = AppState::new();
         s.apply(DomainEvent::ApprovalRequested {
             batch_id: "b".into(),
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
             tools: vec![ToolInfo {
                 call_id: "c".into(),
                 tool_name: "bash".into(),
@@ -1505,6 +1512,7 @@ mod tests {
         let mut s = AppState::new();
         s.apply(DomainEvent::ApprovalRequested {
             batch_id: "b".into(),
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
             tools: vec![ToolInfo {
                 call_id: "c1".into(),
                 tool_name: "bash".into(),
@@ -1517,7 +1525,7 @@ mod tests {
         assert_eq!(s.pending_actions.len(), 1);
         assert!(matches!(
             s.pending_actions[0],
-            Action::SendApprove { ref call_id, approved: true } if call_id == "c1"
+            Action::SendApprove { ref call_id, approved: true, .. } if call_id == "c1"
         ));
     }
 
