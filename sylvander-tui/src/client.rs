@@ -23,6 +23,8 @@ use crate::event::DomainEvent;
 pub enum ClientMsg {
     Chat {
         text: String,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<sylvander_protocol::MessageAttachment>,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -558,6 +560,28 @@ mod tests {
         assert_eq!(json["type"], "cancel_task");
         assert_eq!(json["session_id"], "s1");
         assert_eq!(json["task_id"], "task-42");
+    }
+
+    #[test]
+    fn chat_serializes_typed_attachments_without_text_wrappers() {
+        let message = ClientMsg::Chat {
+            text: "review".into(),
+            attachments: vec![sylvander_protocol::MessageAttachment {
+                id: "a1".into(),
+                kind: sylvander_protocol::AttachmentKind::File,
+                name: "src/main.rs".into(),
+                mime_type: "text/x-rust".into(),
+                content: sylvander_protocol::AttachmentContent::Text {
+                    text: "fn main() {}".into(),
+                },
+                byte_count: 12,
+            }],
+            session_id: Some("s1".into()),
+            workspace: Some("/repo".into()),
+        };
+        let value = serde_json::to_value(message).expect("serialize");
+        assert_eq!(value["attachments"][0]["name"], "src/main.rs");
+        assert!(!value["text"].as_str().unwrap().contains("[attachments]"));
     }
 
     #[test]

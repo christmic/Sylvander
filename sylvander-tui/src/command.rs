@@ -17,6 +17,7 @@ pub enum CommandId {
     Tools,
     Queue,
     Tasks,
+    Attachments,
     Status,
     Quit,
 }
@@ -109,6 +110,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "read-only workers",
     },
     CommandSpec {
+        id: CommandId::Attachments,
+        name: "attachments",
+        usage: "/attachments [drop <n>|up <n>|down <n>|clear]",
+        description: "Inspect, reorder, or remove draft attachments",
+        hint: "@ adds files",
+    },
+    CommandSpec {
         id: CommandId::Status,
         name: "status",
         usage: "/status",
@@ -157,6 +165,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.turn_active = false;
             state.interrupt_requested = false;
             state.queued_prompts.clear();
+            state.queued_prompt_attachments.clear();
             state.chat_scroll = 0;
             state.unread_events = 0;
             state.welcomed = false;
@@ -271,6 +280,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             }
             ["clear"] => {
                 state.queued_prompts.clear();
+                state.queued_prompt_attachments.clear();
                 state
                     .messages
                     .retain(|message| !matches!(message, ChatMessage::QueuedUser(_)));
@@ -279,6 +289,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             ["drop", index] => {
                 let index = queue_index(index, state.queued_prompts.len(), invocation.spec.usage)?;
                 let removed = state.queued_prompts.remove(index).expect("validated index");
+                state.queued_prompt_attachments.remove(index);
                 remove_queued_message(&mut state.messages, &removed);
                 state.status = format!("Removed queued prompt {}", index + 1);
             }
@@ -340,6 +351,42 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
+        CommandId::Attachments => match invocation.args.as_slice() {
+            [] => {
+                if state.composer.attachments.is_empty() {
+                    state.messages.push(ChatMessage::Info("No draft attachments".into()));
+                } else {
+                    let text = state.composer.attachments.iter().enumerate()
+                        .map(|(index, attachment)| format!("{}. {}", index + 1, attachment.label()))
+                        .collect::<Vec<_>>().join("\n");
+                    state.messages.push(ChatMessage::Info(format!("Draft attachments:\n{text}")));
+                }
+            }
+            ["clear"] => {
+                state.composer.attachments.clear();
+                state.status = "Cleared draft attachments".into();
+            }
+            ["drop", raw] => {
+                let index = attachment_index(raw, state.composer.attachment_count(), invocation.spec.usage)?;
+                state.composer.remove_attachment(index);
+                state.status = format!("Removed attachment {}", index + 1);
+            }
+            [direction @ ("up" | "down"), raw] => {
+                let index = attachment_index(raw, state.composer.attachment_count(), invocation.spec.usage)?;
+                let target = if *direction == "up" {
+                    index.checked_sub(1).ok_or_else(|| "Attachment is already first".to_string())?
+                } else {
+                    let target = index + 1;
+                    if target >= state.composer.attachment_count() {
+                        return Err("Attachment is already last".into());
+                    }
+                    target
+                };
+                state.composer.move_attachment(index, target);
+                state.status = format!("Moved attachment {}", index + 1);
+            }
+            _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+        },
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -380,6 +427,10 @@ fn queue_index(raw: &str, len: usize, usage: &str) -> Result<usize, String> {
         return Err(format!("Queue item {one_based} does not exist"));
     }
     Ok(index)
+}
+
+fn attachment_index(raw: &str, len: usize, usage: &str) -> Result<usize, String> {
+    queue_index(raw, len, usage).map_err(|_| format!("Attachment `{raw}` does not exist"))
 }
 
 fn remove_queued_message(messages: &mut Vec<ChatMessage>, prompt: &str) {
@@ -475,5 +526,17 @@ mod tests {
             crate::event::Action::CancelTask { session_id, task_id }
                 if session_id == "session-1" && task_id == "abcdef12-3456"
         ));
+    }
+
+    #[test]
+    fn attachments_commands_reorder_and_remove_draft_context() {
+        let mut state = AppState::new();
+        state.composer.attachments.push(crate::input::Attachment::new_paste("first".into()));
+        state.composer.attachments.push(crate::input::Attachment::new_paste("second".into()));
+        execute(parse("attachments up 2").unwrap(), &mut state).unwrap();
+        assert_eq!(state.composer.attachments[0].content, "second");
+        execute(parse("attachments drop 1").unwrap(), &mut state).unwrap();
+        assert_eq!(state.composer.attachments.len(), 1);
+        assert_eq!(state.composer.attachments[0].content, "first");
     }
 }

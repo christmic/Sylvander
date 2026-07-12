@@ -18,8 +18,8 @@ expression: "render_buf(&state, 90, 22)"
                     │    /tools        Toggle tool details          │                     
                     │    /queue        Inspect or edit prompts waiti│                     
                     │    /tasks        Inspect or cancel one backgro│                     
-                    │    /status       Show runtime and token usage │                     
-                    │    /quit         Quit sylvander-tui           │                     
+                    │    /attachments  Inspect, reorder, or remove d│                     
+                    │    ↓ 2 more                                   │                     
 ────────────────────└───────────────────────────────────────────────┘─────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────

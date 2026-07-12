@@ -109,32 +109,21 @@ const MAX_TOKENS_PER_ROW: usize = 6;
 
 fn render_attachment_tokens(frame: &mut Frame, state: &AppState, area: Rect) {
     let composer = &state.composer;
-    let visible = composer.attachment_count().min(MAX_TOKENS_PER_ROW);
-    let mut line = String::with_capacity(area.width as usize);
-    let hidden = composer
-        .attachment_count()
-        .saturating_sub(MAX_TOKENS_PER_ROW);
-    for (i, att) in composer.attachments.iter().take(visible).enumerate() {
-        if i > 0 {
-            line.push_str("  ");
+    let lines = composer.attachments.chunks(MAX_TOKENS_PER_ROW).map(|attachments| {
+        let mut line = String::with_capacity(area.width as usize);
+        for (index, att) in attachments.iter().enumerate() {
+            if index > 0 { line.push_str("  "); }
+            let glyph = match att.kind {
+                AttachmentKind::Paste => "▣",
+                AttachmentKind::File => "@",
+            };
+            let name = att.preview.replace(' ', "_");
+            let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
+            line.push_str(&truncate(&chunk, CHIP_W));
         }
-        let glyph = match att.kind {
-            AttachmentKind::Paste => "▣",
-            AttachmentKind::File => "@",
-        };
-        // "▣ error.log · 84 lines  ×"
-        let name = att.preview.replace(' ', "_");
-        let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
-        let truncated = truncate(&chunk, CHIP_W);
-        line.push_str(&truncated);
-    }
-    if hidden > 0 {
-        line.push_str(&format!("  +{hidden} more"));
-    }
-    if line.is_empty() {
-        line = "(no attachments)".into();
-    }
-    let paragraph = Paragraph::new(Line::from(Span::styled(line, theme::text_dim())));
+        Line::from(Span::styled(line, theme::text_dim()))
+    }).collect::<Vec<_>>();
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
 

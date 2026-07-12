@@ -68,16 +68,19 @@ impl AgentService {
         let message = match action {
             Action::SendChat {
                 text,
+                attachments,
                 session_id,
                 workspace,
             } => ClientMsg::Chat {
                 text,
+                attachments,
                 session_id,
                 workspace: Some(workspace),
             },
             Action::SendFeedback { text, session_id } => {
                 ClientMsg::Chat {
                     text,
+                    attachments: Vec::new(),
                     session_id,
                     workspace: None,
                 }

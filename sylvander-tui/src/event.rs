@@ -147,6 +147,7 @@ pub enum Action {
     /// Send a chat message to the server.
     SendChat {
         text: String,
+        attachments: Vec<sylvander_protocol::MessageAttachment>,
         session_id: Option<String>,
         workspace: String,
     },

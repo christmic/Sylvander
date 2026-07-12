@@ -73,11 +73,13 @@ completed backend feature.
 
 ### Composer and context attachment
 
-- [ ] `@` opens fuzzy workspace-file mention with path completion.
-- [ ] Local files, images, selections, diffs, and terminal output attach safely.
+- [x] `@` opens fuzzy workspace-file mention with path completion.
+- [x] Text files and large pasted context use typed protocol attachments.
+- [ ] Images, selections, diffs, and terminal output attach safely.
 - [ ] Attachment capability and size are validated against the active model.
-- [ ] Attachments can be selected, removed, reordered, and restored from draft.
-- [ ] Large paste payloads survive history without leaking into visible labels.
+- [x] Attachments can be inspected, removed, and reordered before submit.
+- [ ] Attachments and composer text restore from a crash-safe draft.
+- [x] Large paste payloads survive submission without leaking into visible history.
 - [ ] Copy/cut/selection and external-editor workflows are complete.
 
 ### Model, permission, and context controls
