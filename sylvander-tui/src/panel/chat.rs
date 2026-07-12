@@ -231,14 +231,23 @@ fn push_message_lines<'a>(
                         child.is_error.unwrap_or(false),
                         width.saturating_sub(4),
                     ) {
-                        let style = if child.is_error == Some(true) {
-                            theme::warning()
-                        } else {
-                            theme::text_muted()
+                        let style = match detail.kind {
+                            crate::tool_presenter::DetailKind::Added => theme::verified(),
+                            crate::tool_presenter::DetailKind::Removed
+                            | crate::tool_presenter::DetailKind::Error => theme::danger(),
+                            crate::tool_presenter::DetailKind::Label => theme::header(),
+                            crate::tool_presenter::DetailKind::Meta => theme::text_muted(),
+                            crate::tool_presenter::DetailKind::Normal => {
+                                if child.is_error == Some(true) {
+                                    theme::warning()
+                                } else {
+                                    theme::text_dim()
+                                }
+                            }
                         };
                         lines.push(Line::from(vec![
                             Span::styled("│   ", theme::guide()),
-                            Span::styled(detail, style),
+                            Span::styled(detail.text, style),
                         ]));
                     }
                 }
@@ -322,105 +331,18 @@ fn push_message_lines<'a>(
 /// once; it is not a miniature replacement for the welcome character.
 fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
     let body_width = width.saturating_sub(3).max(1);
-    let body = format_agent_body(text, body_width);
-    for (index, row) in body.into_iter().enumerate() {
-        if row.is_empty() {
+    let body = crate::markdown::render(text, body_width);
+    let mut marked = false;
+    for mut row in body {
+        if row.spans.is_empty() {
             lines.push(Line::from(""));
             continue;
         }
-        let marker = if index == 0 { "◆  " } else { "   " };
-        lines.push(Line::from(vec![
-            Span::styled(marker, theme::agent_speaker()),
-            Span::styled(row, theme::text()),
-        ]));
+        let marker = if marked { "   " } else { "◆  " };
+        marked = true;
+        row.spans.insert(0, Span::styled(marker, theme::agent_speaker()));
+        lines.push(row);
     }
-}
-
-fn format_agent_body(text: &str, width: usize) -> Vec<String> {
-    let normalized = break_inline_numbered_lists(text);
-    let mut output = Vec::new();
-
-    for raw in normalized.lines() {
-        let clean = strip_markdown_markers(raw.trim());
-        if clean.is_empty() {
-            if !output.is_empty() && output.last().is_some_and(|line: &String| !line.is_empty()) {
-                output.push(String::new());
-            }
-            continue;
-        }
-
-        let (first_prefix, continuation, content) = list_prefix(&clean);
-        output.extend(wrap_words(
-            content,
-            first_prefix,
-            continuation,
-            width.max(1),
-        ));
-    }
-
-    while output.last().is_some_and(String::is_empty) {
-        output.pop();
-    }
-    output
-}
-
-fn break_inline_numbered_lists(text: &str) -> String {
-    let chars: Vec<char> = text.replace('\r', "").chars().collect();
-    let mut output = String::with_capacity(chars.len());
-    let mut index = 0;
-
-    while index < chars.len() {
-        if chars[index].is_ascii_digit() {
-            let mut end = index;
-            while end < chars.len() && chars[end].is_ascii_digit() {
-                end += 1;
-            }
-            let is_marker =
-                end + 1 < chars.len() && chars[end] == '.' && chars[end + 1].is_whitespace();
-            let line_has_content = output
-                .rsplit_once('\n')
-                .map_or(!output.trim().is_empty(), |(_, line)| {
-                    !line.trim().is_empty()
-                });
-            if is_marker && line_has_content {
-                while output.ends_with(' ') {
-                    output.pop();
-                }
-                output.push('\n');
-            }
-        }
-        output.push(chars[index]);
-        index += 1;
-    }
-    output
-}
-
-fn strip_markdown_markers(line: &str) -> String {
-    let without_heading = line.trim_start_matches('#').trim_start();
-    without_heading
-        .replace("**", "")
-        .replace("__", "")
-        .replace('`', "")
-}
-
-fn list_prefix(line: &str) -> (&str, String, &str) {
-    if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-        return ("• ", "  ".into(), rest);
-    }
-
-    let digit_count = line.chars().take_while(char::is_ascii_digit).count();
-    if digit_count > 0 {
-        let marker_end = digit_count + 2;
-        if line.get(digit_count..marker_end) == Some(". ") {
-            let prefix = &line[..marker_end];
-            return (
-                prefix,
-                " ".repeat(prefix.chars().count()),
-                &line[marker_end..],
-            );
-        }
-    }
-    ("", String::new(), line)
 }
 
 fn wrap_words(text: &str, first_prefix: &str, continuation: String, width: usize) -> Vec<String> {

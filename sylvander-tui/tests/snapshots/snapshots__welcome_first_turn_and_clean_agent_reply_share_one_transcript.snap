@@ -17,9 +17,9 @@ expression: "render_buf(&state, 120, 36)"
   › what tools do you have?                                                                                             
                                                                                                                         
   ◆  I have tools:                                                                                                      
+                                                                                                                        
      1. ask_user — Ask for missing information.                                                                         
      2. Read — Read a workspace file.                                                                                   
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

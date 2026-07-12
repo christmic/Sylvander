@@ -13,6 +13,7 @@ pub mod config;
 pub mod dirty;
 pub mod event;
 pub mod input;
+pub mod markdown;
 pub mod modal;
 pub mod model;
 pub mod panel;

@@ -52,23 +52,24 @@ completed backend feature.
 
 ### Transcript and Markdown
 
-- [ ] Render semantic Markdown instead of stripping punctuation.
-- [ ] Preserve paragraphs, nested lists, quotes, links, and inline code.
+- [x] Render semantic Markdown instead of stripping punctuation.
+- [x] Preserve paragraphs, nested lists, quotes, links, and inline code.
 - [ ] Render fenced code with language-aware styling and safe ANSI handling.
-- [ ] Render tables responsively with a readable narrow fallback.
+- [x] Render tables responsively with a readable narrow fallback.
 - [ ] Keep CJK, emoji, URLs, and combining characters width-correct.
-- [ ] Streaming and settled Markdown retain stable geometry.
+- [x] Streaming and settled Markdown retain stable geometry.
 
 ### Tool activity
 
 - [ ] Shell rows include command, cwd, exit code, duration, stdout, and stderr.
-- [ ] File reads include path, range, and language.
+- [x] File reads include path, range, and language.
 - [ ] Edits/writes use a real multi-file unified-diff renderer.
-- [ ] Search results group matches by file with counts and line numbers.
-- [ ] MCP/web/resource tools have typed presentations and safe fallback.
+- [x] Search results group matches by file with counts and line numbers.
+- [x] MCP and unknown tools have a bounded, safe fallback presentation.
+- [ ] MCP/web/resource tools have dedicated typed presentations.
 - [ ] Parallel calls, retries, timeouts, cancellation, and partial output render.
 - [ ] Long output supports expand, focused inspection, copy, and search.
-- [ ] ANSI/control sequences are sanitized and secrets are masked.
+- [x] ANSI/control sequences are sanitized and secrets are masked.
 
 ### Composer and context attachment
 
