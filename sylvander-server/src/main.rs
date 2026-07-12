@@ -1,5 +1,6 @@
 //! Sylvander server — boots the agent system with channels.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
@@ -45,6 +46,16 @@ fn require_env(key: &str) -> String {
         std::process::exit(1);
     }
     v
+}
+
+fn comma_values(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 #[tokio::main]
@@ -95,14 +106,34 @@ async fn main() {
         .build()
         .expect("spec");
 
-    let model = ModelInfo::builder()
-        .id(&model_name)
-        .context_window(200_000)
-        .max_output_tokens(32_000)
-        .capability(ModelCapabilities::TOOL_USE)
-        .capability(ModelCapabilities::VISION)
-        .build()
-        .expect("model");
+    let reasoning_models = comma_values("SYLVANDER_REASONING_MODELS")
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut model_names = comma_values("SYLVANDER_MODELS");
+    if !model_names.iter().any(|model| model == &model_name) {
+        model_names.insert(0, model_name.clone());
+    }
+    let available_models = model_names
+        .into_iter()
+        .map(|id| {
+            let mut capabilities = ModelCapabilities::TOOL_USE | ModelCapabilities::VISION;
+            if reasoning_models.contains(&id) {
+                capabilities |= ModelCapabilities::EXTENDED_THINKING;
+            }
+            ModelInfo::builder()
+                .id(id)
+                .context_window(200_000)
+                .max_output_tokens(32_000)
+                .capabilities(capabilities)
+                .build()
+                .expect("model")
+        })
+        .collect::<Vec<_>>();
+    let model = available_models
+        .iter()
+        .find(|model| model.id == model_name)
+        .expect("primary model is in catalog")
+        .clone();
 
     let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = ToolRegistry::new()
@@ -132,6 +163,7 @@ async fn main() {
         .bus(bus.clone())
         .session_store(session_store.clone())
         .override_tools(tools)
+        .available_models(available_models)
         .model_capabilities(model.capabilities);
 
     let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();
@@ -140,6 +172,7 @@ async fn main() {
     }
 
     let run = run_builder.build().expect("agent build");
+    let runtime_control = run.clone();
     let agent_id = run.id().clone();
     let filter = run.subscription_filter();
     let inbox = bus.subscribe(filter).await.expect("subscribe");
@@ -186,10 +219,13 @@ async fn main() {
         sylvander_channel_unix::UnixChannel::new(socket_path.clone(), agent_id.clone())
             .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
                 model: model.id.clone(),
+                reasoning_effort: sylvander_agent::bus::ReasoningEffort::Off,
+                models: Vec::new(),
                 capabilities: model.capabilities.bits(),
                 approval_enabled,
                 max_attachment_bytes: 512 * 1024,
-            }),
+            })
+            .with_runtime_control(runtime_control),
     );
     let unix_ctx = sylvander_channel::ChannelContext {
         bus: bus.clone(),

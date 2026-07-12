@@ -19,5 +19,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
+[dev-dependencies]
+sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+
 [lints]
 workspace = true

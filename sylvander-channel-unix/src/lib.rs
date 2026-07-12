@@ -99,6 +99,10 @@ enum ClientMsg {
         session_id: String,
     },
     GetRuntimeInfo,
+    SelectModel {
+        model: String,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    },
     Ping,
 }
 
@@ -234,6 +238,8 @@ enum ServerMsg {
     },
     RuntimeInfo {
         model: String,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+        models: Vec<sylvander_protocol::ModelDescriptor>,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -274,11 +280,14 @@ pub struct UnixChannel {
     socket_path: PathBuf,
     agent_id: AgentId,
     runtime: RuntimeInfo,
+    runtime_control: Option<sylvander_agent::run::AgentRun>,
 }
 
 #[derive(Clone)]
 pub struct RuntimeInfo {
     pub model: String,
+    pub reasoning_effort: sylvander_protocol::ReasoningEffort,
+    pub models: Vec<sylvander_protocol::ModelDescriptor>,
     pub capabilities: u8,
     pub approval_enabled: bool,
     pub max_attachment_bytes: usize,
@@ -291,15 +300,23 @@ impl UnixChannel {
             agent_id: agent_id.into(),
             runtime: RuntimeInfo {
                 model: "unknown".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                models: Vec::new(),
                 capabilities: 0,
                 approval_enabled: false,
                 max_attachment_bytes: 512 * 1024,
             },
+            runtime_control: None,
         }
     }
 
     pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    pub fn with_runtime_control(mut self, run: sylvander_agent::run::AgentRun) -> Self {
+        self.runtime_control = Some(run);
         self
     }
 }
@@ -371,6 +388,7 @@ impl Channel for UnixChannel {
             let ctx_clone = ctx.clone();
             let agent_id_clone = agent_id.clone();
             let runtime = self.runtime.clone();
+            let runtime_control = self.runtime_control.clone();
             let clients_clean = clients.clone();
             let client_id_clone = client_id;
             tokio::spawn(async move {
@@ -382,7 +400,15 @@ impl Channel for UnixChannel {
                             continue;
                         }
                     };
-                    handle_client_msg(msg, &ctx_clone, &agent_id_clone, &tx, &runtime).await;
+                    handle_client_msg(
+                        msg,
+                        &ctx_clone,
+                        &agent_id_clone,
+                        &tx,
+                        &runtime,
+                        runtime_control.as_ref(),
+                    )
+                    .await;
                 }
                 // Client disconnected
                 clients_clean.lock().await.remove(&client_id_clone);
@@ -397,6 +423,7 @@ async fn handle_client_msg(
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
+    runtime_control: Option<&sylvander_agent::run::AgentRun>,
 ) {
     match msg {
         ClientMsg::Chat {
@@ -946,12 +973,63 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::GetRuntimeInfo => {
+            let model_info = if let Some(control) = runtime_control {
+                control.runtime_model_info().await
+            } else {
+                sylvander_protocol::RuntimeModelInfo {
+                    current_model: runtime.model.clone(),
+                    reasoning_effort: runtime.reasoning_effort,
+                    models: runtime.models.clone(),
+                }
+            };
+            let capabilities = model_info
+                .models
+                .iter()
+                .find(|model| model.id == model_info.current_model)
+                .map_or(runtime.capabilities, |model| model.capabilities);
             let _ = tx.send(ServerMsg::RuntimeInfo {
-                model: runtime.model.clone(),
-                capabilities: runtime.capabilities,
+                model: model_info.current_model,
+                reasoning_effort: model_info.reasoning_effort,
+                models: model_info.models,
+                capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
             });
+        }
+        ClientMsg::SelectModel {
+            model,
+            reasoning_effort,
+        } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::OperationError {
+                    operation: "select_model".into(),
+                    message: "runtime model control is unavailable".into(),
+                });
+                return;
+            };
+            match control.select_model(&model, reasoning_effort).await {
+                Ok(model_info) => {
+                    let capabilities = model_info
+                        .models
+                        .iter()
+                        .find(|entry| entry.id == model_info.current_model)
+                        .map_or(0, |entry| entry.capabilities);
+                    let _ = tx.send(ServerMsg::RuntimeInfo {
+                        model: model_info.current_model,
+                        reasoning_effort: model_info.reasoning_effort,
+                        models: model_info.models,
+                        capabilities,
+                        approval_enabled: runtime.approval_enabled,
+                        max_attachment_bytes: runtime.max_attachment_bytes,
+                    });
+                }
+                Err(message) => {
+                    let _ = tx.send(ServerMsg::OperationError {
+                        operation: "select_model".into(),
+                        message,
+                    });
+                }
+            }
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
@@ -1030,6 +1108,13 @@ mod tests {
     fn runtime_info() -> RuntimeInfo {
         RuntimeInfo {
             model: "test-model".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            models: vec![sylvander_protocol::ModelDescriptor {
+                id: "test-model".into(),
+                provider: "test".into(),
+                capabilities: 0b101,
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+            }],
             capabilities: 0b101,
             approval_enabled: true,
             max_attachment_bytes: 1024,
@@ -1077,6 +1162,7 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
+            None,
         )
         .await;
 
@@ -1085,10 +1171,68 @@ mod tests {
             response,
             ServerMsg::RuntimeInfo {
                 model,
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                models,
                 capabilities: 0b101,
                 approval_enabled: true,
                 max_attachment_bytes: 1024,
-            } if model == "test-model"
+            } if model == "test-model" && models.len() == 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_selection_is_acknowledged_from_agent_runtime_truth() {
+        use sylvander_llm_anthropic::api::client::AnthropicClient;
+        use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+
+        let bus = Arc::new(InProcessMessageBus::new());
+        let spec = sylvander_agent::spec::AgentSpec::builder()
+            .id("agent-1")
+            .name("Agent")
+            .model_name("test-model")
+            .build()
+            .expect("spec");
+        let client = AnthropicClient::builder()
+            .api_key("test")
+            .build()
+            .expect("client");
+        let thinking = ModelInfo::builder()
+            .id("thinking-model")
+            .context_window(200_000)
+            .max_output_tokens(32_000)
+            .capability(ModelCapabilities::EXTENDED_THINKING)
+            .build()
+            .expect("model");
+        let run = sylvander_agent::run::AgentRun::builder(spec, client)
+            .bus(bus.clone())
+            .available_models(vec![thinking])
+            .build()
+            .expect("run");
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::SelectModel {
+                model: "thinking-model".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            Some(&run),
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::RuntimeInfo {
+                model,
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+                ..
+            }) if model == "thinking-model"
         ));
     }
 
@@ -1246,6 +1390,7 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
+            None,
         )
         .await;
 
@@ -1281,6 +1426,7 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
+            None,
         )
         .await;
 
@@ -1325,6 +1471,7 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
+            None,
         )
         .await;
 
