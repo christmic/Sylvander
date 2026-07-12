@@ -38,6 +38,7 @@ use crate::bus::{
 };
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
+use crate::plan_gate::PlanGate;
 use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::session_store::{MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession};
 use crate::spec::{AgentId, AgentSpec, SessionId};
@@ -75,6 +76,8 @@ pub(crate) struct AgentRunInner {
     pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
     /// Pending AskUser answers (shared with BusAskUserGate).
     pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
+    /// Pending typed plan decisions (shared with BusPlanGate).
+    pending_plans: Arc<Mutex<HashMap<String, PendingPlan>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     /// One cancellation sender per session that currently owns its execution
@@ -93,6 +96,11 @@ struct PendingApproval {
 struct PendingAnswer {
     session_id: SessionId,
     sender: oneshot::Sender<Vec<String>>,
+}
+
+struct PendingPlan {
+    session_id: SessionId,
+    sender: oneshot::Sender<crate::bus::PlanDecision>,
 }
 
 struct ActiveTurn {
@@ -234,6 +242,12 @@ impl AgentRun {
 
                     SystemMessage::InterruptTurn { session_id } => {
                         self.inner.interrupt_turn(session_id).await;
+                    }
+                    SystemMessage::ResolvePlan { plan_id, decision } => {
+                        let mut pending = self.inner.pending_plans.lock().await;
+                        if let Some(request) = pending.remove(plan_id) {
+                            let _ = request.sender.send(decision.clone());
+                        }
                     }
                 },
 
@@ -445,6 +459,49 @@ impl AskUserGate for BusAskUserGate {
     }
 }
 
+// ===========================================================================
+// BusPlanGate — typed plan review
+// ===========================================================================
+
+struct BusPlanGate {
+    bus: Arc<dyn MessageBus>,
+    agent_id: AgentId,
+    session_id: SessionId,
+    pending_plans: Arc<Mutex<HashMap<String, PendingPlan>>>,
+}
+
+#[async_trait::async_trait]
+impl PlanGate for BusPlanGate {
+    async fn review(&self, plan_id: &str, steps: Vec<String>) -> crate::bus::PlanDecision {
+        let (tx, rx) = oneshot::channel();
+        self.pending_plans.lock().await.insert(
+            plan_id.to_string(),
+            PendingPlan {
+                session_id: self.session_id.clone(),
+                sender: tx,
+            },
+        );
+        let _ = self.bus.publish(BusMessage::stream_event(
+            self.session_id.clone(),
+            self.agent_id.clone(),
+            StreamEvent::PlanProposed {
+                plan_id: plan_id.into(),
+                steps,
+                current: 0,
+            },
+        )).await;
+
+        let decision = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+            Ok(Ok(decision)) => decision,
+            _ => crate::bus::PlanDecision::Rejected {
+                reason: "plan review timed out".into(),
+            },
+        };
+        self.pending_plans.lock().await.remove(plan_id);
+        decision
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AgentRunInner — the actual implementation
 // ---------------------------------------------------------------------------
@@ -546,6 +603,24 @@ impl AgentRunInner {
                 let _ = request.sender.send(Vec::new());
             }
         }
+        drop(answers);
+
+        let plan_ids = {
+            let pending = self.pending_plans.lock().await;
+            pending
+                .iter()
+                .filter(|(_, request)| &request.session_id == session_id)
+                .map(|(plan_id, _)| plan_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut plans = self.pending_plans.lock().await;
+        for plan_id in plan_ids {
+            if let Some(request) = plans.remove(&plan_id) {
+                let _ = request.sender.send(crate::bus::PlanDecision::Rejected {
+                    reason: "turn interrupted by user".into(),
+                });
+            }
+        }
     }
 
     /// Core: handle a chat message. Runs the loop with streaming.
@@ -610,7 +685,7 @@ impl AgentRunInner {
         }
 
         // 2. Build per-session approval gate (if enabled)
-        let loop_config = if self.approval_enabled {
+        let mut loop_config = if self.approval_enabled {
             let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
                 agent_id: self.id.clone(),
@@ -627,17 +702,22 @@ impl AgentRunInner {
             };
             let mut cfg = self.loop_config.clone();
             cfg.approval_gate = Some(gate);
-            // M18: also wire AskUser gate
-            cfg.ask_user_gate = Some(Arc::new(BusAskUserGate {
-                bus: self.bus.clone(),
-                agent_id: self.id.clone(),
-                session_id: session_id.clone(),
-                pending_answers: self.pending_answers.clone(),
-            }));
             cfg
         } else {
             self.loop_config.clone()
         };
+        loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
+            bus: self.bus.clone(),
+            agent_id: self.id.clone(),
+            session_id: session_id.clone(),
+            pending_answers: self.pending_answers.clone(),
+        }));
+        loop_config.plan_gate = Some(Arc::new(BusPlanGate {
+            bus: self.bus.clone(),
+            agent_id: self.id.clone(),
+            session_id: session_id.clone(),
+            pending_plans: self.pending_plans.clone(),
+        }));
 
         // 3. Run loop with streaming
         use futures_util::StreamExt;
@@ -671,11 +751,17 @@ impl AgentRunInner {
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ThinkingDelta { delta: text }).await;
                 }
                 crate::event::AgentEvent::ToolCallStart { id, name, input } => {
+                    if name == "present_plan" {
+                        continue;
+                    }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolCall {
                         call_id: id, tool_name: name, input,
                     }).await;
                 }
                 crate::event::AgentEvent::ToolCallEnd { id, name, output, is_error } => {
+                    if name == "present_plan" {
+                        continue;
+                    }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolResult {
                         call_id: id, tool_name: name, output, is_error,
                     }).await;
@@ -706,6 +792,8 @@ impl AgentRunInner {
                         call_id, answer,
                     }).await;
                 }
+                crate::event::AgentEvent::PlanProposed { .. }
+                | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::Done(msg) => {
                     final_message = Some(msg);
                 }
@@ -913,6 +1001,7 @@ impl AgentRunBuilder {
                 approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
+                pending_plans: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
                 tool_context: run_tool_context,

@@ -83,6 +83,7 @@ pub mod engine;
 pub mod error;
 pub mod event;
 pub mod loop_;
+pub mod plan_gate;
 pub mod run;
 pub mod session;
 pub mod session_store;
@@ -121,7 +122,7 @@ pub mod prelude {
     pub use sylvander_protocol::types::UserId;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
-        MemoryWriteTool, ReadTool, WriteTool,
+        MemoryWriteTool, PresentPlanTool, ReadTool, WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
 }

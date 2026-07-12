@@ -112,7 +112,8 @@ async fn main() {
         .register(WriteTool::new("/"))
         .register(EditTool::new("/"))
         .register(MemoryReadTool::new(memory))
-        .register(sylvander_agent::tools::AskUserTool::new());
+        .register(sylvander_agent::tools::AskUserTool::new())
+        .register(sylvander_agent::tools::PresentPlanTool::new());
 
     let bus = Arc::new(InProcessMessageBus::new());
 

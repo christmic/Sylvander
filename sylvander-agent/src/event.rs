@@ -107,4 +107,12 @@ pub enum AgentEvent {
         call_id: String,
         answer: Vec<String>,
     },
+    PlanProposed {
+        plan_id: String,
+        steps: Vec<String>,
+    },
+    PlanResolved {
+        plan_id: String,
+        decision: sylvander_protocol::PlanDecision,
+    },
 }
