@@ -92,11 +92,16 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         // Coalesce bursts without delaying the first input event.
+        let mut had_input = render_immediately;
         for _ in 0..MAX_INPUT_BATCH {
             let Ok(intent) = input.try_recv() else {
                 break;
             };
+            had_input = true;
             application.handle(intent);
+        }
+        if had_input {
+            application.state.save_draft();
         }
         for _ in 0..MAX_SERVICE_BATCH {
             let Some(event) = service.try_recv() else {

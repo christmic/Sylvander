@@ -22,7 +22,7 @@ const HISTORY_CAP: usize = 100;
 pub const INLINE_PASTE_LINE_LIMIT: usize = 8;
 
 /// What kinds of attachment the composer can hold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AttachmentKind {
     /// Bulk text pasted from the clipboard (≥ `INLINE_PASTE_LINE_LIMIT` lines).
     Paste,
@@ -33,7 +33,7 @@ pub enum AttachmentKind {
 
 /// A collapsed payload attached above the draft. Tokens render as a
 /// single-line object so multi-kilobyte pastes don't blow out the layout.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Attachment {
     pub kind: AttachmentKind,
     pub content: String,
@@ -365,6 +365,40 @@ impl Composer {
         // Best-effort atomic rename — on most platforms this is atomic.
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    pub fn save_draft_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if self.is_empty() && self.attachments.is_empty() {
+            match std::fs::remove_file(path) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+        let snapshot = DraftSnapshot { text: self.text(), attachments: self.attachments.clone() };
+        let bytes = serde_json::to_vec(&snapshot)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let temp = path.with_extension("json.tmp");
+        std::fs::write(&temp, bytes)?;
+        std::fs::rename(temp, path)
+    }
+
+    pub fn restore_draft_from(&mut self, path: &std::path::Path) -> std::io::Result<bool> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let snapshot: DraftSnapshot = serde_json::from_slice(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        self.rows = snapshot.text.split('\n').map(String::from).collect();
+        if self.rows.is_empty() { self.rows.push(String::new()); }
+        self.cursor_row = self.rows.len() - 1;
+        self.cursor_col = self.rows[self.cursor_row].len();
+        self.attachments = snapshot.attachments;
+        self.interacted = !self.is_empty() || !self.attachments.is_empty();
+        Ok(true)
     }
 
     /// Reset the composer to an empty buffer (no history push).
@@ -723,6 +757,12 @@ impl Composer {
     pub fn reset_focus(&mut self) {
         self.interacted = false;
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DraftSnapshot {
+    text: String,
+    attachments: Vec<Attachment>,
 }
 
 #[derive(PartialEq)]
@@ -1105,6 +1145,25 @@ mod tests {
         c.save_history_to(&nested).expect("save");
         assert!(nested.exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn crash_safe_draft_restores_text_and_typed_attachments_then_clears_on_submit() {
+        let dir = tempdir();
+        let path = dir.join("draft.json");
+        let mut original = Composer::default();
+        original.paste("draft text");
+        original.attachments.push(Attachment::new_paste("one\ntwo".into()));
+        original.save_draft_to(&path).expect("save draft");
+
+        let mut restored = Composer::default();
+        assert!(restored.restore_draft_from(&path).expect("restore"));
+        assert_eq!(restored.text(), "draft text");
+        assert_eq!(restored.attachments.len(), 1);
+        restored.take_submit();
+        restored.save_draft_to(&path).expect("clear draft");
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     fn tempdir() -> std::path::PathBuf {
