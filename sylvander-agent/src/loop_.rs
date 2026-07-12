@@ -47,6 +47,7 @@ use super::tool_context::ToolContext;
 pub struct AgentLoop {
     pub(crate) client: AnthropicClient,
     pub(crate) model: ModelInfo,
+    pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub(crate) tools: ToolRegistry,
     /// Cached tool definitions for the LLM `tools` field. Built once
     /// at `build()` time and reused every iteration. The registry
@@ -75,6 +76,7 @@ impl std::fmt::Debug for AgentLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoop")
             .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("tools", &self.tools)
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
@@ -102,6 +104,7 @@ pub struct AgentLoopResult {
 pub struct AgentLoopBuilder {
     client: Option<AnthropicClient>,
     model: Option<ModelInfo>,
+    reasoning_effort: sylvander_protocol::ReasoningEffort,
     tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
     max_iterations: u32,
@@ -119,6 +122,7 @@ impl Default for AgentLoopBuilder {
         Self {
             client: None,
             model: None,
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             tools: ToolRegistry::new(),
             compression_pipeline: None,
             max_iterations: 50,
@@ -164,6 +168,12 @@ impl AgentLoopBuilder {
     #[must_use]
     pub fn model(mut self, model: ModelInfo) -> Self {
         self.model = Some(model);
+        self
+    }
+
+    #[must_use]
+    pub fn reasoning_effort(mut self, effort: sylvander_protocol::ReasoningEffort) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 
@@ -280,6 +290,7 @@ impl AgentLoopBuilder {
         Ok(AgentLoop {
             client,
             model,
+            reasoning_effort: self.reasoning_effort,
             tools: self.tools,
             tool_definitions,
             compression_pipeline,
@@ -318,6 +329,11 @@ impl AgentLoop {
     #[must_use]
     pub fn model(&self) -> &ModelInfo {
         &self.model
+    }
+
+    #[must_use]
+    pub fn reasoning_effort(&self) -> sylvander_protocol::ReasoningEffort {
+        self.reasoning_effort
     }
 
     /// Borrow the tool registry.
@@ -1297,6 +1313,10 @@ impl AgentLoop {
             )]));
         }
 
+        if let Some(budget) = self.reasoning_effort.budget_tokens() {
+            builder = builder.thinking(budget.min(self.model.max_output_tokens));
+        }
+
         // Use cached tool definitions (built once at construction
         // time; tools are immutable post-build). Avoids re-serializing
         // every iteration.
@@ -1457,6 +1477,29 @@ mod tests {
             .build()
             .expect("build");
         assert_eq!(loop_.max_retries(), 0);
+    }
+
+    #[test]
+    fn reasoning_effort_builds_a_capability_checked_budget() {
+        let model = ModelInfo::builder()
+            .id("thinking-model")
+            .context_window(200_000)
+            .max_output_tokens(8_192)
+            .capability(ModelCapabilities::EXTENDED_THINKING)
+            .build()
+            .expect("model");
+        let loop_ = AgentLoop::builder()
+            .client(test_client())
+            .model(model)
+            .reasoning_effort(sylvander_protocol::ReasoningEffort::High)
+            .build()
+            .expect("loop");
+        let request = loop_.build_request(&[MessageParam::user("think")]);
+        assert_eq!(request.thinking.unwrap().budget_tokens, 8_192);
+        assert_eq!(
+            loop_.reasoning_effort(),
+            sylvander_protocol::ReasoningEffort::High
+        );
     }
 
     #[test]
