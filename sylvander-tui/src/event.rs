@@ -26,6 +26,7 @@ pub enum DomainEvent {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
         models: Vec<sylvander_protocol::ModelDescriptor>,
+        permissions: sylvander_protocol::PermissionProfile,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -223,6 +224,9 @@ pub enum Action {
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
+    },
+    SelectPermissions {
+        profile: sylvander_protocol::PermissionProfile,
     },
     LoadSession {
         session_id: String,

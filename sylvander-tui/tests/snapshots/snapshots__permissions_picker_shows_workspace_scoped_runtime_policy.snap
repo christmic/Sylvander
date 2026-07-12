@@ -1,0 +1,32 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 100, 28)"
+---
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+               ┌ Permissions · workspace scoped · next turn ────────────────────────┐               
+               │root  /workspace/sylvander                                          │               
+               │                                                                    │               
+               │› filesystem  workspace write                                       │               
+               │  network     denied                                                │               
+               │  approval    ask                                                   │               
+               │                                                                    │               
+               │↑↓ field   ←→ value   enter apply   esc close                       │               
+               │                                                                    │               
+               │                                                                    │               
+               └────────────────────────────────────────────────────────────────────┘               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0 tok                      connecting…   draft local
