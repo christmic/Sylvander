@@ -92,6 +92,7 @@ enum ClientMsg {
     ForkSession {
         session_id: String,
     },
+    GetRuntimeInfo,
     Ping,
 }
 
@@ -162,7 +163,12 @@ enum ServerMsg {
         steps: Vec<String>,
         current: usize,
     },
-    PlanUpdated { session_id: String, plan_id: String, steps: Vec<String>, current: usize },
+    PlanUpdated {
+        session_id: String,
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
     TaskStarted {
         session_id: String,
         task_id: String,
@@ -201,6 +207,12 @@ enum ServerMsg {
         label: Option<String>,
         archived: bool,
     },
+    RuntimeInfo {
+        model: String,
+        capabilities: u8,
+        approval_enabled: bool,
+        max_attachment_bytes: usize,
+    },
     Pong,
 }
 
@@ -232,6 +244,15 @@ struct HistoryMessage {
 pub struct UnixChannel {
     socket_path: PathBuf,
     agent_id: AgentId,
+    runtime: RuntimeInfo,
+}
+
+#[derive(Clone)]
+pub struct RuntimeInfo {
+    pub model: String,
+    pub capabilities: u8,
+    pub approval_enabled: bool,
+    pub max_attachment_bytes: usize,
 }
 
 impl UnixChannel {
@@ -239,7 +260,18 @@ impl UnixChannel {
         Self {
             socket_path: socket_path.into(),
             agent_id: agent_id.into(),
+            runtime: RuntimeInfo {
+                model: "unknown".into(),
+                capabilities: 0,
+                approval_enabled: false,
+                max_attachment_bytes: 512 * 1024,
+            },
         }
+    }
+
+    pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
+        self.runtime = runtime;
+        self
     }
 }
 
@@ -309,6 +341,7 @@ impl Channel for UnixChannel {
             // Spawn reader task
             let ctx_clone = ctx.clone();
             let agent_id_clone = agent_id.clone();
+            let runtime = self.runtime.clone();
             let clients_clean = clients.clone();
             let client_id_clone = client_id;
             tokio::spawn(async move {
@@ -320,7 +353,7 @@ impl Channel for UnixChannel {
                             continue;
                         }
                     };
-                    handle_client_msg(msg, &ctx_clone, &agent_id_clone, &tx).await;
+                    handle_client_msg(msg, &ctx_clone, &agent_id_clone, &tx, &runtime).await;
                 }
                 // Client disconnected
                 clients_clean.lock().await.remove(&client_id_clone);
@@ -334,6 +367,7 @@ async fn handle_client_msg(
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
+    runtime: &RuntimeInfo,
 ) {
     match msg {
         ClientMsg::Chat {
@@ -393,7 +427,10 @@ async fn handle_client_msg(
             let _ = ctx
                 .bus
                 .publish(BusMessage::user_chat_with_attachments(
-                    sid.clone(), "unix-client", &text, attachments,
+                    sid.clone(),
+                    "unix-client",
+                    &text,
+                    attachments,
                 ))
                 .await;
 
@@ -490,42 +527,62 @@ async fn handle_client_msg(
                                     reason,
                                 })
                             }
-                            StreamEvent::PlanProposed { plan_id, steps, current } => {
-                                Some(ServerMsg::PlanProposed {
-                                    session_id: s.0.clone(),
-                                    plan_id,
-                                    steps,
-                                    current,
-                                })
-                            }
-                            StreamEvent::PlanUpdated { plan_id, steps, current } => {
-                                Some(ServerMsg::PlanUpdated {
-                                    session_id: s.0.clone(), plan_id, steps, current,
-                                })
-                            }
-                            StreamEvent::TaskStarted { task_id, owner, purpose } => {
-                                Some(ServerMsg::TaskStarted {
-                                    session_id: s.0.clone(), task_id, owner, purpose,
-                                })
-                            }
+                            StreamEvent::PlanProposed {
+                                plan_id,
+                                steps,
+                                current,
+                            } => Some(ServerMsg::PlanProposed {
+                                session_id: s.0.clone(),
+                                plan_id,
+                                steps,
+                                current,
+                            }),
+                            StreamEvent::PlanUpdated {
+                                plan_id,
+                                steps,
+                                current,
+                            } => Some(ServerMsg::PlanUpdated {
+                                session_id: s.0.clone(),
+                                plan_id,
+                                steps,
+                                current,
+                            }),
+                            StreamEvent::TaskStarted {
+                                task_id,
+                                owner,
+                                purpose,
+                            } => Some(ServerMsg::TaskStarted {
+                                session_id: s.0.clone(),
+                                task_id,
+                                owner,
+                                purpose,
+                            }),
                             StreamEvent::TaskProgress { task_id, message } => {
                                 Some(ServerMsg::TaskProgress {
-                                    session_id: s.0.clone(), task_id, message,
+                                    session_id: s.0.clone(),
+                                    task_id,
+                                    message,
                                 })
                             }
                             StreamEvent::TaskCompleted { task_id, summary } => {
                                 Some(ServerMsg::TaskCompleted {
-                                    session_id: s.0.clone(), task_id, summary,
+                                    session_id: s.0.clone(),
+                                    task_id,
+                                    summary,
                                 })
                             }
                             StreamEvent::TaskFailed { task_id, error } => {
                                 Some(ServerMsg::TaskFailed {
-                                    session_id: s.0.clone(), task_id, error,
+                                    session_id: s.0.clone(),
+                                    task_id,
+                                    error,
                                 })
                             }
                             StreamEvent::TaskCancelled { task_id, reason } => {
                                 Some(ServerMsg::TaskCancelled {
-                                    session_id: s.0.clone(), task_id, reason,
+                                    session_id: s.0.clone(),
+                                    task_id,
+                                    reason,
                                 })
                             }
                             StreamEvent::Done { text } => {
@@ -586,29 +643,41 @@ async fn handle_client_msg(
                 .await;
         }
         ClientMsg::ResolvePlan { plan_id, decision } => {
-            let _ = ctx.bus.publish(BusMessage {
-                session_id: SessionId::new(""),
-                sender: sylvander_agent::bus::Sender::System,
-                recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
-                payload: String::new(),
-                attachments: Vec::new(),
-                timestamp: sylvander_agent::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
-            }).await;
+            let _ = ctx
+                .bus
+                .publish(BusMessage {
+                    session_id: SessionId::new(""),
+                    sender: sylvander_agent::bus::Sender::System,
+                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                    kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
+                    payload: String::new(),
+                    attachments: Vec::new(),
+                    timestamp: sylvander_agent::session::now_secs(),
+                    id: sylvander_agent::bus::MessageId::new(),
+                })
+                .await;
         }
-        ClientMsg::CancelTask { session_id, task_id } => {
+        ClientMsg::CancelTask {
+            session_id,
+            task_id,
+        } => {
             let session_id = SessionId::new(session_id);
-            let _ = ctx.bus.publish(BusMessage {
-                session_id: session_id.clone(),
-                sender: sylvander_agent::bus::Sender::System,
-                recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                kind: MessageKind::System(SystemMessage::CancelTask { session_id, task_id }),
-                payload: String::new(),
-                attachments: Vec::new(),
-                timestamp: sylvander_agent::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
-            }).await;
+            let _ = ctx
+                .bus
+                .publish(BusMessage {
+                    session_id: session_id.clone(),
+                    sender: sylvander_agent::bus::Sender::System,
+                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                    kind: MessageKind::System(SystemMessage::CancelTask {
+                        session_id,
+                        task_id,
+                    }),
+                    payload: String::new(),
+                    attachments: Vec::new(),
+                    timestamp: sylvander_agent::session::now_secs(),
+                    id: sylvander_agent::bus::MessageId::new(),
+                })
+                .await;
         }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
@@ -658,9 +727,7 @@ async fn handle_client_msg(
                             .filter_map(|message| {
                                 history_text(&message.content).map(|text| HistoryMessage {
                                     role: match message.role {
-                                        sylvander_agent::session_store::MessageRole::User => {
-                                            "user"
-                                        }
+                                        sylvander_agent::session_store::MessageRole::User => "user",
                                         sylvander_agent::session_store::MessageRole::Assistant => {
                                             "assistant"
                                         }
@@ -786,6 +853,14 @@ async fn handle_client_msg(
                 Err(error) => warn!(%error, "unix: failed to get fork source"),
             }
         }
+        ClientMsg::GetRuntimeInfo => {
+            let _ = tx.send(ServerMsg::RuntimeInfo {
+                model: runtime.model.clone(),
+                capabilities: runtime.capabilities,
+                approval_enabled: runtime.approval_enabled,
+                max_attachment_bytes: runtime.max_attachment_bytes,
+            });
+        }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
@@ -849,6 +924,15 @@ mod tests {
         ))
     }
 
+    fn runtime_info() -> RuntimeInfo {
+        RuntimeInfo {
+            model: "test-model".into(),
+            capabilities: 0b101,
+            approval_enabled: true,
+            max_attachment_bytes: 1024,
+        }
+    }
+
     async fn connect(path: &std::path::Path) -> tokio::net::UnixStream {
         for _ in 0..40 {
             if let Ok(stream) = tokio::net::UnixStream::connect(path).await {
@@ -868,26 +952,49 @@ mod tests {
             .write_all(format!("{message}\n").as_bytes())
             .await
             .expect("write");
-        let line = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            reader.next_line(),
-        )
-        .await
-        .expect("response timeout")
-        .expect("read")
-        .expect("response");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line())
+            .await
+            .expect("response timeout")
+            .expect("read")
+            .expect("response");
         serde_json::from_str(&line).expect("json response")
+    }
+
+    #[tokio::test]
+    async fn runtime_info_reports_server_truth() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::GetRuntimeInfo,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("runtime response");
+        assert!(matches!(
+            response,
+            ServerMsg::RuntimeInfo {
+                model,
+                capabilities: 0b101,
+                approval_enabled: true,
+                max_attachment_bytes: 1024,
+            } if model == "test-model"
+        ));
     }
 
     #[tokio::test]
     async fn persisted_session_load_rename_fork_and_archive_round_trip() {
         let path = socket_path();
         let agent_id = AgentId::new("agent-1");
-        let store: Arc<dyn SessionStore> = Arc::new(
-            SqliteSessionStore::open_in_memory()
-                .await
-                .expect("store"),
-        );
+        let store: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
         let session_id = SessionId::new("session-1");
         let metadata = sylvander_agent::session::SessionMetadata {
             workspace: "/workspace/project".into(),
@@ -981,9 +1088,7 @@ mod tests {
             .expect("subscribe");
         let context = ChannelContext {
             bus,
-            sessions: Arc::new(
-                SqliteSessionStore::open_in_memory().await.expect("store"),
-            ),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
         };
         let (tx, _rx) = mpsc::unbounded_channel();
 
@@ -997,6 +1102,7 @@ mod tests {
             &context,
             &agent_id,
             &tx,
+            &runtime_info(),
         )
         .await;
 
@@ -1031,7 +1137,9 @@ mod tests {
             &context,
             &agent_id,
             &tx,
-        ).await;
+            &runtime_info(),
+        )
+        .await;
 
         let message = inbox.recv().await.expect("agent message");
         assert!(matches!(
@@ -1044,7 +1152,10 @@ mod tests {
     #[tokio::test]
     async fn chat_forwards_typed_attachments_without_flattening() {
         let bus = Arc::new(InProcessMessageBus::new());
-        let mut events = bus.subscribe(SubscriptionFilter::all()).await.expect("subscribe");
+        let mut events = bus
+            .subscribe(SubscriptionFilter::all())
+            .await
+            .expect("subscribe");
         let agent_id = AgentId::new("agent-1");
         let context = ChannelContext {
             bus,
@@ -1059,7 +1170,9 @@ mod tests {
                     kind: sylvander_protocol::AttachmentKind::File,
                     name: "src/main.rs".into(),
                     mime_type: "text/x-rust".into(),
-                    content: sylvander_protocol::AttachmentContent::Text { text: "fn main() {}".into() },
+                    content: sylvander_protocol::AttachmentContent::Text {
+                        text: "fn main() {}".into(),
+                    },
                     byte_count: 12,
                 }],
                 session_id: Some("session-1".into()),
@@ -1068,14 +1181,20 @@ mod tests {
             &context,
             &agent_id,
             &tx,
-        ).await;
+            &runtime_info(),
+        )
+        .await;
 
         let chat = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 let message = events.recv().await.expect("bus event");
-                if matches!(message.kind, MessageKind::Chat) { break message; }
+                if matches!(message.kind, MessageKind::Chat) {
+                    break message;
+                }
             }
-        }).await.expect("chat");
+        })
+        .await
+        .expect("chat");
         assert_eq!(chat.attachments.len(), 1);
         assert_eq!(chat.attachments[0].name, "src/main.rs");
     }

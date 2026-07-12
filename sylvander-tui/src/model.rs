@@ -10,6 +10,9 @@ pub struct RuntimeMetadata {
     pub model: String,
     pub workspace: PathBuf,
     pub branch: String,
+    pub capabilities: u8,
+    pub approval_enabled: bool,
+    pub max_attachment_bytes: usize,
 }
 
 impl Default for RuntimeMetadata {
@@ -18,6 +21,9 @@ impl Default for RuntimeMetadata {
             model: "—".into(),
             workspace: PathBuf::from("~/workspace"),
             branch: "—".into(),
+            capabilities: 0,
+            approval_enabled: false,
+            max_attachment_bytes: 512 * 1024,
         }
     }
 }

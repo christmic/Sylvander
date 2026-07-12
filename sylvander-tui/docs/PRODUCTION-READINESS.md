@@ -31,7 +31,7 @@ completed backend feature.
 
 ### Sessions
 
-- [ ] The service reports real model, workspace, branch, and session metadata.
+- [x] The service reports real model, workspace, branch, and session metadata.
 - [x] Session selection loads persisted conversation history.
 - [x] Rename persists to `SessionStore`.
 - [ ] Archive/delete persists and has undo-safe behavior where applicable.
@@ -61,7 +61,7 @@ completed backend feature.
 
 ### Tool activity
 
-- [ ] Shell rows include command, cwd, exit code, duration, stdout, and stderr.
+- [x] Shell rows include command, cwd, exit code, duration, stdout, and stderr.
 - [x] File reads include path, range, and language.
 - [ ] Edits/writes use a real multi-file unified-diff renderer.
 - [x] Search results group matches by file with counts and line numbers.

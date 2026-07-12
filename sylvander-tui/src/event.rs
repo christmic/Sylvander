@@ -22,6 +22,12 @@ use crate::model::{HistoryEntry, SessionSummary};
 pub enum DomainEvent {
     /// Socket connected.
     Connected,
+    RuntimeInfo {
+        model: String,
+        capabilities: u8,
+        approval_enabled: bool,
+        max_attachment_bytes: usize,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -118,7 +124,11 @@ pub enum DomainEvent {
         /// Currently-active step index (the ◉ in the marker row).
         current: usize,
     },
-    PlanUpdated { plan_id: String, steps: Vec<String>, current: usize },
+    PlanUpdated {
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
 
     /// Agent kicked off a background task / subagent (UX §11). Surfaces
     /// as a `TaskList` line in the transcript and tracks in-flight vs
@@ -128,10 +138,22 @@ pub enum DomainEvent {
         owner: String,
         purpose: String,
     },
-    TaskProgress { task_id: String, message: String },
-    TaskCompleted { task_id: String, summary: String },
-    TaskFailed { task_id: String, error: String },
-    TaskCancelled { task_id: String, reason: String },
+    TaskProgress {
+        task_id: String,
+        message: String,
+    },
+    TaskCompleted {
+        task_id: String,
+        summary: String,
+    },
+    TaskFailed {
+        task_id: String,
+        error: String,
+    },
+    TaskCancelled {
+        task_id: String,
+        reason: String,
+    },
 
     /// Tick — heartbeat from the main loop (for spinner / time displays).
     Tick,
@@ -169,8 +191,12 @@ pub enum Action {
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
-    CancelTask { session_id: String, task_id: String },
+    CancelTask {
+        session_id: String,
+        task_id: String,
+    },
     RequestSessions,
+    RequestRuntimeInfo,
     LoadSession {
         session_id: String,
     },

@@ -77,24 +77,27 @@ impl AgentService {
                 session_id,
                 workspace: Some(workspace),
             },
-            Action::SendFeedback { text, session_id } => {
-                ClientMsg::Chat {
-                    text,
-                    attachments: Vec::new(),
-                    session_id,
-                    workspace: None,
-                }
-            }
+            Action::SendFeedback { text, session_id } => ClientMsg::Chat {
+                text,
+                attachments: Vec::new(),
+                session_id,
+                workspace: None,
+            },
             Action::SendApprove { call_id, approved } => ClientMsg::Approve { call_id, approved },
             Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
             Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },
             Action::ResolvePlan { plan_id, decision } => {
                 ClientMsg::ResolvePlan { plan_id, decision }
             }
-            Action::CancelTask { session_id, task_id } => {
-                ClientMsg::CancelTask { session_id, task_id }
-            }
+            Action::CancelTask {
+                session_id,
+                task_id,
+            } => ClientMsg::CancelTask {
+                session_id,
+                task_id,
+            },
             Action::RequestSessions => ClientMsg::ListSessions,
+            Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
             Action::RenameSession { session_id, label } => {
                 ClientMsg::RenameSession { session_id, label }
