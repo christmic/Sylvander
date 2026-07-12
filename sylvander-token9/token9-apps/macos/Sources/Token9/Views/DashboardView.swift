@@ -1,12 +1,11 @@
 import SwiftUI
 
-/// Dashboard v2 — stub. Phase A establishes the design system; subsequent
-/// phases (B–F) progressively wire data, header, summary, heatmap, rows,
-/// and states. This commit renders the new popover chrome (background,
-/// logo, frame, range tabs placeholder) so `swift build` exits 0 and the
-/// asset commit's `SeedCrabMark` PDF/PNG is reachable through the bundle.
+/// Dashboard v2 — Phase B renders the gateway header + range tabs +
+/// the summary strip driven by the new `DashboardSummary` aggregation.
+/// Heatmap + aggregation rows land in commits 4 and 5 respectively.
 struct DashboardView: View {
-    @State private var range: RangeKey = .today
+    @StateObject private var vm = DashboardViewModel()
+    @State private var dimension: DimensionToggle.Dimension = .tool
 
     var body: some View {
         ZStack {
@@ -15,17 +14,25 @@ struct DashboardView: View {
 
             VStack(alignment: .leading, spacing: L.majorGap) {
                 header
-                RangeTabs(sel: $range)
+                RangeTabs(sel: $vm.range)
+                SummaryStripView(summary: vm.summary)
                 Panel {
-                    Text("Dashboard v2 — design system only")
-                        .font(.system(size: 12))
-                        .foregroundStyle(T.textSecondary)
+                    HStack(spacing: 12) {
+                        Text("日用量（Phase D 接入热力图）")
+                            .font(.system(size: 12)).foregroundStyle(T.textSecondary)
+                        Spacer()
+                        Text("\(vm.daily.count) 天")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(T.textTertiary)
+                    }
                 }
                 Spacer(minLength: 0)
             }
             .padding(L.outerPad)
         }
         .frame(width: L.popoverW, height: L.popoverH)
+        .onAppear { vm.start() }
+        .onDisappear { vm.stop() }
     }
 
     private var header: some View {
@@ -41,7 +48,12 @@ struct DashboardView: View {
                     .foregroundStyle(T.textTertiary)
             }
             Spacer()
-            IconButton(systemName: "arrow.clockwise") {}
+            HStack(spacing: 6) {
+                StatusDot(active: vm.error == nil)
+                Text(vm.error == nil ? "在线" : "离线")
+                    .font(.system(size: 10)).foregroundStyle(T.textTertiary)
+            }
+            IconButton(systemName: "arrow.clockwise") { vm.reload() }
         }
     }
 }
