@@ -13,20 +13,20 @@ expression: "render_buf(&s, 120, 36)"
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                        ┌ Tool Approval ───────────────────────────────────────────────────────┐                        
-                        │Agent wants to run:                                                   │                        
-                        │  >> 1. bash  {"command":"rm -rf /"}                                  │                        
-                        │                                                                      │                        
-                        │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  ← back  esc=cancel│                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        │                                                                      │                        
-                        └──────────────────────────────────────────────────────────────────────┘                        
+                                                                                                                        
+                                                                                                                        
+                 ┌ Tool Approval ─────────────────────────────────────────────────────────────────────┐                 
+                 │Review the requested capabilities:                                                  │                 
+                 │  >> 1. CRITICAL $ rm -rf /                                                         │                 
+                 │       scope  current workspace                                                     │                 
+                 │                                                                                    │                 
+                 │1/1  ↵/y approve · n reject · a all · N none · esc deny                             │                 
+                 │                                                                                    │                 
+                 │                                                                                    │                 
+                 └────────────────────────────────────────────────────────────────────────────────────┘                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@ expression: "render_buf(&s, 120, 36)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-● approval · model — · branch — · session — · 0t                                                    y approve   n reject
+● approval · model — · branch — · session — · 0 tok                                                 y approve   n reject

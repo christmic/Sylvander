@@ -5,7 +5,7 @@ expression: "render_buf(&s, 120, 36)"
   › Review the auth middleware                                                                                          
   ◌ Run `ls`     00s                                                                                                    
   │ ✓ $ ls src/http  router.rs                                                                                          
-  │ ◌ read src/http/middleware.rs                                                                                       
+  │ ◌ Read src/http/middleware.rs                                                                                       
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -37,4 +37,4 @@ expression: "render_buf(&s, 120, 36)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ working · model — · branch — · session — · 2t                                                   esc interrupt   /draft
+◌ working · model — · branch — · session — · 0 tok                                                esc interrupt   /draft

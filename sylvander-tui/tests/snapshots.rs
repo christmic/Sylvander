@@ -92,6 +92,7 @@ fn tool_call_in_progress() {
     let mut state = AppState::new();
     state.messages.push(ChatMessage::User("list src".into()));
     state.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src"}),
     });
@@ -103,10 +104,12 @@ fn tool_call_done_with_output() {
     let mut state = AppState::new();
     state.messages.push(ChatMessage::User("list src".into()));
     state.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src"}),
     });
     state.apply(DomainEvent::ToolFinished {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         output: "main.rs\nlib.rs".into(),
         is_error: false,
@@ -119,6 +122,7 @@ fn approval_modal_overlays_chat() {
     let mut state = AppState::new();
     state.messages.push(ChatMessage::User("rm -rf /".into()));
     state.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "rm -rf /"}),
     });
@@ -211,6 +215,7 @@ fn approval_modal_batch_with_three_tools() {
     let mut state = AppState::new();
     state.messages.push(ChatMessage::User("run setup".into()));
     state.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls"}),
     });
@@ -441,6 +446,7 @@ fn server_side_tool_rejection_lands_in_transcript() {
     let mut s = AppState::new();
     s.messages.push(ChatMessage::User("try `rm -rf /`".into()));
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "rm -rf /"}),
     });
@@ -498,15 +504,18 @@ fn full_panel_at_user_terminal_size_140x40() {
         delta: "Inspecting the existing router to understand the auth surface.".into(),
     });
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src/http"}),
     });
     s.apply(DomainEvent::ToolFinished {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         output: "router.rs\nmiddleware.rs".into(),
         is_error: false,
     });
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-2".into(),
         tool_name: "read".into(),
         input: serde_json::json!({"path": "src/http/middleware.rs"}),
     });
@@ -541,15 +550,18 @@ fn design_canonical_with_tool_step_grouped_120x36() {
     s.messages
         .push(ChatMessage::User("Review the auth middleware".into()));
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src/http"}),
     });
     s.apply(DomainEvent::ToolFinished {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         output: "router.rs\nmiddleware.rs".into(),
         is_error: false,
     });
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-2".into(),
         tool_name: "read".into(),
         input: serde_json::json!({"path": "src/http/middleware.rs"}),
     });
@@ -577,6 +589,7 @@ fn design_working_state_120x36() {
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
     s.apply(DomainEvent::ToolStarted {
+        call_id: "call-1".into(),
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src/http"}),
     });
@@ -600,4 +613,73 @@ fn design_waiting_approval_state_120x36() {
         }],
     )));
     insta::assert_snapshot!(render_buf(&s, 120, 36));
+}
+
+#[test]
+fn expanded_tool_details_show_structured_input_and_output() {
+    let mut state = AppState::new();
+    state.apply(DomainEvent::Connected);
+    state.tool_details_expanded = true;
+    state
+        .messages
+        .push(ChatMessage::User("run the tests".into()));
+    state.apply(DomainEvent::ToolStarted {
+        call_id: "test-call".into(),
+        tool_name: "bash".into(),
+        input: serde_json::json!({
+            "command": "cargo test -p sylvander-tui --locked",
+            "cwd": "/workspace/Sylvander"
+        }),
+    });
+    state.apply(DomainEvent::ToolFinished {
+        call_id: "test-call".into(),
+        tool_name: "bash".into(),
+        output: "running 130 tests\ntest result: ok. 130 passed\nfinished in 0.12s".into(),
+        is_error: false,
+    });
+    insta::assert_snapshot!(render_buf(&state, 110, 30));
+}
+
+#[test]
+fn command_line_accepts_arguments() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use sylvander_tui::modal::{CommandPalette, Modal};
+
+    let mut state = AppState::new();
+    let mut commands = CommandPalette::new();
+    for character in "theme midnight".chars() {
+        commands.handle_key(
+            &KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            &mut state,
+        );
+    }
+    state.modals.push(Box::new(commands));
+    insta::assert_snapshot!(render_buf(&state, 110, 30));
+}
+
+#[test]
+fn help_is_a_visible_interaction_surface() {
+    use sylvander_tui::modal::HelpModal;
+
+    let mut state = AppState::new();
+    state
+        .modals
+        .push(Box::new(HelpModal::new(Some("tools")).unwrap()));
+    insta::assert_snapshot!(render_buf(&state, 110, 30));
+}
+
+#[test]
+fn empty_question_submission_stays_open_with_feedback() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = AppState::new();
+    state.apply(DomainEvent::AskUserRequested {
+        call_id: "question-1".into(),
+        question: "Describe the desired behavior".into(),
+        options: Vec::new(),
+        multi_select: false,
+    });
+    state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(state.modals.len(), 1);
+    insta::assert_snapshot!(render_buf(&state, 110, 30));
 }

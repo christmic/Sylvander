@@ -1,0 +1,34 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 110, 30)"
+---
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                      ┌ Agent asks (free text) ────────────────────────────────────────┐                      
+                      │Describe the desired behavior                                   │                      
+                      │                                                                │                      
+                      │Type your answer:                                               │                      
+                      │>                                                               │                      
+                      │                                                                │                      
+                      │! Choose an option, type an answer, or press Esc to cancel      │                      
+                      │Enter submit   Esc cancel and unblock Agent                     │                      
+                      └────────────────────────────────────────────────────────────────┘                      
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                             
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0 tok                                connecting…   draft local

@@ -14,7 +14,7 @@ expression: "render_buf(&state, 90, 22)"
                   │Type your answer:                                   │                  
                   │> the loader hangs on cold start                    │                  
                   │                                                    │                  
-                  │Enter: submit   Esc: cancel                         │                  
+                  │Enter submit   Esc cancel and unblock Agent         │                  
                   │                                                    │                  
                   └────────────────────────────────────────────────────┘                  
                                                                                           
@@ -23,4 +23,4 @@ expression: "render_buf(&state, 90, 22)"
 ──────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo
+◌ connecting · model — · branch — · session —

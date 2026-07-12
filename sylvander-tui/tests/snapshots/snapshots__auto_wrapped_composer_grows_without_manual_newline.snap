@@ -21,4 +21,4 @@ expression: "render_buf(&state, 120, 20)"
 > abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123
   456789                                                                                                                
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0t                                             connecting…   draft local
+◌ connecting · model — · branch — · session — · 0 tok                                          connecting…   draft local
