@@ -226,9 +226,12 @@ final class DashboardViewModel: ObservableObject {
     private let client: Token9Client
     private var timer: Timer?
     private var lastSuccessfulBuckets: [StatBucketDto] = []
+    private var lastHeatmapBuckets: [StatBucketDto] = []
     private var lastSuccessfulRateLimits: [RateLimitDto] = []
     private var lastQueryFrom: String = ""
     private var lastQueryTo: String = ""
+    private var heatmapQueryFrom: String = ""
+    private var heatmapQueryTo: String = ""
     private var loadedRange: RangeKey?
 
     init(client: Token9Client = Token9Client()) {
@@ -258,13 +261,20 @@ final class DashboardViewModel: ObservableObject {
         loading = true
         defer { loading = false }
         let (from, to) = range.range()
+        let heatmapRange = range.heatmapRange()
         do {
-            let buckets = try await client.stats(from: from, to: to).buckets
+            async let selectedCall = client.stats(from: from, to: to)
+            async let heatmapCall = client.stats(from: heatmapRange.from, to: heatmapRange.to)
+            let buckets = try await selectedCall.buckets
+            let heatmapBuckets = try await heatmapCall.buckets
             let rates = (try? await client.rateLimits().rate_limits) ?? []
             lastSuccessfulBuckets = buckets
+            lastHeatmapBuckets = heatmapBuckets
             lastSuccessfulRateLimits = rates
             lastQueryFrom = from
             lastQueryTo = to
+            heatmapQueryFrom = heatmapRange.from
+            heatmapQueryTo = heatmapRange.to
             loadedRange = range
             hasSuccessfulLoad = true
             error = nil
@@ -295,7 +305,7 @@ final class DashboardViewModel: ObservableObject {
         // 2. Daily aggregation — independent of groupBy so the heatmap
         // doesn't recolor on tool/model toggle (checklist §6 D).
         daily = DashboardAggregator.aggregateDaily(
-            buckets: buckets, from: lastQueryFrom, to: lastQueryTo
+            buckets: lastHeatmapBuckets, from: heatmapQueryFrom, to: heatmapQueryTo
         )
 
         // 3. Group aggregation with stable tiebreak.

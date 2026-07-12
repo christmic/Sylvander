@@ -59,10 +59,19 @@ enum RangeKey: String, CaseIterable, Identifiable {
     /// this range. Single-day ranges (yesterday / today) hide it per
     /// checklist §6 D1.
     var showsHeatmap: Bool {
-        switch self {
-        case .yesterday, .today: return false
-        case .week, .lastWeek, .month, .year: return true
+        true
+    }
+
+    /// The heatmap has its own stable window. Summary/cards still use
+    /// `range()`, while the visual history stays comparable across tabs.
+    func heatmapRange(now: Date = Date(), calendar: Calendar = .current) -> (from: String, to: String) {
+        if self == .year {
+            let currentMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
+            let start = calendar.date(byAdding: .month, value: -11, to: currentMonth) ?? now
+            return (fmt(start), fmt(now))
         }
+        let start = calendar.date(byAdding: .day, value: -29, to: now) ?? now
+        return (fmt(start), fmt(now))
     }
 
     /// Subtitle text shown above the heatmap.
@@ -70,36 +79,14 @@ enum RangeKey: String, CaseIterable, Identifiable {
     /// - month: "yyyy年M月"
     /// - year:  "yyyy"
     func heatmapTitle(now: Date = Date(), calendar: Calendar = .current) -> String {
-        let (fromK, toK) = range(now: now, calendar: calendar)
-        switch self {
-        case .week, .lastWeek:
-            guard let start = Fmt.parseDateKey(fromK, calendar: calendar),
-                  let end = calendar.date(byAdding: .day, value: 6, to: start)
-            else { return "\(fromK)–\(toK)" }
-            let formatter = DateFormatter()
-            formatter.calendar = calendar
-            formatter.locale = Locale(identifier: "zh_CN")
-            formatter.dateFormat = "M.d"
-            return "\(formatter.string(from: start))—\(formatter.string(from: end))"
-        case .month:
-            return monthTitle(now: now, calendar: calendar)
-        case .year:
-            return yearTitle(now: now, calendar: calendar)
-        case .yesterday, .today:
-            return ""
-        }
-    }
-
-    private func monthTitle(now: Date, calendar: Calendar) -> String {
-        let f = DateFormatter()
-        f.calendar = calendar
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "yyyy年M月"
-        return f.string(from: now)
-    }
-
-    private func yearTitle(now: Date, calendar: Calendar) -> String {
-        let comps = calendar.dateComponents([.year], from: now)
-        return "\(comps.year ?? 0)"
+        let window = heatmapRange(now: now, calendar: calendar)
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = self == .year ? "yyyy.MM" : "M.d"
+        guard let start = Fmt.parseDateKey(window.from, calendar: calendar),
+              let end = Fmt.parseDateKey(window.to, calendar: calendar)
+        else { return "\(window.from)—\(window.to)" }
+        return "\(formatter.string(from: start))—\(formatter.string(from: end))"
     }
 }

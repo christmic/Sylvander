@@ -75,8 +75,15 @@ struct DashboardView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            BrandMark()
-                .frame(width: 50, height: 50)
+            Image(systemName: "timer")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(LinearGradient(
+                    colors: [palette.accent, palette.secondary],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .frame(width: 42, height: 42)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
                 Text("token9").font(.system(size: 15, weight: .bold))
                     .foregroundStyle(T.textPrimary)

@@ -11,9 +11,9 @@ final class RangeKeyTests: XCTestCase {
         XCTAssertTrue(RangeKey.year.showsHeatmap)
     }
 
-    func test_showsHeatmap_falseForSingleDayRanges() {
-        XCTAssertFalse(RangeKey.yesterday.showsHeatmap)
-        XCTAssertFalse(RangeKey.today.showsHeatmap)
+    func test_showsHeatmap_trueForSingleDayRanges() {
+        XCTAssertTrue(RangeKey.yesterday.showsHeatmap)
+        XCTAssertTrue(RangeKey.today.showsHeatmap)
     }
 
     func test_yearRange_isJanFirstThroughToday() {
@@ -24,21 +24,24 @@ final class RangeKeyTests: XCTestCase {
         XCTAssertEqual(to, "2026-07-12")
     }
 
-    func test_heatmapTitle_monthUsesLocalizedChineseLabel() {
+    func test_heatmapTitle_monthUsesRollingWindow() {
         let cal = Calendar(identifier: .gregorian)
         let now = cal.date(from: DateComponents(year: 2026, month: 7, day: 12))!
         let title = RangeKey.month.heatmapTitle(now: now, calendar: cal)
-        XCTAssertEqual(title, "2026年7月")
+        XCTAssertEqual(title, "6.13—7.12")
     }
 
     func test_heatmapTitle_yearIsFourDigits() {
         let cal = Calendar(identifier: .gregorian)
         let now = cal.date(from: DateComponents(year: 2026, month: 7, day: 12))!
-        XCTAssertEqual(RangeKey.year.heatmapTitle(now: now, calendar: cal), "2026")
+        XCTAssertEqual(RangeKey.year.heatmapTitle(now: now, calendar: cal), "2025.08—2026.07")
     }
 
-    func test_heatmapTitle_singleDayIsEmpty() {
-        XCTAssertEqual(RangeKey.today.heatmapTitle(), "")
-        XCTAssertEqual(RangeKey.yesterday.heatmapTitle(), "")
+    func test_heatmapRange_monthIsThirtyDays() {
+        let cal = Calendar(identifier: .gregorian)
+        let now = cal.date(from: DateComponents(year: 2026, month: 7, day: 12))!
+        let window = RangeKey.today.heatmapRange(now: now, calendar: cal)
+        XCTAssertEqual(window.from, "2026-06-13")
+        XCTAssertEqual(window.to, "2026-07-12")
     }
 }

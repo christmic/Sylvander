@@ -71,16 +71,8 @@ struct ActivityHeatmapView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch range {
-        case .week, .lastWeek:
-            weekStrip
-        case .month:
-            monthGrid
-        case .year:
-            yearGrid
-        case .yesterday, .today:
-            EmptyView()
-        }
+        if range == .year { yearGrid }
+        else { monthGrid }
     }
 
     private var weekStrip: some View {
@@ -109,8 +101,8 @@ struct ActivityHeatmapView: View {
         // starting from the calendar's first weekday.
         let cells = monthCells
         let firstWeekday = Calendar.current.firstWeekday  // 1=Sun, 2=Mon...
-        let cellSize: CGFloat = 11
-        let gap: CGFloat = 3
+        let cellSize: CGFloat = 14
+        let gap: CGFloat = 4
         let totalCells = cells.count
         let weeks = Int((Double(totalCells) / 7.0).rounded(.up))
         return HStack(alignment: .top, spacing: 4) {
@@ -141,6 +133,7 @@ struct ActivityHeatmapView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var yearGrid: some View {
@@ -148,8 +141,8 @@ struct ActivityHeatmapView: View {
         let gap: CGFloat = 2
         return VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 0) {
-                ForEach(1...12, id: \.self) { month in
-                    Text("\(month)月")
+                ForEach(yearMonthLabels, id: \.self) { month in
+                    Text(month)
                         .font(.system(size: 7.5))
                         .foregroundStyle(T.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,10 +263,12 @@ struct ActivityHeatmapView: View {
     /// Year cells as an array of weeks, each week is 7 entries (some nil).
     private var yearCells: [[DailyUsage?]] {
         let cal = Calendar.current
-        // Anchor to Jan 1 of the year so we get a fixed column count.
-        let comps = cal.dateComponents([.year], from: now)
-        guard let yearStart = cal.date(from: comps),
-              let yearEnd = cal.date(byAdding: .year, value: 1, to: yearStart)
+        guard let first = orderedDays.first?.date else { return [] }
+        let startComponents = cal.dateComponents([.year, .month], from: first)
+        let endComponents = cal.dateComponents([.year, .month], from: now)
+        guard let yearStart = cal.date(from: startComponents),
+              let currentMonth = cal.date(from: endComponents),
+              let yearEnd = cal.date(byAdding: .month, value: 1, to: currentMonth)
         else { return [] }
         let firstWeekday = cal.firstWeekday
         let pad = ((cal.component(.weekday, from: yearStart) - firstWeekday) + 7) % 7
@@ -297,6 +292,16 @@ struct ActivityHeatmapView: View {
         }
         _ = yearEnd  // (placeholder if we later want last-week clipping)
         return out
+    }
+
+    private var yearMonthLabels: [String] {
+        guard let first = orderedDays.first?.date else { return [] }
+        let calendar = Calendar.current
+        let start = calendar.date(from: calendar.dateComponents([.year, .month], from: first)) ?? first
+        return (0..<12).compactMap { offset in
+            guard let date = calendar.date(byAdding: .month, value: offset, to: start) else { return nil }
+            return "\(calendar.component(.month, from: date))月"
+        }
     }
 
     // MARK: Lookup helpers
