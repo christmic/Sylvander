@@ -8,14 +8,14 @@ expression: "render_buf(&state, 90, 22)"
               ┌ Sessions ───────────────────────────────────────────────────┐             
               │Search sessions… _                                           │             
               │─────────────────────────────────────────────────────────────│             
+              │  ▾ ~/Projects/acme-api                                      │             
               │  ›   auth-refactor           working   ~/Projects/acme-api  │             
               │        2m ago                                               │             
               │      auth-debug              waiting   ~/Projects/acme-api  │             
               │        1h ago                                               │             
+              │  ▾ ~/Projects/web                                           │             
               │      login-tests             complete  ~/Projects/web       │             
               │        1d ago                                               │             
-              │                                                             │             
-              │                                                             │             
               │                                                             │             
               │                                                             │             
               │                                                             │             

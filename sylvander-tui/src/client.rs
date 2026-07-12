@@ -203,6 +203,10 @@ pub enum ServerMsg {
         approval_enabled: bool,
         max_attachment_bytes: usize,
     },
+    OperationError {
+        operation: String,
+        message: String,
+    },
     Pong,
 }
 
@@ -512,6 +516,9 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             label,
             archived,
         },
+        ServerMsg::OperationError { operation, message } => {
+            DomainEvent::OperationFailed { operation, message }
+        }
         ServerMsg::IterationEnd {
             iteration,
             input_tokens,
@@ -547,6 +554,19 @@ mod tests {
                 approval_enabled: true,
                 max_attachment_bytes: 4096,
             }) if model == "claude-test"
+        ));
+    }
+
+    #[test]
+    fn operation_errors_do_not_impersonate_agent_failures() {
+        let event = parse_server_msg(ServerMsg::OperationError {
+            operation: "load_session".into(),
+            message: "not found".into(),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::OperationFailed { operation, message })
+                if operation == "load_session" && message == "not found"
         ));
     }
 
