@@ -105,6 +105,12 @@ impl AgentService {
             Action::ArchiveSession { session_id } => ClientMsg::ArchiveSession { session_id },
             Action::RestoreSession { session_id } => ClientMsg::RestoreSession { session_id },
             Action::DeleteSession { session_id } => ClientMsg::DeleteSession { session_id },
+            Action::CopyText { .. } => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "clipboard actions belong to the terminal runtime",
+                ));
+            }
             Action::ForkSession { session_id } => ClientMsg::ForkSession { session_id },
             Action::Quit => return Ok(()),
         };

@@ -71,7 +71,7 @@ completed backend feature.
 - [x] Independent tool calls execute concurrently and render as one deterministic batch.
 - [x] Tool timeout, rejection, error, and turn cancellation settle pending rows explicitly.
 - [ ] LLM retries and partial tool output have typed lifecycle events and render incrementally.
-- [ ] Long output supports expand, focused inspection, copy, and search.
+- [x] Long output supports expand, focused inspection, copy, and search.
 - [x] ANSI/control sequences are sanitized and secrets are masked.
 
 ### Composer and context attachment
@@ -99,7 +99,7 @@ completed backend feature.
 ### Core commands
 
 - [x] Session: `/resume`, `/rename`, `/fork`.
-- [ ] Work: `/diff`, `/review`, `/copy`, `/mention`.
+- [ ] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
 - [ ] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.
 - [ ] Commands support fuzzy matching, completion, aliases, recent ordering,

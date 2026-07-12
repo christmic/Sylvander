@@ -1,7 +1,7 @@
 //! Application commands exposed through the `/` command line.
 
 use crate::app::{AppMode, AppState, ChatMessage};
-use crate::modal::{HelpModal, SessionsOverlay};
+use crate::modal::{HelpModal, SessionsOverlay, ToolInspector};
 use crate::theme::ThemeName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub enum CommandId {
     Queue,
     Tasks,
     Attachments,
+    Inspect,
+    Copy,
     Status,
     Quit,
 }
@@ -122,6 +124,20 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/status",
         description: "Show runtime and token usage",
         hint: "local",
+    },
+    CommandSpec {
+        id: CommandId::Inspect,
+        name: "inspect",
+        usage: "/inspect [call-id-prefix]",
+        description: "Open searchable output for a completed tool call",
+        hint: "long output",
+    },
+    CommandSpec {
+        id: CommandId::Copy,
+        name: "copy",
+        usage: "/copy [call-id-prefix]",
+        description: "Copy a tool result through the terminal clipboard",
+        hint: "OSC 52",
     },
     CommandSpec {
         id: CommandId::Quit,
@@ -400,6 +416,17 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.output_tokens
             )));
         }
+        CommandId::Inspect => {
+            let prefix = optional_one_arg(&invocation)?;
+            let (call_id, tool_name, output) = find_tool_output(state, prefix)?;
+            state.modals.push(Box::new(ToolInspector::new(call_id, tool_name, output)));
+        }
+        CommandId::Copy => {
+            let prefix = optional_one_arg(&invocation)?;
+            let (call_id, _, output) = find_tool_output(state, prefix)?;
+            state.pending_actions.push(crate::event::Action::CopyText { text: output });
+            state.status = format!("Copying tool output {}…", &call_id[..8.min(call_id.len())]);
+        }
         CommandId::Quit => {
             require_no_args(&invocation)?;
             state.should_quit = true;
@@ -458,6 +485,35 @@ fn exactly_one_arg<'a>(invocation: &'a Invocation<'a>) -> Result<&'a str, String
     }
 }
 
+fn optional_one_arg<'a>(invocation: &'a Invocation<'a>) -> Result<Option<&'a str>, String> {
+    match invocation.args.as_slice() {
+        [] => Ok(None),
+        [argument] => Ok(Some(*argument)),
+        _ => Err(format!("Usage: {}", invocation.spec.usage)),
+    }
+}
+
+fn find_tool_output(
+    state: &AppState,
+    prefix: Option<&str>,
+) -> Result<(String, String, String), String> {
+    let matches = state.messages.iter().rev().flat_map(|message| match message {
+        ChatMessage::ToolStep { children, .. } => children.as_slice(),
+        _ => &[],
+    }).filter(|child| child.output.is_some() && prefix.map_or(true, |prefix| child.call_id.starts_with(prefix)))
+        .collect::<Vec<_>>();
+    let child = match (prefix, matches.as_slice()) {
+        (_, []) => return Err("No completed tool output matches".into()),
+        (Some(prefix), [_, _, ..]) => return Err(format!("Tool prefix `{prefix}` is ambiguous")),
+        (_, [child, ..]) => *child,
+    };
+    Ok((
+        child.call_id.clone(),
+        child.name.clone(),
+        child.output.clone().expect("filtered output"),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,6 +542,31 @@ mod tests {
         execute(parse("tools expand").unwrap(), &mut state).unwrap();
         assert!(state.tool_details_expanded);
         assert!(execute(parse("tools sideways").unwrap(), &mut state).is_err());
+    }
+
+    #[test]
+    fn inspect_and_copy_resolve_completed_tool_outputs_by_prefix() {
+        let mut state = AppState::new();
+        state.messages.push(ChatMessage::ToolStep {
+            name: "Run".into(),
+            started_at_secs: 0,
+            children: vec![crate::app::ToolStepChild {
+                call_id: "call-abcdef".into(),
+                name: "bash".into(),
+                status: crate::app::ToolStatus::Done,
+                input: serde_json::json!({"command":"test"}),
+                output: Some("line one\nline two".into()),
+                is_error: Some(false),
+            }],
+        });
+        execute(parse("inspect call-a").unwrap(), &mut state).unwrap();
+        assert_eq!(state.modals.top().map(|modal| modal.title()), Some("Tool output"));
+        state.modals.pop();
+        execute(parse("copy call-a").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::CopyText { text }] if text == "line one\nline two"
+        ));
     }
 
     #[test]
