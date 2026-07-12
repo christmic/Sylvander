@@ -52,6 +52,9 @@ pub enum DomainEvent {
         label: Option<String>,
         archived: bool,
     },
+    SessionDeleted {
+        session_id: String,
+    },
     OperationFailed {
         operation: String,
         message: String,
@@ -215,6 +218,9 @@ pub enum Action {
         session_id: String,
     },
     RestoreSession {
+        session_id: String,
+    },
+    DeleteSession {
         session_id: String,
     },
     ForkSession {

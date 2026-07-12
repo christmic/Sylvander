@@ -90,6 +90,9 @@ pub struct SessionsOverlay {
     pub filter_focused: bool,
     /// When in delete-confirm mode: index of the entry pending delete.
     pub pending_delete: Option<usize>,
+    /// Destructive delete is separate from archive and requires typing DELETE.
+    pub pending_permanent_delete: Option<usize>,
+    pub permanent_delete_buffer: String,
     /// Original entry index currently being renamed.
     pub renaming: Option<usize>,
     pub rename_buffer: String,
@@ -108,6 +111,8 @@ impl SessionsOverlay {
             filter: String::new(),
             filter_focused: true,
             pending_delete: None,
+            pending_permanent_delete: None,
+            permanent_delete_buffer: String::new(),
             renaming: None,
             rename_buffer: String::new(),
         }
@@ -244,6 +249,12 @@ impl Modal for SessionsOverlay {
                 Span::styled("_", theme::active()),
                 Span::styled("  Enter save · Esc cancel", theme::text_muted()),
             ])
+        } else if self.pending_permanent_delete.is_some() {
+            Line::from(vec![
+                Span::styled("Permanent delete: type DELETE ", theme::danger()),
+                Span::styled(&self.permanent_delete_buffer, theme::text()),
+                Span::styled("_  Enter confirm · Esc cancel", theme::text_muted()),
+            ])
         } else if self.pending_delete.is_some() {
             Line::from(vec![
                 Span::styled("Delete this session? ", theme::warning()),
@@ -251,12 +262,12 @@ impl Modal for SessionsOverlay {
             ])
         } else if self.filter_focused {
             Line::from(Span::styled(
-                "type to filter   ↓/↑ select   enter open   ctrl+n new   r rename   d archive   ctrl+z undo",
+                "type filter · ↑↓ select · ↵ open · d archive · D delete",
                 theme::text_muted(),
             ))
         } else {
             Line::from(Span::styled(
-                "↓/↑ select   enter open   ctrl+n new   r rename   d archive   ctrl+z undo",
+                "↑↓ select · ↵ open · r rename · d archive · D delete",
                 theme::text_muted(),
             ))
         };
@@ -304,6 +315,42 @@ impl Modal for SessionsOverlay {
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
                     self.rename_buffer.push(character);
+                }
+                _ => {}
+            }
+            state.dirty.mark();
+            return Consumed::Yes { dismiss: false };
+        }
+
+        if let Some(index) = self.pending_permanent_delete {
+            match key.code {
+                KeyCode::Esc => {
+                    self.pending_permanent_delete = None;
+                    self.permanent_delete_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.permanent_delete_buffer.pop();
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.permanent_delete_buffer.push(character);
+                }
+                KeyCode::Enter if self.permanent_delete_buffer == "DELETE" => {
+                    if let Some(entry) = self.entries.get(index) {
+                        state.pending_actions.push(crate::event::Action::DeleteSession {
+                            session_id: entry.id.clone(),
+                        });
+                        state.status = format!("Permanently deleting {}…", entry.label);
+                    }
+                    self.pending_permanent_delete = None;
+                    self.permanent_delete_buffer.clear();
+                    state.mode = AppMode::Normal;
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: true };
+                }
+                KeyCode::Enter => {
+                    state.status = "Type DELETE exactly to confirm permanent deletion".into();
                 }
                 _ => {}
             }
@@ -428,6 +475,14 @@ impl Modal for SessionsOverlay {
             KeyCode::Char('d') if !self.filter_focused => {
                 if let Some((original_index, _entry)) = self.filtered().get(self.cursor) {
                     self.pending_delete = Some(*original_index);
+                    state.dirty.mark();
+                }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('D') if !self.filter_focused => {
+                if let Some((original_index, _entry)) = self.filtered().get(self.cursor) {
+                    self.pending_permanent_delete = Some(*original_index);
+                    self.permanent_delete_buffer.clear();
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
@@ -606,6 +661,29 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::RestoreSession { session_id }] if session_id == "a"
         ));
+    }
+
+    #[test]
+    fn permanent_delete_requires_exact_typed_confirmation() {
+        let mut state = AppState::new();
+        let mut overlay = SessionsOverlay::new(vec![entry(
+            "a",
+            "Critical work",
+            SessionStatus::Complete,
+            60,
+        )]);
+        overlay.filter_focused = false;
+        overlay.handle_key(&key(KeyCode::Char('D'), KeyModifiers::SHIFT), &mut state);
+        for character in "DELETE".chars() {
+            overlay.handle_key(&key(KeyCode::Char(character), KeyModifiers::SHIFT), &mut state);
+        }
+        let result = overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        assert!(matches!(result, Consumed::Yes { dismiss: true }));
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::DeleteSession { session_id }] if session_id == "a"
+        ));
+        assert_eq!(overlay.entries.len(), 1, "server confirmation owns final removal");
     }
 
     #[test]

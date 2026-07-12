@@ -35,7 +35,7 @@ completed backend feature.
 - [x] Session selection loads persisted conversation history.
 - [x] Rename persists to `SessionStore`.
 - [x] Archive persists as a soft delete and `Ctrl+Z` restores the session with history intact.
-- [ ] Permanent delete requires a separate explicit confirmation and cannot be mistaken for archive.
+- [x] Permanent delete requires typing `DELETE` and cannot be mistaken for archive.
 - [x] Fork creates an independent session at the current completed turn boundary.
 - [x] Resume restores durable token/accounting and replaces rather than mixes transcripts.
 - [x] Session search, accurate recency, workspace grouping, and empty/error states work.

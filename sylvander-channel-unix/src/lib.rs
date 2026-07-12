@@ -92,6 +92,9 @@ enum ClientMsg {
     RestoreSession {
         session_id: String,
     },
+    DeleteSession {
+        session_id: String,
+    },
     ForkSession {
         session_id: String,
     },
@@ -212,6 +215,9 @@ enum ServerMsg {
         session_id: String,
         label: Option<String>,
         archived: bool,
+    },
+    SessionDeleted {
+        session_id: String,
     },
     RuntimeInfo {
         model: String,
@@ -816,6 +822,18 @@ async fn handle_client_msg(
                 Err(error) => warn!(%error, "unix: failed to restore session"),
             }
         }
+        ClientMsg::DeleteSession { session_id } => {
+            let session_id = SessionId::new(session_id);
+            match ctx.sessions.delete(&session_id).await {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionDeleted { session_id: session_id.0 });
+                }
+                Err(error) => {
+                    warn!(%error, "unix: failed to permanently delete session");
+                    operation_error(tx, "delete_session", error.to_string());
+                }
+            }
+        }
         ClientMsg::ForkSession { session_id } => {
             let source_id = SessionId::new(session_id);
             let caller = unix_session_context(agent_id, source_id.clone());
@@ -1149,6 +1167,15 @@ mod tests {
         .await;
         assert_eq!(missing["type"], "operation_error");
         assert_eq!(missing["operation"], "load_session");
+
+        let deleted = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"delete_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(deleted["type"], "session_deleted");
+        assert_eq!(deleted["session_id"], "session-1");
 
         task.abort();
         let _ = std::fs::remove_file(path);
