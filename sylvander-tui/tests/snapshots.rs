@@ -658,6 +658,24 @@ fn command_line_accepts_arguments() {
 }
 
 #[test]
+fn queued_prompt_is_visible_but_not_rendered_as_sent() {
+    let mut state = AppState::new();
+    state.apply(DomainEvent::Connected);
+    state.turn_active = true;
+    state.streaming = "I am still working on the first request.".into();
+    state
+        .messages
+        .push(ChatMessage::User("finish the current implementation".into()));
+    state
+        .messages
+        .push(ChatMessage::QueuedUser("then run the full test suite".into()));
+    state
+        .queued_prompts
+        .push_back("then run the full test suite".into());
+    insta::assert_snapshot!(render_buf(&state, 110, 30));
+}
+
+#[test]
 fn help_is_a_visible_interaction_surface() {
     use sylvander_tui::modal::HelpModal;
 
