@@ -34,8 +34,8 @@ pub struct AppState {
     pub status: String,
     pub mode: AppMode,
     pub iteration: u32,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
     /// True from local submit until a terminal Done/Error/Interrupted event.
     pub turn_active: bool,
     /// Handles the small window before a new session receives its server id.
@@ -329,7 +329,13 @@ impl AppState {
                         .push(Box::new(SessionsOverlay::new(self.sessions.clone())));
                 }
             }
-            DomainEvent::SessionHistoryLoaded { session, messages } => {
+            DomainEvent::SessionHistoryLoaded {
+                session,
+                messages,
+                iterations,
+                input_tokens,
+                output_tokens,
+            } => {
                 self.session_id = Some(session.id.clone());
                 self.metadata.workspace = session.workspace.clone().into();
                 self.messages = messages
@@ -348,6 +354,9 @@ impl AppState {
                 self.queued_prompt_attachments.clear();
                 self.chat_scroll = 0;
                 self.unread_events = 0;
+                self.iteration = iterations;
+                self.input_tokens = input_tokens;
+                self.output_tokens = output_tokens;
                 self.welcomed = !self.messages.is_empty();
                 self.status = format!("Resumed {}", session.label);
                 if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == session.id)
@@ -1260,6 +1269,9 @@ mod tests {
                     text: "restored answer".into(),
                 },
             ],
+            iterations: 4,
+            input_tokens: 800,
+            output_tokens: 120,
         });
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
@@ -1270,6 +1282,7 @@ mod tests {
         assert!(
             matches!(state.messages[1], ChatMessage::Agent(ref text) if text == "restored answer")
         );
+        assert_eq!((state.iteration, state.input_tokens, state.output_tokens), (4, 800, 120));
     }
 
     #[test]

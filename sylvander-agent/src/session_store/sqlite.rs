@@ -29,7 +29,7 @@ use crate::spec::{AgentId, SessionId};
 
 use super::{
     MessageRole, SessionFilter, SessionLifetime, SessionStore, SessionStoreError,
-    StoredMessage, StoredSession,
+    SessionUsage, StoredMessage, StoredSession,
 };
 
 /// SQLite-backed session store.
@@ -164,6 +164,13 @@ CREATE TABLE IF NOT EXISTS session_messages (
     is_summarized   INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL,
     UNIQUE(session_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS session_usage (
+    session_id      TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    iterations      INTEGER NOT NULL DEFAULT 0,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_user
@@ -303,6 +310,33 @@ impl SessionStore for SqliteSessionStore {
             Ok(())
         })
         .await
+    }
+
+    async fn record_usage(
+        &self,
+        id: &SessionId,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<SessionUsage, SessionStoreError> {
+        let id = id.clone();
+        self.run(move |c| {
+            c.execute(
+                "INSERT INTO session_usage (session_id, iterations, input_tokens, output_tokens) \
+                 VALUES (?1, 1, ?2, ?3) \
+                 ON CONFLICT(session_id) DO UPDATE SET \
+                   iterations = iterations + 1, \
+                   input_tokens = input_tokens + excluded.input_tokens, \
+                   output_tokens = output_tokens + excluded.output_tokens",
+                params![id.0, input_tokens, output_tokens],
+            )?;
+            read_usage(c, &id)
+        })
+        .await
+    }
+
+    async fn usage(&self, id: &SessionId) -> Result<SessionUsage, SessionStoreError> {
+        let id = id.clone();
+        self.run(move |c| read_usage(c, &id)).await
     }
 
     async fn delete(&self, id: &SessionId) -> Result<(), SessionStoreError> {
@@ -632,6 +666,18 @@ impl SessionStore for SqliteSessionStore {
     }
 }
 
+fn read_usage(c: &Connection, id: &SessionId) -> Result<SessionUsage, SessionStoreError> {
+    Ok(c.query_row(
+        "SELECT iterations, input_tokens, output_tokens FROM session_usage WHERE session_id = ?1",
+        params![id.0],
+        |row| Ok(SessionUsage {
+            iterations: row.get(0)?,
+            input_tokens: row.get(1)?,
+            output_tokens: row.get(2)?,
+        }),
+    ).optional()?.unwrap_or_default())
+}
+
 // ---------------------------------------------------------------------------
 // Row → struct helpers
 // ---------------------------------------------------------------------------
@@ -877,6 +923,17 @@ mod tests {
         store.archive(&id).await.unwrap();
         store.restore(&id).await.unwrap();
         assert_eq!(store.get(&id).await.unwrap().unwrap().id, id);
+    }
+
+    #[tokio::test]
+    async fn usage_accumulates_atomically_per_session() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let id = SessionId::new("s1");
+        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store.record_usage(&id, 100, 20).await.unwrap();
+        let usage = store.record_usage(&id, 50, 10).await.unwrap();
+        assert_eq!(usage, SessionUsage { iterations: 2, input_tokens: 150, output_tokens: 30 });
+        assert_eq!(store.usage(&id).await.unwrap(), usage);
     }
 
     #[tokio::test]

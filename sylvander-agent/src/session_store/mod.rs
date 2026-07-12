@@ -61,6 +61,13 @@ pub struct StoredSession {
     pub external_meta: HashMap<String, JsonValue>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionUsage {
+    pub iterations: u32,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 impl StoredSession {
     /// Create a new stored session record.
     #[must_use]
@@ -205,6 +212,16 @@ pub trait SessionStore: Send + Sync {
 
     /// Undo a soft-delete. The session and its messages become visible again.
     async fn restore(&self, id: &SessionId) -> Result<(), SessionStoreError>;
+
+    /// Atomically add one model iteration to durable session accounting.
+    async fn record_usage(
+        &self,
+        id: &SessionId,
+        input_tokens: u32,
+        output_tokens: u32,
+    ) -> Result<SessionUsage, SessionStoreError>;
+
+    async fn usage(&self, id: &SessionId) -> Result<SessionUsage, SessionStoreError>;
 
     /// Hard-delete. Cascades through `session_agents` and
     /// `session_messages`. Use only on explicit user action.
