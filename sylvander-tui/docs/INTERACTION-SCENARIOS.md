@@ -84,12 +84,22 @@ Approval is a focus-owning decision layer. Keys never leak into global shortcuts
 or the Composer.
 
 - Each request shows risk, semantic action, and filesystem/process scope.
-- `Enter`, `y`, or `1` approves the selected request.
+- `Enter`, `y`, or `1` approves the selected request once.
+- `s` approves the exact tool-and-arguments request for the current session.
+- `p` persists that exact request across sessions only when the server advertises
+  persistent approval. It is hidden when the operator has not configured a store.
 - `n`, `r`, or `2` rejects it and opens optional feedback input.
-- `a`/`Y` approves all remaining requests; `N` rejects all remaining requests.
+- `a`/`Y` approves all remaining requests once; `N` rejects all remaining requests.
 - `Esc` and `Ctrl+C` reject every pending request before closing. The Agent is
   never left waiting on an abandoned approval modal.
 - Completion appends a compact approved/rejected summary to the transcript.
+
+Approval lifetime is Agent-owned rather than a local TUI preference. The public
+event carries the allowed scopes, transports forward the selected scope without
+interpreting it, and the Agent rejects a forged or unavailable scope. Session
+grants are isolated by session ID. Persistent grants are written atomically and
+match the normalized tool name plus complete JSON arguments; changing a path,
+command, or content requires a new decision.
 
 Risk labels are explanatory, not policy decisions: Read/Search are low, writes
 are medium, shell execution is high, and destructive shell patterns are
