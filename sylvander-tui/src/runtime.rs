@@ -9,7 +9,9 @@ use base64::Engine as _;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
-use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 
 use crate::app::AppState;
 use crate::application::{Application, UserIntent};
@@ -120,6 +122,44 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
                 application.state.dirty.mark();
                 continue;
             }
+            if matches!(effect, crate::event::Action::EditDraft) {
+                disable_raw_mode()?;
+                execute!(
+                    stdout(),
+                    DisableMouseCapture,
+                    DisableBracketedPaste,
+                    LeaveAlternateScreen
+                )?;
+                let original = application.state.composer.text();
+                let editor_task =
+                    tokio::task::spawn_blocking(move || edit_draft_in_external_editor(&original))
+                        .await;
+                enable_raw_mode()?;
+                execute!(
+                    stdout(),
+                    EnterAlternateScreen,
+                    EnableBracketedPaste,
+                    EnableMouseCapture
+                )?;
+                terminal.clear()?;
+                let result = editor_task.unwrap_or_else(|error| {
+                    Err(std::io::Error::other(format!(
+                        "editor task failed: {error}"
+                    )))
+                });
+                match result {
+                    Ok(text) => {
+                        application.state.composer.replace_text(&text);
+                        application.state.save_draft();
+                        application.state.status = "Draft updated from external editor".into();
+                    }
+                    Err(error) => {
+                        application.state.status = format!("Editor failed: {error}");
+                    }
+                }
+                application.state.dirty.mark();
+                continue;
+            }
             if let Err(error) = service.execute(effect).await {
                 application.apply(DomainEvent::Disconnected {
                     reason: error.to_string(),
@@ -162,6 +202,53 @@ fn osc52_sequence(text: &str) -> std::io::Result<String> {
     Ok(format!("\x1b]52;c;{encoded}\x07"))
 }
 
+fn edit_draft_in_external_editor(initial: &str) -> std::io::Result<String> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into());
+    edit_draft_with_command(initial, &editor)
+}
+
+fn edit_draft_with_command(initial: &str, editor: &str) -> std::io::Result<String> {
+    let argv = shell_words::split(&editor).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid editor command: {error}"),
+        )
+    })?;
+    let (program, args) = argv.split_first().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "editor command is empty")
+    })?;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "sylvander-draft-{}-{unique}.md",
+        std::process::id()
+    ));
+    let operation = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(initial.as_bytes())?;
+        file.flush()?;
+        let status = std::process::Command::new(program)
+            .args(args)
+            .arg(&path)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "editor exited with {status}"
+            )));
+        }
+        std::fs::read_to_string(&path)
+    })();
+    let _ = std::fs::remove_file(path);
+    operation
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,11 +256,26 @@ mod tests {
     #[test]
     fn osc52_clipboard_is_bounded_and_round_trips_utf8() {
         let sequence = osc52_sequence("蟹 helper").unwrap();
-        let encoded = sequence.strip_prefix("\x1b]52;c;").unwrap().strip_suffix('\x07').unwrap();
+        let encoded = sequence
+            .strip_prefix("\x1b]52;c;")
+            .unwrap()
+            .strip_suffix('\x07')
+            .unwrap();
         assert_eq!(
-            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(),
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
             "蟹 helper".as_bytes()
         );
         assert!(osc52_sequence(&"x".repeat(100 * 1024 + 1)).is_err());
+    }
+
+    #[test]
+    fn external_editor_replaces_text_only_after_success() {
+        let edited =
+            edit_draft_with_command("before", "sh -c 'printf after > \"$1\"' sylvander-editor")
+                .unwrap();
+        assert_eq!(edited, "after");
+        assert!(edit_draft_with_command("before", "sh -c 'exit 7'").is_err());
     }
 }

@@ -226,6 +226,7 @@ pub enum Action {
     CopyText {
         text: String,
     },
+    EditDraft,
     ForkSession {
         session_id: String,
     },

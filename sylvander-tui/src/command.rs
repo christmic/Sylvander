@@ -21,6 +21,7 @@ pub enum CommandId {
     Attachments,
     Inspect,
     Copy,
+    Editor,
     Status,
     Quit,
 }
@@ -141,6 +142,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "OSC 52",
     },
     CommandSpec {
+        id: CommandId::Editor,
+        name: "editor",
+        usage: "/editor",
+        description: "Edit the current draft in $VISUAL or $EDITOR",
+        hint: "keeps attachments",
+    },
+    CommandSpec {
         id: CommandId::Quit,
         name: "quit",
         usage: "/quit",
@@ -230,9 +238,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .session_id
                 .clone()
                 .ok_or_else(|| "There is no persisted session to fork".to_string())?;
-            state.pending_actions.push(crate::event::Action::ForkSession {
-                session_id,
-            });
+            state
+                .pending_actions
+                .push(crate::event::Action::ForkSession { session_id });
             state.status = "Forking session…".into();
         }
         CommandId::Clear => {
@@ -285,9 +293,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                         .queued_prompts
                         .iter()
                         .enumerate()
-                        .map(|(index, prompt)| {
-                            format!("{}. {}", index + 1, compact_prompt(prompt))
-                        })
+                        .map(|(index, prompt)| format!("{}. {}", index + 1, compact_prompt(prompt)))
                         .collect::<Vec<_>>()
                         .join("\n");
                     state
@@ -314,7 +320,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 let index = queue_index(index, state.queued_prompts.len(), invocation.spec.usage)?;
                 let replacement = replacement.join(" ");
                 let previous = std::mem::replace(
-                    state.queued_prompts.get_mut(index).expect("validated index"),
+                    state
+                        .queued_prompts
+                        .get_mut(index)
+                        .expect("validated index"),
                     replacement.clone(),
                 );
                 if let Some(message) = state.messages.iter_mut().find(
@@ -328,42 +337,63 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
         },
         CommandId::Tasks => match invocation.args.as_slice() {
             [] => {
-                let tasks = state.messages.iter().flat_map(|message| match message {
-                    ChatMessage::TaskList { tasks } => tasks.as_slice(),
-                    _ => &[],
-                }).collect::<Vec<_>>();
+                let tasks = state
+                    .messages
+                    .iter()
+                    .flat_map(|message| match message {
+                        ChatMessage::TaskList { tasks } => tasks.as_slice(),
+                        _ => &[],
+                    })
+                    .collect::<Vec<_>>();
                 if tasks.is_empty() {
-                    state.messages.push(ChatMessage::Info("No background tasks".into()));
+                    state
+                        .messages
+                        .push(ChatMessage::Info("No background tasks".into()));
                 } else {
-                    let text = tasks.iter().map(|task| {
-                        format!(
-                            "{} · {:?} · {}\n  {}",
-                            task.task_id, task.state, task.purpose, task.detail
-                        )
-                    }).collect::<Vec<_>>().join("\n");
-                    state.messages.push(ChatMessage::Info(format!("Background tasks:\n{text}")));
+                    let text = tasks
+                        .iter()
+                        .map(|task| {
+                            format!(
+                                "{} · {:?} · {}\n  {}",
+                                task.task_id, task.state, task.purpose, task.detail
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    state
+                        .messages
+                        .push(ChatMessage::Info(format!("Background tasks:\n{text}")));
                 }
             }
             ["cancel", prefix] => {
-                let session_id = state.session_id.clone()
+                let session_id = state
+                    .session_id
+                    .clone()
                     .ok_or_else(|| "There is no active session".to_string())?;
-                let matches = state.messages.iter().flat_map(|message| match message {
-                    ChatMessage::TaskList { tasks } => tasks.as_slice(),
-                    _ => &[],
-                }).filter(|task| {
-                    task.task_id.starts_with(prefix)
-                        && task.state == crate::app::TaskState::Running
-                }).collect::<Vec<_>>();
+                let matches = state
+                    .messages
+                    .iter()
+                    .flat_map(|message| match message {
+                        ChatMessage::TaskList { tasks } => tasks.as_slice(),
+                        _ => &[],
+                    })
+                    .filter(|task| {
+                        task.task_id.starts_with(prefix)
+                            && task.state == crate::app::TaskState::Running
+                    })
+                    .collect::<Vec<_>>();
                 let task = match matches.as_slice() {
                     [task] => *task,
                     [] => return Err(format!("No running task matches `{prefix}`")),
                     _ => return Err(format!("Task prefix `{prefix}` is ambiguous")),
                 };
                 let task_id = task.task_id.clone();
-                state.pending_actions.push(crate::event::Action::CancelTask {
-                    session_id,
-                    task_id: task_id.clone(),
-                });
+                state
+                    .pending_actions
+                    .push(crate::event::Action::CancelTask {
+                        session_id,
+                        task_id: task_id.clone(),
+                    });
                 state.status = format!("Cancelling task {}…", &task_id[..8.min(task_id.len())]);
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
@@ -371,12 +401,21 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
         CommandId::Attachments => match invocation.args.as_slice() {
             [] => {
                 if state.composer.attachments.is_empty() {
-                    state.messages.push(ChatMessage::Info("No draft attachments".into()));
+                    state
+                        .messages
+                        .push(ChatMessage::Info("No draft attachments".into()));
                 } else {
-                    let text = state.composer.attachments.iter().enumerate()
+                    let text = state
+                        .composer
+                        .attachments
+                        .iter()
+                        .enumerate()
                         .map(|(index, attachment)| format!("{}. {}", index + 1, attachment.label()))
-                        .collect::<Vec<_>>().join("\n");
-                    state.messages.push(ChatMessage::Info(format!("Draft attachments:\n{text}")));
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    state
+                        .messages
+                        .push(ChatMessage::Info(format!("Draft attachments:\n{text}")));
                 }
             }
             ["clear"] => {
@@ -384,14 +423,24 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.status = "Cleared draft attachments".into();
             }
             ["drop", raw] => {
-                let index = attachment_index(raw, state.composer.attachment_count(), invocation.spec.usage)?;
+                let index = attachment_index(
+                    raw,
+                    state.composer.attachment_count(),
+                    invocation.spec.usage,
+                )?;
                 state.composer.remove_attachment(index);
                 state.status = format!("Removed attachment {}", index + 1);
             }
             [direction @ ("up" | "down"), raw] => {
-                let index = attachment_index(raw, state.composer.attachment_count(), invocation.spec.usage)?;
+                let index = attachment_index(
+                    raw,
+                    state.composer.attachment_count(),
+                    invocation.spec.usage,
+                )?;
                 let target = if *direction == "up" {
-                    index.checked_sub(1).ok_or_else(|| "Attachment is already first".to_string())?
+                    index
+                        .checked_sub(1)
+                        .ok_or_else(|| "Attachment is already first".to_string())?
                 } else {
                     let target = index + 1;
                     if target >= state.composer.attachment_count() {
@@ -403,7 +452,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.status = format!("Moved attachment {}", index + 1);
             }
             ["selection"] => {
-                let selected = state.composer.selected_text()
+                let selected = state
+                    .composer
+                    .selected_text()
                     .ok_or_else(|| "Select composer text with Shift+Arrow first".to_string())?;
                 state.composer.attach_text(
                     AttachmentKind::Selection,
@@ -446,13 +497,22 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
         CommandId::Inspect => {
             let prefix = optional_one_arg(&invocation)?;
             let (call_id, tool_name, output) = find_tool_output(state, prefix)?;
-            state.modals.push(Box::new(ToolInspector::new(call_id, tool_name, output)));
+            state
+                .modals
+                .push(Box::new(ToolInspector::new(call_id, tool_name, output)));
         }
         CommandId::Copy => {
             let prefix = optional_one_arg(&invocation)?;
             let (call_id, _, output) = find_tool_output(state, prefix)?;
-            state.pending_actions.push(crate::event::Action::CopyText { text: output });
+            state
+                .pending_actions
+                .push(crate::event::Action::CopyText { text: output });
             state.status = format!("Copying tool output {}…", &call_id[..8.min(call_id.len())]);
+        }
+        CommandId::Editor => {
+            require_no_args(&invocation)?;
+            state.pending_actions.push(crate::event::Action::EditDraft);
+            state.status = "Opening external editor…".into();
         }
         CommandId::Quit => {
             require_no_args(&invocation)?;
@@ -524,10 +584,18 @@ fn find_tool_output(
     state: &AppState,
     prefix: Option<&str>,
 ) -> Result<(String, String, String), String> {
-    let matches = state.messages.iter().rev().flat_map(|message| match message {
-        ChatMessage::ToolStep { children, .. } => children.as_slice(),
-        _ => &[],
-    }).filter(|child| child.output.is_some() && prefix.map_or(true, |prefix| child.call_id.starts_with(prefix)))
+    let matches = state
+        .messages
+        .iter()
+        .rev()
+        .flat_map(|message| match message {
+            ChatMessage::ToolStep { children, .. } => children.as_slice(),
+            _ => &[],
+        })
+        .filter(|child| {
+            child.output.is_some()
+                && prefix.map_or(true, |prefix| child.call_id.starts_with(prefix))
+        })
         .collect::<Vec<_>>();
     let child = match (prefix, matches.as_slice()) {
         (_, []) => return Err("No completed tool output matches".into()),
@@ -572,6 +640,16 @@ mod tests {
     }
 
     #[test]
+    fn editor_command_is_a_local_runtime_effect() {
+        let mut state = AppState::new();
+        execute(parse("editor").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::EditDraft]
+        ));
+    }
+
+    #[test]
     fn inspect_and_copy_resolve_completed_tool_outputs_by_prefix() {
         let mut state = AppState::new();
         state.messages.push(ChatMessage::ToolStep {
@@ -587,10 +665,16 @@ mod tests {
             }],
         });
         execute(parse("inspect call-a").unwrap(), &mut state).unwrap();
-        assert_eq!(state.modals.top().map(|modal| modal.title()), Some("Tool output"));
+        assert_eq!(
+            state.modals.top().map(|modal| modal.title()),
+            Some("Tool output")
+        );
         state.modals.pop();
         execute(parse("attachments tool call-a").unwrap(), &mut state).unwrap();
-        assert_eq!(state.composer.attachments[0].kind, AttachmentKind::TerminalOutput);
+        assert_eq!(
+            state.composer.attachments[0].kind,
+            AttachmentKind::TerminalOutput
+        );
         execute(parse("copy call-a").unwrap(), &mut state).unwrap();
         assert!(matches!(
             state.pending_actions.as_slice(),
@@ -641,8 +725,14 @@ mod tests {
     #[test]
     fn attachments_commands_reorder_and_remove_draft_context() {
         let mut state = AppState::new();
-        state.composer.attachments.push(crate::input::Attachment::new_paste("first".into()));
-        state.composer.attachments.push(crate::input::Attachment::new_paste("second".into()));
+        state
+            .composer
+            .attachments
+            .push(crate::input::Attachment::new_paste("first".into()));
+        state
+            .composer
+            .attachments
+            .push(crate::input::Attachment::new_paste("second".into()));
         execute(parse("attachments up 2").unwrap(), &mut state).unwrap();
         assert_eq!(state.composer.attachments[0].content, "second");
         execute(parse("attachments drop 1").unwrap(), &mut state).unwrap();
