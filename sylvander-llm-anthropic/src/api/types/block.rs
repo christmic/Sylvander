@@ -140,11 +140,7 @@ pub struct ToolUseBlock {
 impl ToolUseBlock {
     /// Create a new tool use block.
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        input: JsonValue,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, input: JsonValue) -> Self {
         Self {
             kind: ToolUseBlockKind::ToolUse,
             id: id.into(),
@@ -251,11 +247,7 @@ mod tests {
 
     #[test]
     fn tool_use_block_bare_round_trip() {
-        let block = ToolUseBlock::new(
-            "toolu_abc",
-            "Read",
-            json!({"file_path": "/a/b.txt"}),
-        );
+        let block = ToolUseBlock::new("toolu_abc", "Read", json!({"file_path": "/a/b.txt"}));
         let json = serde_json::to_string(&block).unwrap();
         assert_eq!(
             json,

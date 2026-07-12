@@ -79,7 +79,11 @@ pub enum MessageRole {
 fn assistant_block_to_user_block(block: ContentBlock) -> super::block::UserContentBlock {
     match block {
         ContentBlock::Text(t) => super::block::UserContentBlock::Text(t),
-        ContentBlock::Thinking(ThinkingBlock { thinking, signature, .. }) => {
+        ContentBlock::Thinking(ThinkingBlock {
+            thinking,
+            signature,
+            ..
+        }) => {
             // Thinking blocks in re-fed assistant turns are passed as opaque
             // JSON; the protocol SDK preserves them through the loop.
             super::block::UserContentBlock::Other(serde_json::json!({
