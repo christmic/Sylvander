@@ -3,7 +3,8 @@
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme;
 
@@ -347,16 +348,16 @@ impl RichWriter {
         }
         self.pending_space = false;
         let mut chunk = String::new();
-        for ch in word.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if self.line_width + UnicodeWidthStr::width(chunk.as_str()) + char_width > self.width
+        for grapheme in word.graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if self.line_width + UnicodeWidthStr::width(chunk.as_str()) + grapheme_width > self.width
                 && !chunk.is_empty()
             {
                 self.spans.push(Span::styled(std::mem::take(&mut chunk), style));
                 self.flush();
                 self.ensure_line();
             }
-            chunk.push(ch);
+            chunk.push_str(grapheme);
         }
         if !chunk.is_empty() {
             self.line_width += UnicodeWidthStr::width(chunk.as_str());
@@ -434,8 +435,8 @@ pub fn sanitize_terminal_text(text: &str) -> String {
 fn take_width(text: &str, max: usize) -> (String, String) {
     let mut width = 0;
     let mut split = text.len();
-    for (index, ch) in text.char_indices() {
-        let next = width + UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let next = width + UnicodeWidthStr::width(grapheme);
         if next > max { split = index; break; }
         width = next;
     }
@@ -485,5 +486,14 @@ mod tests {
         let partial = plain(&render("Status: **working", 12));
         let settled = plain(&render("Status: **working**", 12));
         assert_eq!(partial, settled);
+    }
+
+    #[test]
+    fn wrapping_never_splits_emoji_or_combining_graphemes() {
+        let rows = plain(&render("👩‍💻 e\u{301}cole https://example.com/very/long/path", 12));
+        assert!(rows.iter().all(|row| UnicodeWidthStr::width(row.as_str()) <= 12));
+        assert!(rows.iter().any(|row| row.contains("👩‍💻")));
+        assert!(rows.iter().any(|row| row.contains("e\u{301}")));
+        assert!(!rows.iter().any(|row| row.starts_with('\u{301}')));
     }
 }
