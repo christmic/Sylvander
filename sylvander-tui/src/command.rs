@@ -1,6 +1,7 @@
 //! Application commands exposed through the `/` command line.
 
 use crate::app::{AppMode, AppState, ChatMessage};
+use crate::input::AttachmentKind;
 use crate::modal::{HelpModal, SessionsOverlay, ToolInspector};
 use crate::theme::ThemeName;
 
@@ -114,7 +115,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Attachments,
         name: "attachments",
-        usage: "/attachments [drop <n>|up <n>|down <n>|clear]",
+        usage: "/attachments [selection|tool <id>|diff <id>|drop <n>|up <n>|down <n>|clear]",
         description: "Inspect, reorder, or remove draft attachments",
         hint: "@ adds files",
     },
@@ -401,6 +402,32 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.composer.move_attachment(index, target);
                 state.status = format!("Moved attachment {}", index + 1);
             }
+            ["selection"] => {
+                let selected = state.composer.selected_text()
+                    .ok_or_else(|| "Select composer text with Shift+Arrow first".to_string())?;
+                state.composer.attach_text(
+                    AttachmentKind::Selection,
+                    "composer selection",
+                    "text/plain",
+                    selected,
+                )?;
+                state.status = "Attached composer selection".into();
+            }
+            [kind @ ("tool" | "diff"), prefix] => {
+                let (call_id, tool_name, output) = find_tool_output(state, Some(prefix))?;
+                let (attachment_kind, mime_type) = if *kind == "diff" {
+                    (AttachmentKind::Diff, "text/x-diff")
+                } else {
+                    (AttachmentKind::TerminalOutput, "text/plain")
+                };
+                state.composer.attach_text(
+                    attachment_kind,
+                    format!("{tool_name} {}", &call_id[..8.min(call_id.len())]),
+                    mime_type,
+                    output,
+                )?;
+                state.status = format!("Attached {kind} output");
+            }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
         CommandId::Status => {
@@ -562,6 +589,8 @@ mod tests {
         execute(parse("inspect call-a").unwrap(), &mut state).unwrap();
         assert_eq!(state.modals.top().map(|modal| modal.title()), Some("Tool output"));
         state.modals.pop();
+        execute(parse("attachments tool call-a").unwrap(), &mut state).unwrap();
+        assert_eq!(state.composer.attachments[0].kind, AttachmentKind::TerminalOutput);
         execute(parse("copy call-a").unwrap(), &mut state).unwrap();
         assert!(matches!(
             state.pending_actions.as_slice(),

@@ -32,6 +32,9 @@ pub enum AttachmentKind {
     File,
     /// A PNG or JPEG carried as a typed base64 payload.
     Image,
+    Selection,
+    Diff,
+    TerminalOutput,
 }
 
 /// A collapsed payload attached above the draft. Tokens render as a
@@ -65,6 +68,26 @@ impl Attachment {
             preview,
             name: "pasted text".into(),
             mime_type: "text/plain".into(),
+        }
+    }
+
+    pub fn new_text(
+        kind: AttachmentKind,
+        name: impl Into<String>,
+        mime_type: impl Into<String>,
+        content: String,
+    ) -> Self {
+        let line_count = content.lines().count();
+        let byte_count = content.len();
+        let preview = make_preview(&content, 32);
+        Self {
+            kind,
+            content,
+            line_count,
+            byte_count,
+            preview,
+            name: name.into(),
+            mime_type: mime_type.into(),
         }
     }
 
@@ -123,6 +146,9 @@ impl Attachment {
                 AttachmentKind::Paste => sylvander_protocol::AttachmentKind::Paste,
                 AttachmentKind::File => sylvander_protocol::AttachmentKind::File,
                 AttachmentKind::Image => sylvander_protocol::AttachmentKind::Image,
+                AttachmentKind::Selection => sylvander_protocol::AttachmentKind::Selection,
+                AttachmentKind::Diff => sylvander_protocol::AttachmentKind::Diff,
+                AttachmentKind::TerminalOutput => sylvander_protocol::AttachmentKind::TerminalOutput,
             },
             name: self.name.clone(),
             mime_type: self.mime_type.clone(),
@@ -141,6 +167,9 @@ impl Attachment {
             AttachmentKind::Paste => "paste",
             AttachmentKind::File => "file",
             AttachmentKind::Image => "image",
+            AttachmentKind::Selection => "selection",
+            AttachmentKind::Diff => "diff",
+            AttachmentKind::TerminalOutput => "terminal",
         };
         let size = human_bytes(self.byte_count);
         if self.kind == AttachmentKind::Image {
@@ -324,6 +353,31 @@ impl Composer {
         self.attachments.push(Attachment::from_file(workspace, path, max_bytes, allow_images)?);
         self.mark_focused();
         Ok(())
+    }
+
+    pub fn attach_text(
+        &mut self,
+        kind: AttachmentKind,
+        name: impl Into<String>,
+        mime_type: impl Into<String>,
+        content: String,
+    ) -> Result<(), String> {
+        if content.is_empty() { return Err("attachment content is empty".into()); }
+        self.attachments.push(Attachment::new_text(kind, name, mime_type, content));
+        self.mark_focused();
+        Ok(())
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        if start.0 == end.0 {
+            return Some(self.rows[start.0][start.1..end.1].to_string());
+        }
+        let mut parts = Vec::new();
+        parts.push(self.rows[start.0][start.1..].to_string());
+        parts.extend(self.rows[start.0 + 1..end.0].iter().cloned());
+        parts.push(self.rows[end.0][..end.1].to_string());
+        Some(parts.join("\n"))
     }
 
     pub fn remove_attachment(&mut self, index: usize) -> bool {
@@ -544,9 +598,8 @@ impl Composer {
             KeyCode::Up => { /* handled above */ }
             KeyCode::Down => { /* handled above */ }
             KeyCode::Home => {
-                let at = (self.cursor_row, 0);
                 if shift {
-                    self.set_anchor(at);
+                    self.set_anchor((self.cursor_row, self.cursor_col));
                 } else {
                     self.anchor = None;
                 }
@@ -554,9 +607,8 @@ impl Composer {
             }
             KeyCode::End => {
                 let len = self.rows[self.cursor_row].len();
-                let at = (self.cursor_row, len);
                 if shift {
-                    self.set_anchor(at);
+                    self.set_anchor((self.cursor_row, self.cursor_col));
                 } else {
                     self.anchor = None;
                 }
@@ -1205,6 +1257,27 @@ mod tests {
         composer.attachments.push(Attachment::new_paste("too large".into()));
         assert!(composer.validate_attachments(3, false).is_err());
         assert!(composer.validate_attachments(1024, false).is_ok());
+    }
+
+    #[test]
+    fn composer_selection_becomes_a_typed_attachment_without_deleting_text() {
+        let mut composer = Composer::default();
+        for character in "hello".chars() {
+            composer.handle_key(&key(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        composer.handle_key(&key(KeyCode::Home, KeyModifiers::SHIFT));
+        assert_eq!(composer.selected_text().as_deref(), Some("hello"));
+        composer.attach_text(
+            AttachmentKind::Selection,
+            "selection",
+            "text/plain",
+            composer.selected_text().unwrap(),
+        ).unwrap();
+        assert_eq!(composer.text(), "hello");
+        assert_eq!(
+            composer.attachments[0].to_message_attachment(0).kind,
+            sylvander_protocol::AttachmentKind::Selection
+        );
     }
 
     #[test]

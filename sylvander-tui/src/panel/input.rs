@@ -117,6 +117,9 @@ fn render_attachment_tokens(frame: &mut Frame, state: &AppState, area: Rect) {
                 AttachmentKind::Paste => "▣",
                 AttachmentKind::File => "@",
                 AttachmentKind::Image => "◈",
+                AttachmentKind::Selection => "≡",
+                AttachmentKind::Diff => "±",
+                AttachmentKind::TerminalOutput => "$",
             };
             let name = att.preview.replace(' ', "_");
             let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
