@@ -48,6 +48,8 @@ impl TuiConfig {
             mouse_scroll_lines,
             metadata: RuntimeMetadata {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                models: Vec::new(),
                 workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("~")),
                 branch: git_branch(),
                 capabilities: 0,

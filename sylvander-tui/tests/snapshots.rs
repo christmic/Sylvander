@@ -401,6 +401,38 @@ fn palette_with_no_match() {
 }
 
 #[test]
+fn model_picker_shows_server_truth_and_reasoning_control() {
+    let mut state = AppState::new();
+    state.metadata.model = "claude-sonnet".into();
+    state.metadata.reasoning_effort = sylvander_protocol::ReasoningEffort::Low;
+    state.metadata.models = vec![
+        sylvander_protocol::ModelDescriptor {
+            id: "claude-sonnet".into(),
+            provider: "anthropic-compatible".into(),
+            capabilities: 0,
+            reasoning_efforts: vec![
+                sylvander_protocol::ReasoningEffort::Off,
+                sylvander_protocol::ReasoningEffort::Low,
+                sylvander_protocol::ReasoningEffort::Medium,
+                sylvander_protocol::ReasoningEffort::High,
+            ],
+        },
+        sylvander_protocol::ModelDescriptor {
+            id: "fast-code".into(),
+            provider: "anthropic-compatible".into(),
+            capabilities: 0,
+            reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+        },
+    ];
+    sylvander_tui::command::execute(
+        sylvander_tui::command::parse("model").expect("parse"),
+        &mut state,
+    )
+    .expect("open model picker");
+    insta::assert_snapshot!(render_buf(&state, 100, 28));
+}
+
+#[test]
 fn file_mention_picker_is_a_focused_workspace_surface() {
     let mut state = AppState::new();
     state.handle_key(&crossterm::event::KeyEvent::new(

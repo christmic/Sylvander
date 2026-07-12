@@ -24,6 +24,8 @@ pub enum DomainEvent {
     Connected,
     RuntimeInfo {
         model: String,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+        models: Vec<sylvander_protocol::ModelDescriptor>,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -218,6 +220,10 @@ pub enum Action {
     },
     RequestSessions,
     RequestRuntimeInfo,
+    SelectModel {
+        model: String,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    },
     LoadSession {
         session_id: String,
     },

@@ -518,7 +518,7 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
         return None;
     }
     let workspace_label = theme::compact_workspace(&state.metadata.workspace, 34);
-    let model = state.metadata.model.clone();
+    let model = state.metadata.model_label();
     let branch = state.metadata.branch.clone();
     let session = state
         .session_id
