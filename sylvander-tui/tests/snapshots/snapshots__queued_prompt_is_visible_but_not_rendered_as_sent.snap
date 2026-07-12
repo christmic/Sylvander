@@ -2,16 +2,16 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 110, 30)"
 ---
-  › run the tests                                                                                             
-  ✓ Run `cargo`     00s                                                                                       
-  │ ✓ $ cargo test -p sylvander-tui --locked                                                                  
-  │   cwd  /workspace/Sylvander                                                                               
-  │   $ cargo test -p sylvander-tui --locked                                                                  
-  │                                                                                                           
-  │   result                                                                                                  
-  │     running 130 tests                                                                                     
-  │     test result: ok. 130 passed                                                                           
-  │     finished in 0.12s                                                                                     
+  › finish the current implementation                                                                         
+                                                                                                              
+  ↳  then run the full test suite                                                                             
+     queued                                                                                                   
+                                                                                                              
+  ◆  I am still working on the first request.                                                                 
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               
@@ -31,4 +31,4 @@ expression: "render_buf(&state, 110, 30)"
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                             
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ working · model — · branch — · session — · 0 tok                                      esc interrupt   /draft
+◌ working · model — · branch — · session — · 0 tok · 1 queued                           esc interrupt   /draft

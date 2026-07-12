@@ -13,6 +13,8 @@ presentation. It does not own the Agent loop, Token9, or Ghostty window UI.
   event loop, frame pacing, scrolling, and rendering performance.
 - [`docs/INTERACTION-SCENARIOS.md`](docs/INTERACTION-SCENARIOS.md) — scenario-by-scenario
   command, tool, approval, question, session, and recovery behavior.
+- [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md) — prioritized
+  production gap checklist and end-to-end acceptance gates.
 - [`../docs/sylvander-tui-ux-design.md`](../docs/sylvander-tui-ux-design.md) —
   normative visual and interaction specification.
 

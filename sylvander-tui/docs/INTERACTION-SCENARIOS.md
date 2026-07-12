@@ -15,6 +15,17 @@ and recovery behavior are all defined and tested.
 | Return live | `Ctrl+End` | Clears unread count and follows streaming output |
 | Paste | bracketed paste | Short text is inline; large text becomes an attachment token |
 
+While a turn is active, `Enter` adds the prompt to a local FIFO instead of
+opening a concurrent subscription for the same session. `/queue` lists pending
+prompts; `/queue edit <n> <text>`, `/queue drop <n>`, and `/queue clear` mutate
+the queue. A terminal Done, Error, or Interrupted event starts exactly one next
+prompt.
+
+`Esc` or `Ctrl+C` during active work sends a session-scoped interrupt. It does
+not quit the TUI or send the Agent-wide Stop command. The terminal interrupted
+event preserves partial prose, settles pending tool rows, closes decision
+surfaces, and then advances the local queue.
+
 ## Tool Activity
 
 Tool calls are paired by `call_id`, never by display name. This is required when

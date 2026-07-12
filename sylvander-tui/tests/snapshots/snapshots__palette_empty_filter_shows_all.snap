@@ -6,7 +6,6 @@ expression: "render_buf(&state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
                     ┌ Commands ─────────────────────────────────────┐                     
                     │/_                                             │                     
                     │───────────────────────────────────────────────│                     
@@ -16,6 +15,7 @@ expression: "render_buf(&state, 90, 22)"
                     │    /help         Show interaction help        │                     
                     │    /theme        Change the active TUI theme  │                     
                     │    /tools        Toggle tool details          │                     
+                    │    /queue        Inspect or edit prompts waiti│                     
                     │    /status       Show runtime and token usage │                     
                     │    /quit         Quit sylvander-tui           │                     
                     └───────────────────────────────────────────────┘                     
