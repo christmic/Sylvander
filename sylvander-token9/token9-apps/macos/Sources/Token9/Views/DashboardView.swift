@@ -5,7 +5,12 @@ import SwiftUI
 /// Heatmap + aggregation rows land in commits 4 and 5 respectively.
 struct DashboardView: View {
     @StateObject private var vm = DashboardViewModel()
-    @State private var dimension: DimensionToggle.Dimension = .tool
+    private var dimensionBinding: Binding<DimensionToggle.Dimension> {
+        Binding(
+            get: { vm.groupBy == .tool ? .tool : .model },
+            set: { vm.groupBy = $0 == .tool ? .tool : .model }
+        )
+    }
 
     var body: some View {
         ZStack {
@@ -16,16 +21,10 @@ struct DashboardView: View {
                 header
                 RangeTabs(sel: $vm.range)
                 SummaryStripView(summary: vm.summary)
-                Panel {
-                    HStack(spacing: 12) {
-                        Text("日用量（Phase D 接入热力图）")
-                            .font(.system(size: 12)).foregroundStyle(T.textSecondary)
-                        Spacer()
-                        Text("\(vm.daily.count) 天")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(T.textTertiary)
-                    }
+                if vm.range.showsHeatmap {
+                    ActivityHeatmapView(range: vm.range, daily: vm.daily)
                 }
+                aggregationHeading
                 Spacer(minLength: 0)
             }
             .padding(L.outerPad)
@@ -50,10 +49,20 @@ struct DashboardView: View {
             Spacer()
             HStack(spacing: 6) {
                 StatusDot(active: vm.error == nil)
-                Text(vm.error == nil ? "在线" : "离线")
+                Text(vm.error == nil ? "在线 · 127.0.0.1:9527" : "离线 · 127.0.0.1:9527")
                     .font(.system(size: 10)).foregroundStyle(T.textTertiary)
             }
             IconButton(systemName: "arrow.clockwise") { vm.reload() }
+        }
+    }
+
+    private var aggregationHeading: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text("汇总维度")
+                .font(.system(size: 11))
+                .foregroundStyle(T.textTertiary)
+            DimensionToggle(sel: dimensionBinding)
+            Spacer()
         }
     }
 }
