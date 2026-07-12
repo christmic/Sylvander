@@ -104,9 +104,12 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            for chunk in char_chunks(text, width.saturating_sub(2)) {
+            for (index, chunk) in char_chunks(text, width.saturating_sub(2))
+                .into_iter()
+                .enumerate()
+            {
                 lines.push(Line::from(vec![
-                    Span::styled("› ", theme::user_speaker()),
+                    Span::styled(if index == 0 { "› " } else { "  " }, theme::user_speaker()),
                     Span::styled(chunk.to_string(), theme::text()),
                 ]));
             }
@@ -539,12 +542,9 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
     if width < 24 {
         return None;
     }
-    let workspace_label = std::env::current_dir()
-        .ok()
-        .map(|p| theme::compact_workspace(&p, 34))
-        .unwrap_or_else(|| "~".into());
-    let model = std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into());
-    let branch = crate::panel::status::branch_label();
+    let workspace_label = theme::compact_workspace(&state.metadata.workspace, 34);
+    let model = state.metadata.model.clone();
+    let branch = state.metadata.branch.clone();
     let session = state
         .session_id
         .as_deref()
@@ -803,6 +803,21 @@ mod tests {
         }
         assert!(found_brand, "Welcome must remain as the transcript prelude");
         assert!(found_turn, "submitted turn must append below Welcome");
+    }
+
+    #[test]
+    fn wrapped_user_turn_marks_only_the_first_visual_row() {
+        let mut lines = Vec::new();
+        let message = ChatMessage::User("a user message that wraps across rows".into());
+        push_message_lines(&message, &mut lines, 14);
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(rendered.matches('›').count(), 1);
+        assert!(rendered.lines().skip(1).all(|line| line.starts_with("  ")));
     }
 
     #[test]

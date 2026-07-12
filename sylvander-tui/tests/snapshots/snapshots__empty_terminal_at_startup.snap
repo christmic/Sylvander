@@ -16,7 +16,7 @@ expression: "render_buf(&state, 80, 24)"
   agent workspace                                                               
                                                                                 
   model     —                                                                   
-  workspace ~/.../sylvander-tui                                                 
+  workspace ~/workspace                                                         
   branch    —                                                                   
   session   new                                                                 
                                                                                 

@@ -29,8 +29,6 @@ use crate::app::{AppMode, AppState};
 use crate::component::Component;
 use crate::theme::{self, StatusMode};
 
-static BRANCH_LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
 /// Single source of truth for which status mode is current.
 /// Pure function — no side effects, easy to unit-test.
 pub fn status_mode_for(state: &AppState) -> StatusMode {
@@ -103,8 +101,8 @@ impl Component for StatusPanel {
             .as_deref()
             .map(|id| id.chars().take(8).collect::<String>())
             .unwrap_or_else(|| "—".into());
-        let model = std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into());
-        let branch = git_branch();
+        let model = &state.metadata.model;
+        let branch = &state.metadata.branch;
         if area.width < 80 {
             let compact = Line::from(vec![
                 Span::styled(format!("{} {}", mode.glyph(), mode.label()), mode.style()),
@@ -136,32 +134,6 @@ impl Component for StatusPanel {
             .split(area);
         frame.render_widget(Paragraph::new(left), layout[0]);
         frame.render_widget(Paragraph::new(right), layout[1]);
-    }
-}
-
-fn git_branch() -> String {
-    BRANCH_LABEL.get_or_init(|| "—".into()).clone()
-}
-
-pub(crate) fn branch_label() -> String {
-    git_branch()
-}
-
-pub fn initialize_branch_label() {
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["branch", "--show-current"])
-        .output()
-    {
-        if output.status.success() {
-            let branch: String = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .chars()
-                .take(20)
-                .collect();
-            if !branch.is_empty() {
-                let _ = BRANCH_LABEL.set(branch);
-            }
-        }
     }
 }
 
