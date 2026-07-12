@@ -102,8 +102,8 @@ struct GroupRowView: View {
     }
 
     private var metricGrid: some View {
-        let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-        return LazyVGrid(columns: cols, alignment: .leading, spacing: 10) {
+        let cols = [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+        return LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
             metric("arrow.down", "输入", Fmt.tokens(card.input), palette.dataColor(0))
             metric("arrow.up", "输出", Fmt.tokens(card.output), palette.dataColor(1))
             metric("bolt.fill", "缓存读", Fmt.tokens(card.cacheRead), palette.dataColor(2))
@@ -114,14 +114,33 @@ struct GroupRowView: View {
     }
 
     private func metric(_ icon: String, _ label: String, _ value: String, _ tint: Color) -> some View {
-        HStack(spacing: 6) {
-            MetricIcon(systemName: icon, tint: tint)
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(tint.opacity(0.18)))
             Text(value)
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .font(.system(size: 15, weight: .bold, design: .rounded))
                 .foregroundStyle(T.textPrimary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.65)
             Spacer(minLength: 0)
         }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [tint.opacity(0.13), Color.white.opacity(0.025)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(tint.opacity(0.18), lineWidth: 0.6)
+        )
         .help(label)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label)

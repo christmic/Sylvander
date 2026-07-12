@@ -65,12 +65,8 @@ enum RangeKey: String, CaseIterable, Identifiable {
     /// The heatmap has its own stable window. Summary/cards still use
     /// `range()`, while the visual history stays comparable across tabs.
     func heatmapRange(now: Date = Date(), calendar: Calendar = .current) -> (from: String, to: String) {
-        if self == .year {
-            let currentMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
-            let start = calendar.date(byAdding: .month, value: -11, to: currentMonth) ?? now
-            return (fmt(start), fmt(now))
-        }
-        let start = calendar.date(byAdding: .day, value: -29, to: now) ?? now
+        let currentMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) ?? now
+        let start = calendar.date(byAdding: .month, value: -11, to: currentMonth) ?? now
         return (fmt(start), fmt(now))
     }
 
@@ -83,7 +79,7 @@ enum RangeKey: String, CaseIterable, Identifiable {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = self == .year ? "yyyy.MM" : "M.d"
+        formatter.dateFormat = "yyyy.MM"
         guard let start = Fmt.parseDateKey(window.from, calendar: calendar),
               let end = Fmt.parseDateKey(window.to, calendar: calendar)
         else { return "\(window.from)—\(window.to)" }

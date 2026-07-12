@@ -54,14 +54,9 @@ struct ActivityHeatmapView: View {
 
     private var header: some View {
         HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("每日用量")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(T.textPrimary)
-                Text(range.heatmapTitle(now: now))
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(T.textTertiary)
-            }
+            Text(range.heatmapTitle(now: now))
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(T.textSecondary)
             Spacer()
             legend
         }
@@ -71,8 +66,7 @@ struct ActivityHeatmapView: View {
 
     @ViewBuilder
     private var content: some View {
-        if range == .year { yearGrid }
-        else { monthGrid }
+        yearGrid
     }
 
     private var weekStrip: some View {
