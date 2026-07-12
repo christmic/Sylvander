@@ -49,6 +49,33 @@ pub struct RuntimeModelInfo {
     pub models: Vec<ModelDescriptor>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSourceKind {
+    SystemPrompt,
+    Conversation,
+    Tools,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSource {
+    pub kind: ContextSourceKind,
+    pub label: String,
+    pub items: usize,
+}
+
+/// Last provider-confirmed context usage plus its structural contributors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextReport {
+    pub model: String,
+    pub context_window: u32,
+    pub used_tokens: u32,
+    pub remaining_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
+    pub sources: Vec<ContextSource>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileAccess {

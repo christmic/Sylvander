@@ -31,6 +31,9 @@ pub enum DomainEvent {
         approval_enabled: bool,
         max_attachment_bytes: usize,
     },
+    ContextReported {
+        report: sylvander_protocol::ContextReport,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -223,6 +226,9 @@ pub enum Action {
     },
     RequestSessions,
     RequestRuntimeInfo,
+    RequestContext {
+        session_id: Option<String>,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,

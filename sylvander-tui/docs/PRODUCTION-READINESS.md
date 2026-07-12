@@ -91,7 +91,7 @@ completed backend feature.
 - [x] `/model` selects provider/model and reasoning effort from server truth.
 - [x] `/permissions` edits workspace-scoped filesystem, network, and approval policy for the next turn.
 - [x] Approval supports once/session/persistent exact-request decisions where policy permits.
-- [ ] `/context` reports window use, cache use, and contributing sources.
+- [x] `/context` reports provider-confirmed window use, cache use, and structural contributing sources.
 - [ ] `/compact` and automatic compaction expose progress and resulting summary.
 - [ ] Cost, rate limit, retry, and model migration states are visible.
 - [ ] Checkpoint, rewind, rollback, and undo have explicit safety boundaries.

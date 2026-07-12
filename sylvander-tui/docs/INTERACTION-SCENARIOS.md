@@ -61,6 +61,7 @@ arguments. Invalid arguments remain in the command line with an inline error.
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
 | `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
 | `/permissions` | Edits workspace filesystem, network, and approval policy for the next turn |
+| `/context` | Reports the last provider-confirmed window/cache usage and structural sources |
 | `/status` | Appends model, branch, session, iteration, and token usage |
 | `/quit` | Saves input history and exits |
 
@@ -77,6 +78,13 @@ session workspace and cannot be replaced by the TUI. Network is denied or
 allowed through `ToolContext`. Approval is ask, allow, or deny; ask is omitted
 when the server operator did not enable approval prompts. The Agent constructs a
 fresh tool context from the acknowledged profile at the start of every turn.
+
+`/context` requests a fresh report from the Agent. Window occupancy uses the
+last provider `Usage` for that session, including cache-read and cache-creation
+input; it is intentionally separate from the session's cumulative billing
+counters. Source rows count verifiable structures (system instructions,
+conversation messages, and tool definitions). Sylvander does not invent
+per-source token estimates when the provider did not return them.
 
 ## Approval
 

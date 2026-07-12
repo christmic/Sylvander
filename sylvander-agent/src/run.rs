@@ -69,6 +69,9 @@ pub(crate) struct AgentRunInner {
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
+    /// Last provider-confirmed prompt usage for each session. This is window
+    /// occupancy, unlike the durable cumulative billing counters.
+    context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -252,6 +255,13 @@ struct RuntimeModels {
     reasoning_effort: sylvander_protocol::ReasoningEffort,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ContextUsage {
+    used_tokens: u32,
+    cache_read_tokens: u32,
+    cache_write_tokens: u32,
+}
+
 impl RuntimeModels {
     fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
         let mut models = self
@@ -350,6 +360,70 @@ impl AgentRun {
         self.inner.runtime_permissions.read().await.clone()
     }
 
+    pub async fn context_report(
+        &self,
+        session_id: Option<&SessionId>,
+    ) -> sylvander_protocol::ContextReport {
+        let models = self.inner.runtime_models.read().await;
+        let model = models
+            .available
+            .get(&models.current_model)
+            .expect("current model belongs to runtime catalog");
+        let usage = match session_id {
+            Some(session_id) => self
+                .inner
+                .context_usage
+                .read()
+                .await
+                .get(session_id)
+                .copied()
+                .unwrap_or_default(),
+            None => ContextUsage::default(),
+        };
+        let conversation_items = match session_id {
+            Some(session_id) => self
+                .inner
+                .sessions
+                .read()
+                .await
+                .get(session_id)
+                .map_or(0, SessionContext::len),
+            None => 0,
+        };
+        let mut sources = Vec::new();
+        if !self.inner.spec.persona.system_prompt.is_empty() {
+            sources.push(sylvander_protocol::ContextSource {
+                kind: sylvander_protocol::ContextSourceKind::SystemPrompt,
+                label: "agent instructions".into(),
+                items: 1,
+            });
+        }
+        if conversation_items > 0 {
+            sources.push(sylvander_protocol::ContextSource {
+                kind: sylvander_protocol::ContextSourceKind::Conversation,
+                label: "conversation messages".into(),
+                items: conversation_items,
+            });
+        }
+        let tool_count = self.inner.loop_config.tools.len();
+        if tool_count > 0 {
+            sources.push(sylvander_protocol::ContextSource {
+                kind: sylvander_protocol::ContextSourceKind::Tools,
+                label: "tool definitions".into(),
+                items: tool_count,
+            });
+        }
+        sylvander_protocol::ContextReport {
+            model: model.id.clone(),
+            context_window: model.context_window,
+            used_tokens: usage.used_tokens,
+            remaining_tokens: model.context_window.saturating_sub(usage.used_tokens),
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_write_tokens,
+            sources,
+        }
+    }
+
     pub async fn select_permissions(
         &self,
         profile: sylvander_protocol::PermissionProfile,
@@ -386,6 +460,7 @@ impl AgentRun {
     /// Leave a session.
     pub async fn leave_session(&self, session_id: &SessionId) {
         self.inner.sessions.write().await.remove(session_id);
+        self.inner.context_usage.write().await.remove(session_id);
         self.inner
             .approval_memory
             .lock()
@@ -466,6 +541,7 @@ impl AgentRun {
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         self.inner.sessions.write().await.remove(session_id);
+                        self.inner.context_usage.write().await.remove(session_id);
                         self.inner
                             .approval_memory
                             .lock()
@@ -1411,6 +1487,14 @@ impl AgentRunInner {
                     .await;
                 }
                 crate::event::AgentEvent::IterationEnd { iteration, usage } => {
+                    self.context_usage.write().await.insert(
+                        session_id.clone(),
+                        ContextUsage {
+                            used_tokens: usage.total_input_tokens(),
+                            cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
+                            cache_write_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
+                        },
+                    );
                     let mut input_tokens = u64::from(usage.input_tokens);
                     let mut output_tokens = u64::from(usage.output_tokens);
                     if let Some(store) = &self.session_store {
@@ -1808,6 +1892,7 @@ impl AgentRunBuilder {
                 loop_config,
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
+                context_usage: RwLock::new(HashMap::new()),
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 session_store: self.session_store,
@@ -1927,6 +2012,46 @@ mod tests {
             run.runtime_model_info().await.current_model,
             "thinking-model"
         );
+    }
+
+    #[tokio::test]
+    async fn context_report_separates_window_usage_from_cumulative_accounting() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
+        let session_id = run.join_session(test_metadata()).await;
+        run.inner
+            .sessions
+            .write()
+            .await
+            .get_mut(&session_id)
+            .expect("session")
+            .append_user_message(sylvander_llm_anthropic::api::types::MessageParam::user(
+                "hello",
+            ));
+        run.inner.context_usage.write().await.insert(
+            session_id.clone(),
+            ContextUsage {
+                used_tokens: 1_250,
+                cache_read_tokens: 900,
+                cache_write_tokens: 120,
+            },
+        );
+
+        let report = run.context_report(Some(&session_id)).await;
+        assert_eq!(report.used_tokens, 1_250);
+        assert_eq!(report.cache_read_tokens, 900);
+        assert_eq!(report.cache_write_tokens, 120);
+        assert_eq!(
+            report.remaining_tokens,
+            report.context_window.saturating_sub(1_250)
+        );
+        assert!(report.sources.iter().any(|source| {
+            source.kind == sylvander_protocol::ContextSourceKind::Conversation && source.items == 1
+        }));
     }
 
     #[tokio::test]

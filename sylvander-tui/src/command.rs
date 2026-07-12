@@ -24,6 +24,7 @@ pub enum CommandId {
     Editor,
     Model,
     Permissions,
+    Context,
     Status,
     Quit,
 }
@@ -163,6 +164,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/permissions",
         description: "Edit workspace, network, and approval policy",
         hint: "next turn",
+    },
+    CommandSpec {
+        id: CommandId::Context,
+        name: "context",
+        usage: "/context",
+        description: "Show server-confirmed context and cache usage",
+        hint: "live report",
     },
     CommandSpec {
         id: CommandId::Quit,
@@ -511,6 +519,15 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.output_tokens
             )));
         }
+        CommandId::Context => {
+            require_no_args(&invocation)?;
+            state
+                .pending_actions
+                .push(crate::event::Action::RequestContext {
+                    session_id: state.session_id.clone(),
+                });
+            state.status = "Loading context report…".into();
+        }
         CommandId::Inspect => {
             let prefix = optional_one_arg(&invocation)?;
             let (call_id, tool_name, output) = find_tool_output(state, prefix)?;
@@ -717,6 +734,18 @@ mod tests {
         assert!(state.session_id.is_none());
         assert!(state.messages.is_empty());
         assert!(state.pending_actions.is_empty());
+    }
+
+    #[test]
+    fn context_command_requests_server_truth_for_the_active_session() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-7".into());
+        execute(parse("/context").expect("parse"), &mut state).expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::RequestContext { session_id }]
+                if session_id.as_deref() == Some("session-7")
+        ));
     }
 
     #[test]

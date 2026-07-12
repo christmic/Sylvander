@@ -101,6 +101,10 @@ enum ClientMsg {
         session_id: String,
     },
     GetRuntimeInfo,
+    GetContext {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -250,6 +254,9 @@ enum ServerMsg {
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
+    },
+    ContextReport {
+        report: sylvander_protocol::ContextReport,
     },
     OperationError {
         operation: String,
@@ -1021,6 +1028,18 @@ async fn handle_client_msg(
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
             });
+        }
+        ClientMsg::GetContext { session_id } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::OperationError {
+                    operation: "context".into(),
+                    message: "runtime context reporting is unavailable".into(),
+                });
+                return;
+            };
+            let session_id = session_id.as_deref().map(SessionId::new);
+            let report = control.context_report(session_id.as_ref()).await;
+            let _ = tx.send(ServerMsg::ContextReport { report });
         }
         ClientMsg::SelectModel {
             model,
