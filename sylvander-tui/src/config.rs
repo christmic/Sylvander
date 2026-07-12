@@ -50,6 +50,9 @@ impl TuiConfig {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
                 workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("~")),
                 branch: git_branch(),
+                capabilities: 0,
+                approval_enabled: false,
+                max_attachment_bytes: 512 * 1024,
             },
         })
     }

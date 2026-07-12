@@ -5,8 +5,8 @@ use std::sync::Arc;
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::spec::{AgentSpec, BehaviorConfig, PersonaConfig, ToolRef};
 use sylvander_agent::tool::ToolRegistry;
-use sylvander_agent::tools::{EditTool, MemoryReadTool, ReadTool, WriteTool};
 use sylvander_agent::tools::memory::InMemoryMemoryStore;
+use sylvander_agent::tools::{EditTool, MemoryReadTool, ReadTool, WriteTool};
 use sylvander_channel::Channel;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -41,9 +41,7 @@ fn require_env(key: &str) -> String {
         std::process::exit(1);
     });
     if v.trim().is_empty() {
-        eprintln!(
-            "ERROR: {key} is set but empty — refusing to start. Provide a non-empty value."
-        );
+        eprintln!("ERROR: {key} is set but empty — refusing to start. Provide a non-empty value.");
         std::process::exit(1);
     }
     v
@@ -53,8 +51,7 @@ fn require_env(key: &str) -> String {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -103,6 +100,7 @@ async fn main() {
         .context_window(200_000)
         .max_output_tokens(32_000)
         .capability(ModelCapabilities::TOOL_USE)
+        .capability(ModelCapabilities::VISION)
         .build()
         .expect("model");
 
@@ -134,9 +132,10 @@ async fn main() {
         .bus(bus.clone())
         .session_store(session_store.clone())
         .override_tools(tools)
-        .model_capabilities(ModelCapabilities::TOOL_USE);
+        .model_capabilities(model.capabilities);
 
-    if std::env::var("SYLVANDER_APPROVAL").is_ok() {
+    let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();
+    if approval_enabled {
         run_builder = run_builder.enable_approval();
     }
 
@@ -153,9 +152,10 @@ async fn main() {
     let dt_secret = std::env::var("DINGTALK_APP_SECRET");
 
     if let (Ok(app_key), Ok(app_secret)) = (dt_key, dt_secret) {
-        let channel = Arc::new(
-            sylvander_channel_dingtalk::DingTalkChannel::new(&app_key, &app_secret),
-        );
+        let channel = Arc::new(sylvander_channel_dingtalk::DingTalkChannel::new(
+            &app_key,
+            &app_secret,
+        ));
         let ctx = sylvander_channel::ChannelContext {
             bus: bus.clone(),
             sessions: session_store.clone(),
@@ -180,12 +180,17 @@ async fn main() {
     info!(addr = %http_addr, "http channel started — curl http://{http_addr}/health");
 
     // Unix socket channel (for sylvander-tui)
-    let socket_path = std::env::var("SYLVANDER_SOCKET")
-        .unwrap_or_else(|_| "/tmp/sylvander.sock".to_string());
-    let unix_channel = Arc::new(sylvander_channel_unix::UnixChannel::new(
-        socket_path.clone(),
-        agent_id.clone(),
-    ));
+    let socket_path =
+        std::env::var("SYLVANDER_SOCKET").unwrap_or_else(|_| "/tmp/sylvander.sock".to_string());
+    let unix_channel = Arc::new(
+        sylvander_channel_unix::UnixChannel::new(socket_path.clone(), agent_id.clone())
+            .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
+                model: model.id.clone(),
+                capabilities: model.capabilities.bits(),
+                approval_enabled,
+                max_attachment_bytes: 512 * 1024,
+            }),
+    );
     let unix_ctx = sylvander_channel::ChannelContext {
         bus: bus.clone(),
         sessions: session_store.clone(),

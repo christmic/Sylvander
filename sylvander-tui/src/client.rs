@@ -63,6 +63,7 @@ pub enum ClientMsg {
     ForkSession {
         session_id: String,
     },
+    GetRuntimeInfo,
     Ping,
 }
 
@@ -146,12 +147,38 @@ pub enum ServerMsg {
         steps: Vec<String>,
         current: usize,
     },
-    PlanUpdated { session_id: String, plan_id: String, steps: Vec<String>, current: usize },
-    TaskStarted { session_id: String, task_id: String, owner: String, purpose: String },
-    TaskProgress { session_id: String, task_id: String, message: String },
-    TaskCompleted { session_id: String, task_id: String, summary: String },
-    TaskFailed { session_id: String, task_id: String, error: String },
-    TaskCancelled { session_id: String, task_id: String, reason: String },
+    PlanUpdated {
+        session_id: String,
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
+    TaskStarted {
+        session_id: String,
+        task_id: String,
+        owner: String,
+        purpose: String,
+    },
+    TaskProgress {
+        session_id: String,
+        task_id: String,
+        message: String,
+    },
+    TaskCompleted {
+        session_id: String,
+        task_id: String,
+        summary: String,
+    },
+    TaskFailed {
+        session_id: String,
+        task_id: String,
+        error: String,
+    },
+    TaskCancelled {
+        session_id: String,
+        task_id: String,
+        reason: String,
+    },
     SessionsList {
         sessions: Vec<SessionInfoMsg>,
     },
@@ -163,6 +190,12 @@ pub enum ServerMsg {
         session_id: String,
         label: Option<String>,
         archived: bool,
+    },
+    RuntimeInfo {
+        model: String,
+        capabilities: u8,
+        approval_enabled: bool,
+        max_attachment_bytes: usize,
     },
     Pong,
 }
@@ -326,6 +359,17 @@ impl UnixClient {
 pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
     Some(match msg {
         ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
+        ServerMsg::RuntimeInfo {
+            model,
+            capabilities,
+            approval_enabled,
+            max_attachment_bytes,
+        } => DomainEvent::RuntimeInfo {
+            model,
+            capabilities,
+            approval_enabled,
+            max_attachment_bytes,
+        },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
         ServerMsg::ToolCall {
@@ -353,27 +397,46 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::Done { text, .. } => DomainEvent::AgentDone { final_text: text },
         ServerMsg::Error { message, .. } => DomainEvent::AgentError { message },
         ServerMsg::TurnInterrupted { reason, .. } => DomainEvent::TurnInterrupted { reason },
-        ServerMsg::PlanProposed { plan_id, steps, current, .. } => {
-            DomainEvent::PlanReceived { plan_id, steps, current }
-        }
-        ServerMsg::PlanUpdated { plan_id, steps, current, .. } => {
-            DomainEvent::PlanUpdated { plan_id, steps, current }
-        }
-        ServerMsg::TaskStarted { task_id, owner, purpose, .. } => {
-            DomainEvent::TaskStarted { task_id, owner, purpose }
-        }
-        ServerMsg::TaskProgress { task_id, message, .. } => {
-            DomainEvent::TaskProgress { task_id, message }
-        }
-        ServerMsg::TaskCompleted { task_id, summary, .. } => {
-            DomainEvent::TaskCompleted { task_id, summary }
-        }
-        ServerMsg::TaskFailed { task_id, error, .. } => {
-            DomainEvent::TaskFailed { task_id, error }
-        }
-        ServerMsg::TaskCancelled { task_id, reason, .. } => {
-            DomainEvent::TaskCancelled { task_id, reason }
-        }
+        ServerMsg::PlanProposed {
+            plan_id,
+            steps,
+            current,
+            ..
+        } => DomainEvent::PlanReceived {
+            plan_id,
+            steps,
+            current,
+        },
+        ServerMsg::PlanUpdated {
+            plan_id,
+            steps,
+            current,
+            ..
+        } => DomainEvent::PlanUpdated {
+            plan_id,
+            steps,
+            current,
+        },
+        ServerMsg::TaskStarted {
+            task_id,
+            owner,
+            purpose,
+            ..
+        } => DomainEvent::TaskStarted {
+            task_id,
+            owner,
+            purpose,
+        },
+        ServerMsg::TaskProgress {
+            task_id, message, ..
+        } => DomainEvent::TaskProgress { task_id, message },
+        ServerMsg::TaskCompleted {
+            task_id, summary, ..
+        } => DomainEvent::TaskCompleted { task_id, summary },
+        ServerMsg::TaskFailed { task_id, error, .. } => DomainEvent::TaskFailed { task_id, error },
+        ServerMsg::TaskCancelled {
+            task_id, reason, ..
+        } => DomainEvent::TaskCancelled { task_id, reason },
         ServerMsg::ApprovalRequest {
             batch_id, tools, ..
         } => DomainEvent::ApprovalRequested {
@@ -406,27 +469,25 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                 })
                 .collect(),
         },
-        ServerMsg::SessionHistory { session, messages } => {
-            DomainEvent::SessionHistoryLoaded {
-                session: crate::model::SessionSummary {
-                    id: session.id,
-                    label: session.label,
-                    workspace: session.workspace,
-                    last_seen_secs: session.last_seen_secs,
-                },
-                messages: messages
-                    .into_iter()
-                    .map(|message| crate::model::HistoryEntry {
-                        role: match message.role.as_str() {
-                            "user" => crate::model::HistoryRole::User,
-                            "assistant" => crate::model::HistoryRole::Assistant,
-                            _ => crate::model::HistoryRole::Tool,
-                        },
-                        text: message.text,
-                    })
-                    .collect(),
-            }
-        }
+        ServerMsg::SessionHistory { session, messages } => DomainEvent::SessionHistoryLoaded {
+            session: crate::model::SessionSummary {
+                id: session.id,
+                label: session.label,
+                workspace: session.workspace,
+                last_seen_secs: session.last_seen_secs,
+            },
+            messages: messages
+                .into_iter()
+                .map(|message| crate::model::HistoryEntry {
+                    role: match message.role.as_str() {
+                        "user" => crate::model::HistoryRole::User,
+                        "assistant" => crate::model::HistoryRole::Assistant,
+                        _ => crate::model::HistoryRole::Tool,
+                    },
+                    text: message.text,
+                })
+                .collect(),
+        },
         ServerMsg::SessionUpdated {
             session_id,
             label,
@@ -454,6 +515,25 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_wire_event_preserves_server_capabilities() {
+        let event = parse_server_msg(ServerMsg::RuntimeInfo {
+            model: "claude-test".into(),
+            capabilities: 0b10001,
+            approval_enabled: true,
+            max_attachment_bytes: 4096,
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::RuntimeInfo {
+                model,
+                capabilities: 0b10001,
+                approval_enabled: true,
+                max_attachment_bytes: 4096,
+            }) if model == "claude-test"
+        ));
+    }
 
     #[test]
     fn tool_call_adapter_preserves_identity_and_input() {
@@ -556,7 +636,8 @@ mod tests {
         let json = serde_json::to_value(ClientMsg::CancelTask {
             session_id: "s1".into(),
             task_id: "task-42".into(),
-        }).expect("serialize");
+        })
+        .expect("serialize");
         assert_eq!(json["type"], "cancel_task");
         assert_eq!(json["session_id"], "s1");
         assert_eq!(json["task_id"], "task-42");

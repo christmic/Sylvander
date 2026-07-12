@@ -7,8 +7,8 @@
 //!
 //! Both paths automatically mark the dirty flag so the render loop wakes.
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::VecDeque;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
@@ -216,7 +216,10 @@ impl AppState {
 
     fn start_next_queued_prompt(&mut self) -> Option<Action> {
         let text = self.queued_prompts.pop_front()?;
-        let attachments = self.queued_prompt_attachments.pop_front().unwrap_or_default();
+        let attachments = self
+            .queued_prompt_attachments
+            .pop_front()
+            .unwrap_or_default();
         if let Some(message) = self
             .messages
             .iter_mut()
@@ -244,6 +247,18 @@ impl AppState {
             DomainEvent::Connected => {
                 self.connected = true;
                 self.status = "Connected".into();
+                return Some(Action::RequestRuntimeInfo);
+            }
+            DomainEvent::RuntimeInfo {
+                model,
+                capabilities,
+                approval_enabled,
+                max_attachment_bytes,
+            } => {
+                self.metadata.model = model;
+                self.metadata.capabilities = capabilities;
+                self.metadata.approval_enabled = approval_enabled;
+                self.metadata.max_attachment_bytes = max_attachment_bytes;
             }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
@@ -766,9 +781,10 @@ impl AppState {
             && key.modifiers.is_empty()
             && self.composer.can_open_file_mention()
         {
-            self.modals.push(Box::new(crate::modal::FileMentionModal::new(
-                self.metadata.workspace.clone(),
-            )));
+            self.modals
+                .push(Box::new(crate::modal::FileMentionModal::new(
+                    self.metadata.workspace.clone(),
+                )));
             self.dirty.mark();
             return None;
         }
@@ -846,14 +862,11 @@ impl AppState {
     }
 }
 
-fn update_task(
-    messages: &mut [ChatMessage],
-    task_id: &str,
-    state: TaskState,
-    detail: String,
-) {
+fn update_task(messages: &mut [ChatMessage], task_id: &str, state: TaskState, detail: String) {
     for message in messages.iter_mut().rev() {
-        let ChatMessage::TaskList { tasks } = message else { continue };
+        let ChatMessage::TaskList { tasks } = message else {
+            continue;
+        };
         if let Some(task) = tasks.iter_mut().find(|task| task.task_id == task_id) {
             task.state = state;
             task.detail = detail;
@@ -890,6 +903,25 @@ mod tests {
     use super::*;
     use crate::event::DomainEvent;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn connection_requests_and_applies_runtime_truth() {
+        let mut state = AppState::new();
+        assert!(matches!(
+            state.apply(DomainEvent::Connected),
+            Some(Action::RequestRuntimeInfo)
+        ));
+        state.apply(DomainEvent::RuntimeInfo {
+            model: "claude-test".into(),
+            capabilities: 0b10001,
+            approval_enabled: true,
+            max_attachment_bytes: 4096,
+        });
+        assert_eq!(state.metadata.model, "claude-test");
+        assert_eq!(state.metadata.capabilities, 0b10001);
+        assert!(state.metadata.approval_enabled);
+        assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    }
 
     #[test]
     fn apply_text_chunks_accumulate_into_streaming() {
@@ -1160,16 +1192,16 @@ mod tests {
         let mut state = AppState::new();
         state.turn_active = true;
         for character in "next request".chars() {
-            state.handle_key(&KeyEvent::new(
-                KeyCode::Char(character),
-                KeyModifiers::NONE,
-            ));
+            state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
         }
 
         let action = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(action.is_none());
-        assert_eq!(state.queued_prompts.front().map(String::as_str), Some("next request"));
+        assert_eq!(
+            state.queued_prompts.front().map(String::as_str),
+            Some("next request")
+        );
         assert!(matches!(
             state.messages.last(),
             Some(ChatMessage::QueuedUser(text)) if text == "next request"
@@ -1201,8 +1233,12 @@ mod tests {
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
         assert_eq!(state.messages.len(), 2);
-        assert!(matches!(state.messages[0], ChatMessage::User(ref text) if text == "restored question"));
-        assert!(matches!(state.messages[1], ChatMessage::Agent(ref text) if text == "restored answer"));
+        assert!(
+            matches!(state.messages[0], ChatMessage::User(ref text) if text == "restored question")
+        );
+        assert!(
+            matches!(state.messages[1], ChatMessage::Agent(ref text) if text == "restored answer")
+        );
     }
 
     #[test]
@@ -1361,7 +1397,10 @@ mod tests {
     fn at_sign_at_token_boundary_opens_file_picker_instead_of_mutating_draft() {
         let mut s = AppState::new();
         s.handle_key(&KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
-        assert_eq!(s.modals.top().map(|modal| modal.title()), Some("Mention file"));
+        assert_eq!(
+            s.modals.top().map(|modal| modal.title()),
+            Some("Mention file")
+        );
         assert!(s.composer.is_empty());
     }
 }
