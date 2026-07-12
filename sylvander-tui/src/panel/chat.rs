@@ -39,7 +39,7 @@ impl Component for ChatPanel {
             Vec::new()
         };
         for msg in &state.messages {
-            push_message_lines(msg, &mut lines, width);
+            push_message_lines(msg, &mut lines, width, state.tool_details_expanded);
         }
 
         if !state.streaming_thinking.is_empty() {
@@ -98,7 +98,12 @@ impl Component for ChatPanel {
     }
 }
 
-fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width: usize) {
+fn push_message_lines<'a>(
+    msg: &'a ChatMessage,
+    lines: &mut Vec<Line<'a>>,
+    width: usize,
+    tool_details_expanded: bool,
+) {
     match msg {
         ChatMessage::User(text) => {
             if !lines.is_empty() {
@@ -153,8 +158,14 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
             started_at_secs,
             children,
         } => {
+            let any_error = children.iter().any(|c| c.status == ToolStatus::Error);
             let all_done = children.iter().all(|c| c.status != ToolStatus::Pending);
-            let (step_glyph, step_style) = if all_done {
+            let (step_glyph, step_style) = if any_error {
+                (
+                    theme::tool_status_glyph(ToolStatus::Error),
+                    theme::warning(),
+                )
+            } else if all_done {
                 (
                     theme::tool_status_glyph(ToolStatus::Done),
                     theme::verified(),
@@ -173,12 +184,16 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
             ]));
             for child in children {
                 let (g, gstyle) = theme::tool_status_glyph_and_style(child.status);
-                let target = child_target_line(&child.name, &child.input);
-                let meta = child
-                    .output
-                    .as_deref()
-                    .map(|o| summarize_output(o, width))
-                    .unwrap_or_default();
+                let target = crate::tool_presenter::compact_target(&child.name, &child.input);
+                let meta = if tool_details_expanded {
+                    String::new()
+                } else {
+                    child
+                        .output
+                        .as_deref()
+                        .map(|o| summarize_output(o, width))
+                        .unwrap_or_default()
+                };
                 lines.push(Line::from(vec![
                     Span::styled("│ ", theme::guide()),
                     Span::styled(format!("{g} "), gstyle),
@@ -192,6 +207,25 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                         theme::text_muted(),
                     ),
                 ]));
+                if tool_details_expanded {
+                    for detail in crate::tool_presenter::detail_rows(
+                        &child.name,
+                        &child.input,
+                        child.output.as_deref(),
+                        child.is_error.unwrap_or(false),
+                        width.saturating_sub(4),
+                    ) {
+                        let style = if child.is_error == Some(true) {
+                            theme::warning()
+                        } else {
+                            theme::text_muted()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled("│   ", theme::guide()),
+                            Span::styled(detail, style),
+                        ]));
+                    }
+                }
             }
         }
         ChatMessage::Thinking(text) => {
@@ -488,27 +522,6 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
         }
     }
     out
-}
-
-fn child_target_line(tool: &str, input: &serde_json::Value) -> String {
-    let fallback = || format!("{tool} {}", render_json_value(input));
-    let some_path = |k| input.get(k).and_then(|v| v.as_str());
-    match tool {
-        "read" | "write" | "edit" => match some_path("path") {
-            Some(p) => format!("{tool} {p}"),
-            None => fallback(),
-        },
-        "bash" => match some_path("command") {
-            Some(c) => format!("$ {}", truncate_first(c, 60)),
-            None => fallback(),
-        },
-        "search" | "grep" => match (some_path("pattern"), some_path("path")) {
-            (Some(p), Some(path)) => format!("search \"{p}\" in {path}"),
-            (Some(p), None) => format!("search \"{p}\""),
-            _ => fallback(),
-        },
-        _ => fallback(),
-    }
 }
 
 fn summarize_output(output: &str, width: usize) -> String {
@@ -809,7 +822,7 @@ mod tests {
     fn wrapped_user_turn_marks_only_the_first_visual_row() {
         let mut lines = Vec::new();
         let message = ChatMessage::User("a user message that wraps across rows".into());
-        push_message_lines(&message, &mut lines, 14);
+        push_message_lines(&message, &mut lines, 14, false);
         let rendered = lines
             .iter()
             .map(Line::to_string)
@@ -898,12 +911,6 @@ mod tests {
     }
 
     #[test]
-    fn child_target_line_bash_prefixes_dollar() {
-        let s = child_target_line("bash", &serde_json::json!({"command": "ls"}));
-        assert!(s.starts_with('$'), "expected `$` prefix, got `{s}`");
-    }
-
-    #[test]
     fn plan_step_three_glyphs() {
         let (gd, _) = theme::plan_step_glyph_and_style(true, false);
         let (gc, _) = theme::plan_step_glyph_and_style(false, true);
@@ -937,10 +944,12 @@ mod tests {
             final_text: "Hello back".into(),
         });
         s.apply(crate::event::DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"command": "ls"}),
         });
         s.apply(crate::event::DomainEvent::ToolFinished {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             output: "a.rs".into(),
             is_error: false,

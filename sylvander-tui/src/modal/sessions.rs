@@ -20,7 +20,6 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, AppState};
-use crate::event::Action;
 use crate::modal::{Consumed, Modal};
 use crate::theme;
 
@@ -91,6 +90,9 @@ pub struct SessionsOverlay {
     pub filter_focused: bool,
     /// When in delete-confirm mode: index of the entry pending delete.
     pub pending_delete: Option<usize>,
+    /// Original entry index currently being renamed.
+    pub renaming: Option<usize>,
+    pub rename_buffer: String,
 }
 
 impl SessionsOverlay {
@@ -101,6 +103,8 @@ impl SessionsOverlay {
             filter: String::new(),
             filter_focused: true,
             pending_delete: None,
+            renaming: None,
+            rename_buffer: String::new(),
         }
     }
 
@@ -220,7 +224,14 @@ impl Modal for SessionsOverlay {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), layout[2]);
 
         // 4. Footer
-        let footer = if self.pending_delete.is_some() {
+        let footer = if self.renaming.is_some() {
+            Line::from(vec![
+                Span::styled("Rename: ", theme::active()),
+                Span::styled(&self.rename_buffer, theme::text()),
+                Span::styled("_", theme::active()),
+                Span::styled("  Enter save · Esc cancel", theme::text_muted()),
+            ])
+        } else if self.pending_delete.is_some() {
             Line::from(vec![
                 Span::styled("Delete this session? ", theme::warning()),
                 Span::styled("[y] confirm  [n/Esc] cancel", theme::text_muted()),
@@ -249,12 +260,48 @@ impl Modal for SessionsOverlay {
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
+        if let Some(index) = self.renaming {
+            match key.code {
+                KeyCode::Enter => {
+                    let label = self.rename_buffer.trim();
+                    if !label.is_empty() {
+                        if let Some(entry) = self.entries.get_mut(index) {
+                            entry.label = label.to_string();
+                        }
+                        if let Some(entry) = state.sessions.get_mut(index) {
+                            entry.label = label.to_string();
+                        }
+                    }
+                    self.renaming = None;
+                    self.rename_buffer.clear();
+                }
+                KeyCode::Esc => {
+                    self.renaming = None;
+                    self.rename_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.rename_buffer.pop();
+                }
+                KeyCode::Char(character)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    self.rename_buffer.push(character);
+                }
+                _ => {}
+            }
+            state.dirty.mark();
+            return Consumed::Yes { dismiss: false };
+        }
+
         // Delete-confirm layer wins.
         if let Some(idx) = self.pending_delete {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if idx < self.entries.len() {
+                        let id = self.entries[idx].id.clone();
                         self.entries.remove(idx);
+                        state.sessions.retain(|entry| entry.id != id);
                     }
                     self.pending_delete = None;
                     let new_len = self.filtered().len();
@@ -289,11 +336,7 @@ impl Modal for SessionsOverlay {
                 Consumed::Yes { dismiss: true }
             }
             KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // ctrl+n: new session — synthesize a request.
-                state.pending_actions.push(Action::SendChat {
-                    text: String::new(),
-                    session_id: None,
-                });
+                let _ = crate::command::execute(crate::command::parse("new").unwrap(), state);
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
@@ -307,6 +350,12 @@ impl Modal for SessionsOverlay {
                 // picks up on next message.
                 if let Some((_, entry)) = self.filtered().get(self.cursor) {
                     state.session_id = Some(entry.id.clone());
+                    state.messages.clear();
+                    state.streaming.clear();
+                    state.streaming_thinking.clear();
+                    state.chat_scroll = 0;
+                    state.unread_events = 0;
+                    state.welcomed = false;
                     state.status = format!("Switched to {}", entry.label);
                     state.mode = AppMode::Normal;
                     state.dirty.mark();
@@ -332,13 +381,20 @@ impl Modal for SessionsOverlay {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Char('r') if !self.filter_focused => {
-                // Rename: TODO M-T6 — drop into inline edit, for now no-op.
-                state.dirty.mark();
+                let selected = self
+                    .filtered()
+                    .get(self.cursor)
+                    .map(|(index, entry)| (*index, entry.label.clone()));
+                if let Some((original_index, label)) = selected {
+                    self.renaming = Some(original_index);
+                    self.rename_buffer = label;
+                    state.dirty.mark();
+                }
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Char('d') if !self.filter_focused => {
-                if let Some((_, _entry)) = self.filtered().get(self.cursor) {
-                    self.pending_delete = Some(self.cursor);
+                if let Some((original_index, _entry)) = self.filtered().get(self.cursor) {
+                    self.pending_delete = Some(*original_index);
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
@@ -480,25 +536,38 @@ mod tests {
     #[test]
     fn delete_confirm_removes_entry_on_y() {
         let mut state = AppState::new();
-        let mut overlay = SessionsOverlay::new(vec![entry("a", "Foo", SessionStatus::Working, 60)]);
+        state.sessions = vec![entry("a", "Foo", SessionStatus::Working, 60)];
+        let mut overlay = SessionsOverlay::new(state.sessions.clone());
         overlay.pending_delete = Some(0);
         let result = overlay.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: false }));
         assert_eq!(overlay.entries.len(), 0);
+        assert!(state.sessions.is_empty());
     }
 
     #[test]
-    fn new_session_action_emitted_on_ctrl_n() {
+    fn rename_updates_overlay_and_application_cache() {
         let mut state = AppState::new();
+        state.sessions = vec![entry("a", "Old", SessionStatus::Working, 60)];
+        let mut overlay = SessionsOverlay::new(state.sessions.clone());
+        overlay.filter_focused = false;
+        overlay.handle_key(&key(KeyCode::Char('r'), KeyModifiers::NONE), &mut state);
+        overlay.rename_buffer = "New name".into();
+        overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        assert_eq!(overlay.entries[0].label, "New name");
+        assert_eq!(state.sessions[0].label, "New name");
+    }
+
+    #[test]
+    fn new_session_on_ctrl_n_does_not_send_an_empty_prompt() {
+        let mut state = AppState::new();
+        state.session_id = Some("old".into());
         let mut overlay = SessionsOverlay::new(vec![]);
         let result =
             overlay.handle_key(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: true }));
-        assert_eq!(state.pending_actions.len(), 1);
-        assert!(matches!(
-            state.pending_actions[0],
-            Action::SendChat { ref text, session_id: None } if text.is_empty()
-        ));
+        assert!(state.pending_actions.is_empty());
+        assert!(state.session_id.is_none());
     }
 
     #[test]

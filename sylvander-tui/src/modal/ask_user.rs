@@ -48,6 +48,7 @@ pub struct AskUserModal {
     pub cursor: usize,
     /// Free-text answer the user has typed (always available).
     pub answer: String,
+    pub validation_error: Option<String>,
 }
 
 impl AskUserModal {
@@ -70,6 +71,7 @@ impl AskUserModal {
             selection,
             cursor: 0,
             answer: String::new(),
+            validation_error: None,
         }
     }
 
@@ -87,6 +89,14 @@ impl AskUserModal {
     /// agent's `ask_user` handler: joined options first, free text after `; `.
     fn submit_answer(&self) -> String {
         match &self.selection {
+            Selection::None if !self.options.is_empty() && !self.multi_select => {
+                let option = self.options.get(self.cursor).cloned().unwrap_or_default();
+                if self.answer.trim().is_empty() {
+                    option
+                } else {
+                    format!("{option}; {}", self.answer.trim())
+                }
+            }
             Selection::None => self.answer.trim().to_string(),
             Selection::Single(i) => {
                 let opt = self.options[*i].clone();
@@ -217,10 +227,16 @@ impl Modal for AskUserModal {
             Span::styled(&self.answer, Style::default()),
         ]));
         lines.push(Line::from(""));
+        if let Some(error) = &self.validation_error {
+            lines.push(Line::from(Span::styled(
+                format!("! {error}"),
+                theme::warning(),
+            )));
+        }
         let hint = match self.kind() {
-            "free text" => "Enter: submit   Esc: cancel",
-            "multi-select" => "Space: toggle   Enter: submit   Esc: cancel",
-            _ => "Enter: submit option   Esc: cancel",
+            "free text" => "Enter submit   Esc cancel and unblock Agent",
+            "multi-select" => "Space toggle   Enter submit   Esc cancel",
+            _ => "↑/↓ select   Enter submit   Esc cancel",
         };
         lines.push(Line::from(Span::styled(hint, theme::text_muted())));
 
@@ -236,13 +252,9 @@ impl Modal for AskUserModal {
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
-            KeyCode::Esc => {
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
-            }
+            KeyCode::Esc => self.cancel(state),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
+                self.cancel(state)
             }
             KeyCode::Up => {
                 if self.cursor > 0 {
@@ -268,14 +280,22 @@ impl Modal for AskUserModal {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
-                let call_id = std::mem::take(&mut self.call_id);
                 let answer = self.submit_answer();
-                state.mode = AppMode::Normal;
-                if !answer.is_empty() {
-                    state
-                        .pending_actions
-                        .push(Action::SendAnswer { call_id, answer });
+                if answer.is_empty() {
+                    self.validation_error =
+                        Some("Choose an option, type an answer, or press Esc to cancel".into());
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: false };
                 }
+                let call_id = std::mem::take(&mut self.call_id);
+                state.mode = AppMode::Normal;
+                state.pending_actions.push(Action::SendAnswer {
+                    call_id,
+                    answer: answer.clone(),
+                });
+                state.messages.push(crate::app::ChatMessage::Info(format!(
+                    "answered · {answer}"
+                )));
                 Consumed::Yes { dismiss: true }
             }
             KeyCode::Char(c) => {
@@ -303,12 +323,15 @@ impl Modal for AskUserModal {
                             }
                         }
                         state.dirty.mark();
+                        self.validation_error = None;
                         return Consumed::Yes { dismiss: false };
                     }
                 }
                 // Free-text input (always available as a fallback).
                 self.answer.push(c);
+                self.validation_error = None;
                 state.dirty.mark();
+                self.validation_error = None;
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Backspace => {
@@ -327,6 +350,21 @@ impl Modal for AskUserModal {
             }
             _ => Consumed::Ignored,
         }
+    }
+}
+
+impl AskUserModal {
+    fn cancel(&mut self, state: &mut AppState) -> Consumed {
+        let call_id = std::mem::take(&mut self.call_id);
+        state.pending_actions.push(Action::SendAnswer {
+            call_id,
+            answer: String::new(),
+        });
+        state
+            .messages
+            .push(crate::app::ChatMessage::Info("question cancelled".into()));
+        state.mode = AppMode::Normal;
+        Consumed::Yes { dismiss: true }
     }
 }
 
@@ -452,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_cancels_without_emitting_answer() {
+    fn esc_cancels_and_unblocks_the_agent() {
         let mut m = AskUserModal::new(
             "c".into(),
             "?".into(),
@@ -462,7 +500,10 @@ mod tests {
         let mut s = AppState::new();
         let consumed = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
-        assert!(s.pending_actions.is_empty());
+        assert!(matches!(
+            s.pending_actions.as_slice(),
+            [Action::SendAnswer { call_id, answer }] if call_id == "c" && answer.is_empty()
+        ));
         assert_eq!(s.mode, AppMode::Normal);
     }
 }

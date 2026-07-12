@@ -2,10 +2,8 @@
 //! area (when it is otherwise empty). Provides a fuzzy-filtered command
 //! list the user can invoke without leaving the keyboard home row.
 //!
-//! Scope for M-T6 only covers commands whose underlying action exists:
-//! `/new`, `/sessions`, `/clear`, `/help`, `/quit`. The remaining 13
-//! commands in the v6.0 initial set will be plugged in as their
-//! features land.
+//! The input is a real command line: entries can be selected, or commands with
+//! arguments such as `theme midnight` can be typed and submitted directly.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -17,61 +15,14 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, AppState};
-use crate::event::Action;
+pub use crate::command::{COMMANDS, CommandSpec as Command};
 use crate::modal::{Consumed, Modal};
-
-/// One palette entry. `matcher` is the fuzzy needle (lowercase substring).
-#[derive(Debug, Clone)]
-pub struct Command {
-    pub cmd: &'static str,
-    pub label: &'static str,
-    pub hint: &'static str,
-}
-
-impl Command {
-    pub fn matches(&self, needle: &str) -> bool {
-        if needle.is_empty() {
-            return true;
-        }
-        let n = needle.to_lowercase();
-        // Match against command name first; fall back to label.
-        self.cmd.to_lowercase().contains(&n) || self.label.to_lowercase().contains(&n)
-    }
-}
-
-/// Curated list for M-T6.
-pub const COMMANDS: &[Command] = &[
-    Command {
-        cmd: "/new",
-        label: "Start a new session",
-        hint: "/ new-session",
-    },
-    Command {
-        cmd: "/sessions",
-        label: "Switch sessions",
-        hint: "ctrl+p",
-    },
-    Command {
-        cmd: "/clear",
-        label: "Clear the transcript",
-        hint: "local",
-    },
-    Command {
-        cmd: "/help",
-        label: "Show help",
-        hint: "ui-only",
-    },
-    Command {
-        cmd: "/quit",
-        label: "Quit sylvander-tui",
-        hint: "ctrl+c",
-    },
-];
 
 pub struct CommandPalette {
     pub filter: String,
     pub cursor: usize,
     pub filtered: Vec<usize>,
+    pub error: Option<String>,
 }
 
 impl CommandPalette {
@@ -80,17 +31,25 @@ impl CommandPalette {
             filter: String::new(),
             cursor: 0,
             filtered: Vec::new(),
+            error: None,
         };
         s.recompute();
         s
     }
 
     pub fn recompute(&mut self) {
+        let needle = self.filter.split_whitespace().next().unwrap_or("");
         self.filtered = COMMANDS
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| {
-                if c.matches(&self.filter) {
+            .filter_map(|(i, command)| {
+                if needle.is_empty()
+                    || command.name.contains(&needle.to_ascii_lowercase())
+                    || command
+                        .description
+                        .to_ascii_lowercase()
+                        .contains(&needle.to_ascii_lowercase())
+                {
                     Some(i)
                 } else {
                     None
@@ -104,47 +63,29 @@ impl CommandPalette {
 
     /// Run the currently-selected command, pushing the appropriate
     /// side-effect onto AppState's pending_actions.
-    fn invoke(&self, state: &mut AppState) -> Consumed {
-        if let Some(&cmd_idx) = self.filtered.get(self.cursor) {
-            let cmd = &COMMANDS[cmd_idx];
-            match cmd.cmd {
-                "/new" => {
-                    state.pending_actions.push(Action::SendChat {
-                        text: String::new(),
-                        session_id: None,
-                    });
-                }
-                "/sessions" => {
-                    // Push the sessions overlay onto the stack so the user
-                    // lands directly in it.
-                    let snapshot = state.sessions.clone();
-                    state
-                        .modals
-                        .push(Box::new(crate::modal::sessions::SessionsOverlay::new(
-                            snapshot,
-                        )));
-                }
-                "/clear" => {
-                    state.messages.clear();
-                    state.streaming.clear();
-                    state.streaming_thinking.clear();
-                    state.dirty.mark();
-                    state.status = "Cleared transcript".into();
-                }
-                "/help" => {
-                    state.status = "Help: Type /command · ctrl+p sessions · ctrl+k palette".into();
-                    state.dirty.mark();
-                }
-                "/quit" => {
-                    state.should_quit = true;
-                }
-                _ => {
-                    // Unknown — no-op for M-T6.
-                }
+    fn invoke(&mut self, state: &mut AppState) -> Consumed {
+        let typed_name = self.filter.split_whitespace().next().unwrap_or("");
+        let exact_typed = COMMANDS
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(typed_name));
+        let line = if exact_typed {
+            self.filter.clone()
+        } else if let Some(&command_index) = self.filtered.get(self.cursor) {
+            COMMANDS[command_index].name.to_string()
+        } else {
+            self.error = Some("No matching command".into());
+            return Consumed::Yes { dismiss: false };
+        };
+        match crate::command::parse(&line)
+            .and_then(|invocation| crate::command::execute(invocation, state))
+        {
+            Ok(()) => Consumed::Yes { dismiss: true },
+            Err(error) => {
+                self.error = Some(error);
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
             }
-            return Consumed::Yes { dismiss: true };
         }
-        Consumed::Ignored
     }
 }
 
@@ -179,8 +120,8 @@ impl Modal for CommandPalette {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // input
-                Constraint::Length(1), // divider
-                Constraint::Min(7),    // list
+                Constraint::Length(1), // error or divider
+                Constraint::Min(7),    // command list
             ])
             .split(inner);
 
@@ -197,11 +138,16 @@ impl Modal for CommandPalette {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
 
-        // 2. Spacer divider
-        frame.render_widget(
-            Paragraph::new("─".repeat(layout[1].width as usize)),
-            layout[1],
+        let feedback = self.error.as_deref().map_or_else(
+            || {
+                Line::from(Span::styled(
+                    "─".repeat(layout[1].width as usize),
+                    theme::rule(),
+                ))
+            },
+            |error| Line::from(Span::styled(format!("! {error}"), theme::warning())),
         );
+        frame.render_widget(Paragraph::new(feedback), layout[1]);
 
         // 3. List
         let mut lines: Vec<Line> = Vec::new();
@@ -223,15 +169,14 @@ impl Modal for CommandPalette {
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
-                        format!("{:<14}", cmd.cmd),
+                        format!("/{:<13}", cmd.name),
                         Style::default().fg(if is_cursor {
                             theme::palette().active
                         } else {
                             theme::palette().brand_violet
                         }),
                     ),
-                    Span::styled(cmd.label, Style::default().fg(color)),
-                    Span::styled(format!("  ({})", cmd.hint), theme::text_muted()),
+                    Span::styled(cmd.description, Style::default().fg(color)),
                 ]));
             }
         }
@@ -265,6 +210,7 @@ impl Modal for CommandPalette {
             KeyCode::Backspace => {
                 if !self.filter.is_empty() {
                     self.filter.pop();
+                    self.error = None;
                     self.recompute();
                     state.dirty.mark();
                 }
@@ -276,6 +222,7 @@ impl Modal for CommandPalette {
                     && !key.modifiers.contains(KeyModifiers::ALT)
                 {
                     self.filter.push(c);
+                    self.error = None;
                     self.recompute();
                     state.dirty.mark();
                 }
@@ -332,9 +279,9 @@ mod tests {
         let mut p = CommandPalette::new();
         p.filter = "ses".into();
         p.recompute();
-        let names: Vec<&'static str> = p.filtered.iter().map(|&i| COMMANDS[i].cmd).collect();
-        assert!(names.contains(&"/sessions"));
-        assert!(!names.contains(&"/clear"));
+        let names: Vec<&'static str> = p.filtered.iter().map(|&i| COMMANDS[i].name).collect();
+        assert!(names.contains(&"sessions"));
+        assert!(!names.contains(&"clear"));
     }
 
     #[test]
@@ -349,12 +296,12 @@ mod tests {
     fn enter_dispatches_quit_command() {
         let mut state = AppState::new();
         let mut p = CommandPalette::new();
-        // Cursor lands on /new (first command). Move down to /quit.
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
-        // Now cursor at /quit (index 4).
+        for character in "quit".chars() {
+            let _ = p.handle_key(
+                &key(KeyCode::Char(character), KeyModifiers::NONE),
+                &mut state,
+            );
+        }
         let consumed = p.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         assert!(state.should_quit);

@@ -4,7 +4,9 @@
 
 pub mod app;
 pub mod application;
+pub mod approval_presenter;
 pub mod client;
+pub mod command;
 pub mod compat;
 pub mod component;
 pub mod config;
@@ -18,4 +20,5 @@ pub mod runtime;
 pub mod service;
 pub mod terminal_input;
 pub mod theme;
+pub mod tool_presenter;
 pub mod ui;

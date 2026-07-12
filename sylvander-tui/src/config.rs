@@ -18,6 +18,7 @@ pub struct TuiConfig {
     pub theme: ThemeName,
     pub render_interval: Duration,
     pub animation_interval: Duration,
+    pub reconnect_interval: Duration,
     pub mouse_scroll_lines: usize,
     pub metadata: RuntimeMetadata,
 }
@@ -34,6 +35,7 @@ impl TuiConfig {
             .parse()?;
         let render_fps = env_number("SYLVANDER_TUI_RENDER_FPS", 30, 5, 120)?;
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
+        let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
         let mouse_scroll_lines = env_number("SYLVANDER_TUI_MOUSE_SCROLL_LINES", 4, 1, 40)?;
 
         Ok(Self {
@@ -42,6 +44,7 @@ impl TuiConfig {
             theme,
             render_interval: Duration::from_millis(1_000 / render_fps as u64),
             animation_interval: Duration::from_millis(animation_ms as u64),
+            reconnect_interval: Duration::from_millis(reconnect_ms as u64),
             mouse_scroll_lines,
             metadata: RuntimeMetadata {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),

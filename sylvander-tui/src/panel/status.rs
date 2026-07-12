@@ -103,7 +103,7 @@ impl Component for StatusPanel {
             .unwrap_or_else(|| "—".into());
         let model = &state.metadata.model;
         let branch = &state.metadata.branch;
-        if area.width < 80 {
+        if area.width < 100 {
             let compact = Line::from(vec![
                 Span::styled(format!("{} {}", mode.glyph(), mode.label()), mode.style()),
                 Span::styled(
@@ -114,11 +114,19 @@ impl Component for StatusPanel {
             frame.render_widget(Paragraph::new(compact), area);
             return;
         }
+        let tool_summary = if area.width >= 140 {
+            format!(" · {tool_count} tools")
+        } else {
+            String::new()
+        };
         let left = Line::from(vec![
             Span::styled(format!("{} ", mode.glyph()), mode.style()),
             Span::styled(mode.label(), mode.style()),
             Span::styled(
-                format!(" · model {model} · branch {branch} · session {session} · {tool_count}t"),
+                format!(
+                    " · model {model} · branch {branch} · session {session} · {} tok{tool_summary}",
+                    state.input_tokens.saturating_add(state.output_tokens),
+                ),
                 theme::text_dim(),
             ),
             task_span,
@@ -242,6 +250,7 @@ mod tests {
             name: "step".into(),
             started_at_secs: 0,
             children: vec![crate::app::ToolStepChild {
+                call_id: "call-1".into(),
                 name: "bash".into(),
                 status: ToolStatus::Pending,
                 input: serde_json::json!({}),
