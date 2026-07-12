@@ -1,14 +1,13 @@
-//! Design tokens — verbatim from `docs/design/02-tui-immersive.svg`.
+//! Configurable semantic theme system.
 //!
-//! Every color and state-derived glyph / colour pair used by the TUI
-//! lives here. Panels and modals import from this module — they do
-//! not reach into ratatui's `Color::*` enum directly, so a palette
-//! swap requires editing only this file.
+//! Rendering code requests semantic roles instead of concrete terminal colors.
+//! A palette is selected once from `TuiConfig` during process startup.
 
 use ratatui::style::{Color, Modifier, Style};
+use std::str::FromStr;
+use std::sync::RwLock;
 
-// Palette constants — derived from the 02-tui-immersive.svg <style>.
-
+// Public defaults remain available to snapshot/unit tests and downstream code.
 pub const BG: Color = Color::Rgb(0x00, 0x00, 0x00);
 pub const TEXT: Color = Color::Rgb(0xEC, 0xE7, 0xDE);
 pub const TEXT_DIM: Color = Color::Rgb(0x98, 0x9B, 0x9D);
@@ -21,74 +20,196 @@ pub const TEAL: Color = Color::Rgb(0x72, 0xC7, 0xB1);
 pub const AMBER: Color = Color::Rgb(0xD9, 0xAF, 0x62);
 pub const RULE: Color = Color::Rgb(0x34, 0x3A, 0x40);
 pub const GUIDE: Color = Color::Rgb(0x4A, 0x53, 0x5C);
+pub const DANGER: Color = Color::Rgb(0xE0, 0x6C, 0x75);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeName {
+    Sylvander,
+    Midnight,
+    HighContrast,
+}
+
+impl FromStr for ThemeName {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "sylvander" | "default" => Ok(Self::Sylvander),
+            "midnight" => Ok(Self::Midnight),
+            "high-contrast" | "high_contrast" | "contrast" => Ok(Self::HighContrast),
+            _ => Err(format!(
+                "unknown theme {value:?}; expected sylvander, midnight, or high-contrast"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub canvas: Color,
+    pub text: Color,
+    pub text_dim: Color,
+    pub text_muted: Color,
+    pub identity: Color,
+    pub brand_warm: Color,
+    pub brand_violet: Color,
+    pub active: Color,
+    pub verified: Color,
+    pub waiting: Color,
+    pub danger: Color,
+    pub rule: Color,
+    pub guide: Color,
+}
+
+pub const SYLVANDER: Palette = Palette {
+    canvas: BG,
+    text: TEXT,
+    text_dim: TEXT_DIM,
+    text_muted: TEXT_MUTED,
+    identity: CORAL,
+    brand_warm: BRAND_WARM,
+    brand_violet: BRAND_VIOLET,
+    active: BLUE,
+    verified: TEAL,
+    waiting: AMBER,
+    danger: DANGER,
+    rule: RULE,
+    guide: GUIDE,
+};
+
+pub const MIDNIGHT: Palette = Palette {
+    canvas: Color::Rgb(0x03, 0x05, 0x08),
+    text: Color::Rgb(0xD9, 0xE2, 0xEC),
+    text_dim: Color::Rgb(0x8A, 0x99, 0xA8),
+    text_muted: Color::Rgb(0x55, 0x64, 0x73),
+    identity: Color::Rgb(0xD9, 0x8B, 0x73),
+    brand_warm: Color::Rgb(0xE7, 0xB8, 0x6A),
+    brand_violet: Color::Rgb(0x86, 0x8B, 0xFF),
+    active: Color::Rgb(0x64, 0xB5, 0xF6),
+    verified: Color::Rgb(0x67, 0xC5, 0xA0),
+    waiting: Color::Rgb(0xD7, 0xA9, 0x55),
+    danger: Color::Rgb(0xEF, 0x6B, 0x73),
+    rule: Color::Rgb(0x24, 0x2C, 0x35),
+    guide: Color::Rgb(0x3B, 0x47, 0x54),
+};
+
+pub const HIGH_CONTRAST: Palette = Palette {
+    canvas: Color::Black,
+    text: Color::White,
+    text_dim: Color::Gray,
+    text_muted: Color::DarkGray,
+    identity: Color::LightRed,
+    brand_warm: Color::LightYellow,
+    brand_violet: Color::LightMagenta,
+    active: Color::LightCyan,
+    verified: Color::LightGreen,
+    waiting: Color::Yellow,
+    danger: Color::LightRed,
+    rule: Color::Gray,
+    guide: Color::DarkGray,
+};
+
+static ACTIVE: RwLock<Palette> = RwLock::new(SYLVANDER);
+
+pub fn palette_for(name: ThemeName) -> Palette {
+    match name {
+        ThemeName::Sylvander => SYLVANDER,
+        ThemeName::Midnight => MIDNIGHT,
+        ThemeName::HighContrast => HIGH_CONTRAST,
+    }
+}
+
+pub fn configure(name: ThemeName) {
+    *ACTIVE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = palette_for(name);
+}
+
+pub fn palette() -> Palette {
+    *ACTIVE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub fn text() -> Style {
-    Style::default().fg(TEXT)
+    Style::default().fg(palette().text)
 }
 pub fn text_on_canvas() -> Style {
-    Style::default().fg(TEXT).bg(BG)
+    let palette = palette();
+    Style::default().fg(palette.text).bg(palette.canvas)
 }
 pub fn text_dim() -> Style {
-    Style::default().fg(TEXT_DIM)
+    Style::default().fg(palette().text_dim)
 }
 pub fn text_muted() -> Style {
-    Style::default().fg(TEXT_MUTED)
+    Style::default().fg(palette().text_muted)
 }
 pub fn header() -> Style {
-    Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().text)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn coral() -> Style {
-    Style::default().fg(CORAL).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().identity)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn brand_warm() -> Style {
-    Style::default().fg(BRAND_WARM)
+    Style::default().fg(palette().brand_warm)
 }
 pub fn brand_violet() -> Style {
-    Style::default().fg(BRAND_VIOLET)
+    Style::default().fg(palette().brand_violet)
 }
 pub fn brand_wordmark() -> Style {
-    Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().text)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn brand_tagline() -> Style {
     Style::default()
-        .fg(BRAND_VIOLET)
+        .fg(palette().brand_violet)
         .add_modifier(Modifier::ITALIC)
 }
 pub fn active() -> Style {
-    Style::default().fg(BLUE)
+    Style::default().fg(palette().active)
 }
 pub fn active_bold() -> Style {
-    Style::default().fg(BLUE).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().active)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn verified() -> Style {
-    Style::default().fg(TEAL)
+    Style::default().fg(palette().verified)
 }
 pub fn warning() -> Style {
-    Style::default().fg(AMBER)
+    Style::default().fg(palette().waiting)
+}
+pub fn danger() -> Style {
+    Style::default().fg(palette().danger)
 }
 pub fn rule() -> Style {
-    Style::default().fg(RULE)
+    Style::default().fg(palette().rule)
 }
 pub fn guide() -> Style {
-    Style::default().fg(GUIDE)
+    Style::default().fg(palette().guide)
 }
 pub fn focus_box() -> Style {
-    Style::default().fg(CORAL)
+    Style::default().fg(palette().identity)
 }
 pub fn composer_idle_border() -> Style {
-    Style::default().fg(TEXT_MUTED)
+    Style::default().fg(palette().text_muted)
 }
 pub fn composer_placeholder() -> Style {
-    Style::default().fg(TEXT_DIM)
+    Style::default().fg(palette().text_dim)
 }
 pub fn composer_helper() -> Style {
     Style::default()
-        .fg(TEXT_MUTED)
+        .fg(palette().text_muted)
         .add_modifier(Modifier::ITALIC)
 }
 pub fn thinking_text() -> Style {
     Style::default()
-        .fg(TEXT_MUTED)
+        .fg(palette().text_muted)
         .add_modifier(Modifier::ITALIC)
 }
 
@@ -105,11 +226,9 @@ pub enum StatusMode {
 impl StatusMode {
     pub fn glyph(self) -> &'static str {
         match self {
-            Self::Connecting => "◌",
+            Self::Connecting | Self::Working => "◌",
             Self::Idle => "\u{00b7}",
-            Self::Working => "\u{25cc}",
-            Self::WaitingApproval => "\u{25cf}",
-            Self::Asking => "\u{25cf}",
+            Self::WaitingApproval | Self::Asking => "\u{25cf}",
             Self::Disconnected => "!",
         }
     }
@@ -125,9 +244,8 @@ impl StatusMode {
     }
     pub fn style(self) -> Style {
         match self {
-            Self::Connecting => active(),
+            Self::Connecting | Self::Working => active(),
             Self::Idle | Self::Asking => text_dim(),
-            Self::Working => active(),
             Self::WaitingApproval | Self::Disconnected => warning(),
         }
     }
@@ -161,32 +279,36 @@ pub fn plan_step_glyph_and_style(completed: bool, current: bool) -> (&'static st
 }
 
 pub fn user_speaker() -> Style {
-    Style::default().fg(TEXT_DIM).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().text_dim)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn agent_speaker() -> Style {
     Style::default()
-        .fg(BRAND_VIOLET)
+        .fg(palette().brand_violet)
         .add_modifier(Modifier::BOLD)
 }
 
 pub fn modal_title_coral() -> Style {
-    Style::default().fg(CORAL).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(palette().identity)
+        .add_modifier(Modifier::BOLD)
 }
 pub fn task_summary_line() -> Style {
-    Style::default().fg(CORAL)
+    Style::default().fg(palette().identity)
 }
 pub fn selected() -> Style {
-    Style::default().fg(CORAL)
+    Style::default().fg(palette().identity)
 }
 pub fn dimmed() -> Style {
-    Style::default().fg(TEXT_MUTED)
+    Style::default().fg(palette().text_muted)
 }
 
 pub fn kv_label() -> Style {
-    Style::default().fg(TEXT_MUTED)
+    Style::default().fg(palette().text_muted)
 }
 pub fn kv_value() -> Style {
-    Style::default().fg(TEXT)
+    Style::default().fg(palette().text)
 }
 
 pub fn compact_workspace(path: &std::path::Path, max_chars: usize) -> String {
@@ -194,19 +316,10 @@ pub fn compact_workspace(path: &std::path::Path, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         return s;
     }
-    let basename = path
-        .components()
-        .next_back()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .unwrap_or_else(|| "~".into());
-    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            let rest_str = rest.display().to_string();
-            if !rest_str.is_empty() && rest_str != "." {
-                return format!("~/.../{basename}");
-            }
-        }
-    }
+    let basename = path.components().next_back().map_or_else(
+        || "~".into(),
+        |c| c.as_os_str().to_string_lossy().into_owned(),
+    );
     format!(".../{basename}")
 }
 
@@ -278,5 +391,35 @@ mod tests {
         );
         assert!(s.contains("sylvander-tui"));
         assert!(s.chars().count() < p.display().to_string().chars().count());
+    }
+
+    #[test]
+    fn built_in_themes_have_distinct_semantic_palettes() {
+        assert_ne!(
+            palette_for(ThemeName::Sylvander),
+            palette_for(ThemeName::Midnight)
+        );
+        assert_ne!(
+            palette_for(ThemeName::Sylvander),
+            palette_for(ThemeName::HighContrast)
+        );
+        assert_eq!(palette_for(ThemeName::Sylvander).canvas, BG);
+    }
+
+    #[test]
+    fn theme_names_accept_documented_aliases() {
+        assert_eq!(
+            "default".parse::<ThemeName>().unwrap(),
+            ThemeName::Sylvander
+        );
+        assert_eq!(
+            "midnight".parse::<ThemeName>().unwrap(),
+            ThemeName::Midnight
+        );
+        assert_eq!(
+            "high-contrast".parse::<ThemeName>().unwrap(),
+            ThemeName::HighContrast
+        );
+        assert!("unknown".parse::<ThemeName>().is_err());
     }
 }

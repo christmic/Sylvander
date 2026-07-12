@@ -13,13 +13,15 @@
 use ratatui::{
     Frame,
     layout::Layout,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Stylize},
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::AppState;
 use crate::compat::Breakpoint;
+use crate::component::Component;
+use crate::panel::{ChatPanel, InputPanel, StatusPanel};
 
 pub fn dispatch(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
@@ -33,14 +35,14 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Sylvander — please resize ")
-            .title_style(Style::default().fg(Color::Yellow));
+            .title_style(crate::theme::warning());
         frame.render_widget(block, area);
         let msg = Line::from(vec![
-            Span::styled("Terminal too small", Style::default().fg(Color::Red).bold()),
+            Span::styled("Terminal too small", crate::theme::danger().bold()),
             Span::raw(" — minimum supported viewport is "),
             Span::styled(
                 "50 columns × 12 rows",
-                Style::default().add_modifier(Modifier::BOLD),
+                crate::theme::text().add_modifier(Modifier::BOLD),
             ),
             Span::raw("."),
             Span::raw("\n\nResize the window to continue."),
@@ -56,17 +58,20 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
     // whitespace intentionally; that whitespace is still part of the UI.
     frame.render_widget(Block::default().style(crate::theme::text_on_canvas()), area);
 
-    let constraints: Vec<ratatui::layout::Constraint> = state
-        .panels
-        .iter()
-        .map(|p| p.height(state, area.width))
-        .collect();
+    // Presentation owns its component graph. Domain/application state never
+    // stores renderer instances or decides component order.
+    let chat = ChatPanel;
+    let input = InputPanel;
+    let status = StatusPanel;
+    let panels: [&dyn Component; 3] = [&chat, &input, &status];
+    let constraints: Vec<ratatui::layout::Constraint> =
+        panels.iter().map(|p| p.height(state, area.width)).collect();
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
-    for (panel, chunk) in state.panels.iter().zip(chunks.iter()) {
+    for (panel, chunk) in panels.iter().zip(chunks.iter()) {
         panel.render(frame, *chunk, state);
     }
 
