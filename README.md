@@ -37,7 +37,7 @@ sylvander-server                  binary — boots the system
 ```bash
 # Configure
 export ANTHROPIC_API_KEY=sk-...
-export SYLVANDER_MODEL=deepseek-v4-flash
+export SYLVANDER_MODEL=MiniMax-M3
 
 # Run
 cargo run -p sylvander-server --release
