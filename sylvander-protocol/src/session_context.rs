@@ -146,7 +146,11 @@ impl AttributeBag {
 
     /// Insert / replace a value. Returns `Some(previous)` if the key
     /// already existed.
-    pub fn set(&mut self, key: impl Into<String>, value: impl Into<AttributeValue>) -> Option<AttributeValue> {
+    pub fn set(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<AttributeValue>,
+    ) -> Option<AttributeValue> {
         self.inner.insert(key.into(), value.into())
     }
 
@@ -261,7 +265,11 @@ impl SessionContext {
     /// Minimal constructor: identity only. Origin/RequestMeta get
     /// defaults, attributes is empty.
     #[must_use]
-    pub fn new(user_id: impl Into<UserId>, agent_id: impl Into<AgentId>, session_id: impl Into<SessionId>) -> Self {
+    pub fn new(
+        user_id: impl Into<UserId>,
+        agent_id: impl Into<AgentId>,
+        session_id: impl Into<SessionId>,
+    ) -> Self {
         Self {
             identity: Identity {
                 user_id: user_id.into(),
@@ -318,7 +326,11 @@ impl SessionContext {
     }
 
     #[must_use]
-    pub fn with_attribute(mut self, key: impl Into<String>, value: impl Into<AttributeValue>) -> Self {
+    pub fn with_attribute(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<AttributeValue>,
+    ) -> Self {
         self.attributes.set(key, value);
         self
     }
@@ -361,12 +373,18 @@ mod tests {
             .with_attribute("experiment", "control")
             .with_attribute("attempt", 3_i64);
 
-        assert_eq!(ctx.origin.workspace.as_deref(), Some(std::path::Path::new("/home/alice/code")));
+        assert_eq!(
+            ctx.origin.workspace.as_deref(),
+            Some(std::path::Path::new("/home/alice/code"))
+        );
         assert_eq!(ctx.origin.channel.as_deref(), Some("telegram"));
         assert_eq!(ctx.request.trace_id.as_deref(), Some("req-42"));
         assert_eq!(ctx.request.priority, Priority::High);
         assert_eq!(ctx.attributes.get_str("experiment"), Some("control"));
-        assert_eq!(ctx.attributes.get("attempt").and_then(|v| v.as_i64()), Some(3));
+        assert_eq!(
+            ctx.attributes.get("attempt").and_then(|v| v.as_i64()),
+            Some(3)
+        );
     }
 
     #[test]

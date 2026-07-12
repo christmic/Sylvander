@@ -8,7 +8,14 @@ use serde_json::Value;
 const DEFAULT_DETAIL_LIMIT: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetailKind { Normal, Label, Added, Removed, Meta, Error }
+pub enum DetailKind {
+    Normal,
+    Label,
+    Added,
+    Removed,
+    Meta,
+    Error,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetailRow {
@@ -18,7 +25,10 @@ pub struct DetailRow {
 
 impl DetailRow {
     fn new(text: impl Into<String>, kind: DetailKind) -> Self {
-        Self { text: text.into(), kind }
+        Self {
+            text: text.into(),
+            kind,
+        }
     }
 }
 
@@ -36,7 +46,11 @@ pub fn detail_rows(
         }
         rows.push(DetailRow::new(
             if is_error { "error" } else { "result" },
-            if is_error { DetailKind::Error } else { DetailKind::Label },
+            if is_error {
+                DetailKind::Error
+            } else {
+                DetailKind::Label
+            },
         ));
         if is_shell(tool_name) {
             rows.extend(shell_output_rows(output, width));
@@ -56,7 +70,13 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
         let target = string_field(input, &["uri", "url", "query", "resource"]);
         return target.map_or_else(
             || format!("MCP {server} · {}", tool.replace('_', " ")),
-            |target| format!("MCP {server} · {} · {}", tool.replace('_', " "), one_line(target)),
+            |target| {
+                format!(
+                    "MCP {server} · {} · {}",
+                    tool.replace('_', " "),
+                    one_line(target)
+                )
+            },
         );
     }
     match normalized_name(tool_name).as_str() {
@@ -99,10 +119,17 @@ fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
         "bash" | "shell" | "exec" => {
             let mut rows = Vec::new();
             if let Some(cwd) = string_field(input, &["cwd", "workdir"]) {
-                rows.push(DetailRow::new(format!("cwd  {}", truncate(cwd, width.saturating_sub(5))), DetailKind::Meta));
+                rows.push(DetailRow::new(
+                    format!("cwd  {}", truncate(cwd, width.saturating_sub(5))),
+                    DetailKind::Meta,
+                ));
             }
             if let Some(command) = string_field(input, &["command", "cmd"]) {
-                rows.extend(wrap_prefixed("$ ", command, width).into_iter().map(|row| DetailRow::new(row, DetailKind::Normal)));
+                rows.extend(
+                    wrap_prefixed("$ ", command, width)
+                        .into_iter()
+                        .map(|row| DetailRow::new(row, DetailKind::Normal)),
+                );
             }
             rows
         }
@@ -111,23 +138,38 @@ fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
             let files = write_specs(input);
             let mut rows = Vec::new();
             for (index, (path, content)) in files.iter().enumerate() {
-                if index > 0 { rows.push(DetailRow::new("", DetailKind::Normal)); }
+                if index > 0 {
+                    rows.push(DetailRow::new("", DetailKind::Normal));
+                }
                 rows.extend(file_heading(path, width));
                 rows.extend(unified_diff_rows(path, "", content, width));
             }
-            if rows.is_empty() { generic_input_rows(input, width) } else { rows }
+            if rows.is_empty() {
+                generic_input_rows(input, width)
+            } else {
+                rows
+            }
         }
         "edit" | "edit_file" => {
             let edits = edit_specs(input);
             let mut rows = Vec::new();
             for (index, (path, old, new)) in edits.iter().enumerate() {
-                if index > 0 { rows.push(DetailRow::new("", DetailKind::Normal)); }
+                if index > 0 {
+                    rows.push(DetailRow::new("", DetailKind::Normal));
+                }
                 rows.extend(file_heading(path, width));
                 rows.extend(unified_diff_rows(path, old, new, width));
             }
-            if rows.is_empty() { generic_input_rows(input, width) } else { rows }
+            if rows.is_empty() {
+                generic_input_rows(input, width)
+            } else {
+                rows
+            }
         }
-        "search" | "grep" | "rg" => vec![DetailRow::new(compact_target(tool_name, input), DetailKind::Normal)],
+        "search" | "grep" | "rg" => vec![DetailRow::new(
+            compact_target(tool_name, input),
+            DetailKind::Normal,
+        )],
         "web_search" | "search_web" | "web_fetch" | "fetch_url" | "read_resource"
         | "list_resources" => resource_input_rows(None, tool_name, input, width),
         _ => generic_input_rows(input, width),
@@ -142,11 +184,18 @@ fn output_rows(output: &str, width: usize, limit: usize) -> Vec<DetailRow> {
         if line.is_empty() {
             rows.push(DetailRow::new("", DetailKind::Normal));
         } else {
-            rows.extend(wrap_prefixed("  ", line, width).into_iter().map(|row| DetailRow::new(row, DetailKind::Normal)));
+            rows.extend(
+                wrap_prefixed("  ", line, width)
+                    .into_iter()
+                    .map(|row| DetailRow::new(row, DetailKind::Normal)),
+            );
         }
     }
     if lines.len() > limit {
-        rows.push(DetailRow::new(format!("… {} more lines", lines.len() - limit), DetailKind::Meta));
+        rows.push(DetailRow::new(
+            format!("… {} more lines", lines.len() - limit),
+            DetailKind::Meta,
+        ));
     }
     rows
 }
@@ -161,15 +210,16 @@ fn unified_diff_rows(path: &str, old: &str, new: &str, width: usize) -> Vec<Deta
         .to_string();
     diff.lines()
         .map(|line| {
-            let kind = if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
-                DetailKind::Meta
-            } else if line.starts_with('+') {
-                DetailKind::Added
-            } else if line.starts_with('-') {
-                DetailKind::Removed
-            } else {
-                DetailKind::Normal
-            };
+            let kind =
+                if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+                    DetailKind::Meta
+                } else if line.starts_with('+') {
+                    DetailKind::Added
+                } else if line.starts_with('-') {
+                    DetailKind::Removed
+                } else {
+                    DetailKind::Normal
+                };
             DetailRow::new(truncate(line, width), kind)
         })
         .collect()
@@ -185,9 +235,9 @@ fn edit_specs(input: &Value) -> Vec<(&str, &str, &str)> {
 
 fn edit_spec(value: &Value) -> Option<(&str, &str, &str)> {
     Some((
-        string_field(value, &["path", "file_path"] )?,
-        string_field(value, &["old_string", "old_text", "before"] )?,
-        string_field(value, &["new_string", "new_text", "after"] )?,
+        string_field(value, &["path", "file_path"])?,
+        string_field(value, &["old_string", "old_text", "before"])?,
+        string_field(value, &["new_string", "new_text", "after"])?,
     ))
 }
 
@@ -201,8 +251,8 @@ fn write_specs(input: &Value) -> Vec<(&str, &str)> {
 
 fn write_spec(value: &Value) -> Option<(&str, &str)> {
     Some((
-        string_field(value, &["path", "file_path"] )?,
-        string_field(value, &["content", "new_string", "after"] )?,
+        string_field(value, &["path", "file_path"])?,
+        string_field(value, &["content", "new_string", "after"])?,
     ))
 }
 
@@ -212,7 +262,10 @@ fn file_heading(path: &str, width: usize) -> Vec<DetailRow> {
         DetailKind::Label,
     )];
     if let Some(language) = language_for_path(path) {
-        rows.push(DetailRow::new(format!("language  {language}"), DetailKind::Meta));
+        rows.push(DetailRow::new(
+            format!("language  {language}"),
+            DetailKind::Meta,
+        ));
     }
     rows
 }
@@ -234,11 +287,19 @@ fn shell_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
                 exit.map_or_else(|| "—".into(), |code| code.to_string()),
                 duration.map_or_else(String::new, |ms| format!(" · {ms}ms")),
             ),
-            if exit.is_some_and(|code| code != 0) { DetailKind::Error } else { DetailKind::Meta },
+            if exit.is_some_and(|code| code != 0) {
+                DetailKind::Error
+            } else {
+                DetailKind::Meta
+            },
         ));
     }
     for (label, kind) in [("stdout", DetailKind::Label), ("stderr", DetailKind::Error)] {
-        if let Some(content) = object.get(label).and_then(Value::as_str).filter(|value| !value.is_empty()) {
+        if let Some(content) = object
+            .get(label)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
             rows.push(DetailRow::new(label, kind));
             rows.extend(output_rows(content, width, DEFAULT_DETAIL_LIMIT));
         }
@@ -251,11 +312,15 @@ fn search_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
     let mut groups = std::collections::BTreeMap::<String, Vec<(String, String)>>::new();
     for line in clean.lines() {
         let mut parts = line.splitn(3, ':');
-        let (Some(path), Some(number), Some(text)) = (parts.next(), parts.next(), parts.next()) else {
+        let (Some(path), Some(number), Some(text)) = (parts.next(), parts.next(), parts.next())
+        else {
             continue;
         };
         if number.parse::<u64>().is_ok() {
-            groups.entry(path.into()).or_default().push((number.into(), text.into()));
+            groups
+                .entry(path.into())
+                .or_default()
+                .push((number.into(), text.into()));
         }
     }
     if groups.is_empty() {
@@ -264,12 +329,19 @@ fn search_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
     let mut rows = Vec::new();
     for (path, matches) in groups {
         rows.push(DetailRow::new(
-            format!("{} · {} matches", truncate(&path, width.saturating_sub(14)), matches.len()),
+            format!(
+                "{} · {} matches",
+                truncate(&path, width.saturating_sub(14)),
+                matches.len()
+            ),
             DetailKind::Label,
         ));
         for (number, text) in matches.into_iter().take(6) {
             rows.push(DetailRow::new(
-                format!("  {number:>5}  {}", truncate(text.trim(), width.saturating_sub(10))),
+                format!(
+                    "  {number:>5}  {}",
+                    truncate(text.trim(), width.saturating_sub(10))
+                ),
                 DetailKind::Normal,
             ));
         }
@@ -285,7 +357,10 @@ fn resource_input_rows(
 ) -> Vec<DetailRow> {
     let mut rows = Vec::new();
     if let Some(server) = server {
-        rows.push(DetailRow::new(format!("server  {server}"), DetailKind::Label));
+        rows.push(DetailRow::new(
+            format!("server  {server}"),
+            DetailKind::Label,
+        ));
     }
     rows.push(DetailRow::new(
         format!("tool  {}", tool.replace('_', " ")),
@@ -306,7 +381,10 @@ fn resource_input_rows(
         }
     }
     let known = ["uri", "resource", "url", "query", "cursor"];
-    if input.as_object().is_some_and(|map| map.keys().any(|key| !known.contains(&key.as_str()))) {
+    if input
+        .as_object()
+        .is_some_and(|map| map.keys().any(|key| !known.contains(&key.as_str())))
+    {
         rows.extend(generic_input_rows(input, width));
     }
     rows
@@ -330,20 +408,35 @@ fn resource_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
 fn collect_resource_rows(value: &Value, width: usize, rows: &mut Vec<DetailRow>) {
     match value {
         Value::Array(values) => {
-            for value in values { collect_resource_rows(value, width, rows); }
+            for value in values {
+                collect_resource_rows(value, width, rows);
+            }
         }
         Value::Object(map) => {
             if let Some(uri) = map.get("uri").and_then(Value::as_str) {
-                rows.push(DetailRow::new(format!("resource  {}", truncate(uri, width.saturating_sub(10))), DetailKind::Label));
+                rows.push(DetailRow::new(
+                    format!("resource  {}", truncate(uri, width.saturating_sub(10))),
+                    DetailKind::Label,
+                ));
             }
-            if let Some(mime) = map.get("mimeType").or_else(|| map.get("mime_type")).and_then(Value::as_str) {
+            if let Some(mime) = map
+                .get("mimeType")
+                .or_else(|| map.get("mime_type"))
+                .and_then(Value::as_str)
+            {
                 rows.push(DetailRow::new(format!("mime  {mime}"), DetailKind::Meta));
             }
-            if let Some(text) = map.get("text").or_else(|| map.get("content")).and_then(Value::as_str) {
+            if let Some(text) = map
+                .get("text")
+                .or_else(|| map.get("content"))
+                .and_then(Value::as_str)
+            {
                 rows.extend(output_rows(text, width, 8));
             }
             for key in ["contents", "resources", "results"] {
-                if let Some(value) = map.get(key) { collect_resource_rows(value, width, rows); }
+                if let Some(value) = map.get(key) {
+                    collect_resource_rows(value, width, rows);
+                }
             }
         }
         Value::String(text) => rows.extend(output_rows(text, width, 8)),
@@ -363,7 +456,12 @@ fn is_mcp_or_resource(name: &str) -> bool {
     mcp_identity(name).is_some()
         || matches!(
             normalized_name(name).as_str(),
-            "web_search" | "search_web" | "web_fetch" | "fetch_url" | "read_resource" | "list_resources"
+            "web_search"
+                | "search_web"
+                | "web_fetch"
+                | "fetch_url"
+                | "read_resource"
+                | "list_resources"
         )
 }
 
@@ -373,7 +471,12 @@ fn mcp_identity(name: &str) -> Option<(&str, &str)> {
 }
 
 fn language_for_path(path: &str) -> Option<&'static str> {
-    match std::path::Path::new(path).extension()?.to_str()?.to_ascii_lowercase().as_str() {
+    match std::path::Path::new(path)
+        .extension()?
+        .to_str()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "rs" => Some("Rust"),
         "ts" | "tsx" => Some("TypeScript"),
         "js" | "jsx" => Some("JavaScript"),
@@ -395,40 +498,62 @@ fn safe_output(output: &str) -> String {
 }
 
 fn redact_secrets(output: &str) -> String {
-    output.lines().map(|line| {
-        line.split_whitespace().map(|token| {
-            let bare = token.trim_matches(|ch: char| {
-                !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-'
-            });
-            let sensitive_prefix = ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
-                .iter().any(|prefix| bare.starts_with(prefix));
-            let lower = bare.to_ascii_lowercase();
-            let assignment = ["api_key=", "apikey=", "token=", "password="]
-                .iter().any(|key| lower.contains(key));
-            if sensitive_prefix || assignment { "[REDACTED]" } else { token }
-        }).collect::<Vec<_>>().join(" ")
-    }).collect::<Vec<_>>().join("\n")
+    output
+        .lines()
+        .map(|line| {
+            line.split_whitespace()
+                .map(|token| {
+                    let bare = token.trim_matches(|ch: char| {
+                        !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-'
+                    });
+                    let sensitive_prefix = ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+                        .iter()
+                        .any(|prefix| bare.starts_with(prefix));
+                    let lower = bare.to_ascii_lowercase();
+                    let assignment = ["api_key=", "apikey=", "token=", "password="]
+                        .iter()
+                        .any(|key| lower.contains(key));
+                    if sensitive_prefix || assignment {
+                        "[REDACTED]"
+                    } else {
+                        token
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn file_rows(label: &str, input: &Value, width: usize) -> Vec<DetailRow> {
     let mut rows = Vec::new();
     if let Some(path) = string_field(input, &["path", "file_path"]) {
-        rows.push(DetailRow::new(format!(
-            "{label}  {}",
-            truncate(path, width.saturating_sub(label.len() + 2))
-        ), DetailKind::Normal));
+        rows.push(DetailRow::new(
+            format!(
+                "{label}  {}",
+                truncate(path, width.saturating_sub(label.len() + 2))
+            ),
+            DetailKind::Normal,
+        ));
         if let Some(language) = language_for_path(path) {
-            rows.push(DetailRow::new(format!("language  {language}"), DetailKind::Meta));
+            rows.push(DetailRow::new(
+                format!("language  {language}"),
+                DetailKind::Meta,
+            ));
         }
     }
     let offset = number_field(input, &["offset", "line_start"]);
     let limit = number_field(input, &["limit", "line_count"]);
     if offset.is_some() || limit.is_some() {
-        rows.push(DetailRow::new(format!(
-            "range  {}{}",
-            offset.map_or_else(|| "start".into(), |value| value.to_string()),
-            limit.map_or_else(String::new, |value| format!(" +{value}"))
-        ), DetailKind::Meta));
+        rows.push(DetailRow::new(
+            format!(
+                "range  {}{}",
+                offset.map_or_else(|| "start".into(), |value| value.to_string()),
+                limit.map_or_else(String::new, |value| format!(" +{value}"))
+            ),
+            DetailKind::Meta,
+        ));
     }
     rows
 }
@@ -440,14 +565,20 @@ fn generic_input_rows(input: &Value, width: usize) -> Vec<DetailRow> {
             .filter(|(_, value)| !value.is_null())
             .map(|(key, value)| {
                 let value = value.as_str().map_or_else(|| value.to_string(), one_line);
-                DetailRow::new(format!(
-                    "{key}  {}",
-                    truncate(&value, width.saturating_sub(key.len() + 2))
-                ), DetailKind::Normal)
+                DetailRow::new(
+                    format!(
+                        "{key}  {}",
+                        truncate(&value, width.saturating_sub(key.len() + 2))
+                    ),
+                    DetailKind::Normal,
+                )
             })
             .collect(),
         Value::Null => Vec::new(),
-        value => vec![DetailRow::new(truncate(&value.to_string(), width), DetailKind::Normal)],
+        value => vec![DetailRow::new(
+            truncate(&value.to_string(), width),
+            DetailKind::Normal,
+        )],
     }
 }
 
@@ -560,8 +691,14 @@ mod tests {
             "new_string": "let new = true;"
         });
         let rows = detail_rows("edit", &input, None, false, 60);
-        assert!(rows.iter().any(|row| row.text.contains("let old = true;") && row.kind == DetailKind::Removed));
-        assert!(rows.iter().any(|row| row.text.contains("let new = true;") && row.kind == DetailKind::Added));
+        assert!(
+            rows.iter()
+                .any(|row| row.text.contains("let old = true;") && row.kind == DetailKind::Removed)
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.text.contains("let new = true;") && row.kind == DetailKind::Added)
+        );
     }
 
     #[test]
@@ -582,7 +719,10 @@ mod tests {
         assert_eq!(compact_target("write", &write), "Write 2 files");
         let rows = detail_rows("write", &write, None, false, 80);
         assert!(rows.iter().any(|row| row.text == "+++ b/new/a.rs"));
-        assert!(rows.iter().any(|row| row.text.contains("fn b()") && row.kind == DetailKind::Added));
+        assert!(
+            rows.iter()
+                .any(|row| row.text.contains("fn b()") && row.kind == DetailKind::Added)
+        );
     }
 
     #[test]
@@ -614,16 +754,36 @@ mod tests {
             "duration_ms": 41,
             "stdout": "one",
             "stderr": "bad"
-        }).to_string();
-        let rows = detail_rows("bash", &serde_json::json!({"command":"test"}), Some(&output), true, 60);
-        assert!(rows.iter().any(|row| row.text == "exit 2 · 41ms" && row.kind == DetailKind::Error));
-        assert!(rows.iter().any(|row| row.text == "stderr" && row.kind == DetailKind::Error));
+        })
+        .to_string();
+        let rows = detail_rows(
+            "bash",
+            &serde_json::json!({"command":"test"}),
+            Some(&output),
+            true,
+            60,
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.text == "exit 2 · 41ms" && row.kind == DetailKind::Error)
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.text == "stderr" && row.kind == DetailKind::Error)
+        );
     }
 
     #[test]
     fn search_results_group_by_file_and_controls_and_secrets_are_removed() {
-        let output = "src/a.rs:10:first\nsrc/a.rs:20:\u{1b}[31msecond\u{1b}[0m\nsrc/b.rs:3:token=secret";
-        let rows = detail_rows("rg", &serde_json::json!({"query":"x"}), Some(output), false, 80);
+        let output =
+            "src/a.rs:10:first\nsrc/a.rs:20:\u{1b}[31msecond\u{1b}[0m\nsrc/b.rs:3:token=secret";
+        let rows = detail_rows(
+            "rg",
+            &serde_json::json!({"query":"x"}),
+            Some(output),
+            false,
+            80,
+        );
         assert!(rows.iter().any(|row| row.text == "src/a.rs · 2 matches"));
         assert!(rows.iter().all(|row| !row.text.contains("\u{1b}")));
         assert!(rows.iter().all(|row| !row.text.contains("secret")));
@@ -640,7 +800,8 @@ mod tests {
             "uri":"file:///docs/design.md",
             "mimeType":"text/markdown",
             "text":"# Design\nSafe content"
-        }]}).to_string();
+        }]})
+        .to_string();
         let rows = detail_rows(
             "mcp__filesystem__read_resource",
             &input,
@@ -649,7 +810,10 @@ mod tests {
             80,
         );
         assert!(rows.iter().any(|row| row.text == "server  filesystem"));
-        assert!(rows.iter().any(|row| row.text == "resource  file:///docs/design.md"));
+        assert!(
+            rows.iter()
+                .any(|row| row.text == "resource  file:///docs/design.md")
+        );
         assert!(rows.iter().any(|row| row.text == "mime  text/markdown"));
         assert!(rows.iter().any(|row| row.text.contains("Safe content")));
     }
