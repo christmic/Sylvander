@@ -63,6 +63,9 @@ enum ClientMsg {
         call_id: String,
         answer: String,
     },
+    Interrupt {
+        session_id: String,
+    },
     ListSessions,
     Ping,
 }
@@ -123,6 +126,10 @@ enum ServerMsg {
         question: String,
         options: Vec<String>,
         multi_select: bool,
+    },
+    TurnInterrupted {
+        session_id: String,
+        reason: String,
     },
     SessionsList {
         sessions: Vec<SessionInfo>,
@@ -387,6 +394,12 @@ async fn handle_client_msg(
                                 options,
                                 multi_select,
                             }),
+                            StreamEvent::TurnInterrupted { reason } => {
+                                Some(ServerMsg::TurnInterrupted {
+                                    session_id: s.0.clone(),
+                                    reason,
+                                })
+                            }
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -430,6 +443,16 @@ async fn handle_client_msg(
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
+                .await;
+        }
+        ClientMsg::Interrupt { session_id } => {
+            let session_id = SessionId::new(session_id);
+            let _ = ctx
+                .bus
+                .publish(BusMessage::system_interrupt_turn(
+                    agent_id.clone(),
+                    session_id,
+                ))
                 .await;
         }
         ClientMsg::ListSessions => {

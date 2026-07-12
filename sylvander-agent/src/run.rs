@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -69,14 +69,32 @@ pub(crate) struct AgentRunInner {
     /// Static approval rules (auto-approve/auto-reject).
     approval_rules: Vec<crate::approval::ApprovalRule>,
     /// Pending approval requests (shared with BusApprovalGate).
-    pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::approval::ApprovalDecision>>>>,
+    pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
     /// Pending AskUser answers (shared with BusAskUserGate).
-    pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>>,
+    pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
+    /// One cancellation sender per session that currently owns its execution
+    /// lock. Queued turns do not replace the active sender.
+    active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
     /// Tool invocation context (session identity + budget + surface).
     /// Used by system-driven ops like `remember` to attribute writes.
     tool_context: ToolContext,
+}
+
+struct PendingApproval {
+    session_id: SessionId,
+    sender: oneshot::Sender<crate::approval::ApprovalDecision>,
+}
+
+struct PendingAnswer {
+    session_id: SessionId,
+    sender: oneshot::Sender<Vec<String>>,
+}
+
+struct ActiveTurn {
+    id: uuid::Uuid,
+    interrupt: oneshot::Sender<()>,
 }
 
 /// A running agent instance — cheap `Clone` handle.
@@ -188,7 +206,7 @@ impl AgentRun {
                     // M12: forward approval response to the waiting task
                     SystemMessage::ApproveTool { call_id, approved } => {
                         let mut pending = self.inner.pending_approvals.lock().await;
-                        if let Some(tx) = pending.remove(call_id) {
+                        if let Some(request) = pending.remove(call_id) {
                             let decision = if *approved {
                                 crate::approval::ApprovalDecision::Approved
                             } else {
@@ -196,16 +214,20 @@ impl AgentRun {
                                     reason: "rejected by user".into(),
                                 }
                             };
-                            let _ = tx.send(decision);
+                            let _ = request.sender.send(decision);
                         }
                     }
 
                     // M18: forward AskUser answer to the waiting gate
                     SystemMessage::AnswerQuestion { call_id, answer } => {
                         let mut pending = self.inner.pending_answers.lock().await;
-                        if let Some(tx) = pending.remove(call_id) {
-                            let _ = tx.send(vec![answer.clone()]);
+                        if let Some(request) = pending.remove(call_id) {
+                            let _ = request.sender.send(vec![answer.clone()]);
                         }
+                    }
+
+                    SystemMessage::InterruptTurn { session_id } => {
+                        self.inner.interrupt_turn(session_id).await;
                     }
                 },
 
@@ -226,7 +248,19 @@ impl AgentRun {
 
                     tokio::spawn(async move {
                         let _guard = lock.lock().await;
-                        if let Err(e) = inner.handle_message(msg).await {
+                        let turn_id = uuid::Uuid::new_v4();
+                        let (interrupt, interrupted) = oneshot::channel();
+                        inner.active_turns.lock().await.insert(
+                            sid.clone(),
+                            ActiveTurn { id: turn_id, interrupt },
+                        );
+                        let result = inner.handle_message_interruptible(msg, interrupted).await;
+                        let mut active = inner.active_turns.lock().await;
+                        if active.get(&sid).is_some_and(|turn| turn.id == turn_id) {
+                            active.remove(&sid);
+                        }
+                        drop(active);
+                        if let Err(e) = result {
                             warn!(error = %e, "handle_message failed");
                         }
                     });
@@ -294,9 +328,7 @@ struct BusApprovalGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    pending_approvals: Arc<
-        Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalDecision>>>,
-    >,
+    pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
 }
 
 #[async_trait::async_trait]
@@ -308,10 +340,13 @@ impl ApprovalGate for BusApprovalGate {
 
         for tool in tools {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            self.pending_approvals
-                .lock()
-                .await
-                .insert(tool.call_id.clone(), tx);
+            self.pending_approvals.lock().await.insert(
+                tool.call_id.clone(),
+                PendingApproval {
+                    session_id: self.session_id.clone(),
+                    sender: tx,
+                },
+            );
             receivers.push((tool.call_id.clone(), rx));
         }
 
@@ -337,13 +372,14 @@ impl ApprovalGate for BusApprovalGate {
 
         // Wait for all decisions (120s timeout each)
         let mut decisions = Vec::new();
-        for (_call_id, rx) in receivers {
+        for (call_id, rx) in receivers {
             match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await {
                 Ok(Ok(d)) => decisions.push(d),
                 _ => decisions.push(ApprovalDecision::Rejected {
                     reason: "approval timeout".into(),
                 }),
             }
+            self.pending_approvals.lock().await.remove(&call_id);
         }
         ApprovalBatchResult { decisions }
     }
@@ -357,7 +393,7 @@ struct BusAskUserGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    pending_answers: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>>,
+    pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
 }
 
 #[async_trait::async_trait]
@@ -370,10 +406,13 @@ impl AskUserGate for BusAskUserGate {
         multi_select: bool,
     ) -> Vec<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.pending_answers
-            .lock()
-            .await
-            .insert(call_id.to_string(), tx);
+        self.pending_answers.lock().await.insert(
+            call_id.to_string(),
+            PendingAnswer {
+                session_id: self.session_id.clone(),
+                sender: tx,
+            },
+        );
 
         // Publish AskUser event
         let _ = self
@@ -391,10 +430,12 @@ impl AskUserGate for BusAskUserGate {
             .await;
 
         // Wait up to 5 minutes for user reply
-        match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
+        let answer = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
             Ok(Ok(answer)) => answer,
             _ => Vec::new(),
-        }
+        };
+        self.pending_answers.lock().await.remove(call_id);
+        answer
     }
 }
 
@@ -403,8 +444,68 @@ impl AskUserGate for BusAskUserGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    async fn interrupt_turn(&self, session_id: &SessionId) {
+        if let Some(turn) = self.active_turns.lock().await.remove(session_id) {
+            let _ = turn.interrupt.send(());
+        }
+    }
+
+    async fn cancel_pending_decisions(&self, session_id: &SessionId) {
+        let approval_ids = {
+            let pending = self.pending_approvals.lock().await;
+            pending
+                .iter()
+                .filter(|(_, request)| &request.session_id == session_id)
+                .map(|(call_id, _)| call_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut approvals = self.pending_approvals.lock().await;
+        for call_id in approval_ids {
+            if let Some(request) = approvals.remove(&call_id) {
+                let _ = request.sender.send(ApprovalDecision::Rejected {
+                    reason: "turn interrupted by user".into(),
+                });
+            }
+        }
+        drop(approvals);
+
+        let answer_ids = {
+            let pending = self.pending_answers.lock().await;
+            pending
+                .iter()
+                .filter(|(_, request)| &request.session_id == session_id)
+                .map(|(call_id, _)| call_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut answers = self.pending_answers.lock().await;
+        for call_id in answer_ids {
+            if let Some(request) = answers.remove(&call_id) {
+                let _ = request.sender.send(Vec::new());
+            }
+        }
+    }
+
     /// Core: handle a chat message. Runs the loop with streaming.
     async fn handle_message(&self, msg: BusMessage) -> Result<(), AgentRunError> {
+        self.handle_message_with_interrupt(msg, std::future::pending::<()>()).await
+    }
+
+    async fn handle_message_interruptible(
+        &self,
+        msg: BusMessage,
+        interrupted: oneshot::Receiver<()>,
+    ) -> Result<(), AgentRunError> {
+        self.handle_message_with_interrupt(msg, interrupted).await
+    }
+
+    async fn handle_message_with_interrupt<F>(
+        &self,
+        msg: BusMessage,
+        interrupted: F,
+    ) -> Result<(), AgentRunError>
+    where
+        F: std::future::Future,
+    {
         let session_id = msg.session_id.clone();
 
         // 1. Append user message + take history snapshot
@@ -450,9 +551,27 @@ impl AgentRunInner {
         // 3. Run loop with streaming
         use futures_util::StreamExt;
         let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
+        tokio::pin!(interrupted);
         let mut final_message: Option<sylvander_llm_anthropic::api::types::Message> = None;
 
-        while let Some(event) = stream.next().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = &mut interrupted => {
+                    self.cancel_pending_decisions(&session_id).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::TurnInterrupted {
+                            reason: "interrupted by user".into(),
+                        },
+                    ).await;
+                    return Ok(());
+                }
+                event = stream.next() => event,
+            };
+            let Some(event) = event else {
+                break;
+            };
             match event {
                 crate::event::AgentEvent::TextChunk(text) => {
                     self.publish_stream(&session_id, crate::bus::StreamEvent::TextDelta { delta: text }).await;
@@ -661,6 +780,7 @@ impl AgentRunBuilder {
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
+                active_turns: Mutex::new(HashMap::new()),
                 tool_context: run_tool_context,
             }),
         })
@@ -709,6 +829,33 @@ mod tests {
         let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
         let run2 = run.clone();
         assert_eq!(run.id(), run2.id());
+    }
+
+    #[tokio::test]
+    async fn interrupt_is_scoped_to_the_selected_session() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let session_a = SessionId::new("session-a");
+        let session_b = SessionId::new("session-b");
+        let (interrupt_a, interrupted_a) = oneshot::channel();
+        let (interrupt_b, mut interrupted_b) = oneshot::channel();
+        run.inner.active_turns.lock().await.insert(
+            session_a.clone(),
+            ActiveTurn { id: uuid::Uuid::new_v4(), interrupt: interrupt_a },
+        );
+        run.inner.active_turns.lock().await.insert(
+            session_b,
+            ActiveTurn { id: uuid::Uuid::new_v4(), interrupt: interrupt_b },
+        );
+
+        run.inner.interrupt_turn(&session_a).await;
+
+        assert!(interrupted_a.await.is_ok());
+        assert!(matches!(
+            interrupted_b.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]
@@ -781,3 +928,4 @@ mod tests {
         assert!(!filter.matches(&BusMessage { recipient: Recipient::Agent(AgentId::new("other")), ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi") }));
     }
 }
+
