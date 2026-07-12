@@ -11,7 +11,7 @@ instead of mid-flight.
 |----------------------|---------------------------------------------------------|
 | `ANTHROPIC_API_KEY`  | Bearer token sent in `Authorization: Bearer …` headers. Non-empty string required. |
 | `ANTHROPIC_BASE_URL` | Root URL of the upstream `/v1/messages` endpoint. Non-empty URL required. |
-| `SYLVANDER_MODEL`    | Model id the gateway recognizes (e.g. `claude-sonnet-5-20260601`). Non-empty required because the wrong id silently 404s on the gateway. |
+| `SYLVANDER_MODEL`    | Model id the gateway recognizes (e.g. `MiniMax-M3`). Non-empty required because the wrong id silently 404s on the gateway. |
 
 ## Optional
 
