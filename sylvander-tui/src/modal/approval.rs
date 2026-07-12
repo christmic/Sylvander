@@ -150,11 +150,12 @@ impl ApprovalModal {
         for (i, tool) in self.tools.iter().enumerate() {
             let is_current = i == self.current;
             let marker = Self::marker(self.decisions[i], is_current);
+            let palette = theme::palette();
             let marker_color = match (self.decisions[i], is_current) {
-                (_, true) => ratatui::style::Color::Yellow,
-                (Decision::Approve, _) => ratatui::style::Color::Green,
-                (Decision::Reject, _) => ratatui::style::Color::Red,
-                (Decision::Pending, _) => ratatui::style::Color::Gray,
+                (_, true) => palette.waiting,
+                (Decision::Approve, _) => palette.verified,
+                (Decision::Reject, _) => palette.danger,
+                (Decision::Pending, _) => palette.text_dim,
             };
             let tool_label = format!(
                 "{}. {}  {}",
