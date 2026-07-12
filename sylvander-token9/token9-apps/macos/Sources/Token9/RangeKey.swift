@@ -54,4 +54,45 @@ enum RangeKey: String, CaseIterable, Identifiable {
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: date)
     }
+
+    /// Whether the dashboard should render the activity heatmap for
+    /// this range. Single-day ranges (yesterday / today) hide it per
+    /// checklist §6 D1.
+    var showsHeatmap: Bool {
+        switch self {
+        case .yesterday, .today: return false
+        case .week, .lastWeek, .month, .year: return true
+        }
+    }
+
+    /// Subtitle text shown above the heatmap.
+    /// - week / lastWeek: range start..end
+    /// - month: "yyyy年M月"
+    /// - year:  "yyyy"
+    func heatmapTitle(now: Date = Date(), calendar: Calendar = .current) -> String {
+        let (fromK, toK) = range(now: now, calendar: calendar)
+        switch self {
+        case .week, .lastWeek:
+            return "\(fromK) ~ \(toK)"
+        case .month:
+            return monthTitle(now: now, calendar: calendar)
+        case .year:
+            return yearTitle(now: now, calendar: calendar)
+        case .yesterday, .today:
+            return ""
+        }
+    }
+
+    private func monthTitle(now: Date, calendar: Calendar) -> String {
+        let f = DateFormatter()
+        f.calendar = calendar
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "yyyy年M月"
+        return f.string(from: now)
+    }
+
+    private func yearTitle(now: Date, calendar: Calendar) -> String {
+        let comps = calendar.dateComponents([.year], from: now)
+        return "\(comps.year ?? 0)"
+    }
 }

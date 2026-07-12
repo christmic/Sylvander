@@ -1,109 +1,189 @@
 import SwiftUI
 
+/// Dashboard v2 — composes the gateway header, range tabs, summary
+/// strip, heatmap, and aggregation rows. Drives the five states from
+/// IMPLEMENTATION_CHECKLIST.md §8: loading-without-data, empty-success,
+/// offline-no-cache, offline-with-cached-data, and rate-limit warning.
 struct DashboardView: View {
     @StateObject private var vm = DashboardViewModel()
-    @AppStorage("themeMode") private var themeRaw = ThemeMode.warm.rawValue
+    @State private var expandedGroupID: String?
+    private var dimensionBinding: Binding<DimensionToggle.Dimension> {
+        Binding(
+            get: { vm.groupBy == .tool ? .tool : .model },
+            set: { vm.groupBy = $0 == .tool ? .tool : .model }
+        )
+    }
 
-    private var mode: ThemeMode { ThemeMode(rawValue: themeRaw) ?? .warm }
+    private var allTotal: Int64 { vm.cards.reduce(0) { $0 + $1.totalTokens } }
+    private var largestTotal: Int64 { vm.cards.map(\.totalTokens).max() ?? 0 }
+
+    /// Initial load failed and we have no cached data — show offline
+    /// error instead of the row list.
+    private var isInitialLoadFailed: Bool {
+        vm.error != nil && vm.cards.isEmpty && vm.daily.isEmpty
+    }
+    /// First successful load returned but with zero buckets.
+    private var isEmptySuccess: Bool {
+        vm.error == nil && !vm.loading && vm.cards.isEmpty && vm.daily.isEmpty
+    }
+    /// First-load-in-progress with no data yet.
+    private var isInitialLoading: Bool {
+        vm.loading && vm.cards.isEmpty && vm.daily.isEmpty
+    }
 
     var body: some View {
         ZStack {
             VisualEffect().ignoresSafeArea()
-            Theme.bg(mode).ignoresSafeArea()
+            T.bgPrimary.ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 12) {
-                topBar
-                SegmentedTabs(sel: $vm.range)
-                groupBar
-                content
+            VStack(alignment: .leading, spacing: L.majorGap) {
+                header
+                RangeTabs(sel: $vm.range)
+                if !isInitialLoadFailed {
+                    SummaryStripView(summary: vm.summary)
+                    if vm.range.showsHeatmap {
+                        ActivityHeatmapView(range: vm.range, daily: vm.daily)
+                    }
+                    aggregationHeading
+                    contentBody
+                } else {
+                    offlineErrorBody
+                }
+                if let rate = vm.minimumRateLimitPercent, rate <= 15 {
+                    RateLimitWarning(remainingPercent: rate)
+                }
             }
-            .padding(Theme.outerPad)
+            .padding(L.outerPad)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 440, height: 620)
+        .frame(width: L.popoverW, height: L.popoverH)
         .onAppear { vm.start() }
         .onDisappear { vm.stop() }
     }
 
-    private var topBar: some View {
-        HStack(alignment: .center, spacing: 9) {
-            Image(systemName: "timer")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(Theme.accent(mode))
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image("SeedCrabMark", bundle: .module)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: L.logoSize, height: L.logoSize)
             VStack(alignment: .leading, spacing: 0) {
-                Text("token9").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.tPrimary)
-                Text("本地 AI 用量").font(.system(size: 9.5)).foregroundStyle(Theme.tTertiary)
+                Text("token9").font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(T.textPrimary)
+                Text("本地 LLM 网关").font(.system(size: 10))
+                    .foregroundStyle(T.textTertiary)
             }
             Spacer()
-            if let at = vm.updatedAt {
-                Text(timeString(at)).font(.system(size: 9.5, design: .monospaced))
-                    .foregroundStyle(Theme.tTertiary)
+            HStack(spacing: 6) {
+                StatusDot(active: vm.error == nil)
+                Text(vm.error == nil ? "在线 · 127.0.0.1:9527" : "离线 · 127.0.0.1:9527")
+                    .font(.system(size: 10)).foregroundStyle(T.textTertiary)
             }
-            IconButton(icon: mode.icon) {
-                withAnimation(.easeOut(duration: 0.25)) { themeRaw = mode.next.rawValue }
-            }
-            IconButton(icon: "arrow.clockwise") { vm.reload() }
+            IconButton(systemName: "arrow.clockwise") { vm.reload() }
         }
     }
 
-    private var groupBar: some View {
-        HStack(spacing: 8) {
-            Text("汇总维度").font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
-            Picker("", selection: $vm.groupBy) {
-                ForEach(GroupBy.allCases) { g in Text(g.label).tag(g) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 150)
+    private var aggregationHeading: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text("汇总维度")
+                .font(.system(size: 11))
+                .foregroundStyle(T.textTertiary)
+            DimensionToggle(sel: dimensionBinding)
             Spacer()
         }
     }
+
+    // MARK: Content states
 
     @ViewBuilder
-    private var content: some View {
-        if let e = vm.error, vm.cards.isEmpty {
-            errorState(e)
-        } else if vm.cards.isEmpty && !vm.loading {
-            emptyState
+    private var contentBody: some View {
+        if isInitialLoading {
+            Spacer(minLength: 0)
+            initialLoadingState
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Spacer(minLength: 0)
+        } else if isEmptySuccess {
+            Spacer(minLength: 0)
+            emptySuccessState
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Spacer(minLength: 0)
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 13) {
-                    if vm.cards.count > 1 {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("分布").font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
-                            DistributionChart(cards: vm.cards)
-                        }
-                    }
-                    ForEach(vm.cards) { card in
-                        GroupCardView(card: card, subTitle: vm.groupBy.subTitle)
-                    }
-                }
-                .padding(.bottom, 6)
+            rowList
+            // Cached-offline caption (retained last successful data).
+            if vm.error != nil, let updated = vm.updatedAt {
+                Text("上次成功 · \(Fmt.shortDate(updated))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(T.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "chart.bar.doc.horizontal")
-                .font(.system(size: 30)).foregroundStyle(Theme.tTertiary)
-            Text("暂无数据").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.tSecondary)
-            Text("让工具走 token9 (127.0.0.1:9527) 后即可看到用量")
-                .font(.system(size: 10)).foregroundStyle(Theme.tTertiary).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    private var initialLoadingState: some View {
+        ProgressView()
+            .controlSize(.small)
+            .progressViewStyle(.circular)
+            .tint(T.seedOrange)
     }
 
-    private func errorState(_ e: String) -> some View {
+    private var emptySuccessState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 26)).foregroundStyle(.orange)
-            Text("连接失败").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.tSecondary)
-            Text("token9 serve 在 :9527 运行吗？").font(.system(size: 10)).foregroundStyle(Theme.tTertiary)
+            Text("等待第一条流量")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(T.textSecondary)
+            Text("将 AI 工具的 Base URL 指向 127.0.0.1:9527")
+                .font(.system(size: 10))
+                .foregroundStyle(T.textTertiary)
+                .multilineTextAlignment(.center)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 20)
     }
 
-    private func timeString(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f.string(from: d)
+    private var offlineErrorBody: some View {
+        VStack(spacing: 10) {
+            Spacer(minLength: 0)
+            VStack(spacing: 8) {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 28))
+                    .foregroundStyle(T.warningAmber)
+                Text("网关未连接")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(T.textPrimary)
+                Text("启动 token9 serve 后，这里会自动恢复")
+                    .font(.system(size: 11))
+                    .foregroundStyle(T.textTertiary)
+                    .multilineTextAlignment(.center)
+                IconButton(systemName: "arrow.clockwise") { vm.reload() }
+                    .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity)
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: Row list
+
+    private var rowList: some View {
+        ScrollView {
+            VStack(spacing: 6) {
+                ForEach(vm.cards) { card in
+                    GroupRowView(
+                        card: card,
+                        allTotal: allTotal,
+                        largestTotal: largestTotal,
+                        subTitle: vm.groupBy.subTitle,
+                        isExpanded: expandedGroupID == card.id,
+                        onToggle: { toggle(card.id) }
+                    )
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func toggle(_ id: String) {
+        expandedGroupID = (expandedGroupID == id) ? nil : id
     }
 }

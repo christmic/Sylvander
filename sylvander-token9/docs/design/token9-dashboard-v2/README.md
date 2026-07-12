@@ -3,6 +3,8 @@
 Status: design proposal
 Scope: macOS menu-bar popover only; no implementation changes
 
+Implementation handoff: [IMPLEMENTATION_CHECKLIST.md](IMPLEMENTATION_CHECKLIST.md)
+
 ## Product direction
 
 The dashboard is a compact observability surface for a local LLM gateway. It
