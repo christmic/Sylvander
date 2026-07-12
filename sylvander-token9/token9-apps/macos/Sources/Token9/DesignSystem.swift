@@ -46,6 +46,15 @@ enum T {
         Color(red: 0.26, green: 0.53, blue: 0.90),                              // electric blue
         Color(red: 0.95, green: 0.54, blue: 0.40),                              // seed orange
     ]
+
+    static func groupTint(_ name: String) -> Color {
+        let value = name.lowercased()
+        if value.contains("claude") { return seedOrange }
+        if value.contains("codex") { return coreViolet }
+        if value.contains("sylvander") { return electricBlue }
+        if value.contains("deepseek") { return electricBlue }
+        return coreViolet
+    }
 }
 
 /// Layout constants. Per IMPLEMENTATION_CHECKLIST.md §3 A2.
@@ -185,6 +194,8 @@ struct RangeTabs: View {
                 .frame(height: 36)
                 .contentShape(Rectangle())
                 .onTapGesture { sel = k }
+                .accessibilityAddTraits(on ? .isSelected : [])
+                .accessibilityLabel(k.label)
             }
         }
     }
@@ -214,6 +225,8 @@ struct DimensionToggle: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture { sel = d }
+                .accessibilityAddTraits(on ? .isSelected : [])
+                .accessibilityLabel(d.rawValue)
             }
         }
     }

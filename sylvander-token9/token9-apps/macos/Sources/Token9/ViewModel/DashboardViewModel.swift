@@ -133,25 +133,26 @@ enum DashboardAggregator {
     /// matched by provider name (the closest stable identity in the
     /// current data model).
     static func aggregate(buckets: [StatBucketDto], groupBy: GroupBy, rateLimits: [RateLimitDto]) -> [GroupCard] {
-        var groups: [String: (input: Int64, output: Int64, cr: Int64, cw: Int64, req: Int64, provider: String?, subs: [String: (name: String, tokens: Int64, req: Int64, cr: Int64)])] = [:]
+        var groups: [String: (input: Int64, output: Int64, cr: Int64, cw: Int64, req: Int64, providers: Set<String>, subs: [String: (name: String, tokens: Int64, req: Int64, input: Int64, cr: Int64)])] = [:]
         let primaryKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.tool : \.model
         let subKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.model : \.tool
 
         for b in buckets {
             let name = b[keyPath: primaryKey]
             guard !name.isEmpty else { continue }
-            var g = groups[name] ?? (0, 0, 0, 0, 0, nil, [:])
+            var g = groups[name] ?? (0, 0, 0, 0, 0, [], [:])
             g.input += b.input_tokens
             g.output += b.output_tokens
             g.cr += b.cache_read_tokens
             g.cw += b.cache_write_tokens
             g.req += b.requests
-            if g.provider == nil { g.provider = b.provider }
+            g.providers.insert(b.provider)
             let sName = b[keyPath: subKey]
             if !sName.isEmpty && sName != name {
-                var s = g.subs[sName] ?? (sName, 0, 0, 0)
+                var s = g.subs[sName] ?? (sName, 0, 0, 0, 0)
                 s.tokens += b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens
                 s.req += b.requests
+                s.input += b.input_tokens
                 s.cr += b.cache_read_tokens
                 g.subs[sName] = s
             }
@@ -165,10 +166,11 @@ enum DashboardAggregator {
                     return $0.name.localizedCompare($1.name) == .orderedAscending
                 }
                 .map {
-                    let ratio = $0.tokens > 0 ? Double($0.cr) / Double($0.tokens) : 0
+                    let denominator = $0.input + $0.cr
+                    let ratio = denominator > 0 ? Double($0.cr) / Double(denominator) : 0
                     return SubLine(id: $0.name, name: $0.name, tokens: $0.tokens, requests: $0.req, cacheRatio: ratio)
                 }
-            let rates = (g.provider.map { p in rateLimits.filter { $0.provider == p } }) ?? []
+            let rates = rateLimits.filter { g.providers.contains($0.provider) }
             return GroupCard(
                 id: name, name: name,
                 requests: g.req,
@@ -206,7 +208,9 @@ enum DashboardAggregator {
 @MainActor
 final class DashboardViewModel: ObservableObject {
     @Published var range: RangeKey = .today { didSet { if oldValue != range { Task { await load() } } } }
-    @Published var groupBy: GroupBy = .tool
+    @Published var groupBy: GroupBy = .tool {
+        didSet { if oldValue != groupBy { rebuildGroups() } }
+    }
     @Published var cards: [GroupCard] = []
     @Published var daily: [DailyUsage] = []
     @Published var summary: DashboardSummary = .zero
@@ -217,6 +221,7 @@ final class DashboardViewModel: ObservableObject {
     /// rate-limit headers are absent). Drives the warning footer
     /// implemented in commit 6.
     @Published var minimumRateLimitPercent: Double?
+    @Published private(set) var hasSuccessfulLoad = false
 
     private let client: Token9Client
     private var timer: Timer?
@@ -224,6 +229,7 @@ final class DashboardViewModel: ObservableObject {
     private var lastSuccessfulRateLimits: [RateLimitDto] = []
     private var lastQueryFrom: String = ""
     private var lastQueryTo: String = ""
+    private var loadedRange: RangeKey?
 
     init(client: Token9Client = Token9Client()) {
         self.client = client
@@ -253,20 +259,20 @@ final class DashboardViewModel: ObservableObject {
         defer { loading = false }
         let (from, to) = range.range()
         do {
-            async let statsResp = client.stats(from: from, to: to)
-            async let ratesResp = client.rateLimits()
-            let buckets = try await statsResp.buckets
-            let rates = try await ratesResp.rate_limits
+            let buckets = try await client.stats(from: from, to: to).buckets
+            let rates = (try? await client.rateLimits().rate_limits) ?? []
             lastSuccessfulBuckets = buckets
             lastSuccessfulRateLimits = rates
             lastQueryFrom = from
             lastQueryTo = to
+            loadedRange = range
+            hasSuccessfulLoad = true
             error = nil
             rebuild()
         } catch {
             // Per checklist §4 B4: keep last data visible on refresh
             // failure; only show error when there is no cached state.
-            if lastSuccessfulBuckets.isEmpty {
+            if lastSuccessfulBuckets.isEmpty || loadedRange != range {
                 self.error = error.localizedDescription
                 self.cards = []
                 self.daily = []
@@ -306,5 +312,17 @@ final class DashboardViewModel: ObservableObject {
         minimumRateLimitPercent = DashboardAggregator.minRateLimit(rates)
 
         updatedAt = Date()
+    }
+
+    private func rebuildGroups() {
+        let grouped = DashboardAggregator.aggregate(
+            buckets: lastSuccessfulBuckets,
+            groupBy: groupBy,
+            rateLimits: lastSuccessfulRateLimits
+        )
+        cards = grouped.sorted {
+            if $0.totalTokens != $1.totalTokens { return $0.totalTokens > $1.totalTokens }
+            return $0.name.localizedCompare($1.name) == .orderedAscending
+        }
     }
 }

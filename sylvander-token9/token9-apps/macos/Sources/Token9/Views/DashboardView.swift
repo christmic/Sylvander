@@ -24,11 +24,11 @@ struct DashboardView: View {
     }
     /// First successful load returned but with zero buckets.
     private var isEmptySuccess: Bool {
-        vm.error == nil && !vm.loading && vm.cards.isEmpty && vm.daily.isEmpty
+        vm.hasSuccessfulLoad && vm.error == nil && !vm.loading && vm.cards.isEmpty
     }
     /// First-load-in-progress with no data yet.
     private var isInitialLoading: Bool {
-        vm.loading && vm.cards.isEmpty && vm.daily.isEmpty
+        !vm.hasSuccessfulLoad && vm.loading && vm.cards.isEmpty
     }
 
     var body: some View {
@@ -39,12 +39,14 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: L.majorGap) {
                 header
                 RangeTabs(sel: $vm.range)
-                if !isInitialLoadFailed {
+                if !isInitialLoadFailed && !isInitialLoading && !isEmptySuccess {
                     SummaryStripView(summary: vm.summary)
                     if vm.range.showsHeatmap {
                         ActivityHeatmapView(range: vm.range, daily: vm.daily)
                     }
                     aggregationHeading
+                    contentBody
+                } else if isInitialLoading || isEmptySuccess {
                     contentBody
                 } else {
                     offlineErrorBody

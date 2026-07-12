@@ -120,6 +120,25 @@ final class DashboardAggregationTests: XCTestCase {
         // → beta (100) before gamma (100).
     }
 
+    func test_group_preservesRateLimitsFromEveryProvider() {
+        let buckets = [
+            bucket(provider: "anthropic", date: "2026-07-10", tool: "agent", model: "a", req: 1, inp: 10, out: 0, cr: 0, cw: 0),
+            bucket(provider: "openai", date: "2026-07-10", tool: "agent", model: "b", req: 1, inp: 10, out: 0, cr: 0, cw: 0),
+        ]
+        let rates = [rate(provider: "anthropic"), rate(provider: "openai")]
+        let groups = DashboardAggregator.aggregate(buckets: buckets, groupBy: .tool, rateLimits: rates)
+        XCTAssertEqual(Set(groups[0].rateLimits.map(\.provider)), Set(["anthropic", "openai"]))
+    }
+
+    func test_subline_cacheRatio_usesInputPlusCacheRead() {
+        let buckets = [
+            bucket(date: "2026-07-10", tool: "agent", model: "model", req: 1,
+                   inp: 100, out: 900, cr: 300, cw: 0),
+        ]
+        let groups = DashboardAggregator.aggregate(buckets: buckets, groupBy: .tool, rateLimits: [])
+        XCTAssertEqual(groups[0].subs[0].cacheRatio, 0.75, accuracy: 0.001)
+    }
+
     // MARK: Rate limit
 
     func test_rateLimit_floorAcrossPairs() {
@@ -148,12 +167,20 @@ final class DashboardAggregationTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func bucket(date: String, tool: String, model: String,
+    private func bucket(provider: String = "test", date: String, tool: String, model: String,
                         req: Int64, inp: Int64, out: Int64, cr: Int64, cw: Int64) -> StatBucketDto {
         StatBucketDto(
-            provider: "test", model: model, tool: tool, date: date,
+            provider: provider, model: model, tool: tool, date: date,
             requests: req, input_tokens: inp, output_tokens: out,
             cache_read_tokens: cr, cache_write_tokens: cw, cache_ratio: 0
+        )
+    }
+
+    private func rate(provider: String) -> RateLimitDto {
+        RateLimitDto(
+            provider: provider, updated_at: 0,
+            requests_limit: 100, requests_remaining: 50, requests_reset: nil,
+            tokens_limit: nil, tokens_remaining: nil, tokens_reset: nil
         )
     }
 }

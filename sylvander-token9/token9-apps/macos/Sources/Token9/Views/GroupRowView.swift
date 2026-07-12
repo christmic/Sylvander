@@ -19,6 +19,7 @@ struct GroupRowView: View {
     var subTitle: String
     var isExpanded: Bool
     var onToggle: () -> Void
+    private var tint: Color { T.groupTint(card.name) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,7 +41,7 @@ struct GroupRowView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: L.rowRadius, style: .continuous)
-                .strokeBorder(isExpanded ? T.borderSubtle : .clear, lineWidth: L.hairline)
+                .strokeBorder(isExpanded ? tint.opacity(0.55) : T.borderSubtle, lineWidth: L.hairline)
         )
         .contentShape(Rectangle())
         .onTapGesture { onToggle() }
@@ -87,7 +88,7 @@ struct GroupRowView: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.white.opacity(0.07))
                 Capsule()
-                    .fill(T.seedOrange)
+                    .fill(tint)
                     .frame(width: max(0, geo.size.width * fraction))
             }
         }

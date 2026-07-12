@@ -15,6 +15,16 @@ rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS"
 cp "$BIN" "$BUNDLE/Contents/MacOS/Token9"
 
+# SwiftPM places processed resources in a sibling bundle. Bundle.module
+# resolves it from Contents/Resources in a packaged macOS application.
+RESOURCE_BUNDLE="$(dirname "$BIN")/Token9_Token9.bundle"
+if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+    echo "missing SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2
+    exit 1
+fi
+mkdir -p "$BUNDLE/Contents/Resources"
+cp -R "$RESOURCE_BUNDLE" "$BUNDLE/Contents/Resources/"
+
 cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

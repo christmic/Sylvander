@@ -83,9 +83,15 @@ struct ActivityHeatmapView: View {
     private var weekStrip: some View {
         HStack(spacing: 4) {
             ForEach(orderedDays) { d in
-                cell(level: level(for: d), size: 14)
-                    .help(tooltip(d))
-                    .accessibilityLabel(accessibilityLabel(d))
+                VStack(spacing: 4) {
+                    Text(weekdayLabel(for: d.date))
+                        .font(.system(size: 8))
+                        .foregroundStyle(T.textTertiary)
+                    cell(level: level(for: d), size: 14)
+                        .help(tooltip(d))
+                        .accessibilityLabel(accessibilityLabel(d))
+                }
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,9 +116,9 @@ struct ActivityHeatmapView: View {
                 }
             }
             VStack(alignment: .leading, spacing: gap) {
-                ForEach(0..<weeks, id: \.self) { weekIdx in
+                ForEach(0..<7, id: \.self) { dayIdx in
                     HStack(spacing: gap) {
-                        ForEach(0..<7, id: \.self) { dayIdx in
+                        ForEach(0..<weeks, id: \.self) { weekIdx in
                             let idx = weekIdx * 7 + dayIdx
                             if idx < cells.count, let d = cells[idx] {
                                 cell(level: level(for: d), size: cellSize)
@@ -133,22 +139,40 @@ struct ActivityHeatmapView: View {
     private var yearGrid: some View {
         let weeks = yearCells
         let gap: CGFloat = 2
-        return GeometryReader { geo in
-            let avail = geo.size.width
-            let rawW = (avail - CGFloat(weeks.count - 1) * gap) / CGFloat(max(1, weeks.count))
-            let cellSize = min(8, max(4, rawW))
-            VStack(alignment: .leading, spacing: gap) {
-                ForEach(0..<7, id: \.self) { dayIdx in
-                    HStack(spacing: gap) {
-                        ForEach(0..<weeks.count, id: \.self) { wk in
-                            let d: DailyUsage? = (dayIdx < weeks[wk].count) ? weeks[wk][dayIdx] : nil
-                            cellOrPlaceholder(d, size: cellSize)
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 0) {
+                ForEach(1...12, id: \.self) { month in
+                    Text("\(month)月")
+                        .font(.system(size: 7.5))
+                        .foregroundStyle(T.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack(alignment: .top, spacing: 4) {
+                VStack(alignment: .trailing, spacing: gap) {
+                    ForEach(Array(["一", "", "三", "", "五", "", ""].enumerated()), id: \.offset) { _, label in
+                        Text(label).font(.system(size: 7.5)).foregroundStyle(T.textTertiary)
+                            .frame(width: 10, height: cellSizeDefault)
+                    }
+                }
+                GeometryReader { geo in
+                    let avail = geo.size.width
+                    let rawW = (avail - CGFloat(weeks.count - 1) * gap) / CGFloat(max(1, weeks.count))
+                    let cellSize = min(8, max(4, rawW))
+                    VStack(alignment: .leading, spacing: gap) {
+                        ForEach(0..<7, id: \.self) { dayIdx in
+                            HStack(spacing: gap) {
+                                ForEach(0..<weeks.count, id: \.self) { wk in
+                                    let d: DailyUsage? = (dayIdx < weeks[wk].count) ? weeks[wk][dayIdx] : nil
+                                    cellOrPlaceholder(d, size: cellSize)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-        .frame(height: 7 * (cellSizeDefault + gap))
+        .frame(height: 7 * (cellSizeDefault + gap) + 16)
     }
 
     private let cellSizeDefault: CGFloat = 6
@@ -224,10 +248,15 @@ struct ActivityHeatmapView: View {
         else { return [] }
         let firstWeekday = cal.firstWeekday
         let pad = ((cal.component(.weekday, from: yearStart) - firstWeekday) + 7) % 7
-        let all = orderedDays
+        let byKey = Dictionary(uniqueKeysWithValues: orderedDays.map { ($0.dateKey, $0) })
         var out: [[DailyUsage?]] = []
         var current: [DailyUsage?] = Array(repeating: nil, count: pad)
-        for d in all { current.append(d) }
+        var cursor = yearStart
+        while cursor < yearEnd {
+            current.append(byKey[Fmt.dateKey(cursor, calendar: cal)])
+            guard let next = cal.date(byAdding: .day, value: 1, to: cursor) else { break }
+            cursor = next
+        }
         // Pad tail to multiple of 7.
         let rem = current.count % 7
         if rem != 0 { current.append(contentsOf: Array(repeating: nil, count: 7 - rem)) }
@@ -263,11 +292,15 @@ struct ActivityHeatmapView: View {
     private func weekdayLabels(first: Int) -> [String] {
         // Produce the 7 weekday labels in calendar order, starting at
         // the calendar's first weekday. Show only 1/3/5 per checklist.
-        let symbols = Calendar.current.standaloneWeekdaySymbols   // Sun..Sat
+        let symbols = ["日", "一", "二", "三", "四", "五", "六"]
         let labels = Array(symbols[(first - 1)..<symbols.count] + symbols[0..<(first - 1)])
-        return labels.enumerated().map { i, full in
-            (i == 0 || i == 2 || i == 4) ? String(full.prefix(1)) : ""
+        return labels.enumerated().map { i, label in
+            (i == 0 || i == 2 || i == 4) ? label : ""
         }
     }
-}
 
+    private func weekdayLabel(for date: Date) -> String {
+        let symbols = ["日", "一", "二", "三", "四", "五", "六"]
+        return symbols[Calendar.current.component(.weekday, from: date) - 1]
+    }
+}
