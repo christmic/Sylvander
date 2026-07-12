@@ -289,6 +289,22 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
+    async fn restore(&self, id: &SessionId) -> Result<(), SessionStoreError> {
+        let id = id.clone();
+        self.run(move |c| {
+            let rows = c.execute(
+                "UPDATE sessions SET is_archived = 0, archive_reason = NULL, updated_at = ?2 \
+                 WHERE id = ?1 AND is_archived = 1",
+                params![id.0, crate::session::now_secs()],
+            )?;
+            if rows == 0 {
+                return Err(SessionStoreError::NotFound(id).into());
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn delete(&self, id: &SessionId) -> Result<(), SessionStoreError> {
         let id = id.clone();
         self.run(move |c| {
@@ -851,6 +867,16 @@ mod tests {
         let filter = SessionFilter { include_archived: true, ..Default::default() };
         let all = store.list(&ctx(), filter).await.unwrap();
         assert_eq!(all.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn archived_session_can_be_restored_with_history_intact() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let id = SessionId::new("s1");
+        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store.archive(&id).await.unwrap();
+        store.restore(&id).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap().unwrap().id, id);
     }
 
     #[tokio::test]

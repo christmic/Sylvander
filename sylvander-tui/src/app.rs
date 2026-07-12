@@ -51,6 +51,8 @@ pub struct AppState {
     /// `SessionCreated` events arrive. Survives reconnects so the user
     /// can switch back to a previous session even after a server restart.
     pub sessions: Vec<SessionEntry>,
+    /// Most recently archived session, retained until one undo or replacement.
+    pub last_archived_session: Option<SessionEntry>,
 
     /// Floating layers (approval, ask, sessions, toast).
     pub modals: ModalStack,
@@ -124,6 +126,7 @@ impl AppState {
             queued_prompt_attachments: VecDeque::new(),
             tool_details_expanded: false,
             sessions: Vec::new(),
+            last_archived_session: None,
             modals: ModalStack::new(),
             composer,
             chat_scroll: 0,
@@ -376,6 +379,8 @@ impl AppState {
                         session.label = label.clone();
                     }
                     self.status = format!("Renamed session to {label}");
+                } else {
+                    self.status = "Archived session restored".into();
                 }
             }
             DomainEvent::TextChunk { delta } => {
@@ -679,6 +684,19 @@ impl AppState {
         }
 
         // 2. Global keys — Ctrl+C interrupts active work before it can quit.
+        let is_undo_archive = key.code == crossterm::event::KeyCode::Char('z')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_undo_archive {
+            if let Some(session) = self.last_archived_session.take() {
+                let session_id = session.id.clone();
+                self.sessions.insert(0, session);
+                self.status = "Restoring archived session…".into();
+                self.dirty.mark();
+                return Some(Action::RestoreSession { session_id });
+            }
+        }
         let is_ctrl_c = key.code == crossterm::event::KeyCode::Char('c')
             && key
                 .modifiers

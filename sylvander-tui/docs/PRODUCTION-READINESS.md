@@ -34,7 +34,8 @@ completed backend feature.
 - [x] The service reports real model, workspace, branch, and session metadata.
 - [x] Session selection loads persisted conversation history.
 - [x] Rename persists to `SessionStore`.
-- [ ] Archive/delete persists and has undo-safe behavior where applicable.
+- [x] Archive persists as a soft delete and `Ctrl+Z` restores the session with history intact.
+- [ ] Permanent delete requires a separate explicit confirmation and cannot be mistaken for archive.
 - [x] Fork creates an independent session at the current completed turn boundary.
 - [ ] Resume restores token/accounting and does not mix transcripts.
 - [ ] Session search, recency, workspace grouping, and empty/error states work.

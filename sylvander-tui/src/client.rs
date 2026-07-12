@@ -60,6 +60,9 @@ pub enum ClientMsg {
     ArchiveSession {
         session_id: String,
     },
+    RestoreSession {
+        session_id: String,
+    },
     ForkSession {
         session_id: String,
     },

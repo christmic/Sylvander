@@ -203,6 +203,9 @@ pub trait SessionStore: Send + Sync {
     /// remain on disk for audit / undo; `get` returns `None`.
     async fn archive(&self, id: &SessionId) -> Result<(), SessionStoreError>;
 
+    /// Undo a soft-delete. The session and its messages become visible again.
+    async fn restore(&self, id: &SessionId) -> Result<(), SessionStoreError>;
+
     /// Hard-delete. Cascades through `session_agents` and
     /// `session_messages`. Use only on explicit user action.
     async fn delete(&self, id: &SessionId) -> Result<(), SessionStoreError>;
