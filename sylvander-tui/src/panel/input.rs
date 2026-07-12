@@ -109,24 +109,30 @@ const MAX_TOKENS_PER_ROW: usize = 6;
 
 fn render_attachment_tokens(frame: &mut Frame, state: &AppState, area: Rect) {
     let composer = &state.composer;
-    let lines = composer.attachments.chunks(MAX_TOKENS_PER_ROW).map(|attachments| {
-        let mut line = String::with_capacity(area.width as usize);
-        for (index, att) in attachments.iter().enumerate() {
-            if index > 0 { line.push_str("  "); }
-            let glyph = match att.kind {
-                AttachmentKind::Paste => "▣",
-                AttachmentKind::File => "@",
-                AttachmentKind::Image => "◈",
-                AttachmentKind::Selection => "≡",
-                AttachmentKind::Diff => "±",
-                AttachmentKind::TerminalOutput => "$",
-            };
-            let name = att.preview.replace(' ', "_");
-            let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
-            line.push_str(&truncate(&chunk, CHIP_W));
-        }
-        Line::from(Span::styled(line, theme::text_dim()))
-    }).collect::<Vec<_>>();
+    let lines = composer
+        .attachments
+        .chunks(MAX_TOKENS_PER_ROW)
+        .map(|attachments| {
+            let mut line = String::with_capacity(area.width as usize);
+            for (index, att) in attachments.iter().enumerate() {
+                if index > 0 {
+                    line.push_str("  ");
+                }
+                let glyph = match att.kind {
+                    AttachmentKind::Paste => "▣",
+                    AttachmentKind::File => "@",
+                    AttachmentKind::Image => "◈",
+                    AttachmentKind::Selection => "≡",
+                    AttachmentKind::Diff => "±",
+                    AttachmentKind::TerminalOutput => "$",
+                };
+                let name = att.preview.replace(' ', "_");
+                let chunk = format!("{glyph} {name} · {} lines  ×", att.line_count);
+                line.push_str(&truncate(&chunk, CHIP_W));
+            }
+            Line::from(Span::styled(line, theme::text_dim()))
+        })
+        .collect::<Vec<_>>();
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }

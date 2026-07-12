@@ -99,8 +99,8 @@ impl Default for ModalStack {
 // ===========================================================================
 
 pub mod approval;
-pub mod file_mention;
 pub mod ask_user;
+pub mod file_mention;
 pub mod help;
 pub mod palette;
 pub mod plan;
@@ -108,8 +108,8 @@ pub mod sessions;
 pub mod tool_inspector;
 
 pub use approval::ApprovalModal;
-pub use file_mention::FileMentionModal;
 pub use ask_user::AskUserModal;
+pub use file_mention::FileMentionModal;
 pub use help::HelpModal;
 pub use palette::{COMMANDS, Command, CommandPalette};
 pub use plan::PlanReviewModal;

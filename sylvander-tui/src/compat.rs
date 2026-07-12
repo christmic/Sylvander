@@ -74,7 +74,9 @@ impl Breakpoint {
 pub fn compact_help_for(breakpoint: Breakpoint, mode_label: &str) -> &'static str {
     if breakpoint.shows_full_help() {
         match mode_label {
-            "Normal" => "Enter:send  Shift+Enter:newline  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command",
+            "Normal" => {
+                "Enter:send  Shift+Enter:newline  Esc:quit  Ctrl+C:quit  Ctrl+P:sessions  /:command"
+            }
             "ApprovalPending" => "y:approve  n:reject  Y:all  N:reject-all  esc:cancel",
             "AskPending" => "Enter:submit  Space:toggle  Esc:cancel",
             _ => "Enter:send  Esc:quit",

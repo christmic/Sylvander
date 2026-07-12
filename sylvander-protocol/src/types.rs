@@ -165,8 +165,12 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
-    TextDelta { delta: String },
-    ThinkingDelta { delta: String },
+    TextDelta {
+        delta: String,
+    },
+    ThinkingDelta {
+        delta: String,
+    },
     ToolCall {
         call_id: String,
         tool_name: String,
@@ -178,13 +182,17 @@ pub enum StreamEvent {
         output: String,
         is_error: bool,
     },
-    IterationStart { iteration: u32 },
+    IterationStart {
+        iteration: u32,
+    },
     IterationEnd {
         iteration: u32,
         input_tokens: u32,
         output_tokens: u32,
     },
-    Done { text: String },
+    Done {
+        text: String,
+    },
     ToolApprovalRequired {
         batch_id: String,
         tools: Vec<ToolCallInfo>,
@@ -478,11 +486,7 @@ impl BusMessage {
         }
     }
 
-    pub fn stream_event(
-        session_id: SessionId,
-        agent_id: AgentId,
-        event: StreamEvent,
-    ) -> Self {
+    pub fn stream_event(session_id: SessionId, agent_id: AgentId, event: StreamEvent) -> Self {
         Self {
             session_id,
             sender: Sender::Agent(agent_id),
@@ -534,8 +538,8 @@ mod tests {
 
     #[test]
     fn legacy_bus_messages_default_to_no_attachments() {
-        let mut value = serde_json::to_value(BusMessage::user_chat("s".into(), "u", "hi"))
-            .expect("serialize");
+        let mut value =
+            serde_json::to_value(BusMessage::user_chat("s".into(), "u", "hi")).expect("serialize");
         value.as_object_mut().unwrap().remove("attachments");
         let message: BusMessage = serde_json::from_value(value).expect("legacy decode");
         assert!(message.attachments.is_empty());

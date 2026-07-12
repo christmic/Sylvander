@@ -312,12 +312,9 @@ fn push_message_lines<'a>(
                         Span::styled(format!(" · {short_id}"), theme::text_muted()),
                     ]));
                     if !task.detail.is_empty() {
-                        for row in wrap_words(
-                            &task.detail,
-                            "    ",
-                            "    ".into(),
-                            width.saturating_sub(4),
-                        ) {
+                        for row in
+                            wrap_words(&task.detail, "    ", "    ".into(), width.saturating_sub(4))
+                        {
                             lines.push(Line::from(Span::styled(row, theme::text_dim())));
                         }
                     }
@@ -340,7 +337,8 @@ fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
         }
         let marker = if marked { "   " } else { "◆  " };
         marked = true;
-        row.spans.insert(0, Span::styled(marker, theme::agent_speaker()));
+        row.spans
+            .insert(0, Span::styled(marker, theme::agent_speaker()));
         lines.push(row);
     }
 }

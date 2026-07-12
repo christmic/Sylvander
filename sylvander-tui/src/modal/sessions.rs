@@ -291,10 +291,12 @@ impl Modal for SessionsOverlay {
                     if !label.is_empty() {
                         if let Some(entry) = self.entries.get_mut(index) {
                             entry.label = label.to_string();
-                            state.pending_actions.push(crate::event::Action::RenameSession {
-                                session_id: entry.id.clone(),
-                                label: label.to_string(),
-                            });
+                            state
+                                .pending_actions
+                                .push(crate::event::Action::RenameSession {
+                                    session_id: entry.id.clone(),
+                                    label: label.to_string(),
+                                });
                         }
                         if let Some(entry) = state.sessions.get_mut(index) {
                             entry.label = label.to_string();
@@ -332,15 +334,19 @@ impl Modal for SessionsOverlay {
                     self.permanent_delete_buffer.pop();
                 }
                 KeyCode::Char(character)
-                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.permanent_delete_buffer.push(character);
                 }
                 KeyCode::Enter if self.permanent_delete_buffer == "DELETE" => {
                     if let Some(entry) = self.entries.get(index) {
-                        state.pending_actions.push(crate::event::Action::DeleteSession {
-                            session_id: entry.id.clone(),
-                        });
+                        state
+                            .pending_actions
+                            .push(crate::event::Action::DeleteSession {
+                                session_id: entry.id.clone(),
+                            });
                         state.status = format!("Permanently deleting {}…", entry.label);
                     }
                     self.pending_permanent_delete = None;
@@ -366,9 +372,11 @@ impl Modal for SessionsOverlay {
                         let archived = self.entries[idx].clone();
                         let id = archived.id.clone();
                         state.last_archived_session = Some(archived);
-                        state.pending_actions.push(crate::event::Action::ArchiveSession {
-                            session_id: id.clone(),
-                        });
+                        state
+                            .pending_actions
+                            .push(crate::event::Action::ArchiveSession {
+                                session_id: id.clone(),
+                            });
                         self.entries.remove(idx);
                         state.sessions.retain(|entry| entry.id != id);
                         state.status = "Session archived · Ctrl+Z to undo".into();
@@ -397,7 +405,9 @@ impl Modal for SessionsOverlay {
                     let session_id = session.id.clone();
                     self.entries.insert(0, session.clone());
                     state.sessions.insert(0, session);
-                    state.pending_actions.push(crate::event::Action::RestoreSession { session_id });
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::RestoreSession { session_id });
                     state.status = "Restoring archived session…".into();
                 }
                 state.dirty.mark();
@@ -433,9 +443,11 @@ impl Modal for SessionsOverlay {
                     return Consumed::Yes { dismiss: false };
                 }
                 if let Some((_, entry)) = self.filtered().get(self.cursor) {
-                    state.pending_actions.push(crate::event::Action::LoadSession {
-                        session_id: entry.id.clone(),
-                    });
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::LoadSession {
+                            session_id: entry.id.clone(),
+                        });
                     state.status = format!("Loading {}…", entry.label);
                     state.mode = AppMode::Normal;
                     state.dirty.mark();
@@ -599,11 +611,27 @@ mod tests {
     #[test]
     fn sessions_group_by_workspace_and_keep_recent_first() {
         let overlay = SessionsOverlay::new(vec![
-            SessionEntry { workspace: "/b".into(), ..entry("b1", "B", SessionStatus::Complete, 5) },
-            SessionEntry { workspace: "/a".into(), ..entry("a2", "A2", SessionStatus::Complete, 60) },
-            SessionEntry { workspace: "/a".into(), ..entry("a1", "A1", SessionStatus::Complete, 5) },
+            SessionEntry {
+                workspace: "/b".into(),
+                ..entry("b1", "B", SessionStatus::Complete, 5)
+            },
+            SessionEntry {
+                workspace: "/a".into(),
+                ..entry("a2", "A2", SessionStatus::Complete, 60)
+            },
+            SessionEntry {
+                workspace: "/a".into(),
+                ..entry("a1", "A1", SessionStatus::Complete, 5)
+            },
         ]);
-        assert_eq!(overlay.entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["a1", "a2", "b1"]);
+        assert_eq!(
+            overlay
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a1", "a2", "b1"]
+        );
     }
 
     #[test]
@@ -646,7 +674,13 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::ArchiveSession { session_id }] if session_id == "a"
         ));
-        assert_eq!(state.last_archived_session.as_ref().map(|session| session.id.as_str()), Some("a"));
+        assert_eq!(
+            state
+                .last_archived_session
+                .as_ref()
+                .map(|session| session.id.as_str()),
+            Some("a")
+        );
     }
 
     #[test]
@@ -675,7 +709,10 @@ mod tests {
         overlay.filter_focused = false;
         overlay.handle_key(&key(KeyCode::Char('D'), KeyModifiers::SHIFT), &mut state);
         for character in "DELETE".chars() {
-            overlay.handle_key(&key(KeyCode::Char(character), KeyModifiers::SHIFT), &mut state);
+            overlay.handle_key(
+                &key(KeyCode::Char(character), KeyModifiers::SHIFT),
+                &mut state,
+            );
         }
         let result = overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: true }));
@@ -683,7 +720,11 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::DeleteSession { session_id }] if session_id == "a"
         ));
-        assert_eq!(overlay.entries.len(), 1, "server confirmation owns final removal");
+        assert_eq!(
+            overlay.entries.len(),
+            1,
+            "server confirmation owns final removal"
+        );
     }
 
     #[test]

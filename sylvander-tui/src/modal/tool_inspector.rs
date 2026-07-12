@@ -24,7 +24,14 @@ pub struct ToolInspector {
 
 impl ToolInspector {
     pub fn new(call_id: String, tool_name: String, output: String) -> Self {
-        Self { call_id, tool_name, output, query: String::new(), searching: false, cursor: 0 }
+        Self {
+            call_id,
+            tool_name,
+            output,
+            query: String::new(),
+            searching: false,
+            cursor: 0,
+        }
     }
 
     fn lines(&self) -> Vec<String> {
@@ -35,17 +42,25 @@ impl ToolInspector {
     }
 
     fn matches(&self, lines: &[String]) -> Vec<usize> {
-        if self.query.is_empty() { return Vec::new(); }
+        if self.query.is_empty() {
+            return Vec::new();
+        }
         let query = self.query.to_lowercase();
-        lines.iter().enumerate().filter_map(|(index, line)| {
-            line.to_lowercase().contains(&query).then_some(index)
-        }).collect()
+        lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| line.to_lowercase().contains(&query).then_some(index))
+            .collect()
     }
 }
 
 impl Modal for ToolInspector {
-    fn active(&self) -> bool { true }
-    fn title(&self) -> &str { "Tool output" }
+    fn active(&self) -> bool {
+        true
+    }
+    fn title(&self) -> &str {
+        "Tool output"
+    }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
         let area = inset(parent, 4, 2);
@@ -53,16 +68,23 @@ impl Modal for ToolInspector {
         frame.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} · {} ", self.tool_name, short_id(&self.call_id)))
+                .title(format!(
+                    " {} · {} ",
+                    self.tool_name,
+                    short_id(&self.call_id)
+                ))
                 .title_style(theme::active_bold()),
             area,
         );
         let inner = Block::default().borders(Borders::ALL).inner(area);
-        let rows = Layout::default().direction(Direction::Vertical).constraints([
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ]).split(inner);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+            ])
+            .split(inner);
         let search = if self.searching {
             format!("/{}▏", self.query)
         } else if self.query.is_empty() {
@@ -70,20 +92,39 @@ impl Modal for ToolInspector {
         } else {
             format!("/{}", self.query)
         };
-        frame.render_widget(Paragraph::new(Span::styled(search, theme::text_muted())), rows[0]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(search, theme::text_muted())),
+            rows[0],
+        );
 
         let lines = self.lines();
         let matches = self.matches(&lines);
         let height = rows[1].height as usize;
         let max_start = lines.len().saturating_sub(height);
-        let start = self.cursor.saturating_sub(height.saturating_sub(1)).min(max_start);
-        let visible = lines.iter().enumerate().skip(start).take(height).map(|(index, line)| {
-            let matched = matches.contains(&index);
-            Line::from(vec![
-                Span::styled(format!("{:>5}  ", index + 1), theme::text_muted()),
-                Span::styled(line.clone(), if matched { theme::active() } else { theme::text() }),
-            ])
-        }).collect::<Vec<_>>();
+        let start = self
+            .cursor
+            .saturating_sub(height.saturating_sub(1))
+            .min(max_start);
+        let visible = lines
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(height)
+            .map(|(index, line)| {
+                let matched = matches.contains(&index);
+                Line::from(vec![
+                    Span::styled(format!("{:>5}  ", index + 1), theme::text_muted()),
+                    Span::styled(
+                        line.clone(),
+                        if matched {
+                            theme::active()
+                        } else {
+                            theme::text()
+                        },
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
         frame.render_widget(Paragraph::new(visible), rows[1]);
         let match_label = if self.query.is_empty() {
             String::new()
@@ -103,9 +144,13 @@ impl Modal for ToolInspector {
         if self.searching {
             match key.code {
                 KeyCode::Esc | KeyCode::Enter => self.searching = false,
-                KeyCode::Backspace => { self.query.pop(); }
+                KeyCode::Backspace => {
+                    self.query.pop();
+                }
                 KeyCode::Char(character)
-                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.query.push(character);
                 }
@@ -116,12 +161,25 @@ impl Modal for ToolInspector {
         }
         match key.code {
             KeyCode::Esc => Consumed::Yes { dismiss: true },
-            KeyCode::Up => { self.cursor = self.cursor.saturating_sub(1); Consumed::Yes { dismiss: false } }
-            KeyCode::Down => { self.cursor = (self.cursor + 1).min(self.lines().len().saturating_sub(1)); Consumed::Yes { dismiss: false } }
-            KeyCode::Char('/') => { self.searching = true; Consumed::Yes { dismiss: false } }
+            KeyCode::Up => {
+                self.cursor = self.cursor.saturating_sub(1);
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Down => {
+                self.cursor = (self.cursor + 1).min(self.lines().len().saturating_sub(1));
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('/') => {
+                self.searching = true;
+                Consumed::Yes { dismiss: false }
+            }
             KeyCode::Char('n') => {
                 let lines = self.lines();
-                if let Some(next) = self.matches(&lines).into_iter().find(|index| *index > self.cursor) {
+                if let Some(next) = self
+                    .matches(&lines)
+                    .into_iter()
+                    .find(|index| *index > self.cursor)
+                {
                     self.cursor = next;
                 } else if let Some(first) = self.matches(&lines).first() {
                     self.cursor = *first;
@@ -129,7 +187,9 @@ impl Modal for ToolInspector {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Char('c') => {
-                state.pending_actions.push(Action::CopyText { text: self.output.clone() });
+                state.pending_actions.push(Action::CopyText {
+                    text: self.output.clone(),
+                });
                 state.status = "Copying tool output…".into();
                 Consumed::Yes { dismiss: false }
             }
@@ -147,7 +207,9 @@ fn inset(parent: Rect, x: u16, y: u16) -> Rect {
     }
 }
 
-fn short_id(id: &str) -> &str { &id[..8.min(id.len())] }
+fn short_id(id: &str) -> &str {
+    &id[..8.min(id.len())]
+}
 
 #[cfg(test)]
 mod tests {
@@ -165,9 +227,15 @@ mod tests {
         assert_eq!(inspector.matches(&lines), [1, 2]);
         inspector.cursor = 2;
         let mut state = AppState::new();
-        inspector.handle_key(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), &mut state);
+        inspector.handle_key(
+            &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut state,
+        );
         assert_eq!(inspector.cursor, 1);
-        inspector.handle_key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), &mut state);
+        inspector.handle_key(
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &mut state,
+        );
         assert!(matches!(
             state.pending_actions.as_slice(),
             [Action::CopyText { text }] if text.contains("needle one")

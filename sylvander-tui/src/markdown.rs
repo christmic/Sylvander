@@ -13,9 +13,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     let clean = sanitize_terminal_text(&break_inline_numbered_lists(&normalized));
     let parser = Parser::new_ext(
         &clean,
-        Options::ENABLE_STRIKETHROUGH
-            | Options::ENABLE_TABLES
-            | Options::ENABLE_TASKLISTS,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS,
     );
     let mut out = RichWriter::new(width.max(1));
     let mut lists: Vec<Option<u64>> = Vec::new();
@@ -64,7 +62,9 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
             Event::Start(Tag::List(start)) => lists.push(start),
             Event::End(TagEnd::List(_)) => {
                 lists.pop();
-                if lists.is_empty() { out.blank(); }
+                if lists.is_empty() {
+                    out.blank();
+                }
             }
             Event::Start(Tag::Item) => {
                 in_item = true;
@@ -147,9 +147,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
             Event::Html(value) | Event::InlineHtml(value) => {
                 out.push_text(&value, theme::text_dim())
             }
-            Event::FootnoteReference(value) => {
-                out.push_text(&format!("[{value}]"), link_style())
-            }
+            Event::FootnoteReference(value) => out.push_text(&format!("[{value}]"), link_style()),
             _ => {}
         }
     }
@@ -170,7 +168,9 @@ fn stabilize_incomplete_inline_markers(text: &str) -> String {
         }
     }
     if !value.contains("```") && value.matches('`').count() % 2 == 1 {
-        if let Some(index) = value.rfind('`') { value.remove(index); }
+        if let Some(index) = value.rfind('`') {
+            value.remove(index);
+        }
     }
     value
 }
@@ -186,16 +186,20 @@ fn break_inline_numbered_lists(text: &str) -> String {
         }
         if !in_inline_code && chars[index].is_ascii_digit() {
             let mut end = index;
-            while end < chars.len() && chars[end].is_ascii_digit() { end += 1; }
-            let marker = end + 1 < chars.len()
-                && chars[end] == '.'
-                && chars[end + 1].is_whitespace();
-            let line_has_content = output.rsplit_once('\n').map_or(
-                !output.trim().is_empty(),
-                |(_, line)| !line.trim().is_empty(),
-            );
+            while end < chars.len() && chars[end].is_ascii_digit() {
+                end += 1;
+            }
+            let marker =
+                end + 1 < chars.len() && chars[end] == '.' && chars[end + 1].is_whitespace();
+            let line_has_content = output
+                .rsplit_once('\n')
+                .map_or(!output.trim().is_empty(), |(_, line)| {
+                    !line.trim().is_empty()
+                });
             if marker && line_has_content {
-                while output.ends_with(' ') { output.pop(); }
+                while output.ends_with(' ') {
+                    output.pop();
+                }
                 output.push('\n');
             }
         }
@@ -206,19 +210,37 @@ fn break_inline_numbered_lists(text: &str) -> String {
 }
 
 fn inline_style(heading: bool, strong: usize, emphasis: usize, strike: usize, link: bool) -> Style {
-    let mut style = if heading { theme::header() } else { theme::text() };
-    if strong > 0 { style = style.add_modifier(Modifier::BOLD); }
-    if emphasis > 0 { style = style.add_modifier(Modifier::ITALIC); }
-    if strike > 0 { style = style.add_modifier(Modifier::CROSSED_OUT); }
-    if link { style = link_style(); }
+    let mut style = if heading {
+        theme::header()
+    } else {
+        theme::text()
+    };
+    if strong > 0 {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if emphasis > 0 {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if strike > 0 {
+        style = style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    if link {
+        style = link_style();
+    }
     style
 }
 
-fn code_style() -> Style { theme::active() }
+fn code_style() -> Style {
+    theme::active()
+}
 
-fn link_style() -> Style { theme::brand_violet().add_modifier(Modifier::UNDERLINED) }
+fn link_style() -> Style {
+    theme::brand_violet().add_modifier(Modifier::UNDERLINED)
+}
 
-fn quote_prefix(depth: usize) -> String { "│ ".repeat(depth) }
+fn quote_prefix(depth: usize) -> String {
+    "│ ".repeat(depth)
+}
 
 #[derive(Clone, Default)]
 struct TableBuilder {
@@ -237,7 +259,9 @@ impl TableBuilder {
             Event::Text(value) | Event::Code(value) => self.cell.push_str(value),
             Event::End(TagEnd::TableCell) => self.row.push(self.cell.trim().to_string()),
             Event::End(TagEnd::TableHead) | Event::End(TagEnd::TableRow) => {
-                if !self.row.is_empty() { self.rows.push(std::mem::take(&mut self.row)); }
+                if !self.row.is_empty() {
+                    self.rows.push(std::mem::take(&mut self.row));
+                }
             }
             _ => {}
         }
@@ -246,10 +270,14 @@ impl TableBuilder {
 }
 
 fn render_table(out: &mut RichWriter, table: TableBuilder) {
-    let Some(header) = table.rows.first() else { return };
+    let Some(header) = table.rows.first() else {
+        return;
+    };
     if out.width < 48 {
         for (row_index, row) in table.rows.iter().skip(1).enumerate() {
-            if row_index > 0 { out.blank(); }
+            if row_index > 0 {
+                out.blank();
+            }
             for (index, value) in row.iter().enumerate() {
                 let label = header.get(index).map_or("column", String::as_str);
                 out.start_block(format!("{label}: "), "  ".into());
@@ -273,7 +301,15 @@ fn render_table(out: &mut RichWriter, table: TableBuilder) {
             line.push_str(&" ".repeat(padding));
             line.push('│');
         }
-        out.raw_line(&line, if row_index == 0 { theme::header() } else { theme::text() }, "");
+        out.raw_line(
+            &line,
+            if row_index == 0 {
+                theme::header()
+            } else {
+                theme::text()
+            },
+            "",
+        );
     }
     out.blank();
 }
@@ -291,9 +327,16 @@ struct RichWriter {
 
 impl RichWriter {
     fn new(width: usize) -> Self {
-        Self { width, lines: Vec::new(), spans: Vec::new(), line_width: 0,
-            first_prefix: String::new(), continuation: String::new(), first_line: true,
-            pending_space: false }
+        Self {
+            width,
+            lines: Vec::new(),
+            spans: Vec::new(),
+            line_width: 0,
+            first_prefix: String::new(),
+            continuation: String::new(),
+            first_line: true,
+            pending_space: false,
+        }
     }
 
     fn start_block(&mut self, first: String, continuation: String) {
@@ -306,10 +349,15 @@ impl RichWriter {
 
     fn ensure_line(&mut self) {
         if self.spans.is_empty() {
-            let prefix = if self.first_line { &self.first_prefix } else { &self.continuation };
+            let prefix = if self.first_line {
+                &self.first_prefix
+            } else {
+                &self.continuation
+            };
             if !prefix.is_empty() {
                 self.line_width = UnicodeWidthStr::width(prefix.as_str());
-                self.spans.push(Span::styled(prefix.clone(), theme::text_muted()));
+                self.spans
+                    .push(Span::styled(prefix.clone(), theme::text_muted()));
             }
             self.first_line = false;
         }
@@ -335,7 +383,9 @@ impl RichWriter {
     }
 
     fn push_word(&mut self, word: &str, style: Style) {
-        if word.is_empty() { return; }
+        if word.is_empty() {
+            return;
+        }
         self.ensure_line();
         let space = usize::from(self.pending_space && self.line_width > 0);
         let word_width = UnicodeWidthStr::width(word);
@@ -350,10 +400,12 @@ impl RichWriter {
         let mut chunk = String::new();
         for grapheme in word.graphemes(true) {
             let grapheme_width = UnicodeWidthStr::width(grapheme);
-            if self.line_width + UnicodeWidthStr::width(chunk.as_str()) + grapheme_width > self.width
+            if self.line_width + UnicodeWidthStr::width(chunk.as_str()) + grapheme_width
+                > self.width
                 && !chunk.is_empty()
             {
-                self.spans.push(Span::styled(std::mem::take(&mut chunk), style));
+                self.spans
+                    .push(Span::styled(std::mem::take(&mut chunk), style));
                 self.flush();
                 self.ensure_line();
             }
@@ -365,11 +417,17 @@ impl RichWriter {
         }
     }
 
-    fn new_line(&mut self) { self.flush(); self.pending_space = false; }
+    fn new_line(&mut self) {
+        self.flush();
+        self.pending_space = false;
+    }
 
     fn raw_line(&mut self, text: &str, style: Style, prefix: &str) {
         self.flush();
-        let available = self.width.saturating_sub(UnicodeWidthStr::width(prefix)).max(1);
+        let available = self
+            .width
+            .saturating_sub(UnicodeWidthStr::width(prefix))
+            .max(1);
         let mut rest = sanitize_terminal_text(text);
         loop {
             let (part, tail) = take_width(&rest, available);
@@ -377,12 +435,19 @@ impl RichWriter {
                 Span::styled(prefix.to_string(), theme::text_muted()),
                 Span::styled(part, style),
             ]));
-            if tail.is_empty() { break; }
+            if tail.is_empty() {
+                break;
+            }
             rest = tail;
         }
     }
 
-    fn finish_block(&mut self, blank: bool) { self.flush(); if blank { self.blank(); } }
+    fn finish_block(&mut self, blank: bool) {
+        self.flush();
+        if blank {
+            self.blank();
+        }
+    }
 
     fn flush(&mut self) {
         if !self.spans.is_empty() {
@@ -400,7 +465,9 @@ impl RichWriter {
 
     fn finish(mut self) -> Vec<Line<'static>> {
         self.flush();
-        while self.lines.last().is_some_and(|line| line.spans.is_empty()) { self.lines.pop(); }
+        while self.lines.last().is_some_and(|line| line.spans.is_empty()) {
+            self.lines.pop();
+        }
         self.lines
     }
 }
@@ -413,12 +480,16 @@ pub fn sanitize_terminal_text(text: &str) -> String {
             if chars.peek() == Some(&'[') {
                 chars.next();
                 for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) { break; }
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
                 }
             } else if chars.peek() == Some(&']') {
                 chars.next();
                 while let Some(next) = chars.next() {
-                    if next == '\u{7}' { break; }
+                    if next == '\u{7}' {
+                        break;
+                    }
                     if next == '\u{1b}' && chars.peek() == Some(&'\\') {
                         chars.next();
                         break;
@@ -427,7 +498,9 @@ pub fn sanitize_terminal_text(text: &str) -> String {
             }
             continue;
         }
-        if ch == '\n' || ch == '\t' || !ch.is_control() { out.push(ch); }
+        if ch == '\n' || ch == '\t' || !ch.is_control() {
+            out.push(ch);
+        }
     }
     out
 }
@@ -437,14 +510,19 @@ fn take_width(text: &str, max: usize) -> (String, String) {
     let mut split = text.len();
     for (index, grapheme) in text.grapheme_indices(true) {
         let next = width + UnicodeWidthStr::width(grapheme);
-        if next > max { split = index; break; }
+        if next > max {
+            split = index;
+            break;
+        }
         width = next;
     }
     (text[..split].to_string(), text[split..].to_string())
 }
 
 fn truncate_width(text: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(text) <= max { return text.to_string(); }
+    if UnicodeWidthStr::width(text) <= max {
+        return text.to_string();
+    }
     let (mut value, _) = take_width(text, max.saturating_sub(1));
     value.push('…');
     value
@@ -455,7 +533,15 @@ mod tests {
     use super::*;
 
     fn plain(lines: &[Line<'_>]) -> Vec<String> {
-        lines.iter().map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect()).collect()
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
     }
 
     #[test]
@@ -464,7 +550,10 @@ mod tests {
         let rows = plain(&lines);
         assert_eq!(rows[0], "标题");
         assert!(rows.iter().any(|row| row.starts_with("• 重要")));
-        assert!(rows.iter().all(|row| UnicodeWidthStr::width(row.as_str()) <= 12));
+        assert!(
+            rows.iter()
+                .all(|row| UnicodeWidthStr::width(row.as_str()) <= 12)
+        );
     }
 
     #[test]
@@ -478,7 +567,10 @@ mod tests {
 
     #[test]
     fn strips_terminal_control_sequences_without_losing_text() {
-        assert_eq!(sanitize_terminal_text("ok\u{1b}[31mRED\u{1b}[0m\u{7}"), "okRED");
+        assert_eq!(
+            sanitize_terminal_text("ok\u{1b}[31mRED\u{1b}[0m\u{7}"),
+            "okRED"
+        );
     }
 
     #[test]
@@ -490,8 +582,14 @@ mod tests {
 
     #[test]
     fn wrapping_never_splits_emoji_or_combining_graphemes() {
-        let rows = plain(&render("👩‍💻 e\u{301}cole https://example.com/very/long/path", 12));
-        assert!(rows.iter().all(|row| UnicodeWidthStr::width(row.as_str()) <= 12));
+        let rows = plain(&render(
+            "👩‍💻 e\u{301}cole https://example.com/very/long/path",
+            12,
+        ));
+        assert!(
+            rows.iter()
+                .all(|row| UnicodeWidthStr::width(row.as_str()) <= 12)
+        );
         assert!(rows.iter().any(|row| row.contains("👩‍💻")));
         assert!(rows.iter().any(|row| row.contains("e\u{301}")));
         assert!(!rows.iter().any(|row| row.starts_with('\u{301}')));

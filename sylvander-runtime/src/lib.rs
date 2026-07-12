@@ -95,9 +95,11 @@ impl Runtime {
         );
 
         // Load persistent sessions
-        for session in session_store.list_persistent().await.map_err(|e| {
-            RuntimeError::Store(format!("list persistent failed: {e}"))
-        })? {
+        for session in session_store
+            .list_persistent()
+            .await
+            .map_err(|e| RuntimeError::Store(format!("list persistent failed: {e}")))?
+        {
             engine
                 .create_session(&session.name, session.metadata.clone(), &session.agents)
                 .await
@@ -121,9 +123,10 @@ impl Runtime {
                     RuntimeError::Engine(format!("create session {} failed: {e}", session.id))
                 })?;
             if session.lifetime == SessionLifetime::Persistent {
-                session_store.save(session).await.map_err(|e| {
-                    RuntimeError::Store(format!("save session failed: {e}"))
-                })?;
+                session_store
+                    .save(session)
+                    .await
+                    .map_err(|e| RuntimeError::Store(format!("save session failed: {e}")))?;
             }
         }
 
@@ -209,9 +212,10 @@ impl Runtime {
     pub async fn shutdown(&self) -> Result<(), RuntimeError> {
         let agents = self.engine.list_agents().await;
         for handle in agents {
-            self.engine.despawn(&handle.id).await.map_err(|e| {
-                RuntimeError::Engine(format!("despawn {} failed: {e}", handle.id))
-            })?;
+            self.engine
+                .despawn(&handle.id)
+                .await
+                .map_err(|e| RuntimeError::Engine(format!("despawn {} failed: {e}", handle.id)))?;
         }
         info!("runtime shut down");
         Ok(())
@@ -319,7 +323,10 @@ mod tests {
             .expect("create");
 
         let stored = rt.get_external_meta(&sid).await.expect("should exist");
-        assert_eq!(stored.get("chat_id").unwrap(), &serde_json::json!("-100xxx"));
+        assert_eq!(
+            stored.get("chat_id").unwrap(),
+            &serde_json::json!("-100xxx")
+        );
 
         rt.shutdown().await.expect("shutdown");
     }
@@ -339,14 +346,9 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert("secret".into(), serde_json::json!("hidden"));
 
-        rt.create_ephemeral_session(
-            "test",
-            test_metadata(),
-            &[AgentId::new("agent-1")],
-            meta,
-        )
-        .await
-        .expect("create");
+        rt.create_ephemeral_session("test", test_metadata(), &[AgentId::new("agent-1")], meta)
+            .await
+            .expect("create");
 
         // Engine sessions have no external_meta field
         let engine_sessions = rt.engine.list_sessions().await;
