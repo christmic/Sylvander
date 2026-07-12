@@ -5,22 +5,20 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::{
+    Json, Router,
     extract::{Query, State},
     routing::get,
-    Json, Router,
 };
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter,
-};
+use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{Channel, ChannelContext};
 
-use protocol::{parse_message_xml, WechatCrypto};
+use protocol::{WechatCrypto, parse_message_xml};
 
 pub mod protocol;
 
@@ -82,7 +80,9 @@ impl Channel for WechatChannel {
             .route("/wechat/callback", get(handle_verify).post(handle_callback))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind(self.webhook_addr).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(self.webhook_addr)
+            .await
+            .unwrap();
         info!(addr = %self.webhook_addr, "wechat channel listening");
         axum::serve(listener, app).await.unwrap();
     }
@@ -127,7 +127,10 @@ async fn handle_verify(
 ) -> String {
     // Verify signature then decrypt echostr
     let echostr = q.echostr.unwrap_or_default();
-    if !state.crypto.verify_signature(&q.msg_signature, &q.timestamp, &q.nonce, &echostr) {
+    if !state
+        .crypto
+        .verify_signature(&q.msg_signature, &q.timestamp, &q.nonce, &echostr)
+    {
         return String::new();
     }
     match state.crypto.decrypt(&echostr) {
@@ -197,10 +200,7 @@ async fn handle_callback(
     "success".into()
 }
 
-async fn resolve_session(
-    store: &Arc<dyn SessionStore>,
-    user_name: &str,
-) -> SessionId {
+async fn resolve_session(store: &Arc<dyn SessionStore>, user_name: &str) -> SessionId {
     if let Some(sid) = find_by_user(store, user_name).await {
         return sid;
     }
@@ -211,8 +211,14 @@ async fn resolve_session(
         user_id: user_name.into(),
     };
     let session_name = meta.name.clone();
-    let stored = StoredSession::new(sid.clone(), session_name, SessionLifetime::Persistent, meta, vec![])
-        .with_external_meta("from_user_name", user_name);
+    let stored = StoredSession::new(
+        sid.clone(),
+        session_name,
+        SessionLifetime::Persistent,
+        meta,
+        vec![],
+    )
+    .with_external_meta("from_user_name", user_name);
     let _ = store.save(&stored).await;
     sid
 }
@@ -220,7 +226,11 @@ async fn resolve_session(
 async fn find_by_user(store: &Arc<dyn SessionStore>, user: &str) -> Option<SessionId> {
     let list = store.list_persistent().await.ok()?;
     for s in &list {
-        if s.external_meta.get("from_user_name").and_then(|v| v.as_str()) == Some(user) {
+        if s.external_meta
+            .get("from_user_name")
+            .and_then(|v| v.as_str())
+            == Some(user)
+        {
             return Some(s.id.clone());
         }
     }
@@ -239,7 +249,9 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
         .expect("subscribe");
 
     while let Some(msg) = rx.recv().await {
-        let MessageKind::Stream(ref ev) = msg.kind else { continue };
+        let MessageKind::Stream(ref ev) = msg.kind else {
+            continue;
+        };
 
         // Find from_user_name for this session
         let user_name = match get_user_name(&ctx.sessions, &msg.session_id).await {
@@ -254,7 +266,12 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
                 continue;
             }
             StreamEvent::ToolCall { tool_name, .. } => format!("🔧 {tool_name}"),
-            StreamEvent::ToolResult { tool_name, output, is_error, .. } => {
+            StreamEvent::ToolResult {
+                tool_name,
+                output,
+                is_error,
+                ..
+            } => {
                 let icon = if *is_error { "❌" } else { "✅" };
                 format!("{icon} {tool_name}: {}", &output[..output.len().min(200)])
             }
@@ -301,7 +318,10 @@ async fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
             // POST back to WeChat — but enterprise app callbacks are passive,
             // so we need active reply API. For simplicity, this is a no-op
             // (real implementation would call https://qyapi.weixin.qq.com/cgi-bin/message/send).
-            warn!("wechat: active reply not implemented (logged only): {}", encrypted_xml);
+            warn!(
+                "wechat: active reply not implemented (logged only): {}",
+                encrypted_xml
+            );
         }
         Err(e) => warn!(error = %e, "wechat: encrypt reply failed"),
     }

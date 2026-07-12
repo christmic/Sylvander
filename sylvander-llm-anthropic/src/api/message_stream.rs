@@ -205,8 +205,7 @@ impl MessageStream {
                         .cloned()
                         .unwrap_or_default();
                     content.push(ContentBlock::Thinking(ThinkingBlock::new(
-                        thinking,
-                        signature,
+                        thinking, signature,
                     )));
                 }
             }

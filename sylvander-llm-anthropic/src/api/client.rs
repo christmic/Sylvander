@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Url;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::error::AnthropicError;
 use super::messages::MessagesApi;
@@ -65,7 +65,10 @@ impl AnthropicClient {
     /// client builder rejects the inputs (e.g., missing `api_key`), or
     /// [`super::blocking::BlockingClientError::Runtime`] if the tokio
     /// runtime fails to build.
-    pub fn blocking(self) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError> {
+    pub fn blocking(
+        self,
+    ) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError>
+    {
         self.blocking_with_config(super::blocking::BlockingConfig::default())
     }
 
@@ -76,11 +79,9 @@ impl AnthropicClient {
     pub fn blocking_with_config(
         self,
         config: super::blocking::BlockingConfig,
-    ) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError> {
-        super::blocking::BlockingAnthropicClient::with_config(
-            self.into_builder(),
-            config,
-        )
+    ) -> Result<super::blocking::BlockingAnthropicClient, super::blocking::BlockingClientError>
+    {
+        super::blocking::BlockingAnthropicClient::with_config(self.into_builder(), config)
     }
 
     /// Consume `self` and produce a builder that reproduces this
@@ -157,12 +158,7 @@ impl AnthropicClient {
         request: &super::request::CreateMessageRequest,
     ) -> HeaderMap {
         let mut headers = self.build_headers();
-        let mut extras: Vec<&str> = self
-            .inner
-            .beta_headers
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let mut extras: Vec<&str> = self.inner.beta_headers.iter().map(String::as_str).collect();
         if request.thinking.is_some() {
             extras.push("extended-thinking-2025-01-01");
         }
@@ -272,9 +268,7 @@ impl AnthropicClientBuilder {
         let base_url = Url::parse(&self.base_url)
             .map_err(|e| AnthropicError::Validation(format!("invalid base_url: {e}")))?;
 
-        let http = reqwest::Client::builder()
-            .timeout(self.timeout)
-            .build()?;
+        let http = reqwest::Client::builder().timeout(self.timeout).build()?;
 
         Ok(AnthropicClient {
             inner: Arc::new(ClientInner {
@@ -335,10 +329,7 @@ mod tests {
             .base_url("https://custom.example.com")
             .build()
             .expect("build should succeed");
-        assert_eq!(
-            client.base_url().as_str(),
-            "https://custom.example.com/"
-        );
+        assert_eq!(client.base_url().as_str(), "https://custom.example.com/");
     }
 
     #[test]
@@ -360,14 +351,8 @@ mod tests {
             .build()
             .expect("build should succeed");
         let headers = client.build_headers();
-        assert_eq!(
-            headers.get(AUTHORIZATION).unwrap(),
-            "Bearer sk-test-123"
-        );
-        assert_eq!(
-            headers.get(CONTENT_TYPE).unwrap(),
-            "application/json"
-        );
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer sk-test-123");
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
         assert_eq!(
             headers.get("anthropic-version").unwrap(),
             DEFAULT_ANTHROPIC_VERSION

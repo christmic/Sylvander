@@ -211,14 +211,13 @@ impl Client {
 
                     match frame.frame_type.as_str() {
                         "CALLBACK" => {
-                            let robot_msg: RobotMessage =
-                                match serde_json::from_str(&frame.data) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "dingtalk: parse failed");
-                                        continue;
-                                    }
-                                };
+                            let robot_msg: RobotMessage = match serde_json::from_str(&frame.data) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "dingtalk: parse failed");
+                                    continue;
+                                }
+                            };
 
                             handler.on_message(&robot_msg, &frame.headers).await;
 
@@ -260,7 +259,10 @@ impl Client {
         let _ = self
             .http
             .post(webhook_url)
-            .header("x-acs-dingtalk-access-token", token.as_deref().unwrap_or(""))
+            .header(
+                "x-acs-dingtalk-access-token",
+                token.as_deref().unwrap_or(""),
+            )
             .json(&WebhookText {
                 msgtype: "text".into(),
                 text: WebhookTextContent {
@@ -277,7 +279,10 @@ impl Client {
         let _ = self
             .http
             .post(webhook_url)
-            .header("x-acs-dingtalk-access-token", token.as_deref().unwrap_or(""))
+            .header(
+                "x-acs-dingtalk-access-token",
+                token.as_deref().unwrap_or(""),
+            )
             .json(&WebhookMarkdown {
                 msgtype: "markdown".into(),
                 markdown: WebhookMarkdownContent {

@@ -5,7 +5,7 @@ use aes::cipher::BlockDecrypt;
 use aes::cipher::BlockEncrypt;
 use aes::cipher::KeyInit;
 use aes::cipher::generic_array::GenericArray;
-use base64::{engine::general_purpose::STANDARD_NO_PAD as B64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD as B64};
 use sha1::{Digest, Sha1};
 
 type Block = GenericArray<u8, aes::cipher::generic_array::typenum::U16>;
@@ -38,7 +38,11 @@ pub struct WechatCrypto {
 }
 
 impl WechatCrypto {
-    pub fn new(token: String, encoding_aes_key: &str, corp_id: String) -> Result<Self, CryptoError> {
+    pub fn new(
+        token: String,
+        encoding_aes_key: &str,
+        corp_id: String,
+    ) -> Result<Self, CryptoError> {
         let aes_key_vec = B64
             .decode(encoding_aes_key.as_bytes())
             .map_err(CryptoError::Base64)?;
@@ -79,12 +83,9 @@ impl WechatCrypto {
         if plaintext.len() < 20 {
             return Err(CryptoError::Aes);
         }
-        let msg_len = u32::from_be_bytes([
-            plaintext[16],
-            plaintext[17],
-            plaintext[18],
-            plaintext[19],
-        ]) as usize;
+        let msg_len =
+            u32::from_be_bytes([plaintext[16], plaintext[17], plaintext[18], plaintext[19]])
+                as usize;
         if plaintext.len() < 20 + msg_len {
             return Err(CryptoError::Aes);
         }
@@ -119,7 +120,12 @@ impl WechatCrypto {
         let ciphertext = encrypt_cbc(&self.aes_key, &plaintext)?;
         let encrypted_b64 = B64.encode(&ciphertext);
 
-        let mut parts = [self.token.as_str(), timestamp, nonce, encrypted_b64.as_str()];
+        let mut parts = [
+            self.token.as_str(),
+            timestamp,
+            nonce,
+            encrypted_b64.as_str(),
+        ];
         parts.sort();
         let joined = parts.join("");
         let mut hasher = Sha1::new();
@@ -217,8 +223,8 @@ pub struct IncomingMessage {
 }
 
 pub fn parse_message_xml(xml: &str) -> Result<IncomingMessage, String> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     let mut reader = Reader::from_str(xml);
 

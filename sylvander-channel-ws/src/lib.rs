@@ -31,14 +31,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::Router;
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{
@@ -75,9 +75,17 @@ enum ClientMsg {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
-    SessionCreated { session_id: String },
-    TextDelta { session_id: String, delta: String },
-    ThinkingDelta { session_id: String, delta: String },
+    SessionCreated {
+        session_id: String,
+    },
+    TextDelta {
+        session_id: String,
+        delta: String,
+    },
+    ThinkingDelta {
+        session_id: String,
+        delta: String,
+    },
     ToolCall {
         session_id: String,
         tool_name: String,
@@ -197,10 +205,7 @@ struct AppState {
 // WebSocket upgrade
 // ===========================================================================
 
-async fn ws_handler(
-    State(state): State<Arc<AppState>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
+async fn ws_handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
@@ -324,24 +329,20 @@ async fn handle_client_msg(
                     if let MessageKind::Stream(ev) = msg.kind {
                         let s = &msg.session_id;
                         let out = match ev {
-                            StreamEvent::TextDelta { delta } => {
-                                Some(ServerMsg::TextDelta {
-                                    session_id: s.0.clone(),
-                                    delta,
-                                })
-                            }
+                            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
+                                session_id: s.0.clone(),
+                                delta,
+                            }),
                             StreamEvent::ThinkingDelta { delta } => {
                                 Some(ServerMsg::ThinkingDelta {
                                     session_id: s.0.clone(),
                                     delta,
                                 })
                             }
-                            StreamEvent::ToolCall { tool_name, .. } => {
-                                Some(ServerMsg::ToolCall {
-                                    session_id: s.0.clone(),
-                                    tool_name,
-                                })
-                            }
+                            StreamEvent::ToolCall { tool_name, .. } => Some(ServerMsg::ToolCall {
+                                session_id: s.0.clone(),
+                                tool_name,
+                            }),
                             StreamEvent::ToolResult {
                                 tool_name,
                                 output,
@@ -373,15 +374,18 @@ async fn handle_client_msg(
                                         .collect(),
                                 })
                             }
-                            StreamEvent::AskUser { call_id, question, options, multi_select } => {
-                                Some(ServerMsg::AskUser {
-                                    session_id: s.0.clone(),
-                                    call_id,
-                                    question,
-                                    options,
-                                    multi_select,
-                                })
-                            }
+                            StreamEvent::AskUser {
+                                call_id,
+                                question,
+                                options,
+                                multi_select,
+                            } => Some(ServerMsg::AskUser {
+                                session_id: s.0.clone(),
+                                call_id,
+                                question,
+                                options,
+                                multi_select,
+                            }),
                             StreamEvent::UserAnswer { call_id, answer } => {
                                 Some(ServerMsg::UserAnswer {
                                     session_id: s.0.clone(),
@@ -412,10 +416,7 @@ async fn handle_client_msg(
                     session_id: SessionId::new(String::new()),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool {
-                        call_id,
-                        approved,
-                    }),
+                    kind: MessageKind::System(SystemMessage::ApproveTool { call_id, approved }),
                     payload: String::new(),
                     attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
@@ -430,10 +431,7 @@ async fn handle_client_msg(
                     session_id: SessionId::new(String::new()),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::AnswerQuestion {
-                        call_id,
-                        answer,
-                    }),
+                    kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
                     payload: String::new(),
                     attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
@@ -458,44 +456,79 @@ async fn run_outgoing(
     ctx: Arc<ChannelContext>,
     clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
 ) {
-    let mut rx = match ctx
-        .bus
-        .subscribe(SubscriptionFilter::all())
-        .await
-    {
+    let mut rx = match ctx.bus.subscribe(SubscriptionFilter::all()).await {
         Ok(rx) => rx,
         Err(_) => return,
     };
 
     while let Some(msg) = rx.recv().await {
-        let MessageKind::Stream(ref ev) = msg.kind else { continue };
+        let MessageKind::Stream(ref ev) = msg.kind else {
+            continue;
+        };
 
         let s = msg.session_id.0.clone();
         let server_msg = match ev {
-            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta { session_id: s, delta: delta.clone() }),
-            StreamEvent::ThinkingDelta { delta } => Some(ServerMsg::ThinkingDelta { session_id: s, delta: delta.clone() }),
-            StreamEvent::ToolCall { tool_name, .. } => Some(ServerMsg::ToolCall { session_id: s, tool_name: tool_name.clone() }),
-            StreamEvent::ToolResult { tool_name, output, is_error, .. } => Some(ServerMsg::ToolResult {
-                session_id: s, tool_name: tool_name.clone(), output: output.clone(), is_error: *is_error,
+            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
+                session_id: s,
+                delta: delta.clone(),
+            }),
+            StreamEvent::ThinkingDelta { delta } => Some(ServerMsg::ThinkingDelta {
+                session_id: s,
+                delta: delta.clone(),
+            }),
+            StreamEvent::ToolCall { tool_name, .. } => Some(ServerMsg::ToolCall {
+                session_id: s,
+                tool_name: tool_name.clone(),
+            }),
+            StreamEvent::ToolResult {
+                tool_name,
+                output,
+                is_error,
+                ..
+            } => Some(ServerMsg::ToolResult {
+                session_id: s,
+                tool_name: tool_name.clone(),
+                output: output.clone(),
+                is_error: *is_error,
             }),
             StreamEvent::IterationStart { iteration } => Some(ServerMsg::IterationStart {
-                session_id: s, iteration: *iteration,
-            }),
-            StreamEvent::Done { text } => Some(ServerMsg::Done { session_id: s, text: text.clone() }),
-            StreamEvent::ToolApprovalRequired { batch_id, tools } => Some(ServerMsg::ToolApprovalRequired {
                 session_id: s,
-                batch_id: batch_id.clone(),
-                tools: tools.iter().map(|t| ToolInfo {
-                    call_id: t.call_id.clone(),
-                    tool_name: t.tool_name.clone(),
-                    input: t.input.clone(),
-                }).collect(),
+                iteration: *iteration,
             }),
-            StreamEvent::AskUser { call_id, question, options, multi_select } => Some(ServerMsg::AskUser {
-                session_id: s, call_id: call_id.clone(), question: question.clone(), options: options.clone(), multi_select: *multi_select,
+            StreamEvent::Done { text } => Some(ServerMsg::Done {
+                session_id: s,
+                text: text.clone(),
+            }),
+            StreamEvent::ToolApprovalRequired { batch_id, tools } => {
+                Some(ServerMsg::ToolApprovalRequired {
+                    session_id: s,
+                    batch_id: batch_id.clone(),
+                    tools: tools
+                        .iter()
+                        .map(|t| ToolInfo {
+                            call_id: t.call_id.clone(),
+                            tool_name: t.tool_name.clone(),
+                            input: t.input.clone(),
+                        })
+                        .collect(),
+                })
+            }
+            StreamEvent::AskUser {
+                call_id,
+                question,
+                options,
+                multi_select,
+            } => Some(ServerMsg::AskUser {
+                session_id: s,
+                call_id: call_id.clone(),
+                question: question.clone(),
+                options: options.clone(),
+                multi_select: *multi_select,
             }),
             StreamEvent::UserAnswer { call_id, answer } => Some(ServerMsg::UserAnswer {
-                session_id: s, call_id: call_id.clone(), answer: answer.clone(),
+                session_id: s,
+                call_id: call_id.clone(),
+                answer: answer.clone(),
             }),
             _ => None,
         };

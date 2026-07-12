@@ -14,19 +14,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, routing::post};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter,
-};
+use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
 use sylvander_agent::spec::{AgentId, SessionId};
@@ -143,7 +137,9 @@ impl Channel for TelegramChannel {
             .route("/telegram/webhook", post(handle_webhook))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind(self.webhook_addr).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(self.webhook_addr)
+            .await
+            .unwrap();
         info!(addr = %self.webhook_addr, "telegram channel listening");
         axum::serve(listener, app).await.unwrap();
     }
@@ -233,10 +229,7 @@ async fn handle_webhook(
     "ok"
 }
 
-async fn resolve_session(
-    store: &Arc<dyn SessionStore>,
-    chat_id: &str,
-) -> SessionId {
+async fn resolve_session(store: &Arc<dyn SessionStore>, chat_id: &str) -> SessionId {
     if let Some(sid) = find_by_chat_id(store, chat_id).await {
         return sid;
     }
@@ -247,8 +240,14 @@ async fn resolve_session(
         user_id: chat_id.into(),
     };
     let session_name = meta.name.clone();
-    let stored = StoredSession::new(sid.clone(), session_name, SessionLifetime::Persistent, meta, vec![])
-        .with_external_meta("chat_id", chat_id);
+    let stored = StoredSession::new(
+        sid.clone(),
+        session_name,
+        SessionLifetime::Persistent,
+        meta,
+        vec![],
+    )
+    .with_external_meta("chat_id", chat_id);
     let _ = store.save(&stored).await;
     sid
 }
@@ -275,7 +274,9 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
         .expect("subscribe");
 
     while let Some(msg) = rx.recv().await {
-        let MessageKind::Stream(ref ev) = msg.kind else { continue };
+        let MessageKind::Stream(ref ev) = msg.kind else {
+            continue;
+        };
 
         let chat_id = match get_chat_id(&ctx.sessions, &msg.session_id).await {
             Some(id) => id,
@@ -289,7 +290,12 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
                 continue;
             }
             StreamEvent::ToolCall { tool_name, .. } => format!("🔧 calling {tool_name}"),
-            StreamEvent::ToolResult { tool_name, output, is_error, .. } => {
+            StreamEvent::ToolResult {
+                tool_name,
+                output,
+                is_error,
+                ..
+            } => {
                 let icon = if *is_error { "❌" } else { "✅" };
                 let summary = if output.len() > 200 {
                     format!("{}...", &output[..200])
@@ -299,7 +305,8 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
                 format!("{icon} {tool_name}: {summary}")
             }
             StreamEvent::ToolApprovalRequired { tools, .. } => {
-                let list: Vec<String> = tools.iter().map(|t| format!("- {}", t.tool_name)).collect();
+                let list: Vec<String> =
+                    tools.iter().map(|t| format!("- {}", t.tool_name)).collect();
                 format!("⚠️ approval needed:\n{}", list.join("\n"))
             }
             StreamEvent::IterationStart { iteration } => {
@@ -325,12 +332,7 @@ async fn send_message(ch: &TelegramChannel, chat_id: i64, text: &str) {
             chat_id,
             text: chunk.to_string(),
         };
-        let _ = ch
-            .http
-            .post(ch.api("sendMessage"))
-            .json(&body)
-            .send()
-            .await;
+        let _ = ch.http.post(ch.api("sendMessage")).json(&body).send().await;
     }
 }
 

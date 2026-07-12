@@ -826,7 +826,9 @@ async fn handle_client_msg(
             let session_id = SessionId::new(session_id);
             match ctx.sessions.delete(&session_id).await {
                 Ok(()) => {
-                    let _ = tx.send(ServerMsg::SessionDeleted { session_id: session_id.0 });
+                    let _ = tx.send(ServerMsg::SessionDeleted {
+                        session_id: session_id.0,
+                    });
                 }
                 Err(error) => {
                     warn!(%error, "unix: failed to permanently delete session");
@@ -1090,7 +1092,10 @@ mod tests {
             )
             .await
             .expect("append");
-        store.record_usage(&session_id, 120, 30).await.expect("usage");
+        store
+            .record_usage(&session_id, 120, 30)
+            .await
+            .expect("usage");
 
         let channel = Arc::new(UnixChannel::new(&path, agent_id));
         let context = ChannelContext {

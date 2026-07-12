@@ -35,13 +35,18 @@ pub struct HttpChannel {
 
 impl HttpChannel {
     pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_agent::spec::AgentId>) -> Self {
-        Self { addr, agent_id: agent_id.into() }
+        Self {
+            addr,
+            agent_id: agent_id.into(),
+        }
     }
 }
 
 #[async_trait]
 impl Channel for HttpChannel {
-    fn name(&self) -> &str { "http" }
+    fn name(&self) -> &str {
+        "http"
+    }
 
     async fn run(self: Arc<Self>, ctx: ChannelContext) {
         let agent = self.agent_id.clone();
@@ -52,7 +57,10 @@ impl Channel for HttpChannel {
         });
 
         let app = Router::new()
-            .route("/health", get(|| async { Json(serde_json::json!({"status":"ok"})) }))
+            .route(
+                "/health",
+                get(|| async { Json(serde_json::json!({"status":"ok"})) }),
+            )
             .route("/chat", post(chat))
             .with_state(state);
 
@@ -92,33 +100,39 @@ async fn chat(
         .unwrap();
 
     // Ensure agent is in this session before sending message
+    use std::path::PathBuf;
     use sylvander_agent::bus::SystemMessage;
     use sylvander_agent::session::SessionMetadata;
-    use std::path::PathBuf;
-    let _ = state.ctx.bus.publish(sylvander_agent::bus::BusMessage {
-        session_id: sid.clone(),
-        sender: sylvander_agent::bus::Sender::System,
-        recipient: sylvander_agent::bus::Recipient::Agent(
-            state.agent_id.clone(),
-        ),
-        kind: sylvander_agent::bus::MessageKind::System(SystemMessage::JoinSession {
+    let _ = state
+        .ctx
+        .bus
+        .publish(sylvander_agent::bus::BusMessage {
             session_id: sid.clone(),
-            metadata: SessionMetadata {
-                workspace: PathBuf::from("/tmp"),
-                name: "http".into(),
-                user_id: "http-user".into(),
-            },
-        }),
-        payload: String::new(),
-        attachments: Vec::new(),
-        timestamp: sylvander_agent::session::now_secs(),
-        id: sylvander_agent::bus::MessageId::new(),
-    }).await;
+            sender: sylvander_agent::bus::Sender::System,
+            recipient: sylvander_agent::bus::Recipient::Agent(state.agent_id.clone()),
+            kind: sylvander_agent::bus::MessageKind::System(SystemMessage::JoinSession {
+                session_id: sid.clone(),
+                metadata: SessionMetadata {
+                    workspace: PathBuf::from("/tmp"),
+                    name: "http".into(),
+                    user_id: "http-user".into(),
+                },
+            }),
+            payload: String::new(),
+            attachments: Vec::new(),
+            timestamp: sylvander_agent::session::now_secs(),
+            id: sylvander_agent::bus::MessageId::new(),
+        })
+        .await;
 
     let _ = state
         .ctx
         .bus
-        .publish(BusMessage::user_chat(sid.clone(), "http-user", &req.message))
+        .publish(BusMessage::user_chat(
+            sid.clone(),
+            "http-user",
+            &req.message,
+        ))
         .await;
 
     let stream = async_stream::stream! {
