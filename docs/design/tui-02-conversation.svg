@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <title>Sylvander TUI — Current Conversation Rhythm</title>
+  <defs><style>
+    .bg{fill:#000}.text{fill:#ECE7DE}.dim{fill:#989B9D}.muted{fill:#666C72}.violet{fill:#9B72FF}.rule{stroke:#343A40;stroke-width:1}.active{fill:#75A7E8}.ok{fill:#72C7B1}
+    .mono{font:19px 'SFMono-Regular',Menlo,monospace;white-space:pre}.small{font:15px 'SFMono-Regular',Menlo,monospace;white-space:pre}.note{font:13px Inter,system-ui,sans-serif}
+  </style></defs>
+  <rect class="bg" width="1600" height="1000"/>
+  <g id="welcome-prelude-condensed" transform="translate(24 28)">
+    <text class="small violet">WELCOME PRELUDE REMAINS ABOVE — ORDINARY SCROLL, NEVER PAGE REPLACEMENT</text>
+    <line class="rule" x1="0" y1="28" x2="1080" y2="28"/>
+  </g>
+  <g id="turns" class="mono" transform="translate(24 100)">
+    <g id="user-turn"><text class="dim">›</text><text class="text" x="36">What tools do you have?</text></g>
+    <g id="agent-turn" transform="translate(0 72)">
+      <text class="violet">◆</text><text class="text" x="36">I have the following tools available:</text>
+      <text class="text" x="36" y="52">1. ask_user — Ask for a decision or missing information.</text>
+      <text class="text" x="36" y="88">2. Read — Read a file inside the current workspace.</text>
+      <text class="text" x="36" y="124">3. Write — Create or replace file content.</text>
+      <text class="text" x="36" y="160">4. Edit — Replace a precise section without rewriting the file.</text>
+    </g>
+    <g id="tool-activity" transform="translate(36 292)">
+      <text class="active">◌ Exploring workspace</text><text class="muted" x="880">00:12</text>
+      <text class="ok" x="20" y="38">✓</text><text class="dim" x="54" y="38">Read  src/panel/chat.rs</text>
+      <text class="ok" x="20" y="72">✓</text><text class="dim" x="54" y="72">Read  docs/sylvander-tui-ux-design.md</text>
+    </g>
+  </g>
+  <g id="annotation" transform="translate(1180 120)">
+    <text class="note violet">ONE TURN MARK</text><text class="note dim" y="26">No three-line face.</text><text class="note dim" y="48">No raw Markdown.</text><text class="note dim" y="70">No character-split words.</text><text class="note dim" y="92">No transcript cards.</text>
+  </g>
+  <g id="composer">
+    <line class="rule" x1="0" y1="884" x2="1600" y2="884"/><text class="mono text" x="0" y="924">&gt; continue improving the TUI</text><line class="rule" x1="0" y1="946" x2="1600" y2="946"/>
+  </g>
+  <text class="small muted" x="0" y="980">· idle · model MiniMax-M3 · branch master · session a91f2e · 2t</text><text class="small muted" x="1360" y="980">↵ send   ⇧↵ newline</text>
+</svg>

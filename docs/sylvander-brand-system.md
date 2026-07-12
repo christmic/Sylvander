@@ -14,7 +14,7 @@ Sylvander uses an **anthropomorphic Seed–Crab–Core product character**: a co
 
 It is not a decorative mascot and not a diagram of an agent pipeline. The character is a product participant. Its expression and motion communicate real interface state while its silhouette creates brand recognition.
 
-The final character master is `design/final-brand/sylvander-seed-crab-master.png`. Its seed shell, crab action body, paired luminous core eyes, left warm/right calm duality, sprout, and connection orbit are canonical. `design/final-brand/sylvander-seed-crab-character-faithful.svg` is its high-fidelity editable vector derivative. Terminal display adaptations are specified separately in `design/final-brand/sylvander-tui-ascii-system.svg`; they do not redefine the brand character. Earlier abstract marks remain archived explorations.
+The final character master is `design/final-brand/sylvander-seed-crab-master.png`. Its seed shell, crab action body, paired luminous core eyes, left warm/right calm duality, sprout, and connection orbit are canonical. `design/final-brand/sylvander-seed-crab-character-faithful.svg` is its high-fidelity editable vector derivative. Current terminal application is specified by `sylvander-tui-ux-design.md` and the editable `design/tui-*.svg` boards; it does not redefine the brand character. Rejected abstract marks are removed from the current design directory.
 
 ### 1.1 Canonical formula
 
@@ -276,19 +276,16 @@ Assets that fail this gate are exploratory and cannot replace the approved maste
 
 ## 14. Exploration record
 
-The following files remain editable historical material. They are not normative designs:
-
-- [`design/23-agent-brand-exploration.svg`](./design/23-agent-brand-exploration.svg)
-- [`design/24-agent-brand-system.svg`](./design/24-agent-brand-system.svg)
-- [`design/25-brand-applied-tui.svg`](./design/25-brand-applied-tui.svg)
-- [`design/26-brand-refinement.svg`](./design/26-brand-refinement.svg)
-- [`design/27-convergence-brand-tui.svg`](./design/27-convergence-brand-tui.svg)
-
 `Convergence Core`, `Vector Core`, and the earlier `◖S◗` shell mark are rejected explorations. None may be treated as the current Sylvander logo.
+
+Their former SVG boards were removed from `docs/design/` so rejected work cannot be mistaken for current UI guidance. Repository history remains the only archive.
 
 ## 15. Approved assets
 
 - [`design/final-brand/sylvander-seed-crab-master.png`](./design/final-brand/sylvander-seed-crab-master.png) — canonical detailed pet/agent character master.
 - [`design/final-brand/sylvander-logo-system.png`](./design/final-brand/sylvander-logo-system.png) — rendered logo, icon, terminal, scale, and avatar study.
 - [`design/final-brand/sylvander-seed-crab-character-faithful.svg`](./design/final-brand/sylvander-seed-crab-character-faithful.svg) — high-fidelity multicolor vector derivative of the approved character.
-- [`design/final-brand/sylvander-tui-ascii-system.svg`](./design/final-brand/sylvander-tui-ascii-system.svg) — terminal-only Unicode, ASCII, turn, Sidebar, and narrow-layout adaptations.
+- [`design/final-brand/sylvander-seed-crab-character-source.png`](./design/final-brand/sylvander-seed-crab-character-source.png) — approved transparent raster source.
+- [`design/final-brand/sylvander-seed-crab-character-square.png`](./design/final-brand/sylvander-seed-crab-character-square.png) — square-mask application source.
+- [`design/tui-01-welcome.svg`](./design/tui-01-welcome.svg) — current editable terminal-character application.
+- [`design/tui-02-conversation.svg`](./design/tui-02-conversation.svg) — current turn-presence application.
