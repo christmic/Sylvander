@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 22)"
 ---
-◖S◗  Sylvander  new session                                                       — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
-──────────────────────────────────────────────────────────────────────────────────────────
+                                                                                          
+                                                                                          
+                                                                                          
               ┌ Sessions ───────────────────────────────────────────────────┐             
-◖S◗  SYLVANDER│Search sessions… _                                           │             
-      intellig│─────────────────────────────────────────────────────────────│             
+              │Search sessions… _                                           │             
+              │─────────────────────────────────────────────────────────────│             
               │  (no sessions match)                                        │             
-      ~/.../sy│                                                             │             
-      What are│                                                             │             
               │                                                             │             
-──────────────│                                                             │─────────────
-│Ask Sylvander│                                                             │            │
-│             │                                                             │            │
-│             │                                                             │            │
-│             │                                                             │            │
-│             │                                                             │            │
-│             │                                                             │            │
-│             │type to filter   ↓/↑ select   enter open   ctrl+n new   r ren│            │
-│             └─────────────────────────────────────────────────────────────┘            │
-│Type while I work — steer, queue, or interrupt.                                         │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │                                                             │             
+              │type to filter   ↓/↑ select   enter open   ctrl+n new   r ren│             
+──────────────└─────────────────────────────────────────────────────────────┘─────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo

@@ -2,9 +2,6 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 120, 36)"
 ---
-◖S◗  Sylvander  new session                                                                                     — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                       
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -13,11 +10,14 @@ expression: "render_buf(&s, 120, 36)"
                                                                                                                         
                                                                                                                         
                                                                                                                         
-◖S◗  SYLVANDER          ┌ Tool Approval ───────────────────────────────────────────────────────┐                        
-      intelligent termin│Agent wants to run:                                                   │                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                        ┌ Tool Approval ───────────────────────────────────────────────────────┐                        
+                        │Agent wants to run:                                                   │                        
                         │  >> 1. bash  {"command":"rm -rf /"}                                  │                        
-      ~/.../sylvander-tu│                                                                      │                        
-      What are we buildi│Tool 1/1  y=approve  n=reject  Y=all  N=reject all  ← back  esc=cancel│                        
+                        │                                                                      │                        
+                        │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  ← back  esc=cancel│                        
                         │                                                                      │                        
                         │                                                                      │                        
                         │                                                                      │                        
@@ -26,15 +26,15 @@ expression: "render_buf(&s, 120, 36)"
                         │                                                                      │                        
                         │                                                                      │                        
                         │                                                                      │                        
-────────────────────────└──────────────────────────────────────────────────────────────────────┘────────────────────────
-│Ask Sylvander…                                                                                                        │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│Type while I work — steer, queue, or interrupt.                                                                       │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+                        └──────────────────────────────────────────────────────────────────────┘                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                                       
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+● approval · model — · branch — · session — · 0t                                                    y approve   n reject

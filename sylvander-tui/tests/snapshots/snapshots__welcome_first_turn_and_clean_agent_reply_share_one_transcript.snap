@@ -14,11 +14,11 @@ expression: "render_buf(&state, 120, 36)"
    ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                          
      ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                             
                                                                                                                         
+  › what tools do you have?                                                                                             
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+  ◆  I have tools:                                                                                                      
+     1. ask_user — Ask for missing information.                                                                         
+     2. Read — Read a workspace file.                                                                                   
                                                                                                                         
                                                                                                                         
                                                                                                                         

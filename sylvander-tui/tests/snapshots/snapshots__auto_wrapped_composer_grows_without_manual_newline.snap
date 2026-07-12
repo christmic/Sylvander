@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 120, 36)"
+expression: "render_buf(&state, 120, 20)"
 ---
                        ⢀⣠⢠⡖                                                                                             
                     ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                             
@@ -17,24 +17,8 @@ expression: "render_buf(&state, 120, 36)"
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                                       
+> abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123
+  456789                                                                                                                
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session — · 0t                                             connecting…   draft local

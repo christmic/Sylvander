@@ -2,27 +2,27 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 80, 24)"
 ---
-◖S◗  Sylvander  new session                                             — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
+  › hello                                                                       
+                                                                                
+  ◆  Thinking about it.                                                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
-You: hello                                                                      
-Thinking about it.                                                              
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
+>                                                                               
 ────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│Type while I work — steer, queue, or interrupt.                               │
-└──────────────────────────────────────────────────────────────────────────────┘
-────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0t          connecting…   draft

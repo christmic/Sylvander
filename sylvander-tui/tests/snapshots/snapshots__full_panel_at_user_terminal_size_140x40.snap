@@ -2,43 +2,43 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 140, 40)"
 ---
-◖S◗  Sylvander  new session                                                                                                         — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                                           
+  › Add JWT auth middleware                                                                                                                 
+  ◌ Run `ls`     00s                                                                                                                        
+  │ ✓ $ ls src/http  router.rs                                                                                                              
+  │ ◌ read src/http/middleware.rs                                                                                                           
+                                                                                                                                            
+  ◆  Inspecting the existing router to understand the auth surface. I see we have a TokenGuard already — let me                             
+     check it covers Bearer + API-key.                                                                                                      
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-You: Add JWT auth middleware                                                                                                                
-◌ Run `ls`     00s                                                                                                                          
-│ ✓ $ ls src/http  router.rs                                                                                                                
-│ ◌ read src/http/middleware.rs                                                                                                             
-Inspecting the existing router to understand the auth surface. I see we have a `TokenGuard` already — let me check it covers Bearer + API-  
-key.                                                                                                                                        
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
+>                                                                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                                                                            │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│                                                                                                                                          │
-│Type while I work — steer, queue, or interrupt.                                                                                           │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ working · model — · branch — · session — · 2t                                                                       esc interrupt   /draft

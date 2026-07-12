@@ -2,39 +2,39 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 120, 36)"
 ---
-◖S◗  Sylvander  new session                                                                                     — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                       
+  › any draft here                                                                                                      
+    Disconnected: server closed                                                                                         
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-You: any draft here                                                                                                     
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+>                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                                                        │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│Type while I work — steer, queue, or interrupt.                                                                       │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+! disconnected · model — · branch — · session — · 0t                                      ! reconnecting…   /draft prese

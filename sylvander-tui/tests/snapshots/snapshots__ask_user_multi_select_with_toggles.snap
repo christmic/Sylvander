@@ -2,29 +2,29 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 26)"
 ---
-◖S◗  Sylvander  new session                                                        — · ask
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
-──────────────────────────────────────────────────────────────────────────────────────────
                                                                                           
                                                                                           
                                                                                           
-◖S◗  SYLVANDER                                                                            
-      intelligent ┌ Agent asks (multi-select) ─────────────────────────┐                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Agent asks (multi-select) ─────────────────────────┐                  
                   │Tags for this issue?                                │                  
-      ~/.../sylvan│                                                    │                  
-      What are we │☑ [1] urgent                                        │                  
+                  │                                                    │                  
+                  │☑ [1] urgent                                        │                  
                   │☐ [2] bug                                           │                  
                   │☐ [3] feature                                       │                  
                   │☐ [4] needs-review                                  │                  
-──────────────────│                                                    │──────────────────
-│Ask Sylvander…   │Or type a free-text reply:                          │                 │
-│                 │> edgecase                                          │                 │
-│                 │                                                    │                 │
-│                 └────────────────────────────────────────────────────┘                 │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│Answering this question clears this draft.                                              │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+                  │                                                    │                  
+                  │Or type a free-text reply:                          │                  
+                  │> edgecase                                          │                  
+                  │                                                    │                  
+                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo

@@ -7,10 +7,10 @@
 //! Snapshot files live in `tests/snapshots/` and are checked in so reviewers
 //! can diff visual changes via `cargo insta review`.
 
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
-use sylvander_tui::app::{AppMode, AppState, ChatMessage, ToolInfo, ToolStatus};
+use sylvander_tui::app::{AppMode, AppState, ChatMessage, ToolInfo};
 use sylvander_tui::event::DomainEvent;
 
 /// Render `state` into a `(width, height)` TestBackend and return the
@@ -54,6 +54,26 @@ fn one_user_message_visible() {
         final_text: "hi there".into(),
     });
     insta::assert_snapshot!(render_buf(&state, 80, 24));
+}
+
+#[test]
+fn welcome_first_turn_and_clean_agent_reply_share_one_transcript() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = AppState::new();
+    for ch in "what tools do you have?".chars() {
+        state.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    let action = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(action.is_some());
+    state.apply(DomainEvent::TextChunk {
+        delta: "I have tools:1. **`ask_user`** — Ask for missing information.2. **`Read`** — Read a workspace file.".into(),
+    });
+    state.apply(DomainEvent::AgentDone {
+        final_text: String::new(),
+    });
+
+    insta::assert_snapshot!(render_buf(&state, 120, 36));
 }
 
 #[test]
@@ -132,6 +152,21 @@ fn multiline_composer_renders_two_rows() {
 }
 
 #[test]
+fn auto_wrapped_composer_grows_without_manual_newline() {
+    let mut state = AppState::new();
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    for ch in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars() {
+        state.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    assert_eq!(
+        state.composer.row_count(),
+        1,
+        "draft has no explicit newline"
+    );
+    insta::assert_snapshot!(render_buf(&state, 120, 20));
+}
+
+#[test]
 fn paste_inline_under_8_lines() {
     let mut state = AppState::new();
     // Short paste (≤ 8 lines) should land in the draft directly.
@@ -161,7 +196,10 @@ fn many_attachments_collapses_with_more_indicator() {
     // Six over-limit pastes — only 4 render as token, the rest get a
     // "… (+2 more attachments)" indicator.
     for _ in 0..6 {
-        let payload = (1..=10).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\n");
+        let payload = (1..=10)
+            .map(|i| format!("L{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         state.handle_paste(&payload);
     }
     assert_eq!(state.composer.attachment_count(), 6);
@@ -238,11 +276,7 @@ fn ask_user_single_select_open() {
     state.apply(DomainEvent::AskUserRequested {
         call_id: "q1".into(),
         question: "Which style do you prefer?".into(),
-        options: vec![
-            "Minimalist".into(),
-            "Colorful".into(),
-            "Monochrome".into(),
-        ],
+        options: vec!["Minimalist".into(), "Colorful".into(), "Monochrome".into()],
         multi_select: false,
     });
     assert_eq!(state.mode, AppMode::AskPending);
@@ -405,8 +439,7 @@ fn layout_too_small_renders_resize_message() {
 #[test]
 fn server_side_tool_rejection_lands_in_transcript() {
     let mut s = AppState::new();
-    s.messages
-        .push(ChatMessage::User("try `rm -rf /`".into()));
+    s.messages.push(ChatMessage::User("try `rm -rf /`".into()));
     s.apply(DomainEvent::ToolStarted {
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "rm -rf /"}),
@@ -421,8 +454,7 @@ fn server_side_tool_rejection_lands_in_transcript() {
 #[test]
 fn plan_block_renders_with_progress_markers() {
     let mut s = AppState::new();
-    s.messages
-        .push(ChatMessage::User("set up auth".into()));
+    s.messages.push(ChatMessage::User("set up auth".into()));
     s.apply(DomainEvent::PlanReceived {
         plan_id: "p-1".into(),
         steps: vec![
@@ -479,7 +511,8 @@ fn full_panel_at_user_terminal_size_140x40() {
         input: serde_json::json!({"path": "src/http/middleware.rs"}),
     });
     s.apply(DomainEvent::TextChunk {
-        delta: " I see we have a `TokenGuard` already — let me check it covers Bearer + API-key.".into(),
+        delta: " I see we have a `TokenGuard` already — let me check it covers Bearer + API-key."
+            .into(),
     });
     insta::assert_snapshot!(render_buf(&s, 140, 40));
 }
@@ -501,7 +534,7 @@ fn design_canonical_welcome_lockup_120x36() {
 #[test]
 fn design_canonical_with_tool_step_grouped_120x36() {
     // All M-T14 visual primitives exercised together: header bar
-    // with crab mark + workspace meta, tool rhythm (UX §6), and
+    // with Seed-Crab presence + workspace meta, tool rhythm (UX §6), and
     // bottom status row showing the Working mode glyph + tool count.
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
@@ -530,7 +563,9 @@ fn design_disconnected_state_120x36() {
     // ADAPTIVE STATUS panel.
     let mut s = AppState::new();
     s.messages.push(ChatMessage::User("any draft here".into()));
-    // Do NOT call Connected → AppState.connected stays false.
+    s.apply(DomainEvent::Disconnected {
+        reason: "server closed".into(),
+    });
     insta::assert_snapshot!(render_buf(&s, 120, 36));
 }
 
@@ -552,8 +587,8 @@ fn design_working_state_120x36() {
 fn design_waiting_approval_state_120x36() {
     // Status row shows the WaitingApproval glyph (`●` in amber) when an
     // Approval modal is open.
-    use sylvander_tui::modal::approval::ApprovalModal;
     use sylvander_tui::app::ToolInfo;
+    use sylvander_tui::modal::approval::ApprovalModal;
     let mut s = AppState::new();
     s.apply(DomainEvent::Connected);
     s.modals.push(Box::new(ApprovalModal::new(

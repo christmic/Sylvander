@@ -2,27 +2,27 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 80, 24)"
 ---
-◖S◗  Sylvander  new session                                             — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
+  › list src                                                                    
+  ✓ Run `ls`     00s                                                            
+  │ ✓ $ ls src  main.rs                                                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
-You: list src                                                                   
-✓ Run `ls`     00s                                                              
-│ ✓ $ ls src  main.rs                                                           
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
+>                                                                               
 ────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│Type while I work — steer, queue, or interrupt.                               │
-└──────────────────────────────────────────────────────────────────────────────┘
-────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 1t          connecting…   draft

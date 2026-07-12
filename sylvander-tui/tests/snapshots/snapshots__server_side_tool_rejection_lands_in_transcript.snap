@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 80, 22)"
 ---
-◖S◗  Sylvander  new session                                             — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
-────────────────────────────────────────────────────────────────────────────────
-You: try `rm -rf /`                                                             
-◌ Run `rm`     00s                                                              
-│ ◌ $ rm -rf /                                                                  
-  tool bash rejected: destructive commands blocked by policy                    
+  › try `rm -rf /`                                                              
+  ◌ Run `rm`     00s                                                            
+  │ ◌ $ rm -rf /                                                                
+    tool bash rejected: destructive commands blocked by policy                  
                                                                                 
                                                                                 
                                                                                 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│Type while I work — steer, queue, or interrupt.                               │
-└──────────────────────────────────────────────────────────────────────────────┘
+>                                                                               
 ────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 1t          connecting…   draft

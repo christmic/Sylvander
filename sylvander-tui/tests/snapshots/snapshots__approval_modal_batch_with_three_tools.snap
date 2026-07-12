@@ -2,12 +2,12 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 28)"
 ---
-◖S◗  Sylvander  new session                                                   — · approval
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
-──────────────────────────────────────────────────────────────────────────────────────────
-You: run setup                                                                            
-◌ Run `ls`     00s                                                                        
-│ ◌ $ ls                                                                                  
+  › run setup                                                                             
+  ◌ Run `ls`     00s                                                                      
+  │ ◌ $ ls                                                                                
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
                                                                                           
                                                                                           
@@ -18,15 +18,15 @@ You: run setup
                   │> use docker                                        │                  
                   │                                                    │                  
                   │enter=send feedback   esc=back to approval          │                  
-──────────────────└────────────────────────────────────────────────────┘──────────────────
-│Ask Sylvander…                                                                          │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│                                                                                        │
-│Approving tools clears this draft.                                                      │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 1t                  connecting…   draft lo
