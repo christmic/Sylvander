@@ -533,3 +533,36 @@ fn design_disconnected_state_120x36() {
     // Do NOT call Connected → AppState.connected stays false.
     insta::assert_snapshot!(render_buf(&s, 120, 36));
 }
+
+#[test]
+fn design_working_state_120x36() {
+    // Status row shows the Working glyph (`◐` in blue) when the agent
+    // is iterating — observational: any pending ToolStep child or
+    // non-empty streaming buffer triggers this.
+    let mut s = AppState::new();
+    s.apply(DomainEvent::Connected);
+    s.apply(DomainEvent::ToolStarted {
+        tool_name: "bash".into(),
+        input: serde_json::json!({"command": "ls src/http"}),
+    });
+    insta::assert_snapshot!(render_buf(&s, 120, 36));
+}
+
+#[test]
+fn design_waiting_approval_state_120x36() {
+    // Status row shows the WaitingApproval glyph (`●` in amber) when an
+    // Approval modal is open.
+    use sylvander_tui::modal::approval::ApprovalModal;
+    use sylvander_tui::app::ToolInfo;
+    let mut s = AppState::new();
+    s.apply(DomainEvent::Connected);
+    s.modals.push(Box::new(ApprovalModal::new(
+        "b1".into(),
+        vec![ToolInfo {
+            call_id: "c1".into(),
+            tool_name: "bash".into(),
+            input: serde_json::json!({"command": "rm -rf /"}),
+        }],
+    )));
+    insta::assert_snapshot!(render_buf(&s, 120, 36));
+}

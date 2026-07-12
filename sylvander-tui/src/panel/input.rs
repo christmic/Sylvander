@@ -62,12 +62,21 @@ impl Component for InputPanel {
         let mut block = Block::default()
             .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
             .border_style(theme::text_muted());
-        if composer_has_focus(state) {
-            // Apply a thick coral border style on the LEFT side by
-            // stacking a separate 3-px coral line at offset 0; ratatui
-            // doesn't expose per-side border style, so we approximate
-            // with a focus-colored left border.
+        // 3-state focus border per UX §18 IDLE / FOCUSED states.
+        if state.composer.has_focus_interaction()
+            && state.modals.is_empty()
+            && matches!(state.mode, AppMode::Normal)
+        {
+            // FOCUSED — coral focus_box border.
             block = block.border_style(theme::focus_box());
+        } else if state.composer.has_focus_interaction() {
+            // INACTIVE — composer has been used but a modal is now
+            // eating its input. Muted border so the chrome still
+            // renders but no focus stroke is shown.
+            block = block.border_style(theme::composer_idle_border());
+        } else {
+            // IDLE — user has not yet typed. Muted border, no coral.
+            block = block.border_style(theme::composer_idle_border());
         }
         frame.render_widget(block, chrome_area);
         let inner = chrome_area.inner(ratatui::layout::Margin {
@@ -219,15 +228,6 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
     }
 }
 
-fn composer_has_focus(state: &AppState) -> bool {
-    // Composer is considered focused when no modal is on top and we're
-    // not in a pending-decision mode that would steal input.
-    // (M-T15.D would gate this on `composer.has_focus_interaction()`
-    // to render IDLE state before the user has typed — not currently
-    // wired since the focus field isn't exposed yet.)
-    state.modals.is_empty()
-        && matches!(state.mode, AppMode::Normal)
-}
 
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
