@@ -223,6 +223,7 @@ async fn handle_webhook(
                 },
             ),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: sylvander_agent::session::now_secs(),
             id: sylvander_agent::bus::MessageId::new(),
         })
