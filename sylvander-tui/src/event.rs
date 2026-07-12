@@ -159,6 +159,10 @@ pub enum Action {
     InterruptTurn {
         session_id: String,
     },
+    ResolvePlan {
+        plan_id: String,
+        decision: sylvander_protocol::PlanDecision,
+    },
     RequestSessions,
     LoadSession {
         session_id: String,
