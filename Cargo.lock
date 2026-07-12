@@ -1984,6 +1984,7 @@ dependencies = [
  "serde_json",
  "sylvander-agent",
  "sylvander-channel",
+ "sylvander-llm-anthropic",
  "sylvander-protocol",
  "tokio",
  "tokio-stream",
