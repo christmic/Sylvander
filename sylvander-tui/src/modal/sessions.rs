@@ -12,11 +12,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::{AppMode, AppState};
@@ -47,11 +47,11 @@ impl SessionStatus {
 
     fn color(self) -> Color {
         match self {
-            Self::Working => ratatui::style::Color::Yellow,
-            Self::Waiting => ratatui::style::Color::Cyan,
-            Self::Complete => ratatui::style::Color::Green,
-            Self::Failed => ratatui::style::Color::Red,
-            Self::Disconnected => ratatui::style::Color::DarkGray,
+            Self::Working => theme::palette().waiting,
+            Self::Waiting => theme::palette().active,
+            Self::Complete => theme::palette().verified,
+            Self::Failed => theme::palette().danger,
+            Self::Disconnected => theme::palette().text_muted,
         }
     }
 }
@@ -167,7 +167,10 @@ impl Modal for SessionsOverlay {
         frame.render_widget(Paragraph::new(search_line), layout[0]);
 
         // 2. Spacer
-        frame.render_widget(Paragraph::new("─".repeat(layout[1].width as usize)), layout[1]);
+        frame.render_widget(
+            Paragraph::new("─".repeat(layout[1].width as usize)),
+            layout[1],
+        );
 
         // 3. List
         let filtered = self.filtered();
@@ -187,7 +190,11 @@ impl Modal for SessionsOverlay {
                 let is_cursor = row_i == self.cursor;
                 let cursor_marker = if is_cursor { "  › " } else { "    " };
                 let active_marker = if is_active { "● " } else { "  " };
-                let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray };
+                let color = if is_cursor {
+                    theme::palette().active
+                } else {
+                    theme::palette().text_dim
+                };
 
                 let status_color = entry.status.color();
                 lines.push(Line::from(vec![
@@ -205,10 +212,7 @@ impl Modal for SessionsOverlay {
                         format!("{:<30}", truncate(&entry.workspace, 30)),
                         theme::text_muted(),
                     ),
-                    Span::styled(
-                        entry.format_time(),
-                        theme::text_muted(),
-                    ),
+                    Span::styled(entry.format_time(), theme::text_muted()),
                 ]));
                 let _ = orig_idx; // surfacing only used in confirm-delete
             }
@@ -236,9 +240,7 @@ impl Modal for SessionsOverlay {
 
         // Hardware cursor in filter when focused.
         if self.filter_focused {
-            let cursor_x = inner.x
-                + 17
-                + self.filter.chars().count() as u16;
+            let cursor_x = inner.x + 17 + self.filter.chars().count() as u16;
             let cursor_y = inner.y;
             if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
                 frame.set_cursor_position((cursor_x, cursor_y));
@@ -468,12 +470,7 @@ mod tests {
     #[test]
     fn delete_confirm_cancels_on_n() {
         let mut state = AppState::new();
-        let mut overlay = SessionsOverlay::new(vec![entry(
-            "a",
-            "Foo",
-            SessionStatus::Working,
-            60,
-        )]);
+        let mut overlay = SessionsOverlay::new(vec![entry("a", "Foo", SessionStatus::Working, 60)]);
         overlay.pending_delete = Some(0);
         let result = overlay.handle_key(&key(KeyCode::Char('n'), KeyModifiers::NONE), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: false }));
@@ -483,12 +480,7 @@ mod tests {
     #[test]
     fn delete_confirm_removes_entry_on_y() {
         let mut state = AppState::new();
-        let mut overlay = SessionsOverlay::new(vec![entry(
-            "a",
-            "Foo",
-            SessionStatus::Working,
-            60,
-        )]);
+        let mut overlay = SessionsOverlay::new(vec![entry("a", "Foo", SessionStatus::Working, 60)]);
         overlay.pending_delete = Some(0);
         let result = overlay.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: false }));
@@ -499,10 +491,8 @@ mod tests {
     fn new_session_action_emitted_on_ctrl_n() {
         let mut state = AppState::new();
         let mut overlay = SessionsOverlay::new(vec![]);
-        let result = overlay.handle_key(
-            &key(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            &mut state,
-        );
+        let result =
+            overlay.handle_key(&key(KeyCode::Char('n'), KeyModifiers::CONTROL), &mut state);
         assert!(matches!(result, Consumed::Yes { dismiss: true }));
         assert_eq!(state.pending_actions.len(), 1);
         assert!(matches!(

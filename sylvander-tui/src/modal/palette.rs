@@ -216,18 +216,18 @@ impl Modal for CommandPalette {
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };
                 let color = if is_cursor {
-                    ratatui::style::Color::Cyan
+                    theme::palette().active
                 } else {
-                    ratatui::style::Color::White
+                    theme::palette().text
                 };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
                         format!("{:<14}", cmd.cmd),
                         Style::default().fg(if is_cursor {
-                            ratatui::style::Color::Cyan
+                            theme::palette().active
                         } else {
-                            ratatui::style::Color::Magenta
+                            theme::palette().brand_violet
                         }),
                     ),
                     Span::styled(cmd.label, Style::default().fg(color)),

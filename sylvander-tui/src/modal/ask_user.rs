@@ -158,20 +158,20 @@ impl Modal for AskUserModal {
                         (
                             format!("{} [{}] ", check, i + 1),
                             if mask[i] {
-                                ratatui::style::Color::Green
+                                theme::palette().verified
                             } else if is_cursor {
-                                ratatui::style::Color::Cyan
+                                theme::palette().active
                             } else {
-                                ratatui::style::Color::Gray
+                                theme::palette().text_dim
                             },
                         )
                     }
                     _ => (
                         format!("  [{}] ", i + 1),
                         if is_cursor {
-                            ratatui::style::Color::Cyan
+                            theme::palette().active
                         } else {
-                            ratatui::style::Color::Gray
+                            theme::palette().text_dim
                         },
                     ),
                 };
@@ -192,9 +192,9 @@ impl Modal for AskUserModal {
                     ]));
                 } else {
                     let color = if is_cursor {
-                        ratatui::style::Color::Cyan
+                        theme::palette().active
                     } else {
-                        ratatui::style::Color::Gray
+                        theme::palette().text_dim
                     };
                     lines.push(Line::from(Span::styled(
                         format!("{prefix}{label}"),

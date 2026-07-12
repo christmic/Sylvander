@@ -68,18 +68,18 @@ impl PlanReviewModal {
             .map(|(i, step)| {
                 let is_cursor = i == self.cursor;
                 let (marker, color) = if is_cursor {
-                    ("● ", ratatui::style::Color::Cyan)
+                    ("● ", theme::palette().active)
                 } else {
-                    ("  ", ratatui::style::Color::DarkGray)
+                    ("  ", theme::palette().text_muted)
                 };
                 Line::from(vec![
                     Span::styled(marker, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("{}. {}", i + 1, step),
                         Style::default().fg(if is_cursor {
-                            ratatui::style::Color::White
+                            theme::palette().text
                         } else {
-                            ratatui::style::Color::Gray
+                            theme::palette().text_dim
                         }),
                     ),
                 ])
