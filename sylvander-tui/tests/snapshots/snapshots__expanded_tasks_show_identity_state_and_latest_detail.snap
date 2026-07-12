@@ -1,0 +1,28 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&s, 80, 24)"
+---
+  ▶ tasks 1/2 done · 1 running                                                  
+    ● inspect auth middleware · a1b2c3d4                                        
+      running read                                                              
+    ✓ check test coverage · e5f6g7h8                                            
+      coverage gaps found in refresh flow                                       
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+>                                                                               
+────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session —                                  

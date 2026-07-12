@@ -44,9 +44,9 @@ completed backend feature.
 - [ ] Plan proposal/update/decision are typed public protocol operations.
 - [x] Plan approve, revise, reject, and cancel unblock the Agent explicitly.
 - [x] Plan current-step state is preserved and rendered correctly.
-- [ ] Background task start/progress/complete/fail/cancel events are public.
-- [ ] A user can inspect and cancel one task without stopping unrelated work.
-- [ ] No plan/task UI is marked complete until a real Agent path activates it.
+- [x] Background task start/progress/complete/fail/cancel events are public.
+- [x] A user can inspect and cancel one task without stopping unrelated work.
+- [x] No plan/task UI is marked complete until a real Agent path activates it.
 
 ## P1 — Coding-agent expression
 

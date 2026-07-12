@@ -72,6 +72,10 @@ enum ClientMsg {
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
+    CancelTask {
+        session_id: String,
+        task_id: String,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -155,6 +159,32 @@ enum ServerMsg {
         plan_id: String,
         steps: Vec<String>,
         current: usize,
+    },
+    TaskStarted {
+        session_id: String,
+        task_id: String,
+        owner: String,
+        purpose: String,
+    },
+    TaskProgress {
+        session_id: String,
+        task_id: String,
+        message: String,
+    },
+    TaskCompleted {
+        session_id: String,
+        task_id: String,
+        summary: String,
+    },
+    TaskFailed {
+        session_id: String,
+        task_id: String,
+        error: String,
+    },
+    TaskCancelled {
+        session_id: String,
+        task_id: String,
+        reason: String,
     },
     SessionsList {
         sessions: Vec<SessionInfo>,
@@ -461,6 +491,31 @@ async fn handle_client_msg(
                                     current,
                                 })
                             }
+                            StreamEvent::TaskStarted { task_id, owner, purpose } => {
+                                Some(ServerMsg::TaskStarted {
+                                    session_id: s.0.clone(), task_id, owner, purpose,
+                                })
+                            }
+                            StreamEvent::TaskProgress { task_id, message } => {
+                                Some(ServerMsg::TaskProgress {
+                                    session_id: s.0.clone(), task_id, message,
+                                })
+                            }
+                            StreamEvent::TaskCompleted { task_id, summary } => {
+                                Some(ServerMsg::TaskCompleted {
+                                    session_id: s.0.clone(), task_id, summary,
+                                })
+                            }
+                            StreamEvent::TaskFailed { task_id, error } => {
+                                Some(ServerMsg::TaskFailed {
+                                    session_id: s.0.clone(), task_id, error,
+                                })
+                            }
+                            StreamEvent::TaskCancelled { task_id, reason } => {
+                                Some(ServerMsg::TaskCancelled {
+                                    session_id: s.0.clone(), task_id, reason,
+                                })
+                            }
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -522,6 +577,18 @@ async fn handle_client_msg(
                 sender: sylvander_agent::bus::Sender::System,
                 recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                 kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
+                payload: String::new(),
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            }).await;
+        }
+        ClientMsg::CancelTask { session_id, task_id } => {
+            let session_id = SessionId::new(session_id);
+            let _ = ctx.bus.publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: sylvander_agent::bus::Sender::System,
+                recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                kind: MessageKind::System(SystemMessage::CancelTask { session_id, task_id }),
                 payload: String::new(),
                 timestamp: sylvander_agent::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
@@ -924,6 +991,37 @@ mod tests {
                 plan_id,
                 decision: sylvander_protocol::PlanDecision::Revised { steps },
             }) if plan_id == "plan-1" && steps == ["inspect", "verify"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn task_cancel_preserves_session_scope_on_the_agent_bus() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let agent_id = AgentId::new("agent-1");
+        let mut inbox = bus
+            .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
+            .await
+            .expect("subscribe");
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::CancelTask {
+                session_id: "session-1".into(),
+                task_id: "task-1".into(),
+            },
+            &context,
+            &agent_id,
+            &tx,
+        ).await;
+
+        let message = inbox.recv().await.expect("agent message");
+        assert!(matches!(
+            message.kind,
+            MessageKind::System(SystemMessage::CancelTask { session_id, task_id })
+                if session_id.0 == "session-1" && task_id == "task-1"
         ));
     }
 }

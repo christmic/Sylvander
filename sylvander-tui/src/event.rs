@@ -127,6 +127,10 @@ pub enum DomainEvent {
         owner: String,
         purpose: String,
     },
+    TaskProgress { task_id: String, message: String },
+    TaskCompleted { task_id: String, summary: String },
+    TaskFailed { task_id: String, error: String },
+    TaskCancelled { task_id: String, reason: String },
 
     /// Tick — heartbeat from the main loop (for spinner / time displays).
     Tick,
@@ -163,6 +167,7 @@ pub enum Action {
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
+    CancelTask { session_id: String, task_id: String },
     RequestSessions,
     LoadSession {
         session_id: String,

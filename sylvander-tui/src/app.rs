@@ -555,33 +555,37 @@ impl AppState {
                     owner,
                     purpose,
                     state: TaskState::Running,
+                    detail: "started".into(),
                 };
-                let mut updated_tasks: Vec<TaskEntry> = Vec::new();
-                let mut found = false;
-                if let Some(ChatMessage::TaskList { tasks }) = self.messages.last_mut() {
-                    for t in tasks.iter() {
-                        if t.task_id == entry.task_id {
-                            // Replace existing entry if it re-emits.
-                            updated_tasks.push(entry.clone());
-                            found = true;
-                        } else {
-                            updated_tasks.push(t.clone());
-                        }
-                    }
-                }
-                if !found {
-                    updated_tasks.push(entry);
-                }
                 match self.messages.last_mut() {
                     Some(ChatMessage::TaskList { tasks }) => {
-                        *tasks = updated_tasks;
+                        if let Some(existing) = tasks
+                            .iter_mut()
+                            .find(|task| task.task_id == entry.task_id)
+                        {
+                            *existing = entry;
+                        } else {
+                            tasks.push(entry);
+                        }
                     }
                     _ => {
                         self.messages.push(ChatMessage::TaskList {
-                            tasks: updated_tasks,
+                            tasks: vec![entry],
                         });
                     }
                 }
+            }
+            DomainEvent::TaskProgress { task_id, message } => {
+                update_task(&mut self.messages, &task_id, TaskState::Running, message);
+            }
+            DomainEvent::TaskCompleted { task_id, summary } => {
+                update_task(&mut self.messages, &task_id, TaskState::Done, summary);
+            }
+            DomainEvent::TaskFailed { task_id, error } => {
+                update_task(&mut self.messages, &task_id, TaskState::Failed, error);
+            }
+            DomainEvent::TaskCancelled { task_id, reason } => {
+                update_task(&mut self.messages, &task_id, TaskState::Cancelled, reason);
             }
             DomainEvent::Tick => {
                 // No state change — only used to wake the render loop.
@@ -791,6 +795,22 @@ impl AppState {
     }
 }
 
+fn update_task(
+    messages: &mut [ChatMessage],
+    task_id: &str,
+    state: TaskState,
+    detail: String,
+) {
+    for message in messages.iter_mut().rev() {
+        let ChatMessage::TaskList { tasks } = message else { continue };
+        if let Some(task) = tasks.iter_mut().find(|task| task.task_id == task_id) {
+            task.state = state;
+            task.detail = detail;
+            return;
+        }
+    }
+}
+
 fn event_adds_transcript_content(event: &DomainEvent) -> bool {
     matches!(
         event,
@@ -802,6 +822,10 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::ToolFinished { .. }
             | DomainEvent::PlanReceived { .. }
             | DomainEvent::TaskStarted { .. }
+            | DomainEvent::TaskProgress { .. }
+            | DomainEvent::TaskCompleted { .. }
+            | DomainEvent::TaskFailed { .. }
+            | DomainEvent::TaskCancelled { .. }
     )
 }
 
@@ -1233,6 +1257,31 @@ mod tests {
             session_id: "abc-123".into(),
         });
         assert_eq!(s.sessions.len(), 1);
+    }
+
+    #[test]
+    fn background_task_lifecycle_updates_one_stable_transcript_entry() {
+        let mut s = AppState::new();
+        s.apply(DomainEvent::TaskStarted {
+            task_id: "task-1".into(),
+            owner: "sylvander".into(),
+            purpose: "Inspect tests".into(),
+        });
+        s.apply(DomainEvent::TaskProgress {
+            task_id: "task-1".into(),
+            message: "running read".into(),
+        });
+        s.apply(DomainEvent::TaskCompleted {
+            task_id: "task-1".into(),
+            summary: "No failures".into(),
+        });
+
+        let ChatMessage::TaskList { tasks } = &s.messages[0] else {
+            panic!("task list");
+        };
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].state, TaskState::Done);
+        assert_eq!(tasks[0].detail, "No failures");
     }
 }
 

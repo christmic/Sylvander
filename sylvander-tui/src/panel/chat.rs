@@ -288,6 +288,32 @@ fn push_message_lines<'a>(
                 format!("▶ tasks {done}/{total} done · {running} running"),
                 theme::task_summary_line(),
             )));
+            if tool_details_expanded {
+                for task in tasks {
+                    let (glyph, style) = match task.state {
+                        crate::app::TaskState::Running => ("●", theme::warning()),
+                        crate::app::TaskState::Done => ("✓", theme::verified()),
+                        crate::app::TaskState::Failed => ("✗", theme::danger()),
+                        crate::app::TaskState::Cancelled => ("○", theme::text_muted()),
+                    };
+                    let short_id = task.task_id.chars().take(8).collect::<String>();
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {glyph} "), style),
+                        Span::styled(&task.purpose, theme::text()),
+                        Span::styled(format!(" · {short_id}"), theme::text_muted()),
+                    ]));
+                    if !task.detail.is_empty() {
+                        for row in wrap_words(
+                            &task.detail,
+                            "    ",
+                            "    ".into(),
+                            width.saturating_sub(4),
+                        ) {
+                            lines.push(Line::from(Span::styled(row, theme::text_dim())));
+                        }
+                    }
+                }
+            }
         }
     }
 }

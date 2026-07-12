@@ -77,6 +77,7 @@ pub struct TaskEntry {
     pub owner: String,
     pub purpose: String,
     pub state: TaskState,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub enum TaskState {
     Running,
     Done,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
