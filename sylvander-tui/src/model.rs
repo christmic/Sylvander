@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 
+pub const CAPABILITY_VISION: u8 = 1 << 4;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeMetadata {
     pub model: String,
@@ -25,6 +27,12 @@ impl Default for RuntimeMetadata {
             approval_enabled: false,
             max_attachment_bytes: 512 * 1024,
         }
+    }
+}
+
+impl RuntimeMetadata {
+    pub fn supports_vision(&self) -> bool {
+        self.capabilities & CAPABILITY_VISION != 0
     }
 }
 

@@ -2088,6 +2088,7 @@ dependencies = [
 name = "sylvander-tui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "crossterm",
  "insta",
  "pulldown-cmark",

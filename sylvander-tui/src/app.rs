@@ -784,6 +784,8 @@ impl AppState {
             self.modals
                 .push(Box::new(crate::modal::FileMentionModal::new(
                     self.metadata.workspace.clone(),
+                    self.metadata.max_attachment_bytes,
+                    self.metadata.supports_vision(),
                 )));
             self.dirty.mark();
             return None;
@@ -815,6 +817,17 @@ impl AppState {
 
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
+        let is_submit = key.code == crossterm::event::KeyCode::Enter && key.modifiers.is_empty();
+        if is_submit {
+            if let Err(error) = self.composer.validate_attachments(
+                self.metadata.max_attachment_bytes,
+                self.metadata.supports_vision(),
+            ) {
+                self.status = error;
+                self.dirty.mark();
+                return None;
+            }
+        }
         if let Some(text) = self.composer.handle_key(key) {
             let attachments = self.composer.take_submitted_attachments();
             self.save_history();
