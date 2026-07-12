@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 pulldown-cmark = "0.12.2"
 unicode-width = "0.2"
 similar = "2.7"
+base64 = "0.22"
 
 [dev-dependencies]
 insta = { version = "1.40", features = ["yaml"] }

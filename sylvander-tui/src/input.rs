@@ -13,6 +13,7 @@
 
 use std::collections::VecDeque;
 
+use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 const HISTORY_CAP: usize = 100;
@@ -29,6 +30,8 @@ pub enum AttachmentKind {
     /// A file/buffer reference (M-T2.4 — currently only populated by tests;
     /// production path arrives when file picker lands).
     File,
+    /// A PNG or JPEG carried as a typed base64 payload.
+    Image,
 }
 
 /// A collapsed payload attached above the draft. Tokens render as a
@@ -65,8 +68,12 @@ impl Attachment {
         }
     }
 
-    pub fn from_file(workspace: &std::path::Path, path: &std::path::Path) -> Result<Self, String> {
-        const MAX_FILE_BYTES: u64 = 512 * 1024;
+    pub fn from_file(
+        workspace: &std::path::Path,
+        path: &std::path::Path,
+        max_bytes: usize,
+        allow_images: bool,
+    ) -> Result<Self, String> {
         let root = workspace.canonicalize().map_err(|error| error.to_string())?;
         let absolute = if path.is_absolute() { path.to_path_buf() } else { root.join(path) };
         let absolute = absolute.canonicalize().map_err(|error| error.to_string())?;
@@ -75,12 +82,27 @@ impl Attachment {
         }
         let metadata = absolute.metadata().map_err(|error| error.to_string())?;
         if !metadata.is_file() { return Err("file mention is not a regular file".into()); }
-        if metadata.len() > MAX_FILE_BYTES {
-            return Err(format!("file is larger than {} KiB", MAX_FILE_BYTES / 1024));
+        if metadata.len() > max_bytes as u64 {
+            return Err(format!("file is larger than {} KiB", max_bytes / 1024));
         }
         let bytes = std::fs::read(&absolute).map_err(|error| error.to_string())?;
-        let content = String::from_utf8(bytes).map_err(|_| "binary files require image attachment support".to_string())?;
         let relative = absolute.strip_prefix(&root).unwrap_or(&absolute).display().to_string();
+        if let Some(mime_type) = image_mime(&bytes) {
+            if !allow_images {
+                return Err("active model does not support image attachments".into());
+            }
+            return Ok(Self {
+                kind: AttachmentKind::Image,
+                preview: relative.clone(),
+                name: relative,
+                mime_type: mime_type.into(),
+                content: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                line_count: 0,
+                byte_count: bytes.len(),
+            });
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|_| "only UTF-8 text, PNG, and JPEG files can be attached".to_string())?;
         let line_count = content.lines().count();
         let byte_count = content.len();
         Ok(Self {
@@ -100,10 +122,15 @@ impl Attachment {
             kind: match self.kind {
                 AttachmentKind::Paste => sylvander_protocol::AttachmentKind::Paste,
                 AttachmentKind::File => sylvander_protocol::AttachmentKind::File,
+                AttachmentKind::Image => sylvander_protocol::AttachmentKind::Image,
             },
             name: self.name.clone(),
             mime_type: self.mime_type.clone(),
-            content: sylvander_protocol::AttachmentContent::Text { text: self.content.clone() },
+            content: if self.kind == AttachmentKind::Image {
+                sylvander_protocol::AttachmentContent::Base64 { data: self.content.clone() }
+            } else {
+                sylvander_protocol::AttachmentContent::Text { text: self.content.clone() }
+            },
             byte_count: self.byte_count,
         }
     }
@@ -113,8 +140,12 @@ impl Attachment {
         let kind = match self.kind {
             AttachmentKind::Paste => "paste",
             AttachmentKind::File => "file",
+            AttachmentKind::Image => "image",
         };
         let size = human_bytes(self.byte_count);
+        if self.kind == AttachmentKind::Image {
+            return format!("[{kind}: {size}] {}", self.preview);
+        }
         format!(
             "[{kind}: {} lines · {size}] {}",
             self.line_count, self.preview
@@ -263,8 +294,34 @@ impl Composer {
         std::mem::take(&mut self.submitted_attachments)
     }
 
-    pub fn attach_file(&mut self, workspace: &std::path::Path, path: &std::path::Path) -> Result<(), String> {
-        self.attachments.push(Attachment::from_file(workspace, path)?);
+    pub fn validate_attachments(
+        &self,
+        max_bytes: usize,
+        allow_images: bool,
+    ) -> Result<(), String> {
+        for attachment in &self.attachments {
+            if attachment.byte_count > max_bytes {
+                return Err(format!(
+                    "{} is larger than {} KiB",
+                    attachment.name,
+                    max_bytes / 1024
+                ));
+            }
+            if attachment.kind == AttachmentKind::Image && !allow_images {
+                return Err("active model does not support image attachments".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn attach_file(
+        &mut self,
+        workspace: &std::path::Path,
+        path: &std::path::Path,
+        max_bytes: usize,
+        allow_images: bool,
+    ) -> Result<(), String> {
+        self.attachments.push(Attachment::from_file(workspace, path, max_bytes, allow_images)?);
         self.mark_focused();
         Ok(())
     }
@@ -759,6 +816,16 @@ impl Composer {
     }
 }
 
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else {
+        None
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DraftSnapshot {
     text: String,
@@ -1093,7 +1160,9 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         let mut composer = Composer::default();
-        composer.attach_file(&root, std::path::Path::new("src/main.rs")).unwrap();
+        composer
+            .attach_file(&root, std::path::Path::new("src/main.rs"), 512 * 1024, false)
+            .unwrap();
         composer.attachments.push(Attachment::new_paste("one\ntwo".into()));
         assert_eq!(composer.attachments[0].mime_type, "text/x-rust");
         assert!(composer.move_attachment(1, 0));
@@ -1103,9 +1172,39 @@ mod tests {
 
         let outside = root.parent().unwrap().join("outside-secret.txt");
         std::fs::write(&outside, "secret").unwrap();
-        assert!(composer.attach_file(&root, &outside).is_err());
+        assert!(composer.attach_file(&root, &outside, 512 * 1024, false).is_err());
         std::fs::remove_file(outside).ok();
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn image_attachment_is_capability_gated_and_base64_typed() {
+        let root = tempdir();
+        let image = root.join("crab.png");
+        let bytes = b"\x89PNG\r\n\x1a\nsmall-image";
+        std::fs::write(&image, bytes).unwrap();
+        let mut composer = Composer::default();
+
+        assert!(composer.attach_file(&root, &image, 1024, false).is_err());
+        composer.attach_file(&root, &image, 1024, true).unwrap();
+        let attachment = composer.attachments.first().unwrap();
+        assert_eq!(attachment.kind, AttachmentKind::Image);
+        assert_eq!(attachment.mime_type, "image/png");
+        assert_eq!(attachment.byte_count, bytes.len());
+        assert!(matches!(
+            attachment.to_message_attachment(0).content,
+            sylvander_protocol::AttachmentContent::Base64 { ref data }
+                if base64::engine::general_purpose::STANDARD.decode(data).unwrap() == bytes
+        ));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn pasted_attachment_is_checked_against_server_limit_before_submit() {
+        let mut composer = Composer::default();
+        composer.attachments.push(Attachment::new_paste("too large".into()));
+        assert!(composer.validate_attachments(3, false).is_err());
+        assert!(composer.validate_attachments(1024, false).is_ok());
     }
 
     #[test]

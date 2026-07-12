@@ -20,12 +20,14 @@ pub struct FileMentionModal {
     query: String,
     cursor: usize,
     error: Option<String>,
+    max_attachment_bytes: usize,
+    allow_images: bool,
 }
 
 impl FileMentionModal {
-    pub fn new(workspace: PathBuf) -> Self {
+    pub fn new(workspace: PathBuf, max_attachment_bytes: usize, allow_images: bool) -> Self {
         let files = discover_files(&workspace, 5_000);
-        Self { workspace, files, query: String::new(), cursor: 0, error: None }
+        Self { workspace, files, query: String::new(), cursor: 0, error: None, max_attachment_bytes, allow_images }
     }
 
     fn matches(&self) -> Vec<&str> {
@@ -107,7 +109,12 @@ impl Modal for FileMentionModal {
                     self.error = Some("Choose a file".into());
                     return Consumed::Yes { dismiss: false };
                 };
-                match state.composer.attach_file(&self.workspace, Path::new(&path)) {
+                match state.composer.attach_file(
+                    &self.workspace,
+                    Path::new(&path),
+                    self.max_attachment_bytes,
+                    self.allow_images,
+                ) {
                     Ok(()) => Consumed::Yes { dismiss: true },
                     Err(error) => {
                         self.error = Some(error);
