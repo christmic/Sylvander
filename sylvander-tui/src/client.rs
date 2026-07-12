@@ -25,6 +25,8 @@ pub enum ClientMsg {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
     Approve {
         call_id: String,
@@ -38,6 +40,19 @@ pub enum ClientMsg {
         session_id: String,
     },
     ListSessions,
+    LoadSession {
+        session_id: String,
+    },
+    RenameSession {
+        session_id: String,
+        label: String,
+    },
+    ArchiveSession {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
     Ping,
 }
 
@@ -118,6 +133,15 @@ pub enum ServerMsg {
     SessionsList {
         sessions: Vec<SessionInfoMsg>,
     },
+    SessionHistory {
+        session: SessionInfoMsg,
+        messages: Vec<HistoryMessageMsg>,
+    },
+    SessionUpdated {
+        session_id: String,
+        label: Option<String>,
+        archived: bool,
+    },
     Pong,
 }
 
@@ -135,6 +159,12 @@ pub struct SessionInfoMsg {
     pub label: String,
     pub workspace: String,
     pub last_seen_secs: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HistoryMessageMsg {
+    pub role: String,
+    pub text: String,
 }
 
 impl From<ToolInfoMsg> for ToolInfo {
@@ -333,6 +363,36 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                 })
                 .collect(),
         },
+        ServerMsg::SessionHistory { session, messages } => {
+            DomainEvent::SessionHistoryLoaded {
+                session: crate::model::SessionSummary {
+                    id: session.id,
+                    label: session.label,
+                    workspace: session.workspace,
+                    last_seen_secs: session.last_seen_secs,
+                },
+                messages: messages
+                    .into_iter()
+                    .map(|message| crate::model::HistoryEntry {
+                        role: match message.role.as_str() {
+                            "user" => crate::model::HistoryRole::User,
+                            "assistant" => crate::model::HistoryRole::Assistant,
+                            _ => crate::model::HistoryRole::Tool,
+                        },
+                        text: message.text,
+                    })
+                    .collect(),
+            }
+        }
+        ServerMsg::SessionUpdated {
+            session_id,
+            label,
+            archived,
+        } => DomainEvent::SessionUpdated {
+            session_id,
+            label,
+            archived,
+        },
         ServerMsg::IterationEnd {
             iteration,
             input_tokens,
@@ -400,6 +460,35 @@ mod tests {
             event,
             Some(DomainEvent::TurnInterrupted { reason })
                 if reason == "interrupted by user"
+        ));
+    }
+
+    #[test]
+    fn persisted_history_maps_to_protocol_neutral_roles() {
+        let event = parse_server_msg(ServerMsg::SessionHistory {
+            session: SessionInfoMsg {
+                id: "s1".into(),
+                label: "Auth work".into(),
+                workspace: "/workspace".into(),
+                last_seen_secs: 3,
+            },
+            messages: vec![
+                HistoryMessageMsg {
+                    role: "user".into(),
+                    text: "hello".into(),
+                },
+                HistoryMessageMsg {
+                    role: "assistant".into(),
+                    text: "hi".into(),
+                },
+            ],
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::SessionHistoryLoaded { session, messages })
+                if session.id == "s1"
+                    && messages[0].role == crate::model::HistoryRole::User
+                    && messages[1].role == crate::model::HistoryRole::Assistant
         ));
     }
 }

@@ -107,3 +107,16 @@ pub struct SessionSummary {
     pub workspace: String,
     pub last_seen_secs: u64,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRole {
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub role: HistoryRole,
+    pub text: String,
+}

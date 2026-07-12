@@ -8,6 +8,9 @@ use crate::theme::ThemeName;
 pub enum CommandId {
     New,
     Sessions,
+    Resume,
+    Rename,
+    Fork,
     Clear,
     Help,
     Theme,
@@ -40,6 +43,27 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/sessions",
         description: "Browse and switch sessions",
         hint: "ctrl+p",
+    },
+    CommandSpec {
+        id: CommandId::Resume,
+        name: "resume",
+        usage: "/resume",
+        description: "Resume a persisted session",
+        hint: "session browser",
+    },
+    CommandSpec {
+        id: CommandId::Rename,
+        name: "rename",
+        usage: "/rename <name>",
+        description: "Rename the current persisted session",
+        hint: "server-backed",
+    },
+    CommandSpec {
+        id: CommandId::Fork,
+        name: "fork",
+        usage: "/fork",
+        description: "Fork the current persisted session",
+        hint: "copies history",
     },
     CommandSpec {
         id: CommandId::Clear,
@@ -139,6 +163,43 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state
                 .modals
                 .push(Box::new(SessionsOverlay::new(state.sessions.clone())));
+        }
+        CommandId::Resume => {
+            require_no_args(&invocation)?;
+            state
+                .pending_actions
+                .push(crate::event::Action::RequestSessions);
+            state
+                .modals
+                .push(Box::new(SessionsOverlay::new(state.sessions.clone())));
+        }
+        CommandId::Rename => {
+            if invocation.args.is_empty() {
+                return Err(format!("Usage: {}", invocation.spec.usage));
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no persisted session to rename".to_string())?;
+            let label = invocation.args.join(" ");
+            state
+                .pending_actions
+                .push(crate::event::Action::RenameSession { session_id, label });
+            state.status = "Renaming session…".into();
+        }
+        CommandId::Fork => {
+            require_no_args(&invocation)?;
+            if state.turn_active {
+                return Err("Interrupt active work before forking".into());
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no persisted session to fork".to_string())?;
+            state.pending_actions.push(crate::event::Action::ForkSession {
+                session_id,
+            });
+            state.status = "Forking session…".into();
         }
         CommandId::Clear => {
             require_no_args(&invocation)?;
