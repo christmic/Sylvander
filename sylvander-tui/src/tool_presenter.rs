@@ -34,15 +34,16 @@ pub fn detail_rows(
         if !rows.is_empty() {
             rows.push(DetailRow::new("", DetailKind::Normal));
         }
-        rows.push(DetailRow::new(if is_error {
-            "error"
-        } else {
-            "result"
-        }, if is_error { DetailKind::Error } else { DetailKind::Label }));
+        rows.push(DetailRow::new(
+            if is_error { "error" } else { "result" },
+            if is_error { DetailKind::Error } else { DetailKind::Label },
+        ));
         if is_shell(tool_name) {
             rows.extend(shell_output_rows(output, width));
         } else if is_search(tool_name) {
             rows.extend(search_output_rows(output, width));
+        } else if is_mcp_or_resource(tool_name) {
+            rows.extend(resource_output_rows(output, width));
         } else {
             rows.extend(output_rows(output, width, DEFAULT_DETAIL_LIMIT));
         }
@@ -51,6 +52,13 @@ pub fn detail_rows(
 }
 
 pub fn compact_target(tool_name: &str, input: &Value) -> String {
+    if let Some((server, tool)) = mcp_identity(tool_name) {
+        let target = string_field(input, &["uri", "url", "query", "resource"]);
+        return target.map_or_else(
+            || format!("MCP {server} · {}", tool.replace('_', " ")),
+            |target| format!("MCP {server} · {} · {}", tool.replace('_', " "), one_line(target)),
+        );
+    }
     match normalized_name(tool_name).as_str() {
         "bash" | "shell" | "exec" => string_field(input, &["command", "cmd"])
             .map(|command| format!("$ {}", one_line(command)))
@@ -72,15 +80,21 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
         "write_memory" | "memory_write" => string_field(input, &["key", "title"])
             .map(|key| format!("Remember {key}"))
             .unwrap_or_else(|| "Write memory".into()),
-        name if tool_name.starts_with("mcp__") => {
-            format!("MCP {}", name.replace('_', " "))
-        }
+        "web_search" | "search_web" => string_field(input, &["query"])
+            .map(|query| format!("Search web for {query:?}"))
+            .unwrap_or_else(|| "Search web".into()),
+        "web_fetch" | "fetch_url" | "read_resource" => string_field(input, &["url", "uri"])
+            .map(|target| format!("Fetch {target}"))
+            .unwrap_or_else(|| tool_name.replace('_', " ")),
         _ => generic_target(tool_name, input),
     }
 }
 
 fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
     let width = width.max(12);
+    if let Some((server, tool)) = mcp_identity(tool_name) {
+        return resource_input_rows(Some(server), tool, input, width);
+    }
     match normalized_name(tool_name).as_str() {
         "bash" | "shell" | "exec" => {
             let mut rows = Vec::new();
@@ -114,6 +128,8 @@ fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
             if rows.is_empty() { generic_input_rows(input, width) } else { rows }
         }
         "search" | "grep" | "rg" => vec![DetailRow::new(compact_target(tool_name, input), DetailKind::Normal)],
+        "web_search" | "search_web" | "web_fetch" | "fetch_url" | "read_resource"
+        | "list_resources" => resource_input_rows(None, tool_name, input, width),
         _ => generic_input_rows(input, width),
     }
 }
@@ -261,12 +277,99 @@ fn search_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
     rows
 }
 
+fn resource_input_rows(
+    server: Option<&str>,
+    tool: &str,
+    input: &Value,
+    width: usize,
+) -> Vec<DetailRow> {
+    let mut rows = Vec::new();
+    if let Some(server) = server {
+        rows.push(DetailRow::new(format!("server  {server}"), DetailKind::Label));
+    }
+    rows.push(DetailRow::new(
+        format!("tool  {}", tool.replace('_', " ")),
+        DetailKind::Meta,
+    ));
+    for (label, names) in [
+        ("resource", &["uri", "resource"][..]),
+        ("url", &["url"][..]),
+        ("query", &["query"][..]),
+        ("cursor", &["cursor"][..]),
+    ] {
+        if let Some(value) = string_field(input, names) {
+            rows.extend(
+                wrap_prefixed(&format!("{label}  "), value, width)
+                    .into_iter()
+                    .map(|text| DetailRow::new(text, DetailKind::Normal)),
+            );
+        }
+    }
+    let known = ["uri", "resource", "url", "query", "cursor"];
+    if input.as_object().is_some_and(|map| map.keys().any(|key| !known.contains(&key.as_str()))) {
+        rows.extend(generic_input_rows(input, width));
+    }
+    rows
+}
+
+fn resource_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
+    let clean = safe_output(output);
+    let Ok(value) = serde_json::from_str::<Value>(&clean) else {
+        return output_rows(&clean, width, DEFAULT_DETAIL_LIMIT);
+    };
+    let mut rows = Vec::new();
+    collect_resource_rows(&value, width, &mut rows);
+    if rows.is_empty() {
+        output_rows(&clean, width, DEFAULT_DETAIL_LIMIT)
+    } else {
+        rows.truncate(DEFAULT_DETAIL_LIMIT * 2);
+        rows
+    }
+}
+
+fn collect_resource_rows(value: &Value, width: usize, rows: &mut Vec<DetailRow>) {
+    match value {
+        Value::Array(values) => {
+            for value in values { collect_resource_rows(value, width, rows); }
+        }
+        Value::Object(map) => {
+            if let Some(uri) = map.get("uri").and_then(Value::as_str) {
+                rows.push(DetailRow::new(format!("resource  {}", truncate(uri, width.saturating_sub(10))), DetailKind::Label));
+            }
+            if let Some(mime) = map.get("mimeType").or_else(|| map.get("mime_type")).and_then(Value::as_str) {
+                rows.push(DetailRow::new(format!("mime  {mime}"), DetailKind::Meta));
+            }
+            if let Some(text) = map.get("text").or_else(|| map.get("content")).and_then(Value::as_str) {
+                rows.extend(output_rows(text, width, 8));
+            }
+            for key in ["contents", "resources", "results"] {
+                if let Some(value) = map.get(key) { collect_resource_rows(value, width, rows); }
+            }
+        }
+        Value::String(text) => rows.extend(output_rows(text, width, 8)),
+        _ => {}
+    }
+}
+
 fn is_shell(name: &str) -> bool {
     matches!(normalized_name(name).as_str(), "bash" | "shell" | "exec")
 }
 
 fn is_search(name: &str) -> bool {
     matches!(normalized_name(name).as_str(), "search" | "grep" | "rg")
+}
+
+fn is_mcp_or_resource(name: &str) -> bool {
+    mcp_identity(name).is_some()
+        || matches!(
+            normalized_name(name).as_str(),
+            "web_search" | "search_web" | "web_fetch" | "fetch_url" | "read_resource" | "list_resources"
+        )
+}
+
+fn mcp_identity(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("mcp__")?;
+    rest.split_once("__")
 }
 
 fn language_for_path(path: &str) -> Option<&'static str> {
@@ -524,5 +627,30 @@ mod tests {
         assert!(rows.iter().any(|row| row.text == "src/a.rs · 2 matches"));
         assert!(rows.iter().all(|row| !row.text.contains("\u{1b}")));
         assert!(rows.iter().all(|row| !row.text.contains("secret")));
+    }
+
+    #[test]
+    fn mcp_resource_calls_keep_server_resource_and_content_identity() {
+        let input = serde_json::json!({"uri":"file:///docs/design.md"});
+        assert_eq!(
+            compact_target("mcp__filesystem__read_resource", &input),
+            "MCP filesystem · read resource · file:///docs/design.md"
+        );
+        let output = serde_json::json!({"contents":[{
+            "uri":"file:///docs/design.md",
+            "mimeType":"text/markdown",
+            "text":"# Design\nSafe content"
+        }]}).to_string();
+        let rows = detail_rows(
+            "mcp__filesystem__read_resource",
+            &input,
+            Some(&output),
+            false,
+            80,
+        );
+        assert!(rows.iter().any(|row| row.text == "server  filesystem"));
+        assert!(rows.iter().any(|row| row.text == "resource  file:///docs/design.md"));
+        assert!(rows.iter().any(|row| row.text == "mime  text/markdown"));
+        assert!(rows.iter().any(|row| row.text.contains("Safe content")));
     }
 }
