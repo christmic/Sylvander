@@ -105,7 +105,8 @@ impl Modal for CommandPalette {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let popup_area = centered_rect(55, 12, parent);
+        let desired_height = (self.filtered.len() as u16).saturating_add(4).clamp(8, 18);
+        let popup_area = centered_rect(55, desired_height, parent);
         frame.render_widget(Clear, popup_area);
         frame.render_widget(
             Block::default()
@@ -157,7 +158,15 @@ impl Modal for CommandPalette {
                 theme::text_muted().italic(),
             )));
         } else {
-            for (row_i, &cmd_idx) in self.filtered.iter().enumerate() {
+            let visible_rows = layout[2].height.max(1) as usize;
+            let start = self.cursor.saturating_add(1).saturating_sub(visible_rows);
+            for (row_i, &cmd_idx) in self
+                .filtered
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible_rows)
+            {
                 let cmd = &COMMANDS[cmd_idx];
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };

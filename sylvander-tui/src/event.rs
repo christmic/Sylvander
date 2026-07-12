@@ -69,6 +69,10 @@ pub enum DomainEvent {
     AgentError {
         message: String,
     },
+    /// The server confirmed that the active turn ended by user interrupt.
+    TurnInterrupted {
+        reason: String,
+    },
 
     /// Server wants permission to run one or more tools.
     ApprovalRequested {
@@ -140,6 +144,10 @@ pub enum Action {
     SendAnswer {
         call_id: String,
         answer: String,
+    },
+    /// Interrupt the active turn for one session without stopping the Agent.
+    InterruptTurn {
+        session_id: String,
     },
     RequestSessions,
     /// Send a feedback message to the agent (e.g. after rejecting a tool

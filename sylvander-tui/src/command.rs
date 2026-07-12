@@ -12,6 +12,7 @@ pub enum CommandId {
     Help,
     Theme,
     Tools,
+    Queue,
     Status,
     Quit,
 }
@@ -69,6 +70,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "ctrl+o",
     },
     CommandSpec {
+        id: CommandId::Queue,
+        name: "queue",
+        usage: "/queue [drop <n>|edit <n> <text>|clear]",
+        description: "Inspect or edit prompts waiting behind active work",
+        hint: "working turns",
+    },
+    CommandSpec {
         id: CommandId::Status,
         name: "status",
         usage: "/status",
@@ -114,6 +122,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.iteration = 0;
             state.input_tokens = 0;
             state.output_tokens = 0;
+            state.turn_active = false;
+            state.interrupt_requested = false;
+            state.queued_prompts.clear();
             state.chat_scroll = 0;
             state.unread_events = 0;
             state.welcomed = false;
@@ -168,6 +179,56 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 "Collapsed tool details".into()
             };
         }
+        CommandId::Queue => match invocation.args.as_slice() {
+            [] => {
+                if state.queued_prompts.is_empty() {
+                    state
+                        .messages
+                        .push(ChatMessage::Info("No queued prompts".into()));
+                } else {
+                    let summary = state
+                        .queued_prompts
+                        .iter()
+                        .enumerate()
+                        .map(|(index, prompt)| {
+                            format!("{}. {}", index + 1, compact_prompt(prompt))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    state
+                        .messages
+                        .push(ChatMessage::Info(format!("Queued prompts:\n{summary}")));
+                }
+            }
+            ["clear"] => {
+                state.queued_prompts.clear();
+                state
+                    .messages
+                    .retain(|message| !matches!(message, ChatMessage::QueuedUser(_)));
+                state.status = "Cleared queued prompts".into();
+            }
+            ["drop", index] => {
+                let index = queue_index(index, state.queued_prompts.len(), invocation.spec.usage)?;
+                let removed = state.queued_prompts.remove(index).expect("validated index");
+                remove_queued_message(&mut state.messages, &removed);
+                state.status = format!("Removed queued prompt {}", index + 1);
+            }
+            ["edit", index, replacement @ ..] if !replacement.is_empty() => {
+                let index = queue_index(index, state.queued_prompts.len(), invocation.spec.usage)?;
+                let replacement = replacement.join(" ");
+                let previous = std::mem::replace(
+                    state.queued_prompts.get_mut(index).expect("validated index"),
+                    replacement.clone(),
+                );
+                if let Some(message) = state.messages.iter_mut().find(
+                    |message| matches!(message, ChatMessage::QueuedUser(text) if text == &previous),
+                ) {
+                    *message = ChatMessage::QueuedUser(replacement);
+                }
+                state.status = format!("Edited queued prompt {}", index + 1);
+            }
+            _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+        },
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -188,6 +249,35 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
     }
     state.dirty.mark();
     Ok(())
+}
+
+fn compact_prompt(prompt: &str) -> String {
+    let single_line = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if single_line.chars().count() <= 72 {
+        single_line
+    } else {
+        format!("{}…", single_line.chars().take(71).collect::<String>())
+    }
+}
+
+fn queue_index(raw: &str, len: usize, usage: &str) -> Result<usize, String> {
+    let one_based = raw
+        .parse::<usize>()
+        .map_err(|_| format!("Usage: {usage}"))?;
+    let index = one_based.saturating_sub(1);
+    if one_based == 0 || index >= len {
+        return Err(format!("Queue item {one_based} does not exist"));
+    }
+    Ok(index)
+}
+
+fn remove_queued_message(messages: &mut Vec<ChatMessage>, prompt: &str) {
+    if let Some(index) = messages
+        .iter()
+        .position(|message| matches!(message, ChatMessage::QueuedUser(text) if text == prompt))
+    {
+        messages.remove(index);
+    }
 }
 
 fn require_no_args(invocation: &Invocation<'_>) -> Result<(), String> {
@@ -234,5 +324,23 @@ mod tests {
         execute(parse("tools expand").unwrap(), &mut state).unwrap();
         assert!(state.tool_details_expanded);
         assert!(execute(parse("tools sideways").unwrap(), &mut state).is_err());
+    }
+
+    #[test]
+    fn queue_commands_edit_and_remove_waiting_prompts() {
+        let mut state = AppState::new();
+        state.queued_prompts.push_back("first".into());
+        state.messages.push(ChatMessage::QueuedUser("first".into()));
+
+        execute(parse("queue edit 1 updated prompt").unwrap(), &mut state).unwrap();
+        assert_eq!(state.queued_prompts[0], "updated prompt");
+        assert!(matches!(
+            state.messages[0],
+            ChatMessage::QueuedUser(ref text) if text == "updated prompt"
+        ));
+
+        execute(parse("queue drop 1").unwrap(), &mut state).unwrap();
+        assert!(state.queued_prompts.is_empty());
+        assert!(state.messages.is_empty());
     }
 }
