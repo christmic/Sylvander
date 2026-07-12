@@ -39,6 +39,10 @@ pub enum ClientMsg {
     Interrupt {
         session_id: String,
     },
+    ResolvePlan {
+        plan_id: String,
+        decision: sylvander_protocol::PlanDecision,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -129,6 +133,12 @@ pub enum ServerMsg {
     TurnInterrupted {
         session_id: String,
         reason: String,
+    },
+    PlanProposed {
+        session_id: String,
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
     },
     SessionsList {
         sessions: Vec<SessionInfoMsg>,
@@ -331,6 +341,9 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::Done { text, .. } => DomainEvent::AgentDone { final_text: text },
         ServerMsg::Error { message, .. } => DomainEvent::AgentError { message },
         ServerMsg::TurnInterrupted { reason, .. } => DomainEvent::TurnInterrupted { reason },
+        ServerMsg::PlanProposed { plan_id, steps, current, .. } => {
+            DomainEvent::PlanReceived { plan_id, steps, current }
+        }
         ServerMsg::ApprovalRequest {
             batch_id, tools, ..
         } => DomainEvent::ApprovalRequested {
@@ -461,6 +474,29 @@ mod tests {
             Some(DomainEvent::TurnInterrupted { reason })
                 if reason == "interrupted by user"
         ));
+    }
+
+    #[test]
+    fn plan_wire_event_maps_to_review_and_resolution_is_typed() {
+        let event = parse_server_msg(ServerMsg::PlanProposed {
+            session_id: "s1".into(),
+            plan_id: "plan-1".into(),
+            steps: vec!["inspect".into(), "verify".into()],
+            current: 1,
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::PlanReceived { plan_id, current: 1, .. })
+                if plan_id == "plan-1"
+        ));
+
+        let json = serde_json::to_value(ClientMsg::ResolvePlan {
+            plan_id: "plan-1".into(),
+            decision: sylvander_protocol::PlanDecision::Approved,
+        })
+        .expect("serialize");
+        assert_eq!(json["type"], "resolve_plan");
+        assert_eq!(json["decision"]["decision"], "approved");
     }
 
     #[test]

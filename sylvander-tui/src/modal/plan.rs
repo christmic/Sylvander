@@ -6,10 +6,8 @@
 //! - **Edit**: user types replacement text for the focused step. Enter
 //!   commits the edit and returns to Navigate; Esc cancels the edit.
 //!
-//! Approve emits `Action::SendFeedback` carrying the (possibly edited)
-//! plan steps, so the agent receives the revised plan as a follow-up
-//! user message. This avoids touching the wire protocol just for plan
-//! signaling (the agent loop is responsible for plan semantics).
+//! Every exit resolves the typed plan gate so the Agent never remains
+//! blocked behind a dismissed modal.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -31,15 +29,16 @@ enum PlanMode {
 }
 
 pub struct PlanReviewModal {
-    _plan_id: String,
+    plan_id: String,
     steps: Vec<String>,
+    original_steps: Vec<String>,
     cursor: usize,
     /// Step currently being edited (only when `mode == Edit`).
     edit_step: usize,
     /// Edit buffer for the focused step.
     edit_buffer: String,
     mode: PlanMode,
-    session_id: Option<String>,
+    _session_id: Option<String>,
 }
 
 impl PlanReviewModal {
@@ -49,14 +48,16 @@ impl PlanReviewModal {
         current: usize,
         session_id: Option<String>,
     ) -> Self {
+        let cursor = current.min(steps.len().saturating_sub(1));
         Self {
-            _plan_id: plan_id,
+            plan_id,
+            original_steps: steps.clone(),
             steps,
-            cursor: current.min(0),
+            cursor,
             edit_step: 0,
             edit_buffer: String::new(),
             mode: PlanMode::Navigate,
-            session_id,
+            _session_id: session_id,
         }
     }
 
@@ -186,10 +187,22 @@ impl PlanReviewModal {
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
             KeyCode::Esc => {
+                state.pending_actions.push(Action::ResolvePlan {
+                    plan_id: self.plan_id.clone(),
+                    decision: sylvander_protocol::PlanDecision::Rejected {
+                        reason: "cancelled by user".into(),
+                    },
+                });
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.pending_actions.push(Action::ResolvePlan {
+                    plan_id: self.plan_id.clone(),
+                    decision: sylvander_protocol::PlanDecision::Rejected {
+                        reason: "cancelled by user".into(),
+                    },
+                });
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
@@ -208,12 +221,16 @@ impl PlanReviewModal {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
-                // Approve: send the (possibly edited) plan back as feedback.
-                let body = self.steps.join("\n  - ");
-                let text = format!("[plan-approve]\nPlan approved:\n  - {body}");
-                state.pending_actions.push(Action::SendFeedback {
-                    text,
-                    session_id: self.session_id.clone(),
+                let decision = if self.steps == self.original_steps {
+                    sylvander_protocol::PlanDecision::Approved
+                } else {
+                    sylvander_protocol::PlanDecision::Revised {
+                        steps: self.steps.clone(),
+                    }
+                };
+                state.pending_actions.push(Action::ResolvePlan {
+                    plan_id: self.plan_id.clone(),
+                    decision,
                 });
                 state.mode = AppMode::Normal;
                 state.dirty.mark();
@@ -326,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_sends_feedback_with_bracketed_prefix() {
+    fn enter_approves_through_typed_action() {
         let mut state = AppState::new();
         let mut m = build_modal(3);
         // Cursor on step 0 (default). Approve.
@@ -335,7 +352,39 @@ mod tests {
         assert_eq!(state.pending_actions.len(), 1);
         assert!(matches!(
             state.pending_actions[0],
-            Action::SendFeedback { ref text, .. } if text.starts_with("[plan-approve]")
+            Action::ResolvePlan {
+                decision: sylvander_protocol::PlanDecision::Approved,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn edited_plan_is_returned_as_revision() {
+        let mut state = AppState::new();
+        let mut m = build_modal(2);
+        m.steps[0] = "safer first step".into();
+        let _ = m.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        assert!(matches!(
+            &state.pending_actions[0],
+            Action::ResolvePlan {
+                decision: sylvander_protocol::PlanDecision::Revised { steps },
+                ..
+            } if steps[0] == "safer first step"
+        ));
+    }
+
+    #[test]
+    fn escape_rejects_instead_of_abandoning_waiter() {
+        let mut state = AppState::new();
+        let mut m = build_modal(2);
+        let _ = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+        assert!(matches!(
+            &state.pending_actions[0],
+            Action::ResolvePlan {
+                decision: sylvander_protocol::PlanDecision::Rejected { .. },
+                ..
+            }
         ));
     }
 
@@ -396,6 +445,6 @@ mod tests {
         let consumed = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         assert_eq!(state.mode, AppMode::Normal);
-        assert!(state.pending_actions.is_empty());
+        assert_eq!(state.pending_actions.len(), 1);
     }
 }

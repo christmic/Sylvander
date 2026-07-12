@@ -68,6 +68,10 @@ enum ClientMsg {
     Interrupt {
         session_id: String,
     },
+    ResolvePlan {
+        plan_id: String,
+        decision: sylvander_protocol::PlanDecision,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -145,6 +149,12 @@ enum ServerMsg {
     TurnInterrupted {
         session_id: String,
         reason: String,
+    },
+    PlanProposed {
+        session_id: String,
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
     },
     SessionsList {
         sessions: Vec<SessionInfo>,
@@ -443,6 +453,14 @@ async fn handle_client_msg(
                                     reason,
                                 })
                             }
+                            StreamEvent::PlanProposed { plan_id, steps, current } => {
+                                Some(ServerMsg::PlanProposed {
+                                    session_id: s.0.clone(),
+                                    plan_id,
+                                    steps,
+                                    current,
+                                })
+                            }
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -497,6 +515,17 @@ async fn handle_client_msg(
                     session_id,
                 ))
                 .await;
+        }
+        ClientMsg::ResolvePlan { plan_id, decision } => {
+            let _ = ctx.bus.publish(BusMessage {
+                session_id: SessionId::new(""),
+                sender: sylvander_agent::bus::Sender::System,
+                recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
+                kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
+                payload: String::new(),
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            }).await;
         }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
@@ -723,7 +752,7 @@ fn history_text(value: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
     use sylvander_agent::session_store::{
         MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
     };
@@ -857,5 +886,44 @@ mod tests {
 
         task.abort();
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn typed_plan_resolution_is_forwarded_to_the_agent_bus() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let agent_id = AgentId::new("agent-1");
+        let mut inbox = bus
+            .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
+            .await
+            .expect("subscribe");
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(
+                SqliteSessionStore::open_in_memory().await.expect("store"),
+            ),
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::ResolvePlan {
+                plan_id: "plan-1".into(),
+                decision: sylvander_protocol::PlanDecision::Revised {
+                    steps: vec!["inspect".into(), "verify".into()],
+                },
+            },
+            &context,
+            &agent_id,
+            &tx,
+        )
+        .await;
+
+        let message = inbox.recv().await.expect("agent message");
+        assert!(matches!(
+            message.kind,
+            MessageKind::System(SystemMessage::ResolvePlan {
+                plan_id,
+                decision: sylvander_protocol::PlanDecision::Revised { steps },
+            }) if plan_id == "plan-1" && steps == ["inspect", "verify"]
+        ));
     }
 }

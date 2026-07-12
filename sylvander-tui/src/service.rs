@@ -85,6 +85,9 @@ impl AgentService {
             Action::SendApprove { call_id, approved } => ClientMsg::Approve { call_id, approved },
             Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
             Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },
+            Action::ResolvePlan { plan_id, decision } => {
+                ClientMsg::ResolvePlan { plan_id, decision }
+            }
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
             Action::RenameSession { session_id, label } => {

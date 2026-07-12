@@ -24,7 +24,7 @@ completed backend feature.
 - [x] Interrupt is scoped by session and cannot affect another session/client.
 - [x] Interrupt releases approval/question waits and settles pending tool rows.
 - [x] The server emits an explicit interrupted terminal event.
-- [ ] Input submitted while working has explicit `steer`, `queue`, or
+- [x] Input submitted while working has explicit `steer`, `queue`, or
       `interrupt-and-send` semantics.
 - [x] Queued prompts are visible, editable/removable, and processed in order.
 - [x] Status hints only advertise implemented actions.
@@ -42,8 +42,8 @@ completed backend feature.
 ### Plan and background work
 
 - [ ] Plan proposal/update/decision are typed public protocol operations.
-- [ ] Plan approve, revise, reject, and cancel unblock the Agent explicitly.
-- [ ] Plan current-step state is preserved and rendered correctly.
+- [x] Plan approve, revise, reject, and cancel unblock the Agent explicitly.
+- [x] Plan current-step state is preserved and rendered correctly.
 - [ ] Background task start/progress/complete/fail/cancel events are public.
 - [ ] A user can inspect and cancel one task without stopping unrelated work.
 - [ ] No plan/task UI is marked complete until a real Agent path activates it.
@@ -91,7 +91,7 @@ completed backend feature.
 
 ### Core commands
 
-- [ ] Session: `/resume`, `/rename`, `/fork`.
+- [x] Session: `/resume`, `/rename`, `/fork`.
 - [ ] Work: `/diff`, `/review`, `/copy`, `/mention`.
 - [ ] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.

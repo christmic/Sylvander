@@ -8,8 +8,8 @@ expression: "render_buf(&s, 90, 24)"
     ● 2. Define the JWT verification interface                                            
     ○ 3. Imple┌ Plan review (5 steps) ──────────────────────────────────────┐             
     ○ 4. Add u│Review the plan — enter approves, e edits the focused step, a│             
-    ○ 5. Run w│● 1. Inspect the current authentication boundary             │             
-              │  2. Define the JWT verification interface                   │             
+    ○ 5. Run w│  1. Inspect the current authentication boundary             │             
+              │● 2. Define the JWT verification interface                   │             
               │  3. Implement verifier and middleware                       │             
               │  4. Add unit and integration tests                          │             
               │  5. Run workspace verification                              │             
