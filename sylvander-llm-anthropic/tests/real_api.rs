@@ -53,7 +53,10 @@ async fn real_api_simple_create() {
         .await
         .expect("create should succeed against real API");
 
-    assert_eq!(msg.role, sylvander_llm_anthropic::api::types::MessageRole::Assistant);
+    assert_eq!(
+        msg.role,
+        sylvander_llm_anthropic::api::types::MessageRole::Assistant
+    );
     assert_eq!(msg.stop_reason, Some(StopReason::EndTurn));
     assert!(msg.usage.input_tokens > 0);
     assert!(msg.usage.output_tokens > 0);

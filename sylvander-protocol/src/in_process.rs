@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::bus_trait::{BusError, MessageBus, SubscriptionFilter};
 use crate::types::BusMessage;
@@ -62,28 +62,78 @@ mod t {
     use super::*;
     use crate::bus_trait::SubscriptionFilter;
     use crate::types::{AgentId, BusMessage, Recipient, SessionId};
-    fn tm(s: &str) -> BusMessage { BusMessage::user_chat(SessionId::new(s), "u1", "hi") }
+    fn tm(s: &str) -> BusMessage {
+        BusMessage::user_chat(SessionId::new(s), "u1", "hi")
+    }
 
-    #[tokio::test] async fn pubsub() {
-        let b = InProcessMessageBus::new(); let mut r = b.subscribe(SubscriptionFilter::all()).await.unwrap();
-        b.publish(tm("s1")).await.unwrap(); assert!(r.try_recv().is_ok());
+    #[tokio::test]
+    async fn pubsub() {
+        let b = InProcessMessageBus::new();
+        let mut r = b.subscribe(SubscriptionFilter::all()).await.unwrap();
+        b.publish(tm("s1")).await.unwrap();
+        assert!(r.try_recv().is_ok());
     }
-    #[tokio::test] async fn filter_session() {
-        let b = InProcessMessageBus::new(); let mut r = b.subscribe(SubscriptionFilter{session_ids:Some(vec![SessionId::new("s1")]),recipients:None,kinds:None}).await.unwrap();
-        b.publish(tm("s1")).await.unwrap(); assert!(r.try_recv().is_ok());
-        b.publish(tm("s2")).await.unwrap(); assert!(r.try_recv().is_err());
+    #[tokio::test]
+    async fn filter_session() {
+        let b = InProcessMessageBus::new();
+        let mut r = b
+            .subscribe(SubscriptionFilter {
+                session_ids: Some(vec![SessionId::new("s1")]),
+                recipients: None,
+                kinds: None,
+            })
+            .await
+            .unwrap();
+        b.publish(tm("s1")).await.unwrap();
+        assert!(r.try_recv().is_ok());
+        b.publish(tm("s2")).await.unwrap();
+        assert!(r.try_recv().is_err());
     }
-    #[tokio::test] async fn filter_recipient() {
-        let b = InProcessMessageBus::new(); let a = AgentId::new("a");
-        let mut r = b.subscribe(SubscriptionFilter::for_agent(a.clone())).await.unwrap();
-        b.publish(BusMessage{recipient:Recipient::Agent(a.clone()),..tm("s1")}).await.unwrap(); assert!(r.try_recv().is_ok());
-        b.publish(BusMessage{recipient:Recipient::Agent(AgentId::new("b")),..tm("s1")}).await.unwrap(); assert!(r.try_recv().is_err());
-        b.publish(BusMessage{recipient:Recipient::Broadcast,..tm("s1")}).await.unwrap(); assert!(r.try_recv().is_ok());
+    #[tokio::test]
+    async fn filter_recipient() {
+        let b = InProcessMessageBus::new();
+        let a = AgentId::new("a");
+        let mut r = b
+            .subscribe(SubscriptionFilter::for_agent(a.clone()))
+            .await
+            .unwrap();
+        b.publish(BusMessage {
+            recipient: Recipient::Agent(a.clone()),
+            ..tm("s1")
+        })
+        .await
+        .unwrap();
+        assert!(r.try_recv().is_ok());
+        b.publish(BusMessage {
+            recipient: Recipient::Agent(AgentId::new("b")),
+            ..tm("s1")
+        })
+        .await
+        .unwrap();
+        assert!(r.try_recv().is_err());
+        b.publish(BusMessage {
+            recipient: Recipient::Broadcast,
+            ..tm("s1")
+        })
+        .await
+        .unwrap();
+        assert!(r.try_recv().is_ok());
     }
-    #[test] fn filter_agent_matches() {
-        let a = AgentId::new("a"); let f = SubscriptionFilter::for_agent(a.clone());
-        assert!(f.matches(&BusMessage{recipient:Recipient::Agent(a.clone()),..tm("s1")}));
-        assert!(f.matches(&BusMessage{recipient:Recipient::Broadcast,..tm("s1")}));
-        assert!(!f.matches(&BusMessage{recipient:Recipient::Agent(AgentId::new("b")),..tm("s1")}));
+    #[test]
+    fn filter_agent_matches() {
+        let a = AgentId::new("a");
+        let f = SubscriptionFilter::for_agent(a.clone());
+        assert!(f.matches(&BusMessage {
+            recipient: Recipient::Agent(a.clone()),
+            ..tm("s1")
+        }));
+        assert!(f.matches(&BusMessage {
+            recipient: Recipient::Broadcast,
+            ..tm("s1")
+        }));
+        assert!(!f.matches(&BusMessage {
+            recipient: Recipient::Agent(AgentId::new("b")),
+            ..tm("s1")
+        }));
     }
 }

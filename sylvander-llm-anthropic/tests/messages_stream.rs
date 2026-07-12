@@ -6,7 +6,9 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
 // ModelId removed; pass model string directly
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
-use sylvander_llm_anthropic::api::types::{ContentDelta, ContentBlock, MessageParam, RawStreamEvent, StopReason};
+use sylvander_llm_anthropic::api::types::{
+    ContentBlock, ContentDelta, MessageParam, RawStreamEvent, StopReason,
+};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -62,10 +64,7 @@ async fn stream_full_assembly() {
         .and(path("/v1/messages"))
         .and(header("authorization", "Bearer test-key"))
         .and(header("accept", "*/*"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(SAMPLE_STREAM, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(SAMPLE_STREAM, "text/event-stream"))
         .mount(&server)
         .await;
 
@@ -134,10 +133,7 @@ data: {\"type\":\"message_stop\"}
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(stream_body, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(stream_body, "text/event-stream"))
         .mount(&server)
         .await;
 
@@ -243,10 +239,7 @@ data: {\"type\":\"message_stop\"}
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(stream_body, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(stream_body, "text/event-stream"))
         .mount(&server)
         .await;
 
@@ -263,8 +256,7 @@ data: {\"type\":\"message_stop\"}
         if let sylvander_llm_anthropic::api::types::RawStreamEvent::ContentBlockDelta {
             delta:
                 sylvander_llm_anthropic::api::types::ContentDelta::CitationsDelta {
-                    citation:
-                        sylvander_llm_anthropic::api::types::TextCitation::CharLocation(c),
+                    citation: sylvander_llm_anthropic::api::types::TextCitation::CharLocation(c),
                 },
             ..
         } = &event

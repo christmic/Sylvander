@@ -65,7 +65,8 @@ async fn batches_create_success() {
         .and(path("/v1/messages/batches"))
         .and(header("authorization", "Bearer test-key"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(sample_batch("msgbatch_001", ProcessingStatus::InProgress)),
+            ResponseTemplate::new(200)
+                .set_body_json(sample_batch("msgbatch_001", ProcessingStatus::InProgress)),
         )
         .mount(&server)
         .await;
@@ -88,7 +89,8 @@ async fn batches_retrieve_success() {
     Mock::given(method("GET"))
         .and(path("/v1/messages/batches/msgbatch_001"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(sample_batch("msgbatch_001", ProcessingStatus::InProgress)),
+            ResponseTemplate::new(200)
+                .set_body_json(sample_batch("msgbatch_001", ProcessingStatus::InProgress)),
         )
         .mount(&server)
         .await;
@@ -179,7 +181,8 @@ async fn batches_cancel_success() {
     Mock::given(method("POST"))
         .and(path("/v1/messages/batches/msgbatch_001/cancel"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(sample_batch("msgbatch_001", ProcessingStatus::Canceling)),
+            ResponseTemplate::new(200)
+                .set_body_json(sample_batch("msgbatch_001", ProcessingStatus::Canceling)),
         )
         .mount(&server)
         .await;
@@ -209,7 +212,11 @@ async fn batches_create_400_api_error() {
         .await;
 
     let client = mock_client(&server);
-    let result = client.messages().batches().create(&sample_create_request()).await;
+    let result = client
+        .messages()
+        .batches()
+        .create(&sample_create_request())
+        .await;
     match result {
         Err(AnthropicError::Api {
             status,

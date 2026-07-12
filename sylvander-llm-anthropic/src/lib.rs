@@ -94,9 +94,9 @@ pub mod prelude {
         ContentBlock, ContentDelta, CreateMessageBatchRequest, Effort, ImageBlock, InputSchema,
         JsonOutputFormat, ListBatchesParams, Message, MessageBatch, MessageBatchIndividualResponse,
         MessageBatchKind, MessageBatchRequestCounts, MessageBatchResult, MessageBatchesPage,
-        MessageKind, MessageParam, MessageRole, MessageTokensCount, OutputConfig,
-        ProcessingStatus, RawStreamEvent, RichToolResultBlock, StopReason, SystemPrompt,
-        SystemTextBlock, TextBlock, TextCitation, ThinkingBlock, ThinkingConfig, Timestamp,
-        Tool, ToolChoice, ToolResultBlock, ToolUseBlock, Usage, UserContent, UserContentBlock,
+        MessageKind, MessageParam, MessageRole, MessageTokensCount, OutputConfig, ProcessingStatus,
+        RawStreamEvent, RichToolResultBlock, StopReason, SystemPrompt, SystemTextBlock, TextBlock,
+        TextCitation, ThinkingBlock, ThinkingConfig, Timestamp, Tool, ToolChoice, ToolResultBlock,
+        ToolUseBlock, Usage, UserContent, UserContentBlock,
     };
 }

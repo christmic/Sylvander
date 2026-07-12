@@ -47,7 +47,9 @@ async fn parse_10k_text_deltas() {
             "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{CHUNK_TEXT}{i} \"}}}}\n\n"
         ));
     }
-    body.push_str("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n");
+    body.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
     body.push_str("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":200000}}\n\n");
     body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
 
@@ -55,10 +57,7 @@ async fn parse_10k_text_deltas() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
         .mount(&server)
         .await;
 
@@ -80,9 +79,7 @@ async fn parse_10k_text_deltas() {
         }
     }
     let parse_elapsed = start.elapsed();
-    eprintln!(
-        "parsed {event_count} events ({delta_count} deltas) in {parse_elapsed:?}"
-    );
+    eprintln!("parsed {event_count} events ({delta_count} deltas) in {parse_elapsed:?}");
 
     // 1 message_start + 1 content_block_start + DELTAS deltas + 1 content_block_stop + 1 message_delta + 1 message_stop
     assert_eq!(event_count, DELTAS + 5);
@@ -91,7 +88,11 @@ async fn parse_10k_text_deltas() {
     let final_msg = stream.final_message().expect("final_message");
     assert_eq!(final_msg.stop_reason, Some(StopReason::EndTurn));
     let text = final_msg.text();
-    assert!(text.len() > 100_000, "expected > 100K chars, got {}", text.len());
+    assert!(
+        text.len() > 100_000,
+        "expected > 100K chars, got {}",
+        text.len()
+    );
 
     // Verify every chunk was assembled in order
     for i in 0..DELTAS {
@@ -127,7 +128,9 @@ async fn parse_large_single_text_block() {
             "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{chunk_text}\"}}}}\n\n"
         ));
     }
-    body.push_str("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n");
+    body.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
     body.push_str("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":100000}}\n\n");
     body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
 
@@ -135,10 +138,7 @@ async fn parse_large_single_text_block() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
         .mount(&server)
         .await;
 
@@ -172,10 +172,7 @@ async fn parse_events_split_across_tiny_chunks() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(stream_body, "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(stream_body, "text/event-stream"))
         .mount(&server)
         .await;
 

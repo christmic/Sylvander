@@ -5,7 +5,9 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
 // ModelId removed; pass model string directly
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
-use sylvander_llm_anthropic::api::types::{ContentBlock, InputSchema, MessageParam, StopReason, Tool, ToolChoice};
+use sylvander_llm_anthropic::api::types::{
+    ContentBlock, InputSchema, MessageParam, StopReason, Tool, ToolChoice,
+};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -107,10 +109,7 @@ async fn create_with_tools_serializes_correctly() {
     let tool = Tool::new(
         "get_weather",
         "Get current weather",
-        InputSchema::new_with_properties(
-            json!({"location": {"type": "string"}}),
-            &["location"],
-        ),
+        InputSchema::new_with_properties(json!({"location": {"type": "string"}}), &["location"]),
     );
     let req = CreateMessageRequest::builder()
         .model("claude-sonnet-5-20260601")
@@ -121,7 +120,11 @@ async fn create_with_tools_serializes_correctly() {
         .unwrap();
 
     let client = mock_client(&server);
-    let msg = client.messages().create(&req).await.expect("create should succeed");
+    let msg = client
+        .messages()
+        .create(&req)
+        .await
+        .expect("create should succeed");
 
     assert_eq!(msg.stop_reason, Some(StopReason::ToolUse));
     assert_eq!(msg.content.len(), 1);
@@ -161,7 +164,11 @@ async fn create_with_tool_choice_specific_tool() {
         .unwrap();
 
     let client = mock_client(&server);
-    let msg = client.messages().create(&req).await.expect("create should succeed");
+    let msg = client
+        .messages()
+        .create(&req)
+        .await
+        .expect("create should succeed");
     assert_eq!(msg.id, "msg_a");
 }
 
