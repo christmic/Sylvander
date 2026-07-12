@@ -165,7 +165,7 @@ impl Modal for CommandPalette {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Commands ")
-                .title_style(Style::default().fg(Color::Magenta)),
+                .title_style(theme::modal_title_coral()),
             popup_area,
         );
 
@@ -181,7 +181,7 @@ impl Modal for CommandPalette {
 
         // 1. Filter input
         let prompt = Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Magenta)),
+            Span::styled("/", theme::modal_title_coral()),
             Span::styled(&self.filter, Style::default()),
             Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
         ]);
@@ -203,28 +203,28 @@ impl Modal for CommandPalette {
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no commands match)",
-                Style::default().fg(Color::DarkGray).italic(),
+                theme::text_muted().italic(),
             )));
         } else {
             for (row_i, &cmd_idx) in self.filtered.iter().enumerate() {
                 let cmd = &COMMANDS[cmd_idx];
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };
-                let color = if is_cursor { Color::Cyan } else { Color::White };
+                let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::White };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
                         format!("{:<14}", cmd.cmd),
                         Style::default().fg(if is_cursor {
-                            Color::Cyan
+                            ratatui::style::Color::Cyan
                         } else {
-                            Color::Magenta
+                            ratatui::style::Color::Magenta
                         }),
                     ),
                     Span::styled(cmd.label, Style::default().fg(color)),
                     Span::styled(
                         format!("  ({})", cmd.hint),
-                        Style::default().fg(Color::DarkGray),
+                        theme::text_muted(),
                     ),
                 ]));
             }
@@ -301,6 +301,7 @@ fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
 }
 
 use ratatui::style::Modifier;
+use crate::theme;
 
 // ===========================================================================
 // Tests

@@ -6,8 +6,8 @@ expression: "render_buf(&s, 80, 22)"
 /Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
 ────────────────────────────────────────────────────────────────────────────────
 You: try `rm -rf /`                                                             
-● Run `rm`     00s                                                              
-│ ◐ $ rm -rf /                                                                  
+◌ Run `rm`     00s                                                              
+│ ◌ $ rm -rf /                                                                  
   tool bash rejected: destructive commands blocked by policy                    
                                                                                 
                                                                                 

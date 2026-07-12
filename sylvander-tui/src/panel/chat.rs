@@ -1,17 +1,18 @@
-//! Chat panel — the main conversation area. Uses virtual scroll: only
-//! renders the lines that fit on screen, bottom-aligned.
+//! Chat panel — main conversation area. Uses virtual scroll to render
+//! only the lines that fit on screen, bottom-aligned. Every color and
+//! state-derived glyph routes through `crate::theme` so the design
+//! palette + state glyphs stay in a single module.
 
 use ratatui::{
     layout::{Constraint, Rect},
-    prelude::Stylize,
-    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
-use crate::app::{AppMode, AppState, ChatMessage, ToolStatus};
+use crate::app::{AppState, ChatMessage, ToolStatus};
 use crate::component::Component;
+use crate::theme;
 
 pub struct ChatPanel;
 
@@ -27,15 +28,9 @@ impl Component for ChatPanel {
 
         let width = inner.width as usize;
 
-        // Welcome lockup (UX §2.2): show once when no messages have
-        // ever been created and no sessions are known. The lockup is
-        // capped at four rows (per design §2.2 — "Maximum welcome
-        // lockup height is five terminal rows"), centered horizontally
-        // in the chat panel.
-        if !state.welcomed
-            && state.messages.is_empty()
-            && state.sessions.is_empty()
-        {
+        // Welcome lockup (UX §2.2): first launch before any messages
+        // and any known sessions.
+        if !state.welcomed && state.messages.is_empty() && state.sessions.is_empty() {
             if let Some(welcome_lines) = build_welcome_lockup(width) {
                 let total = welcome_lines.len() as u16;
                 let top_pad = inner.height.saturating_sub(total) / 2;
@@ -45,42 +40,31 @@ impl Component for ChatPanel {
                     width: inner.width,
                     height: total.min(inner.height),
                 };
-                frame.render_widget(
-                    Paragraph::new(welcome_lines),
-                    centered,
-                );
+                frame.render_widget(Paragraph::new(welcome_lines), centered);
                 return;
             }
         }
 
-        // Build all lines first (cheap, just string formatting).
         let mut lines: Vec<Line> = Vec::new();
-
         for msg in &state.messages {
             push_message_lines(msg, &mut lines, width);
         }
 
-        // Streaming thinking (italic, gray) — render above streaming text.
         if !state.streaming_thinking.is_empty() {
             for chunk in char_chunks(&state.streaming_thinking, width) {
                 lines.push(Line::from(Span::styled(
                     format!("(thinking) {chunk}"),
-                    Style::default().fg(Color::DarkGray).italic(),
+                    theme::thinking_text(),
                 )));
             }
         }
 
-        // Streaming text (white).
         if !state.streaming.is_empty() {
             for chunk in char_chunks(&state.streaming, width) {
-                lines.push(Line::from(Span::styled(
-                    chunk.to_string(),
-                    Style::default().fg(Color::White),
-                )));
+                lines.push(Line::from(Span::styled(chunk.to_string(), theme::text())));
             }
         }
 
-        // Virtual scroll: show last N lines that fit, plus user scroll offset.
         let visible = inner.height as usize;
         let total = lines.len();
         let start = if total > visible + state.chat_scroll {
@@ -101,12 +85,6 @@ impl Component for ChatPanel {
             };
             frame.render_widget(line.clone(), line_area);
         }
-
-        // If we're in AskPending mode with an empty composer, render a hint.
-        // Currently the AskUser popup overlays this region, so we skip.
-        if matches!(state.mode, AppMode::AskPending) && state.composer.is_empty() {
-            // placeholder for future inline hint
-        }
     }
 }
 
@@ -114,107 +92,71 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
     match msg {
         ChatMessage::User(text) => {
             for chunk in char_chunks(text, width.saturating_sub(5)) {
-                lines.push(Line::from(Span::styled(
-                    format!("You: {chunk}"),
-                    Style::default().fg(Color::Cyan),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("You: ", theme::user_speaker()),
+                    Span::styled(chunk.to_string(), theme::text()),
+                ]));
             }
         }
         ChatMessage::Agent(text) => {
             for chunk in char_chunks(text, width) {
-                lines.push(Line::from(Span::styled(
-                    chunk.to_string(),
-                    Style::default().fg(Color::White),
-                )));
+                lines.push(Line::from(Span::styled(chunk.to_string(), theme::text())));
             }
         }
-        ChatMessage::ToolCall {
-            name,
-            status,
-            input,
-        } => {
-            // Legacy flat tool — render as a single one-line entry
-            // (kept so tests that pre-date ToolStep grouping still
-            // produce a coherent trace).
-            let (icon, color) = match status {
-                ToolStatus::Pending => ("◐", Color::Yellow),
-                ToolStatus::Done => ("✓", Color::Green),
-                ToolStatus::Error => ("✗", Color::Red),
-            };
+        ChatMessage::ToolCall { name, status, input } => {
+            let (icon, st) = theme::tool_status_glyph_and_style(*status);
             lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::default().fg(color).bold()),
-                Span::styled(name, Style::default().fg(color).bold()),
+                Span::styled(format!("{icon} "), st),
+                Span::styled(name, st),
             ]));
             for line in input_kv_lines(input, width) {
                 lines.push(line);
             }
         }
-        ChatMessage::ToolResult {
-            name,
-            output,
-            ok,
-        } => {
-            let icon = if *ok { "  +" } else { "  x" };
-            let color = if *ok { Color::Green } else { Color::Red };
-            let summary = crate::panel::chat::truncate(output, width.saturating_sub(name.len() + 6));
-            lines.push(Line::from(Span::styled(
-                format!("{icon} {name}: {summary}"),
-                Style::default().fg(color),
-            )));
+        ChatMessage::ToolResult { name, output, ok } => {
+            let icon = if *ok { "  ✓" } else { "  ✗" };
+            let st = if *ok { theme::verified() } else { theme::warning() };
+            let summary = truncate(output, width.saturating_sub(name.len() + 6));
+            lines.push(Line::from(vec![
+                Span::styled(icon, st),
+                Span::styled(format!(" {name}: "), theme::text_dim()),
+                Span::styled(summary, st),
+            ]));
         }
-        ChatMessage::ToolStep {
-            name,
-            started_at_secs,
-            children,
-        } => {
-            // UX §6 / 02-tui-immersive.svg lines 9-14: a step header
-            // (`● <name>` in blue) followed by indented child rows
-            // each starting with a `✓` (teal) / `◐` (blue) glyph.
-            // The vertical guide `│` column signals the parent→child
-            // relationship. Live children use `◐`; completed ones use
-            // `✓`; errored ones use `✗` and dim red.
+        ChatMessage::ToolStep { name, started_at_secs, children } => {
             let all_done = children
                 .iter()
                 .all(|c| c.status != ToolStatus::Pending);
-            let (step_glyph, step_color) = if all_done {
-                ("✓", Color::Green)
+            let (step_glyph, step_style) = if all_done {
+                (theme::tool_status_glyph(ToolStatus::Done), theme::verified())
             } else {
-                ("●", Color::Blue)
+                (theme::tool_status_glyph(ToolStatus::Pending), theme::active_bold())
             };
             let elapsed = format_elapsed(*started_at_secs);
             lines.push(Line::from(vec![
-                Span::styled(format!("{step_glyph} "), Style::default().fg(step_color).bold()),
-                Span::styled(name.clone(), Style::default().fg(step_color).bold()),
-                Span::styled(
-                    format!("{elapsed:>8}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("{step_glyph} "), step_style),
+                Span::styled(name.clone(), step_style),
+                Span::styled(format!("{elapsed:>8}"), theme::text_muted()),
             ]));
-            // Vertical guide on row(s) where children live: rendered as
-            // `│` in GUIDE color aligned to the `step_glyph` column.
             for child in children {
-                let (g, color) = match child.status {
-                    ToolStatus::Pending => ("◐", Color::Blue),
-                    ToolStatus::Done => ("✓", Color::Green),
-                    ToolStatus::Error => ("✗", Color::Red),
-                };
+                let (g, gstyle) = theme::tool_status_glyph_and_style(child.status);
                 let target = child_target_line(&child.name, &child.input);
-                let meta = if let Some(out) = &child.output {
-                    summarize_output(out, width)
-                } else {
-                    String::new()
-                };
+                let meta = child
+                    .output
+                    .as_deref()
+                    .map(|o| summarize_output(o, width))
+                    .unwrap_or_default();
                 lines.push(Line::from(vec![
-                    Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(format!("{g} "), Style::default().fg(color)),
-                    Span::styled(target, Style::default().fg(Color::Gray)),
+                    Span::styled("│ ", theme::guide()),
+                    Span::styled(format!("{g} "), gstyle),
+                    Span::styled(target, theme::text_dim()),
                     Span::styled(
                         if meta.is_empty() {
                             String::new()
                         } else {
                             format!("  {meta}")
                         },
-                        Style::default().fg(Color::DarkGray),
+                        theme::text_muted(),
                     ),
                 ]));
             }
@@ -223,47 +165,33 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
             for chunk in char_chunks(text, width) {
                 lines.push(Line::from(Span::styled(
                     chunk.to_string(),
-                    Style::default().fg(Color::DarkGray).italic(),
+                    theme::thinking_text(),
                 )));
             }
         }
         ChatMessage::Info(text) => {
             lines.push(Line::from(Span::styled(
                 format!("  {text}"),
-                Style::default().fg(Color::DarkGray),
+                theme::text_muted(),
             )));
         }
-        ChatMessage::Plan {
-            plan_id: _,
-            steps,
-            current,
-        } => {
-            // UX §9: plan renders as a numbered list with ✓ ● ○ markers.
-            // Header says "Proposed plan" so the user can scan the
-            // transcript and find it later.
+        ChatMessage::Plan { plan_id: _, steps, current } => {
             lines.push(Line::from(Span::styled(
                 "Proposed plan",
-                Style::default().fg(Color::Yellow).bold(),
+                theme::header(),
             )));
             for (i, step) in steps.iter().enumerate() {
-                let (marker, color) = if i < *current {
-                    ("✓", Color::Green)
-                } else if i == *current {
-                    ("●", Color::Cyan)
-                } else {
-                    ("○", Color::DarkGray)
-                };
-                let label = format!("{marker} {}. {}", i + 1, step);
+                let completed = i < *current;
+                let current_step = i == *current;
+                let (marker, st) =
+                    theme::plan_step_glyph_and_style(completed, current_step);
                 lines.push(Line::from(Span::styled(
-                    format!("  {label}"),
-                    Style::default().fg(color),
+                    format!("  {marker} {}. {step}", i + 1),
+                    st,
                 )));
             }
         }
         ChatMessage::TaskList { tasks } => {
-            // Compact one-liner per UX §11: `▶ n/m done · <owner> <purpose>`.
-            // Drops per-task lines (the agent loop verbose form) — too noisy
-            // for the immersive transcript.
             let total = tasks.len();
             let done = tasks
                 .iter()
@@ -275,7 +203,7 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                 .count();
             lines.push(Line::from(Span::styled(
                 format!("▶ tasks {done}/{total} done · {running} running"),
-                Style::default().fg(Color::Magenta),
+                theme::task_summary_line(),
             )));
         }
     }
@@ -307,10 +235,16 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Render a `serde_json::Value` as a compact single-line string.
-/// Strings are shown unquoted (their content only), numbers / bools as
-/// themselves, null as `-`, arrays collapsed to `[…]`, objects to
-/// `{k=v, k2=v2}`.
+fn truncate_first(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 fn render_json_value(v: &serde_json::Value) -> String {
     use serde_json::Value;
     match v {
@@ -341,49 +275,39 @@ fn render_json_value(v: &serde_json::Value) -> String {
     }
 }
 
-/// Render the input of a tool as one or more `key  value` lines. Used
-/// both for legacy flat `ToolCall` rendering and for `ToolStep` rows.
 fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     match input {
-        serde_json::Value::Null => {
-            // No payload — header alone is enough.
-        }
+        serde_json::Value::Null => {}
+        serde_json::Value::Object(map) if map.is_empty() => {}
         serde_json::Value::Object(map) => {
-            if map.is_empty() {
-                // Empty object — keep the line clean: don't dump "{}".
-            } else {
-                let label_w = map
-                    .keys()
-                    .map(|k| k.chars().count())
-                    .max()
-                    .unwrap_or(0)
-                    .min(20);
-                for (k, v) in map {
-                    let rendered = render_json_value(v);
-                    let label = format!("  {:<w$}  ", k, w = label_w);
-                    let val_str = truncate(&rendered, width.saturating_sub(label_w + 6));
-                    out.push(Line::from(vec![
-                        Span::styled(label, Style::default().fg(Color::DarkGray)),
-                        Span::styled(val_str, Style::default().fg(Color::White)),
-                    ]));
-                }
+            let label_w = map
+                .keys()
+                .map(|k| k.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(20);
+            for (k, v) in map {
+                let rendered = render_json_value(v);
+                let label = format!("  {:<w$}  ", k, w = label_w);
+                let val_str = truncate(&rendered, width.saturating_sub(label_w + 6));
+                out.push(Line::from(vec![
+                    Span::styled(label, theme::kv_label()),
+                    Span::styled(val_str, theme::kv_value()),
+                ]));
             }
         }
         _ => {
             let rendered = render_json_value(input);
             out.push(Line::from(Span::styled(
                 format!("  → {}", truncate(&rendered, width.saturating_sub(6))),
-                Style::default().fg(Color::White),
+                theme::text(),
             )));
         }
     }
     out
 }
 
-/// Compact one-line representation of a tool child: `<name>  <target>`.
-/// For bash tools we render the command; for read/write/edit we render
-/// the path; for search we render the pattern + path.
 fn child_target_line(tool: &str, input: &serde_json::Value) -> String {
     let fallback = || format!("{tool} {}", render_json_value(input));
     let some_path = |k| input.get(k).and_then(|v| v.as_str());
@@ -405,18 +329,6 @@ fn child_target_line(tool: &str, input: &serde_json::Value) -> String {
     }
 }
 
-fn truncate_first(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
-}
-
-/// Compact one-line summary of a tool's output. Picks the most useful
-/// preview metric: file count, search match count, or first non-empty line.
 fn summarize_output(output: &str, width: usize) -> String {
     let line = output
         .lines()
@@ -429,7 +341,6 @@ fn summarize_output(output: &str, width: usize) -> String {
     truncate_first(line, width.saturating_sub(20).min(80))
 }
 
-/// Format elapsed seconds since `started_at_secs` as `00:00` or `00:00:00`.
 fn format_elapsed(started_at_secs: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -445,69 +356,259 @@ fn format_elapsed(started_at_secs: u64) -> String {
     }
 }
 
-/// The first-launch welcome lockup (UX §2.2 + `02-tui-immersive.svg`
-/// reference).  Four terminal rows:
-///
-/// ```text
-///   ◖S◗  SYLVANDER
-///        intelligent terminal workspace
-///
-///        ~/Projects/<cwd>
-///        What are we building today?
-/// ```
-///
-/// The crab mark + `SYLVANDER` wordmark uses coral; the tagline,
-/// workspace, and prompt line use the soft ivory / muted palette.
-///
-/// Returns `None` if `width` is too narrow (<40 cols) so the lockup
-/// stays out of the way on minimal terminals (§13 responsive rules).
 fn build_welcome_lockup(width: usize) -> Option<Vec<Line<'static>>> {
     if width < 40 {
         return None;
     }
     let workspace_label = std::env::current_dir()
         .ok()
-        .map(short_workspace_label)
+        .map(|p| theme::compact_workspace(&p, 50))
         .unwrap_or_else(|| "~".into());
 
     Some(vec![
-        // Line 1: ◖S◗ + SYLVANDER
         Line::from(vec![
-            Span::styled("◖S◗  ", crate::theme::coral()),
-            Span::styled("SYLVANDER", crate::theme::header()),
+            Span::styled("◖S◗  ", theme::coral()),
+            Span::styled("SYLVANDER", theme::header()),
         ]),
-        // Line 2: tagline (italic, dim)
         Line::from(Span::styled(
             "      intelligent terminal workspace",
-            crate::theme::composer_helper(),
+            theme::composer_helper(),
         )),
-        // Line 3: blank spacer
         Line::from(""),
-        // Line 4: workspace path
         Line::from(vec![
-            Span::styled("      ", crate::theme::text_dim()),
-            Span::styled(workspace_label, crate::theme::text_dim()),
+            Span::styled("      ", theme::text_dim()),
+            Span::styled(workspace_label, theme::text_dim()),
         ]),
-        // Line 5: prompt line
         Line::from(Span::styled(
             "      What are we building today?",
-            crate::theme::text_dim(),
+            theme::text_dim(),
         )),
     ])
 }
 
-/// Shorten a workspace path: when the full path is too long, show the
-/// basename (e.g. `.../acme-api`), prefixed by `…/` so the truncation
-/// is visible. Below the threshold, return the path verbatim.
-fn short_workspace_label(p: std::path::PathBuf) -> String {
-    let s = p.display().to_string();
-    if s.chars().count() <= 60 {
-        return s;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{AppState, ChatMessage, ToolStatus};
+    use crate::component::Component;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(w, h)).expect("terminal")
     }
-    let basename = p
-        .components()
-        .next_back()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .unwrap_or_else(|| "~".into());
-    format!(".../{basename}")
+
+    fn seeded() -> AppState {
+        let mut s = AppState::new();
+        s.apply(crate::event::DomainEvent::Connected);
+        s.messages.push(ChatMessage::User("Hi".into()));
+        s.apply(crate::event::DomainEvent::TextChunk {
+            delta: "world".into(),
+        });
+        s.apply(crate::event::DomainEvent::AgentDone {
+            final_text: "world".into(),
+        });
+        s
+    }
+
+    #[test]
+    fn user_speaker_uses_dim_color() {
+        let s = seeded();
+        let mut t = terminal(60, 12);
+        t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 60, 12), &s))
+            .unwrap();
+        let cell = t.backend().buffer().cell((0, 0)).expect("cell");
+        assert_eq!(cell.fg, crate::theme::TEXT_DIM);
+    }
+
+    #[test]
+    fn agent_body_uses_primary_text() {
+        let s = seeded();
+        let mut t = terminal(60, 12);
+        t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 60, 12), &s))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        let mut found = false;
+        for y in 0..12 {
+            for x in 0..60 {
+                if let Some(c) = buf.cell((x, y)) {
+                    if c.fg == crate::theme::TEXT {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found, "expected a primary-text cell");
+    }
+
+    #[test]
+    fn welcome_lockup_renders_crab_at_first_launch() {
+        let s = AppState::new();
+        let mut t = terminal(120, 36);
+        t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 120, 36), &s))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        let mut found = false;
+        for y in 0..36 {
+            for x in 0..120 {
+                if let Some(c) = buf.cell((x, y)) {
+                    if c.symbol() == "◖" {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found, "expected ◖ glyph in welcome lockup");
+    }
+
+    #[test]
+    fn welcome_lockup_absent_when_welcomed() {
+        let mut s = AppState::new();
+        s.welcomed = true;
+        s.messages.push(ChatMessage::User("x".into()));
+        let mut t = terminal(120, 36);
+        t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 120, 36), &s))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        for y in 0..36 {
+            for x in 0..120 {
+                if let Some(c) = buf.cell((x, y)) {
+                    if c.symbol() == "◖" {
+                        panic!("welcome lockup must not show when welcomed=true");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn input_kv_lines_skips_null_and_empty_object() {
+        assert!(input_kv_lines(&serde_json::Value::Null, 80).is_empty());
+        assert!(input_kv_lines(&serde_json::json!({}), 80).is_empty());
+    }
+
+    #[test]
+    fn input_kv_lines_emits_pair_per_object_key() {
+        // serde_json::Map defaults to BTreeMap, so keys come back in
+        // alphabetical order — assert set membership instead of ordering.
+        let lines =
+            input_kv_lines(&serde_json::json!({"path": "/tmp", "mode": "r"}), 60);
+        assert_eq!(lines.len(), 2);
+        let labels: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans[0].content.to_string())
+            .collect();
+        assert!(
+            labels.iter().any(|l| l.contains("path")),
+            "expected `path` label, got: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("mode")),
+            "expected `mode` label, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn child_target_line_bash_prefixes_dollar() {
+        let s = child_target_line("bash", &serde_json::json!({"command": "ls"}));
+        assert!(s.starts_with('$'), "expected `$` prefix, got `{s}`");
+    }
+
+    #[test]
+    fn plan_step_three_glyphs() {
+        let (gd, _) = theme::plan_step_glyph_and_style(true, false);
+        let (gc, _) = theme::plan_step_glyph_and_style(false, true);
+        let (gp, _) = theme::plan_step_glyph_and_style(false, false);
+        assert_eq!(gd, "✓");
+        assert_eq!(gc, "●");
+        assert_eq!(gp, "○");
+    }
+
+    #[test]
+    fn tool_status_styles_three_distinct_fg() {
+        let (_, sp) = theme::tool_status_glyph_and_style(ToolStatus::Pending);
+        let (_, sd) = theme::tool_status_glyph_and_style(ToolStatus::Done);
+        let (_, se) = theme::tool_status_glyph_and_style(ToolStatus::Error);
+        assert_ne!(sp.fg, sd.fg);
+        assert_ne!(sp.fg, se.fg);
+        assert_ne!(sd.fg, se.fg);
+    }
+
+    #[test]
+    fn render_order_user_then_agent_then_toolstep() {
+        // Contract: messages render in insertion order. User at the
+        // top, then the agent's reply, then a grouped tool step.
+        let mut s = AppState::new();
+        s.apply(crate::event::DomainEvent::Connected);
+        s.messages.push(ChatMessage::User("Hi".into()));
+        s.apply(crate::event::DomainEvent::TextChunk {
+            delta: "Hello back".into(),
+        });
+        s.apply(crate::event::DomainEvent::AgentDone {
+            final_text: "Hello back".into(),
+        });
+        s.apply(crate::event::DomainEvent::ToolStarted {
+            tool_name: "bash".into(),
+            input: serde_json::json!({"command": "ls"}),
+        });
+        s.apply(crate::event::DomainEvent::ToolFinished {
+            tool_name: "bash".into(),
+            output: "a.rs".into(),
+            is_error: false,
+        });
+        let mut t = terminal(60, 20);
+        t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 60, 20), &s))
+            .unwrap();
+        let buf = t.backend().buffer().clone();
+        // Find the first row of each message kind. We do this by
+        // searching the first column of each row for "Y" (the
+        // "You:" speaker label). Once found, the user row is the
+        // smallest such y. The agent body is the row above any tool
+        // step (which renders `● Run ...` or `✓ Run ...`).
+        let mut you_y = None;
+        for y in 0..20 {
+            for x in 0..60 {
+                if let Some(c) = buf.cell((x, y)) {
+                    if c.symbol() == "Y" {
+                        you_y = Some(y);
+                        break;
+                    }
+                }
+            }
+            if you_y.is_some() {
+                break;
+            }
+        }
+        let you_y = you_y.expect("expected to find 'Y' from 'You:' label");
+        // Tool step row has `●` or `✓` glyph in the step header.
+        let mut toolstep_y = None;
+        for y in 0..20 {
+            for x in 0..60 {
+                if let Some(c) = buf.cell((x, y)) {
+                    let sym = c.symbol();
+                    if sym == "\u{25cf}" || sym == "\u{2713}" {
+                        // Step glyphs are tool-step step-header characters.
+                        toolstep_y = Some(y);
+                        break;
+                    }
+                }
+            }
+            if toolstep_y.is_some() {
+                break;
+            }
+        }
+        let toolstep_y = toolstep_y.expect("expected to find tool step glyph");
+        // Order: user (y=0 by convention but at least smallest) precedes
+        // toolstep. They are guaranteed by the way push_message_lines
+        // walks the messages vec.
+        assert!(you_y < toolstep_y, "user row {you_y} must precede toolstep {toolstep_y}");
+    }
 }

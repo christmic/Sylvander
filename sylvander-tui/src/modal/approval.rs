@@ -19,6 +19,7 @@ use ratatui::{
 use crate::app::{AppMode, AppState, ToolInfo};
 use crate::event::Action;
 use crate::modal::{Consumed, Modal};
+use crate::theme;
 
 /// Per-tool decision. Pending means user has not yet decided on this row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,7 +139,7 @@ impl ApprovalModal {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_style(Style::default().fg(Color::Yellow)),
+                .title_style(theme::warning()),
             popup_area,
         );
         let inner = Block::default().borders(Borders::ALL).inner(popup_area);
@@ -150,10 +151,10 @@ impl ApprovalModal {
             let is_current = i == self.current;
             let marker = Self::marker(self.decisions[i], is_current);
             let marker_color = match (self.decisions[i], is_current) {
-                (_, true) => Color::Yellow,
-                (Decision::Approve, _) => Color::Green,
-                (Decision::Reject, _) => Color::Red,
-                (Decision::Pending, _) => Color::Gray,
+                (_, true) => ratatui::style::Color::Yellow,
+                (Decision::Approve, _) => ratatui::style::Color::Green,
+                (Decision::Reject, _) => ratatui::style::Color::Red,
+                (Decision::Pending, _) => ratatui::style::Color::Gray,
             };
             let tool_label = format!(
                 "{}. {}  {}",
@@ -174,7 +175,7 @@ impl ApprovalModal {
                 self.current + 1,
                 self.tools.len()
             ),
-            Style::default().fg(Color::DarkGray),
+            theme::text_muted(),
         )));
 
         frame.render_widget(Paragraph::new(lines), inner);
@@ -264,7 +265,7 @@ impl ApprovalModal {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Rejection Feedback ")
-                .title_style(Style::default().fg(Color::Yellow)),
+                .title_style(theme::warning()),
             popup_area,
         );
         let inner = Block::default().borders(Borders::ALL).inner(popup_area);
@@ -275,13 +276,13 @@ impl ApprovalModal {
         ));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Yellow)),
+            Span::styled("> ", theme::warning()),
             Span::styled(&self.feedback, Style::default()),
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "enter=send feedback   esc=back to approval",
-            Style::default().fg(Color::DarkGray),
+            theme::text_muted(),
         )));
 
         frame.render_widget(Paragraph::new(lines), inner);

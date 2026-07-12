@@ -223,7 +223,7 @@ pub enum TaskState {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     Pending,
     Done,

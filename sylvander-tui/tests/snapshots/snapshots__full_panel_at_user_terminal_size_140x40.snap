@@ -6,9 +6,9 @@ expression: "render_buf(&s, 140, 40)"
 /Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 You: Add JWT auth middleware                                                                                                                
-● Run `ls`     00s                                                                                                                          
+◌ Run `ls`     00s                                                                                                                          
 │ ✓ $ ls src/http  router.rs                                                                                                                
-│ ◐ read src/http/middleware.rs                                                                                                             
+│ ◌ read src/http/middleware.rs                                                                                                             
 Inspecting the existing router to understand the auth surface. I see we have a `TokenGuard` already — let me check it covers Bearer + API-  
 key.                                                                                                                                        
                                                                                                                                             

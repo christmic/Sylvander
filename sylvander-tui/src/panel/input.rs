@@ -222,6 +222,9 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
 fn composer_has_focus(state: &AppState) -> bool {
     // Composer is considered focused when no modal is on top and we're
     // not in a pending-decision mode that would steal input.
+    // (M-T15.D would gate this on `composer.has_focus_interaction()`
+    // to render IDLE state before the user has typed — not currently
+    // wired since the focus field isn't exposed yet.)
     state.modals.is_empty()
         && matches!(state.mode, AppMode::Normal)
 }

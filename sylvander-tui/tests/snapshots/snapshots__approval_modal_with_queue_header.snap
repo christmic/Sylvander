@@ -9,7 +9,7 @@ expression: "render_buf(&state, 90, 22)"
 ◖S◗  SYLVANDER    ┌ Tool Approval (batch 2/2 — 2 total) ───────────────┐                  
       intelligent │Agent wants to run:                                 │                  
                   │  >> 1. write  {}                                   │                  
-      /Users/chris│                                                    │                  
+      ~/.../sylvan│                                                    │                  
       What are we │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  │                  
                   │                                                    │                  
 ──────────────────│                                                    │──────────────────

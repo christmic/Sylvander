@@ -11,7 +11,7 @@ expression: "render_buf(&state, 90, 26)"
 ◖S◗  SYLVANDER                                                                            
       intelligent ┌ Agent asks (multi-select) ─────────────────────────┐                  
                   │Tags for this issue?                                │                  
-      /Users/chris│                                                    │                  
+      ~/.../sylvan│                                                    │                  
       What are we │☑ [1] urgent                                        │                  
                   │☐ [2] bug                                           │                  
                   │☐ [3] feature                                       │                  

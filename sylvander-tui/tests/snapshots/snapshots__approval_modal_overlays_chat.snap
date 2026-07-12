@@ -6,8 +6,8 @@ expression: "render_buf(&state, 80, 24)"
 /Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
 ────────────────────────────────────────────────────────────────────────────────
 You: rm -rf /                                                                   
-● Run `rm`     00s                                                              
-│ ◐ $ rm -rf /  ┌ Tool Approval ───────────────────────────────┐                
+◌ Run `rm`     00s                                                              
+│ ◌ $ rm -rf /  ┌ Tool Approval ───────────────────────────────┐                
                 │Agent wants to run:                           │                
                 │  >> 1. bash  {"command":"rm -rf /"}          │                
                 │                                              │                

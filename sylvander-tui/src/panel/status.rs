@@ -1,15 +1,22 @@
 //! Status panel — bottom row of the screen, mirroring `02-tui-immersive.svg` line 19.
 //!
-//! Layout:
-//! - Left: `<mode-glyph> <mode-label> · context N% · N tools · main` (or "· main"/"· plan").
-//! - Right: up to **three** contextual unicode-symbol hints, mode-aware
-//!   per the design's `18-composer-interactions.svg` rule that the
-//!   footer hints must be `contextual, maximum three. No permanent
-//!   shortcut manual in the footer`.
+//! Layout (UX §5.1):
+//! - Left: `<glyph> <label> · context —% · N tools · <main|plan>`
+//! - Right: up to **three** contextual unicode-symbol hints, mode-aware.
 //!
-//! `AppMode` selects the active mode glyph + label.
-//! `state.connected` toggles a fourth hint when disconnected so the
-//! user knows the failure state without burying the row in text.
+//! Status modes are owned by `theme::StatusMode` (5-mode enum). This
+//! panel just derives which one is current based on AppState.
+//!
+//! **Status contract** (M-T15.C):
+//! - `Disconnected`         — Unix socket is closed (`!` glyph + amber).
+//! - `Working`              — agent is iterating (`◐` glyph + blue).
+//!   Detected observationally: streaming buffer is non-empty, or a
+//!   ToolStep has any Pending child. (When the server starts emitting
+//!   `WorkingStarted`/`WorkingEnded` events, AppState.working_active
+//!   will override this.)
+//! - `WaitingApproval`     — Approval modal is open (`●` glyph + amber).
+//! - `Asking`               — AskUser modal is open (`●` glyph + dim).
+//! - `Idle`                 — everything else (`·` glyph + dim).
 
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -20,38 +27,43 @@ use ratatui::{
 
 use crate::app::{AppMode, AppState};
 use crate::component::Component;
-use crate::theme;
+use crate::theme::{self, StatusMode};
 
-/// Adaptive mode — derived from `AppState::mode` + the agent's
-/// underlying transport state. Each mode has a glyph + label, matching
-/// the §18 ADAPTIVE STATUS panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusMode {
-    Idle,
-    Working,
-    Waiting,
-    Disconnected,
-}
-
-impl StatusMode {
-    fn glyph(self) -> &'static str {
-        match self {
-            Self::Idle => "·",
-            Self::Working => "◐",
-            Self::Waiting => "●",
-            Self::Disconnected => "!",
-        }
-    }
-}
-
-fn mode_for(state: &AppState) -> StatusMode {
+/// Single source of truth for which status mode is current.
+/// Pure function — no side effects, easy to unit-test.
+pub fn status_mode_for(state: &AppState) -> StatusMode {
     if !state.connected {
         return StatusMode::Disconnected;
     }
-    match state.mode {
-        AppMode::Normal => StatusMode::Idle,
-        AppMode::ApprovalPending | AppMode::AskPending => StatusMode::Waiting,
+
+    // Priority order: an open modal always wins over the agent loop.
+    if let Some(top) = state.modals.top() {
+        let t = top.title();
+        if t == "Tool Approval" {
+            return StatusMode::WaitingApproval;
+        }
+        if t == "Plan review" || t == "Agent asks" || t == "Commands" {
+            // Asking covers AskUser + Palette (palette is morally an
+            // interactive decision the user must make).
+            return StatusMode::Asking;
+        }
     }
+
+    // Working is detected observationally since the agent loop doesn't
+    // currently push WorkingStarted/Ended events.
+    let working = !state.streaming.is_empty()
+        || !state.streaming_thinking.is_empty()
+        || state.messages.iter().any(|m| match m {
+            crate::app::ChatMessage::ToolStep { children, .. } => children
+                .iter()
+                .any(|c| c.status == crate::app::ToolStatus::Pending),
+            _ => false,
+        });
+    if working {
+        return StatusMode::Working;
+    }
+
+    StatusMode::Idle
 }
 
 pub struct StatusPanel;
@@ -62,25 +74,20 @@ impl Component for StatusPanel {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
-        let mode = mode_for(state);
-        let (tool_count, task_running) = state
-            .messages
-            .iter()
-            .fold((0usize, false), |(n, running), m| match m {
-                crate::app::ChatMessage::ToolStep { children, .. } => {
-                    (n + children.len(), running)
-                }
-                crate::app::ChatMessage::TaskList { tasks } => {
-                    let any_running = tasks
-                        .iter()
-                        .any(|t| matches!(t.state, crate::app::TaskState::Running));
-                    (n, running || any_running)
-                }
-                _ => (n, running),
-            });
-        // Note: there's no server-pushed context% yet, so we render the
-        // placeholder design token (§5.1 spec). Real value lands when
-        // the agent reports context% via a new DomainEvent.
+        let mode = status_mode_for(state);
+
+        let tool_count = state.messages.iter().fold(0usize, |n, m| match m {
+            crate::app::ChatMessage::ToolStep { children, .. } => n + children.len(),
+            _ => n,
+        });
+        let task_running = state.messages.iter().any(|m| match m {
+            crate::app::ChatMessage::TaskList { tasks } => tasks
+                .iter()
+                .any(|t| matches!(t.state, crate::app::TaskState::Running)),
+            _ => false,
+        });
+
+        // Context% placeholder until the server pushes a context event.
         let context_pct = "—";
         let plan_label = "main";
         let task_span: Span = if task_running {
@@ -88,13 +95,12 @@ impl Component for StatusPanel {
         } else {
             Span::raw("")
         };
-        let mode_style = theme_for_mode(mode);
-        let app_mode = state.mode;
+
         let left = Line::from(vec![
-            Span::styled(format!("{} ", mode.glyph()), mode_style),
-            Span::styled(format!("{} ", mode_label(mode)), mode_style),
+            Span::styled(format!("{} ", mode.glyph()), mode.style()),
+            Span::styled(format!("{} ", mode.label()), mode.style()),
             Span::styled(
-                format!("· context {}% · {} tools", context_pct, tool_count),
+                format!("· context {context_pct}% · {tool_count} tools"),
                 theme::text_dim(),
             ),
             task_span,
@@ -102,10 +108,11 @@ impl Component for StatusPanel {
         ])
         .alignment(Alignment::Left);
 
-        let hints: Vec<Span> = hints_for_mode(app_mode, mode).into_iter().collect();
+        let hints: Vec<Span> = hints_for_mode(state.mode, mode)
+            .into_iter()
+            .collect();
         let right = Line::from(hints).alignment(Alignment::Right);
 
-        // Split the area so left + right don't overlap.
         let layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
@@ -118,27 +125,8 @@ impl Component for StatusPanel {
     }
 }
 
-fn mode_label(mode: StatusMode) -> &'static str {
-    match mode {
-        StatusMode::Idle => "idle",
-        StatusMode::Working => "working",
-        StatusMode::Waiting => "waiting",
-        StatusMode::Disconnected => "disconnected",
-    }
-}
-
-fn theme_for_mode(mode: StatusMode) -> ratatui::style::Style {
-    use ratatui::style::Style;
-    match mode {
-        StatusMode::Idle => theme::text_dim(),
-        StatusMode::Working => theme::active(),
-        StatusMode::Waiting => theme::warning(),
-        StatusMode::Disconnected => theme::warning(),
-    }
-}
-
 /// Up to three contextual hints per `18-composer-interactions.svg`.
-/// Returns one `Span` per hint; trim to fit `width` at render time.
+/// Compact, mode-aware, ≤ 3 entries. No permanent shortcut manual.
 fn hints_for_mode(
     app_mode: AppMode,
     status_mode: StatusMode,
@@ -149,20 +137,154 @@ fn hints_for_mode(
             Span::raw(" "),
             Span::styled("/draft preserved", theme::text_muted()),
         ],
-        (AppMode::Normal, _) => [
-            Span::styled("↵ send", theme::text_muted()),
-            Span::raw(" "),
-            Span::styled("⇧↵ newline", theme::text_muted()),
-        ],
-        (AppMode::ApprovalPending, _) => [
+        (_, StatusMode::WaitingApproval) => [
             Span::styled("y approve", theme::text_muted()),
             Span::raw(" "),
             Span::styled("n reject", theme::text_muted()),
         ],
-        (AppMode::AskPending, _) => [
+        (_, StatusMode::Asking) => [
             Span::styled("↵ submit", theme::text_muted()),
             Span::raw(" "),
             Span::styled("esc cancel", theme::text_muted()),
         ],
+        (_, StatusMode::Working) => [
+            Span::styled("esc interrupt", theme::text_muted()),
+            Span::raw(" "),
+            Span::styled("/draft", theme::text_muted()),
+        ],
+        (AppMode::Normal, StatusMode::Idle) => [
+            Span::styled("↵ send", theme::text_muted()),
+            Span::raw(" "),
+            Span::styled("⇧↵ newline", theme::text_muted()),
+        ],
+        (AppMode::ApprovalPending, StatusMode::Idle) => [
+            Span::styled("y approve", theme::text_muted()),
+            Span::raw(" "),
+            Span::styled("esc cancel", theme::text_muted()),
+        ],
+        (AppMode::AskPending, StatusMode::Idle) => [
+            Span::styled("↵ submit", theme::text_muted()),
+            Span::raw(" "),
+            Span::styled("esc cancel", theme::text_muted()),
+        ],
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{AppMode, AppState, ChatMessage, ToolInfo, ToolStatus};
+    use crate::event::DomainEvent;
+    use crate::modal::{ApprovalModal, AskUserModal, CommandPalette, PlanReviewModal};
+
+    fn fresh_state() -> AppState {
+        let mut s = AppState::new();
+        s.apply(DomainEvent::Connected);
+        s
+    }
+
+    #[test]
+    fn disconnected_state_overrides_everything_else() {
+        let mut s = AppState::new(); // connected=false
+        s.messages
+            .push(ChatMessage::ToolStep { name: "x".into(), started_at_secs: 0, children: vec![] });
+        assert_eq!(status_mode_for(&s), StatusMode::Disconnected);
+    }
+
+    #[test]
+    fn idle_when_connected_no_streaming_no_modal() {
+        let s = fresh_state();
+        assert_eq!(status_mode_for(&s), StatusMode::Idle);
+    }
+
+    #[test]
+    fn working_when_streaming_text_open() {
+        let mut s = fresh_state();
+        s.streaming.push_str("partial");
+        assert_eq!(status_mode_for(&s), StatusMode::Working);
+    }
+
+    #[test]
+    fn working_when_thinking_streaming() {
+        let mut s = fresh_state();
+        s.streaming_thinking.push_str("mulling");
+        assert_eq!(status_mode_for(&s), StatusMode::Working);
+    }
+
+    #[test]
+    fn working_when_a_tool_step_has_pending_child() {
+        let mut s = fresh_state();
+        s.messages.push(ChatMessage::ToolStep {
+            name: "step".into(),
+            started_at_secs: 0,
+            children: vec![crate::app::ToolStepChild {
+                name: "bash".into(),
+                status: ToolStatus::Pending,
+                input: serde_json::json!({}),
+                output: None,
+                is_error: None,
+            }],
+        });
+        assert_eq!(status_mode_for(&s), StatusMode::Working);
+    }
+
+    #[test]
+    fn waiting_approval_when_approval_modal_open() {
+        let mut s = fresh_state();
+        s.modals.push(Box::new(ApprovalModal::new(
+            "b1".into(),
+            vec![ToolInfo {
+                call_id: "c".into(),
+                tool_name: "bash".into(),
+                input: serde_json::json!({}),
+            }],
+        )));
+        // AppMode is still Normal (modal hasn't committed yet), but the
+        // status function looks at the top modal title.
+        assert_eq!(status_mode_for(&s), StatusMode::WaitingApproval);
+    }
+
+    #[test]
+    fn asking_when_askuser_or_plan_or_palette_modal_open() {
+        let mut s = fresh_state();
+        s.modals
+            .push(Box::new(AskUserModal::new("c".into(), "q".into(), vec![], false)));
+        assert_eq!(status_mode_for(&s), StatusMode::Asking);
+        s.modals.pop();
+        s.modals.push(Box::new(PlanReviewModal::new(
+            "p1".into(),
+            vec!["step".into()],
+            0,
+            None,
+        )));
+        assert_eq!(status_mode_for(&s), StatusMode::Asking);
+        s.modals.pop();
+        s.modals.push(Box::new(CommandPalette::new()));
+        assert_eq!(status_mode_for(&s), StatusMode::Asking);
+    }
+
+    #[test]
+    fn asking_modal_wins_over_streaming_observation() {
+        // When an AskUser modal is open, the agent loop is paused and
+        // waiting on the user — the status row should reflect `Asking`,
+        // not a stale `Working` observed from residual streaming.
+        let mut s = fresh_state();
+        s.streaming.push_str("partial");
+        s.modals
+            .push(Box::new(AskUserModal::new("c".into(), "?".into(), vec![], false)));
+        assert_eq!(status_mode_for(&s), StatusMode::Asking);
+    }
+
+    #[test]
+    fn app_mode_alone_does_not_imply_waiting() {
+        let mut s = fresh_state();
+        s.mode = AppMode::ApprovalPending;
+        // No streaming, no modal pushed: still Idle.
+        // (Approval modal is what flips the status to WaitingApproval.)
+        assert_eq!(status_mode_for(&s), StatusMode::Idle);
     }
 }

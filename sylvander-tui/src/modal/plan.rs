@@ -68,15 +68,15 @@ impl PlanReviewModal {
             .map(|(i, step)| {
                 let is_cursor = i == self.cursor;
                 let (marker, color) = if is_cursor {
-                    ("● ", Color::Cyan)
+                    ("● ", ratatui::style::Color::Cyan)
                 } else {
-                    ("  ", Color::DarkGray)
+                    ("  ", ratatui::style::Color::DarkGray)
                 };
                 Line::from(vec![
                     Span::styled(marker, Style::default().fg(color).bold()),
                     Span::styled(
                         format!("{}. {}", i + 1, step),
-                        Style::default().fg(if is_cursor { Color::White } else { Color::Gray }),
+                        Style::default().fg(if is_cursor { ratatui::style::Color::White } else { ratatui::style::Color::Gray }),
                     ),
                 ])
             })
@@ -105,7 +105,7 @@ impl Modal for PlanReviewModal {
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" Plan review ({} steps) ", self.steps.len()))
-                .title_style(Style::default().fg(Color::Yellow)),
+                .title_style(theme::warning()),
             popup_area,
         );
 
@@ -140,7 +140,7 @@ impl Modal for PlanReviewModal {
         // 3. Edit buffer (only when editing)
         if self.mode == PlanMode::Edit {
             let prompt = Line::from(vec![
-                Span::styled("> ", Style::default().fg(Color::Green)),
+                Span::styled("> ", theme::verified()),
                 Span::styled(&self.edit_buffer, Style::default()),
                 Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
             ]);
@@ -171,7 +171,7 @@ impl Modal for PlanReviewModal {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 footer,
-                Style::default().fg(Color::DarkGray),
+                theme::text_muted(),
             )),
             layout[3],
         );
@@ -186,6 +186,7 @@ impl Modal for PlanReviewModal {
 }
 
 use ratatui::style::Modifier;
+use crate::theme;
 
 impl PlanReviewModal {
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {

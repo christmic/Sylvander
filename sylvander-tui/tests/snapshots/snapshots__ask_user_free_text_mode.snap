@@ -9,7 +9,7 @@ expression: "render_buf(&state, 90, 22)"
 ◖S◗  SYLVANDER                                                                            
       intelligent terminal workspace                                                      
                   ┌ Agent asks (free text) ────────────────────────────┐                  
-      /Users/chris│Describe the bug in your own words:                 │                  
+      ~/.../sylvan│Describe the bug in your own words:                 │                  
       What are we │                                                    │                  
                   │Type your answer:                                   │                  
 ──────────────────│> the loader hangs on cold start                    │──────────────────
