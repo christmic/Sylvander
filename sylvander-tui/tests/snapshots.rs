@@ -698,12 +698,12 @@ fn queued_prompt_is_visible_but_not_rendered_as_sent() {
     state.apply(DomainEvent::Connected);
     state.turn_active = true;
     state.streaming = "I am still working on the first request.".into();
-    state
-        .messages
-        .push(ChatMessage::User("finish the current implementation".into()));
-    state
-        .messages
-        .push(ChatMessage::QueuedUser("then run the full test suite".into()));
+    state.messages.push(ChatMessage::User(
+        "finish the current implementation".into(),
+    ));
+    state.messages.push(ChatMessage::QueuedUser(
+        "then run the full test suite".into(),
+    ));
     state
         .queued_prompts
         .push_back("then run the full test suite".into());
