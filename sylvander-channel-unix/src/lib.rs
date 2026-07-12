@@ -204,6 +204,9 @@ enum ServerMsg {
     SessionHistory {
         session: SessionInfo,
         messages: Vec<HistoryMessage>,
+        iterations: u32,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     SessionUpdated {
         session_id: String,
@@ -741,9 +744,13 @@ async fn handle_client_msg(
                                 })
                             })
                             .collect();
+                        let usage = ctx.sessions.usage(&session_id).await.unwrap_or_default();
                         let _ = tx.send(ServerMsg::SessionHistory {
                             session: session_info(session),
                             messages,
+                            iterations: usage.iterations,
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
                         });
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
@@ -863,6 +870,9 @@ async fn handle_client_msg(
                     let _ = tx.send(ServerMsg::SessionHistory {
                         session: session_info(fork),
                         messages,
+                        iterations: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
                     });
                 }
                 Ok(None) => warn!(%source_id, "unix: fork source not found"),
@@ -1040,6 +1050,7 @@ mod tests {
             )
             .await
             .expect("append");
+        store.record_usage(&session_id, 120, 30).await.expect("usage");
 
         let channel = Arc::new(UnixChannel::new(&path, agent_id));
         let context = ChannelContext {
@@ -1059,6 +1070,9 @@ mod tests {
         .await;
         assert_eq!(loaded["type"], "session_history");
         assert_eq!(loaded["messages"][0]["text"], "hello");
+        assert_eq!(loaded["iterations"], 1);
+        assert_eq!(loaded["input_tokens"], 120);
+        assert_eq!(loaded["output_tokens"], 30);
 
         let renamed = send_and_read(
             &mut write,

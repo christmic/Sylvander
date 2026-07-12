@@ -37,7 +37,7 @@ completed backend feature.
 - [x] Archive persists as a soft delete and `Ctrl+Z` restores the session with history intact.
 - [ ] Permanent delete requires a separate explicit confirmation and cannot be mistaken for archive.
 - [x] Fork creates an independent session at the current completed turn boundary.
-- [ ] Resume restores token/accounting and does not mix transcripts.
+- [x] Resume restores durable token/accounting and replaces rather than mixes transcripts.
 - [ ] Session search, recency, workspace grouping, and empty/error states work.
 
 ### Plan and background work

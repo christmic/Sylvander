@@ -188,6 +188,9 @@ pub enum ServerMsg {
     SessionHistory {
         session: SessionInfoMsg,
         messages: Vec<HistoryMessageMsg>,
+        iterations: u32,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     SessionUpdated {
         session_id: String,
@@ -472,7 +475,13 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                 })
                 .collect(),
         },
-        ServerMsg::SessionHistory { session, messages } => DomainEvent::SessionHistoryLoaded {
+        ServerMsg::SessionHistory {
+            session,
+            messages,
+            iterations,
+            input_tokens,
+            output_tokens,
+        } => DomainEvent::SessionHistoryLoaded {
             session: crate::model::SessionSummary {
                 id: session.id,
                 label: session.label,
@@ -490,6 +499,9 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
                     text: message.text,
                 })
                 .collect(),
+            iterations,
+            input_tokens,
+            output_tokens,
         },
         ServerMsg::SessionUpdated {
             session_id,
@@ -507,8 +519,8 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             ..
         } => DomainEvent::UsageUpdated {
             iteration,
-            input_tokens,
-            output_tokens,
+            input_tokens: input_tokens.into(),
+            output_tokens: output_tokens.into(),
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
@@ -687,10 +699,19 @@ mod tests {
                     text: "hi".into(),
                 },
             ],
+            iterations: 2,
+            input_tokens: 120,
+            output_tokens: 30,
         });
         assert!(matches!(
             event,
-            Some(DomainEvent::SessionHistoryLoaded { session, messages })
+            Some(DomainEvent::SessionHistoryLoaded {
+                session,
+                messages,
+                iterations: 2,
+                input_tokens: 120,
+                output_tokens: 30,
+            })
                 if session.id == "s1"
                     && messages[0].role == crate::model::HistoryRole::User
                     && messages[1].role == crate::model::HistoryRole::Assistant

@@ -942,10 +942,26 @@ impl AgentRunInner {
                     self.publish_stream(&session_id, crate::bus::StreamEvent::IterationStart { iteration }).await;
                 }
                 crate::event::AgentEvent::IterationEnd { iteration, usage } => {
+                    let mut input_tokens = u64::from(usage.input_tokens);
+                    let mut output_tokens = u64::from(usage.output_tokens);
+                    if let Some(store) = &self.session_store {
+                        match store
+                            .record_usage(&session_id, usage.input_tokens, usage.output_tokens)
+                            .await
+                        {
+                            Ok(total) => {
+                                input_tokens = total.input_tokens;
+                                output_tokens = total.output_tokens;
+                            }
+                            Err(error) => {
+                                warn!(%session_id, %error, "failed to persist session usage");
+                            }
+                        }
+                    }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::IterationEnd {
                         iteration,
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
+                        input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
+                        output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
                     }).await;
                 }
                 crate::event::AgentEvent::Compressed { .. } => {}

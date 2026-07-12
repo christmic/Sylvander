@@ -43,6 +43,9 @@ pub enum DomainEvent {
     SessionHistoryLoaded {
         session: SessionSummary,
         messages: Vec<HistoryEntry>,
+        iterations: u32,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     SessionUpdated {
         session_id: String,
@@ -73,8 +76,8 @@ pub enum DomainEvent {
     },
     UsageUpdated {
         iteration: u32,
-        input_tokens: u32,
-        output_tokens: u32,
+        input_tokens: u64,
+        output_tokens: u64,
     },
     /// The agent loop has emitted its final answer.
     AgentDone {
