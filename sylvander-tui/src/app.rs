@@ -417,6 +417,19 @@ impl AppState {
                 self.turn_active = true;
                 self.streaming_thinking.push_str(&delta);
             }
+            DomainEvent::ModelRetry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                reason,
+            } => {
+                self.turn_active = true;
+                self.status = format!("Retrying model {attempt}/{max_attempts}");
+                self.messages.push(ChatMessage::Info(format!(
+                    "Model retry {attempt}/{max_attempts} in {delay_ms}ms · {}",
+                    compact_runtime_reason(&reason)
+                )));
+            }
             DomainEvent::ToolStarted {
                 call_id,
                 tool_name,
@@ -955,6 +968,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
         event,
         DomainEvent::TextChunk { .. }
             | DomainEvent::ThinkingChunk { .. }
+            | DomainEvent::ModelRetry { .. }
             | DomainEvent::AgentDone { .. }
             | DomainEvent::TurnInterrupted { .. }
             | DomainEvent::ToolStarted { .. }
@@ -967,6 +981,17 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::TaskFailed { .. }
             | DomainEvent::TaskCancelled { .. }
     )
+}
+
+fn compact_runtime_reason(reason: &str) -> String {
+    const LIMIT: usize = 120;
+    let one_line = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= LIMIT {
+        return one_line;
+    }
+    let mut compact = one_line.chars().take(LIMIT - 1).collect::<String>();
+    compact.push('…');
+    compact
 }
 
 // ===========================================================================
@@ -1034,6 +1059,24 @@ mod tests {
         });
         assert_eq!(s.streaming, "hello!");
         assert!(s.messages.is_empty());
+    }
+
+    #[test]
+    fn model_retry_is_visible_and_bounded_in_transcript() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ModelRetry {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 100,
+            reason: format!("provider unavailable {}", "x".repeat(200)),
+        });
+        assert_eq!(state.status, "Retrying model 1/3");
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text))
+                if text.starts_with("Model retry 1/3 in 100ms")
+                    && text.chars().count() < 170
+        ));
     }
 
     #[test]

@@ -430,7 +430,17 @@ pub fn run_stream(
             let mut stream_open_err: Option<AgentLoopError> = None;
 
             loop {
-                match config.call_llm_with_retry(&request).await {
+                let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
+                let call = config.call_llm_with_retry(&request, retry_tx);
+                tokio::pin!(call);
+                let call_result = loop {
+                    tokio::select! {
+                        biased;
+                        Some(retry) = retry_rx.recv() => yield retry,
+                        result = &mut call => break result,
+                    }
+                };
+                match call_result {
                     Ok(s) => {
                         llm_stream = Some(s);
                         break;
@@ -448,6 +458,12 @@ pub fn run_stream(
                             error = %source,
                             "stream open failed, retrying"
                         );
+                        yield AgentEvent::ModelRetry {
+                            attempt: stream_attempt,
+                            max_attempts: MAX_STREAM_RETRIES,
+                            delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                            reason: source.to_string(),
+                        };
                         tokio::time::sleep(delay).await;
                     }
                     Err(e) => {
@@ -1102,6 +1118,7 @@ impl AgentLoop {
     async fn call_llm_with_retry(
         &self,
         request: &CreateMessageRequest,
+        retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<sylvander_llm_anthropic::prelude::MessageStream, AgentLoopError> {
         let mut last_err: Option<AnthropicError> = None;
         let max_attempts = self.max_retries + 1;
@@ -1131,6 +1148,12 @@ impl AgentLoop {
                         error = %e,
                         "LLM stream open failed, retrying"
                     );
+                    let _ = retry_events.send(AgentEvent::ModelRetry {
+                        attempt: attempt + 1,
+                        max_attempts: self.max_retries,
+                        delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                        reason: e.to_string(),
+                    });
                     tokio::time::sleep(delay).await;
                     last_err = Some(e);
                 }
@@ -1158,6 +1181,12 @@ impl AgentLoop {
                         error = %e,
                         "LLM call failed, retrying"
                     );
+                    let _ = retry_events.send(AgentEvent::ModelRetry {
+                        attempt: attempt + 1,
+                        max_attempts: self.max_retries,
+                        delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                        reason: e.to_string(),
+                    });
                     tokio::time::sleep(delay).await;
                     last_err = Some(e);
                 }

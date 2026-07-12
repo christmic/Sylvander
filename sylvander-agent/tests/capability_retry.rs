@@ -1,6 +1,7 @@
 //! Integration tests for capability validation + retry/backoff.
 
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -174,11 +175,31 @@ async fn llm_5xx_succeeds_after_retry() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let retries = Arc::new(Mutex::new(Vec::new()));
+    let observed = retries.clone();
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("hi")],
+        move |event| {
+            if let AgentEvent::ModelRetry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                ..
+            } = event
+            {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push((attempt, max_attempts, delay_ms));
+            }
+        },
+    )
+    .await
+    .expect("run");
     assert_eq!(run.final_message.id, "msg_retry_ok");
     assert_eq!(run.iterations, 1);
+    assert_eq!(retries.lock().unwrap().as_slice(), &[(1, 3, 100)]);
 }
 
 #[tokio::test]

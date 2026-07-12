@@ -971,6 +971,23 @@ impl AgentRunInner {
                     )
                     .await;
                 }
+                crate::event::AgentEvent::ModelRetry {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                    reason,
+                } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ModelRetry {
+                            attempt,
+                            max_attempts,
+                            delay_ms,
+                            reason,
+                        },
+                    )
+                    .await;
+                }
                 crate::event::AgentEvent::ToolCallStart { id, name, input } => {
                     if matches!(
                         name.as_str(),
