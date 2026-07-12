@@ -392,6 +392,10 @@ impl AppState {
                     self.status = "Archived session restored".into();
                 }
             }
+            DomainEvent::OperationFailed { operation, message } => {
+                self.status = format!("{operation} failed: {message}");
+                self.messages.push(ChatMessage::Info(self.status.clone()));
+            }
             DomainEvent::TextChunk { delta } => {
                 self.turn_active = true;
                 self.streaming.push_str(&delta);

@@ -96,7 +96,12 @@ pub struct SessionsOverlay {
 }
 
 impl SessionsOverlay {
-    pub fn new(entries: Vec<SessionEntry>) -> Self {
+    pub fn new(mut entries: Vec<SessionEntry>) -> Self {
+        entries.sort_by(|left, right| {
+            left.workspace
+                .cmp(&right.workspace)
+                .then_with(|| left.last_seen_secs.cmp(&right.last_seen_secs))
+        });
         Self {
             entries,
             cursor: 0,
@@ -185,7 +190,15 @@ impl Modal for SessionsOverlay {
                 theme::text_muted().italic(),
             )));
         } else {
+            let mut workspace = None::<&str>;
             for (row_i, (orig_idx, entry)) in filtered.iter().enumerate() {
+                if workspace != Some(entry.workspace.as_str()) {
+                    workspace = Some(entry.workspace.as_str());
+                    lines.push(Line::from(vec![
+                        Span::styled("  ▾ ", theme::brand_violet()),
+                        Span::styled(truncate(&entry.workspace, 64), theme::text_muted()),
+                    ]));
+                }
                 let is_active = state
                     .session_id
                     .as_deref()
@@ -526,6 +539,16 @@ mod tests {
         assert_eq!(o.filtered().len(), 1);
         o.filter = "zzz".into();
         assert_eq!(o.filtered().len(), 0);
+    }
+
+    #[test]
+    fn sessions_group_by_workspace_and_keep_recent_first() {
+        let overlay = SessionsOverlay::new(vec![
+            SessionEntry { workspace: "/b".into(), ..entry("b1", "B", SessionStatus::Complete, 5) },
+            SessionEntry { workspace: "/a".into(), ..entry("a2", "A2", SessionStatus::Complete, 60) },
+            SessionEntry { workspace: "/a".into(), ..entry("a1", "A1", SessionStatus::Complete, 5) },
+        ]);
+        assert_eq!(overlay.entries.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["a1", "a2", "b1"]);
     }
 
     #[test]

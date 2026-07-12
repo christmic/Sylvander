@@ -210,7 +210,7 @@ impl SessionStore for SqliteSessionStore {
         // per-user filtering happens in `list` at request time.
         self.run(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, lifetime, workspace, user_id, created_at, external_meta \
+                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta \
                  FROM sessions \
                  WHERE lifetime = 'persistent' AND is_archived = 0 \
                  ORDER BY updated_at DESC",
@@ -362,7 +362,7 @@ impl SessionStore for SqliteSessionStore {
             // a second round-trip when fetching a single record.
             let mut stmt = c.prepare(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
-                        s.created_at, s.external_meta, \
+                        s.created_at, s.updated_at, s.external_meta, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -400,7 +400,7 @@ impl SessionStore for SqliteSessionStore {
         self.run(move |c| {
             let mut sql = String::from(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
-                        s.created_at, s.external_meta, \
+                        s.created_at, s.updated_at, s.external_meta, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -464,7 +464,7 @@ impl SessionStore for SqliteSessionStore {
             // on name + user_id, ordered by updated_at DESC.
             let pattern = format!("%{query}%");
             let mut stmt = c.prepare(
-                "SELECT id, name, lifetime, workspace, user_id, created_at, external_meta \
+                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta \
                  FROM sessions \
                  WHERE is_archived = 0 \
                    AND user_id = ?3 \
@@ -692,7 +692,8 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
     let workspace: String = row.get(3)?;
     let user_id: String = row.get(4)?;
     let created_at: i64 = row.get(5)?;
-    let external: String = row.get(6)?;
+    let updated_at: i64 = row.get(6)?;
+    let external: String = row.get(7)?;
 
     Ok(StoredSession {
         id: SessionId::new(id),
@@ -705,6 +706,7 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
         },
         agents: Vec::new(),
         created_at,
+        updated_at,
         external_meta: serde_json::from_str(&external).unwrap_or_default(),
     })
 }
@@ -718,8 +720,9 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
     let workspace: String = row.get(3)?;
     let user_id: String = row.get(4)?;
     let created_at: i64 = row.get(5)?;
-    let external: String = row.get(6)?;
-    let agents_csv: Option<String> = row.get(7)?;
+    let updated_at: i64 = row.get(6)?;
+    let external: String = row.get(7)?;
+    let agents_csv: Option<String> = row.get(8)?;
 
     let agents = agents_csv
         .map(|s| {
@@ -741,6 +744,7 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
         },
         agents,
         created_at,
+        updated_at,
         external_meta: serde_json::from_str(&external).unwrap_or_default(),
     })
 }

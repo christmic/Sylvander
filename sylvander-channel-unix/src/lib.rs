@@ -219,6 +219,10 @@ enum ServerMsg {
         approval_enabled: bool,
         max_attachment_bytes: usize,
     },
+    OperationError {
+        operation: String,
+        message: String,
+    },
     Pong,
 }
 
@@ -709,13 +713,16 @@ async fn handle_client_msg(
                                 session.name
                             },
                             workspace: session.metadata.workspace.display().to_string(),
-                            last_seen_secs: u64::try_from(now.saturating_sub(session.created_at))
+                            last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at))
                                 .unwrap_or(0),
                         })
                         .collect();
                     let _ = tx.send(ServerMsg::SessionsList { sessions });
                 }
-                Err(error) => warn!(error = %error, "unix: failed to list sessions"),
+                Err(error) => {
+                    warn!(error = %error, "unix: failed to list sessions");
+                    operation_error(tx, "list_sessions", error.to_string());
+                }
             }
         }
         ClientMsg::LoadSession { session_id } => {
@@ -755,8 +762,11 @@ async fn handle_client_msg(
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
                 },
-                Ok(None) => warn!(%session_id, "unix: session not found"),
-                Err(error) => warn!(%error, "unix: failed to get session"),
+                Ok(None) => operation_error(tx, "load_session", "session not found"),
+                Err(error) => {
+                    warn!(%error, "unix: failed to get session");
+                    operation_error(tx, "load_session", error.to_string());
+                }
             }
         }
         ClientMsg::RenameSession { session_id, label } => {
@@ -817,6 +827,7 @@ async fn handle_client_msg(
                     fork.name = format!("{} (fork)", source.name);
                     fork.metadata.name = fork.name.clone();
                     fork.created_at = sylvander_agent::session::now_secs();
+                    fork.updated_at = fork.created_at;
                     if let Err(error) = ctx.sessions.save(&fork).await {
                         warn!(%error, "unix: failed to save forked session");
                         return;
@@ -910,8 +921,19 @@ fn session_info(session: sylvander_agent::session_store::StoredSession) -> Sessi
             session.name
         },
         workspace: session.metadata.workspace.display().to_string(),
-        last_seen_secs: u64::try_from(now.saturating_sub(session.created_at)).unwrap_or(0),
+        last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
     }
+}
+
+fn operation_error(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    operation: &str,
+    message: impl Into<String>,
+) {
+    let _ = tx.send(ServerMsg::OperationError {
+        operation: operation.into(),
+        message: message.into(),
+    });
 }
 
 fn history_text(value: &serde_json::Value) -> Option<String> {
@@ -1118,6 +1140,15 @@ mod tests {
         )
         .await;
         assert_eq!(loaded_again["messages"][0]["text"], "hello");
+
+        let missing = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"load_session","session_id":"missing"}),
+        )
+        .await;
+        assert_eq!(missing["type"], "operation_error");
+        assert_eq!(missing["operation"], "load_session");
 
         task.abort();
         let _ = std::fs::remove_file(path);

@@ -56,6 +56,9 @@ pub struct StoredSession {
     pub metadata: SessionMetadata,
     pub agents: Vec<AgentId>,
     pub created_at: i64,
+    /// Last metadata/message activity, used for reliable recency ordering.
+    #[serde(default)]
+    pub updated_at: i64,
     /// Protocol-specific metadata (agent never sees this).
     #[serde(default)]
     pub external_meta: HashMap<String, JsonValue>,
@@ -78,13 +81,15 @@ impl StoredSession {
         metadata: SessionMetadata,
         agents: Vec<AgentId>,
     ) -> Self {
+        let now = crate::session::now_secs();
         Self {
             id,
             name: name.into(),
             lifetime,
             metadata,
             agents,
-            created_at: crate::session::now_secs(),
+            created_at: now,
+            updated_at: now,
             external_meta: HashMap::new(),
         }
     }

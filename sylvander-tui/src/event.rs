@@ -52,6 +52,10 @@ pub enum DomainEvent {
         label: Option<String>,
         archived: bool,
     },
+    OperationFailed {
+        operation: String,
+        message: String,
+    },
 
     /// Streaming text chunk from the model.
     TextChunk {

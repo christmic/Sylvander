@@ -38,7 +38,7 @@ completed backend feature.
 - [ ] Permanent delete requires a separate explicit confirmation and cannot be mistaken for archive.
 - [x] Fork creates an independent session at the current completed turn boundary.
 - [x] Resume restores durable token/accounting and replaces rather than mixes transcripts.
-- [ ] Session search, recency, workspace grouping, and empty/error states work.
+- [x] Session search, accurate recency, workspace grouping, and empty/error states work.
 
 ### Plan and background work
 
