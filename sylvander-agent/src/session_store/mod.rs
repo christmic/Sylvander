@@ -233,10 +233,7 @@ pub trait SessionStore: Send + Sync {
     async fn delete(&self, id: &SessionId) -> Result<(), SessionStoreError>;
 
     /// Look up a session by ID.
-    async fn get(
-        &self,
-        id: &SessionId,
-    ) -> Result<Option<StoredSession>, SessionStoreError>;
+    async fn get(&self, id: &SessionId) -> Result<Option<StoredSession>, SessionStoreError>;
 
     /// List sessions matching a filter. Used by runtime to scope by
     /// user / agent / lifetime without loading everything.

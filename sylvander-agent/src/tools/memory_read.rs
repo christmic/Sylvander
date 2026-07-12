@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
@@ -70,11 +70,7 @@ impl Tool for MemoryReadTool {
         )
     }
 
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));
         }
@@ -117,10 +113,10 @@ impl Tool for MemoryReadTool {
             })
             .collect();
 
-        Ok(ToolOutput::ok(serde_json::to_string_pretty(
-            &json_results,
-        )
-        .unwrap_or_else(|_| format!("{json_results:#?}"))))
+        Ok(ToolOutput::ok(
+            serde_json::to_string_pretty(&json_results)
+                .unwrap_or_else(|_| format!("{json_results:#?}")),
+        ))
     }
 }
 
@@ -134,7 +130,13 @@ mod tests {
     use crate::tools::memory::{InMemoryMemoryStore, MemoryEntry};
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
+    fn ctx() -> ToolContext {
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
+    }
 
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
@@ -156,7 +158,12 @@ mod tests {
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("query").is_some());
         let required = schema.schema.get("required").expect("has required");
-        assert!(required.as_array().unwrap().contains(&serde_json::json!("query")));
+        assert!(
+            required
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("query"))
+        );
     }
 
     #[tokio::test]
@@ -164,11 +171,17 @@ mod tests {
         let store = test_store();
         let c = ctx();
         store
-            .store(&c.session, MemoryEntry::new("1", "User prefers dark mode", c.session.as_ref().clone()))
+            .store(
+                &c.session,
+                MemoryEntry::new("1", "User prefers dark mode", c.session.as_ref().clone()),
+            )
             .await
             .expect("store");
         store
-            .store(&c.session, MemoryEntry::new("2", "Project uses Rust", c.session.as_ref().clone()))
+            .store(
+                &c.session,
+                MemoryEntry::new("2", "Project uses Rust", c.session.as_ref().clone()),
+            )
             .await
             .expect("store");
 
@@ -196,7 +209,10 @@ mod tests {
         let store = test_store();
         let c = ctx();
         store
-            .store(&c.session, MemoryEntry::new("1", "some content", c.session.as_ref().clone()))
+            .store(
+                &c.session,
+                MemoryEntry::new("1", "some content", c.session.as_ref().clone()),
+            )
             .await
             .expect("store");
 

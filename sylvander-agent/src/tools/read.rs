@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
@@ -68,11 +68,7 @@ impl Tool for ReadTool {
         )
     }
 
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Read) {
             return Ok(ToolOutput::err(
                 "read capability not granted for this invocation",
@@ -152,7 +148,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn ctx() -> ToolContext {
-        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite)
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
     }
 
     /// Helper: create a temp dir with a few files.
@@ -172,7 +172,9 @@ mod tests {
         let tool = ReadTool::new(&workdir);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let c = ctx();
-        let out = rt.block_on(tool.execute(&c, json!({"file_path": "hello.txt"}))).unwrap();
+        let out = rt
+            .block_on(tool.execute(&c, json!({"file_path": "hello.txt"})))
+            .unwrap();
         assert!(!out.is_error);
         assert_eq!(out.content, "Hello, world!");
     }
@@ -236,7 +238,9 @@ mod tests {
         // traversal check, we create a real symlink in setup_workspace
         // (next test).
         let c = ctx();
-        let result = tool.execute(&c, json!({"file_path": "../etc/passwd"})).await;
+        let result = tool
+            .execute(&c, json!({"file_path": "../etc/passwd"}))
+            .await;
         // Either Err (security violation) or Ok(ToolOutput::err(...)) (file
         // not found) — both are correct rejections. The point is the
         // file content is NOT returned.

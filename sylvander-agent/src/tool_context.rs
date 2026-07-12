@@ -217,7 +217,7 @@ impl ToolContext {
     }
 }
 
-    /// Convenience constructors for `SessionContext` values used when the
+/// Convenience constructors for `SessionContext` values used when the
 /// caller has not supplied one. Kept in their own module so callers
 /// don't have to scroll past struct definitions.
 pub mod defaults {
@@ -296,7 +296,10 @@ mod tests {
             .with_capability(Cap::Read)
             .with_capability(Cap::Write);
 
-        assert_eq!(ctx.surface.fs_root.as_deref(), Some(std::path::Path::new("/home/alice/code")));
+        assert_eq!(
+            ctx.surface.fs_root.as_deref(),
+            Some(std::path::Path::new("/home/alice/code"))
+        );
         assert!(ctx.has_cap(Cap::Read));
         assert!(ctx.has_cap(Cap::Write));
         assert!(!ctx.has_cap(Cap::Network));

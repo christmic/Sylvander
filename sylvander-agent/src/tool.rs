@@ -97,11 +97,7 @@ pub trait Tool: Send + Sync {
     /// Returns [`ToolError`] for system-level failures (panic, timeout).
     /// For model-visible failures (e.g., "file not found"), return
     /// [`ToolOutput::err`] and let the loop continue.
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError>;
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError>;
 }
 
 /// Registry of tools available to the agent. Builder-style.
@@ -228,7 +224,11 @@ impl MockTool {
     /// response. Successive calls cycle through `responses` (last
     /// response repeats if exhausted).
     #[must_use]
-    pub fn new(name: impl Into<String>, description: impl Into<String>, response: ToolOutput) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        response: ToolOutput,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -279,11 +279,7 @@ impl Tool for MockTool {
         self.schema.clone()
     }
 
-    async fn execute(
-        &self,
-        _ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.calls
             .lock()
             .expect("MockTool lock poisoned")
@@ -307,7 +303,11 @@ mod tests {
     use serde_json::json;
 
     fn ctx() -> ToolContext {
-        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite)
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
     }
 
     #[test]
@@ -347,11 +347,8 @@ mod tests {
 
     #[test]
     fn registry_definitions_for_llm() {
-        let registry = ToolRegistry::new().register(MockTool::new(
-            "Read",
-            "Read a file",
-            ToolOutput::ok(""),
-        ));
+        let registry =
+            ToolRegistry::new().register(MockTool::new("Read", "Read a file", ToolOutput::ok("")));
         let defs = registry.definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "Read");

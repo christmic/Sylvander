@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value as JsonValue;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -28,8 +28,8 @@ use crate::session::SessionMetadata;
 use crate::spec::{AgentId, SessionId};
 
 use super::{
-    MessageRole, SessionFilter, SessionLifetime, SessionStore, SessionStoreError,
-    SessionUsage, StoredMessage, StoredSession,
+    MessageRole, SessionFilter, SessionLifetime, SessionStore, SessionStoreError, SessionUsage,
+    StoredMessage, StoredSession,
 };
 
 /// SQLite-backed session store.
@@ -352,10 +352,7 @@ impl SessionStore for SqliteSessionStore {
         .await
     }
 
-    async fn get(
-        &self,
-        id: &SessionId,
-    ) -> Result<Option<StoredSession>, SessionStoreError> {
+    async fn get(&self, id: &SessionId) -> Result<Option<StoredSession>, SessionStoreError> {
         let id = id.clone();
         self.run(move |c| {
             // Combine session + agents in one query so we don't need
@@ -391,10 +388,7 @@ impl SessionStore for SqliteSessionStore {
             .as_ref()
             .map(|i| i.user_id.0.clone())
             .unwrap_or_else(|| ctx.identity.user_id.0.clone());
-        let caller_agent = filter
-            .identity
-            .as_ref()
-            .map(|i| i.agent_id.0.clone());
+        let caller_agent = filter.identity.as_ref().map(|i| i.agent_id.0.clone());
         let force_scope = filter.identity.is_some();
 
         self.run(move |c| {
@@ -505,9 +499,8 @@ impl SessionStore for SqliteSessionStore {
         };
         let model_id = model_id.map(str::to_string);
         let tool_name = tool_name.map(str::to_string);
-        let content_json = serde_json::to_string(&content).map_err(|e| {
-            SessionStoreError::Store(format!("serialize content: {e}"))
-        })?;
+        let content_json = serde_json::to_string(&content)
+            .map_err(|e| SessionStoreError::Store(format!("serialize content: {e}")))?;
         // Flatten the SessionContext into real columns. We do NOT
         // store it as a JSON blob — the API still takes the full
         // SessionContext (so call sites don't change), but storage
@@ -533,13 +526,12 @@ impl SessionStore for SqliteSessionStore {
 
             // Compute next seq within the session. SQLite serializes
             // our access through the mutex, so MAX+1 is race-free here.
-            let next_seq: i64 = c
-                .query_row(
-                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
+            let next_seq: i64 = c.query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
                      WHERE session_id = ?1",
-                    params![session_id.0],
-                    |r| r.get(0),
-                )?;
+                params![session_id.0],
+                |r| r.get(0),
+            )?;
 
             c.execute(
                 "INSERT INTO session_messages \
@@ -583,9 +575,7 @@ impl SessionStore for SqliteSessionStore {
                     row_to_message,
                 )
                 .optional()?;
-            row.ok_or_else(|| {
-                SessionStoreError::Store("just-inserted message vanished".into())
-            })
+            row.ok_or_else(|| SessionStoreError::Store("just-inserted message vanished".into()))
         })
         .await
     }
@@ -670,12 +660,16 @@ fn read_usage(c: &Connection, id: &SessionId) -> Result<SessionUsage, SessionSto
     Ok(c.query_row(
         "SELECT iterations, input_tokens, output_tokens FROM session_usage WHERE session_id = ?1",
         params![id.0],
-        |row| Ok(SessionUsage {
-            iterations: row.get(0)?,
-            input_tokens: row.get(1)?,
-            output_tokens: row.get(2)?,
-        }),
-    ).optional()?.unwrap_or_default())
+        |row| {
+            Ok(SessionUsage {
+                iterations: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+            })
+        },
+    )
+    .optional()?
+    .unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -858,8 +852,14 @@ mod tests {
     #[tokio::test]
     async fn list_persistent_filters_correctly() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
-        store.save(&make_session("s2", SessionLifetime::Ephemeral)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
+        store
+            .save(&make_session("s2", SessionLifetime::Ephemeral))
+            .await
+            .unwrap();
 
         let persistent = store.list_persistent().await.unwrap();
         assert_eq!(persistent.len(), 1);
@@ -869,7 +869,10 @@ mod tests {
     #[tokio::test]
     async fn save_and_get() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
 
         let found = store.get(&SessionId::new("s1")).await.unwrap();
         assert!(found.is_some());
@@ -881,13 +884,25 @@ mod tests {
     #[tokio::test]
     async fn save_is_upsert() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         // Save again with a new name — should update, not duplicate.
         let mut updated = make_session("s1", SessionLifetime::Persistent);
         updated.name = "renamed".into();
         store.save(&updated).await.unwrap();
 
-        let all = store.list(&ctx(), SessionFilter { include_archived: true, ..Default::default() }).await.unwrap();
+        let all = store
+            .list(
+                &ctx(),
+                SessionFilter {
+                    include_archived: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "renamed");
     }
@@ -895,7 +910,10 @@ mod tests {
     #[tokio::test]
     async fn delete_removes() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Ephemeral)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Ephemeral))
+            .await
+            .unwrap();
         store.delete(&SessionId::new("s1")).await.unwrap();
         assert!(store.get(&SessionId::new("s1")).await.unwrap().is_none());
     }
@@ -903,7 +921,10 @@ mod tests {
     #[tokio::test]
     async fn archive_soft_deletes() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         store.archive(&SessionId::new("s1")).await.unwrap();
 
         // get returns None (treats archived as gone from active set)
@@ -914,7 +935,10 @@ mod tests {
         assert!(visible.iter().all(|s| s.id != SessionId::new("s1")));
 
         // list with include_archived=true brings it back
-        let filter = SessionFilter { include_archived: true, ..Default::default() };
+        let filter = SessionFilter {
+            include_archived: true,
+            ..Default::default()
+        };
         let all = store.list(&ctx(), filter).await.unwrap();
         assert_eq!(all.len(), 1);
     }
@@ -923,7 +947,10 @@ mod tests {
     async fn archived_session_can_be_restored_with_history_intact() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
         let id = SessionId::new("s1");
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         store.archive(&id).await.unwrap();
         store.restore(&id).await.unwrap();
         assert_eq!(store.get(&id).await.unwrap().unwrap().id, id);
@@ -933,10 +960,20 @@ mod tests {
     async fn usage_accumulates_atomically_per_session() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
         let id = SessionId::new("s1");
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         store.record_usage(&id, 100, 20).await.unwrap();
         let usage = store.record_usage(&id, 50, 10).await.unwrap();
-        assert_eq!(usage, SessionUsage { iterations: 2, input_tokens: 150, output_tokens: 30 });
+        assert_eq!(
+            usage,
+            SessionUsage {
+                iterations: 2,
+                input_tokens: 150,
+                output_tokens: 30
+            }
+        );
         assert_eq!(store.usage(&id).await.unwrap(), usage);
     }
 
@@ -985,7 +1022,10 @@ mod tests {
     #[tokio::test]
     async fn append_message_assigns_seq() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
 
         let m1 = store
             .append_message(
@@ -1020,7 +1060,10 @@ mod tests {
     #[tokio::test]
     async fn read_history_returns_in_order() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
 
         for i in 0..3 {
             store
@@ -1037,7 +1080,10 @@ mod tests {
                 .unwrap();
         }
 
-        let history = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
+        let history = store
+            .read_history(&ctx(), &SessionId::new("s1"), false, None)
+            .await
+            .unwrap();
         assert_eq!(history.len(), 3);
         for (i, m) in history.iter().enumerate() {
             assert_eq!(m.seq, i as u32);
@@ -1047,7 +1093,10 @@ mod tests {
     #[tokio::test]
     async fn read_history_excludes_summarized() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         for i in 0..3 {
             store
                 .append_message(
@@ -1063,20 +1112,32 @@ mod tests {
                 .unwrap();
         }
         // Mark seq 0..2 (i.e. seq 0 and 1) as summarized.
-        store.mark_summarized(&SessionId::new("s1"), 0..2).await.unwrap();
+        store
+            .mark_summarized(&SessionId::new("s1"), 0..2)
+            .await
+            .unwrap();
 
-        let active = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
+        let active = store
+            .read_history(&ctx(), &SessionId::new("s1"), false, None)
+            .await
+            .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].seq, 2);
 
-        let all = store.read_history(&ctx(), &SessionId::new("s1"), true, None).await.unwrap();
+        let all = store
+            .read_history(&ctx(), &SessionId::new("s1"), true, None)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 3);
     }
 
     #[tokio::test]
     async fn count_active_messages() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         for _ in 0..5 {
             store
                 .append_message(
@@ -1091,15 +1152,27 @@ mod tests {
                 .await
                 .unwrap();
         }
-        store.mark_summarized(&SessionId::new("s1"), 0..3).await.unwrap();
+        store
+            .mark_summarized(&SessionId::new("s1"), 0..3)
+            .await
+            .unwrap();
 
-        assert_eq!(store.count_active_messages(&ctx(), &SessionId::new("s1")).await.unwrap(), 2);
+        assert_eq!(
+            store
+                .count_active_messages(&ctx(), &SessionId::new("s1"))
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
     async fn cascade_delete_drops_messages() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         store
             .append_message(
                 &ctx(),
@@ -1116,7 +1189,10 @@ mod tests {
         store.delete(&SessionId::new("s1")).await.unwrap();
 
         // The message row is gone (CASCADE).
-        let history = store.read_history(&ctx(), &SessionId::new("s1"), true, None).await.unwrap();
+        let history = store
+            .read_history(&ctx(), &SessionId::new("s1"), true, None)
+            .await
+            .unwrap();
         assert!(history.is_empty());
     }
 
@@ -1140,7 +1216,10 @@ mod tests {
     #[tokio::test]
     async fn concurrent_saves_serialize_safely() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store.save(&make_session("s1", SessionLifetime::Persistent)).await.unwrap();
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
 
         // Spawn 10 concurrent appends — must not deadlock or panic.
         let mut handles = Vec::new();
@@ -1163,11 +1242,17 @@ mod tests {
             h.await.unwrap().unwrap();
         }
 
-        let count = store.count_active_messages(&ctx(), &SessionId::new("s1")).await.unwrap();
+        let count = store
+            .count_active_messages(&ctx(), &SessionId::new("s1"))
+            .await
+            .unwrap();
         assert_eq!(count, 10);
 
         // All seq values must be unique and contiguous.
-        let history = store.read_history(&ctx(), &SessionId::new("s1"), false, None).await.unwrap();
+        let history = store
+            .read_history(&ctx(), &SessionId::new("s1"), false, None)
+            .await
+            .unwrap();
         let seqs: Vec<u32> = history.iter().map(|m| m.seq).collect();
         let mut sorted = seqs.clone();
         sorted.sort();
@@ -1181,7 +1266,9 @@ mod tests {
 
         // Write one session and message.
         let s1 = SqliteSessionStore::open(&path).await.unwrap();
-        s1.save(&make_session("p1", SessionLifetime::Persistent)).await.unwrap();
+        s1.save(&make_session("p1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
         s1.append_message(
             &ctx(),
             &SessionId::new("p1"),
@@ -1199,7 +1286,10 @@ mod tests {
         let s2 = SqliteSessionStore::open(&path).await.unwrap();
         let found = s2.get(&SessionId::new("p1")).await.unwrap();
         assert!(found.is_some());
-        let history = s2.read_history(&ctx(), &SessionId::new("p1"), false, None).await.unwrap();
+        let history = s2
+            .read_history(&ctx(), &SessionId::new("p1"), false, None)
+            .await
+            .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content["hello"], "world");
     }

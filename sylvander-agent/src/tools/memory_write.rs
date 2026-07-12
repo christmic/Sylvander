@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
@@ -63,11 +63,7 @@ impl Tool for MemoryWriteTool {
         )
     }
 
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));
         }
@@ -111,7 +107,13 @@ mod tests {
     use crate::tools::memory::InMemoryMemoryStore;
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
+    fn ctx() -> ToolContext {
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
+    }
 
     fn test_store() -> Arc<dyn MemoryStore> {
         Arc::new(InMemoryMemoryStore::new())
@@ -133,7 +135,12 @@ mod tests {
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
         let required = schema.schema.get("required").expect("has required");
-        assert!(required.as_array().unwrap().contains(&serde_json::json!("content")));
+        assert!(
+            required
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("content"))
+        );
     }
 
     #[tokio::test]
@@ -143,10 +150,13 @@ mod tests {
         let c = ctx();
 
         let result = tool
-            .execute(&c, json!({
-                "content": "The user prefers tabs over spaces",
-                "tags": ["preference", "code-style"]
-            }))
+            .execute(
+                &c,
+                json!({
+                    "content": "The user prefers tabs over spaces",
+                    "tags": ["preference", "code-style"]
+                }),
+            )
             .await
             .expect("execute");
 
