@@ -39,6 +39,7 @@ use crate::bus::{
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::session::{now_secs, SessionContext, SessionMetadata};
+use crate::session_store::{MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession};
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::tool::{Tool, ToolRegistry};
 use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
@@ -62,6 +63,8 @@ pub(crate) struct AgentRunInner {
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
+    /// Optional durable source of truth shared with channels/runtime.
+    session_store: Option<Arc<dyn SessionStore>>,
     /// Long-term memory store.
     memory: Option<Arc<dyn MemoryStore>>,
     /// Whether bus-based approval is enabled (opt-in, off by default).
@@ -193,7 +196,10 @@ impl AgentRun {
                         break;
                     }
                     SystemMessage::JoinSession { session_id, metadata } => {
-                        let ctx = SessionContext::new(session_id.clone(), metadata.clone());
+                        let ctx = self
+                            .inner
+                            .restore_session_context(session_id, metadata)
+                            .await;
                         self.inner.sessions.write().await.insert(session_id.clone(), ctx);
                         info!(agent_id = %self.inner.id, %session_id, "joined session");
                     }
@@ -444,6 +450,63 @@ impl AskUserGate for BusAskUserGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    async fn restore_session_context(
+        &self,
+        session_id: &SessionId,
+        metadata: &SessionMetadata,
+    ) -> SessionContext {
+        let mut context = SessionContext::new(session_id.clone(), metadata.clone());
+        let Some(store) = &self.session_store else {
+            return context;
+        };
+
+        match store.get(session_id).await {
+            Ok(None) => {
+                let stored = StoredSession::new(
+                    session_id.clone(),
+                    metadata.name.clone(),
+                    SessionLifetime::Persistent,
+                    metadata.clone(),
+                    vec![self.id.clone()],
+                );
+                if let Err(error) = store.save(&stored).await {
+                    warn!(%session_id, %error, "failed to persist joined session");
+                    return context;
+                }
+            }
+            Ok(Some(stored)) => {
+                context.metadata = stored.metadata;
+            }
+            Err(error) => {
+                warn!(%session_id, %error, "failed to inspect joined session");
+                return context;
+            }
+        }
+
+        let caller = sylvander_protocol::SessionContext::new(
+            metadata.user_id.clone(),
+            self.id.clone(),
+            session_id.clone(),
+        );
+        match store.read_history(&caller, session_id, false, None).await {
+            Ok(messages) => {
+                for stored in messages {
+                    match serde_json::from_value(stored.content) {
+                        Ok(message) => context.history.push(message),
+                        Err(error) => warn!(
+                            %session_id,
+                            seq = stored.seq,
+                            %error,
+                            "ignored malformed persisted message"
+                        ),
+                    }
+                }
+            }
+            Err(error) => warn!(%session_id, %error, "failed to restore session history"),
+        }
+        context
+    }
+
     async fn interrupt_turn(&self, session_id: &SessionId) {
         if let Some(turn) = self.active_turns.lock().await.remove(session_id) {
             let _ = turn.interrupt.send(());
@@ -507,6 +570,7 @@ impl AgentRunInner {
         F: std::future::Future,
     {
         let session_id = msg.session_id.clone();
+        let user_message = self.message_to_param(&msg);
 
         // 1. Append user message + take history snapshot
         let history = {
@@ -514,9 +578,36 @@ impl AgentRunInner {
             let ctx = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
-            ctx.append_user_message(self.message_to_param(&msg));
+            ctx.append_user_message(user_message.clone());
             ctx.history_snapshot()
         };
+        if let Some(store) = &self.session_store {
+            let user_id = match &msg.sender {
+                Sender::User(user_id) => user_id.as_str(),
+                _ => "unix-client",
+            };
+            let caller = sylvander_protocol::SessionContext::new(
+                user_id,
+                self.id.clone(),
+                session_id.clone(),
+            );
+            if let Ok(content) = serde_json::to_value(&user_message) {
+                if let Err(error) = store
+                    .append_message(
+                        &caller,
+                        &session_id,
+                        StoredMessageRole::User,
+                        content,
+                        Some(&self.loop_config.model().id),
+                        None,
+                        None,
+                    )
+                    .await
+                {
+                    warn!(%session_id, %error, "failed to persist user message");
+                }
+            }
+        }
 
         // 2. Build per-session approval gate (if enabled)
         let loop_config = if self.approval_enabled {
@@ -628,11 +719,45 @@ impl AgentRunInner {
         // 4. Write final message to session + publish Done
         if let Some(msg) = final_message {
             let text = msg.text();
-            self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text }).await;
+            if let Some(store) = &self.session_store {
+                let user_id = self
+                    .sessions
+                    .read()
+                    .await
+                    .get(&session_id)
+                    .map(|context| context.metadata.user_id.clone())
+                    .unwrap_or_else(|| "unix-client".into());
+                let caller = sylvander_protocol::SessionContext::new(
+                    user_id,
+                    self.id.clone(),
+                    session_id.clone(),
+                );
+                let message = sylvander_llm_anthropic::api::types::MessageParam::assistant_blocks(
+                    msg.content.clone(),
+                );
+                if let Ok(content) = serde_json::to_value(message) {
+                    if let Err(error) = store
+                        .append_message(
+                            &caller,
+                            &session_id,
+                            StoredMessageRole::Assistant,
+                            content,
+                            Some(&self.loop_config.model().id),
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!(%session_id, %error, "failed to persist assistant message");
+                    }
+                }
+            }
             let mut sessions = self.sessions.write().await;
             if let Some(ctx) = sessions.get_mut(&session_id) {
                 ctx.append_assistant_message(msg);
             }
+            drop(sessions);
+            self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text }).await;
         }
 
         Ok(())
@@ -674,6 +799,7 @@ pub struct AgentRunBuilder {
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
+    session_store: Option<Arc<dyn SessionStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
@@ -688,6 +814,7 @@ impl AgentRunBuilder {
             tool_overrides: None,
             compression_overrides: None,
             memory: None,
+            session_store: None,
             model_capabilities: None,
             approval_enabled: false,
             approval_rules: Vec::new(),
@@ -699,6 +826,12 @@ impl AgentRunBuilder {
 
     #[must_use]
     pub fn memory(mut self, store: Arc<dyn MemoryStore>) -> Self { self.memory = Some(store); self }
+
+    #[must_use]
+    pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
 
     #[must_use]
     pub fn override_tools(mut self, tools: ToolRegistry) -> Self { self.tool_overrides = Some(tools); self }
@@ -774,6 +907,7 @@ impl AgentRunBuilder {
                 loop_config,
                 bus,
                 sessions: RwLock::new(HashMap::new()),
+                session_store: self.session_store,
                 memory,
                 approval_enabled: self.approval_enabled,
                 approval_rules: self.approval_rules,
@@ -859,6 +993,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_session_history_restores_into_agent_context() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let agent_id = spec.id.clone();
+        let store: Arc<dyn SessionStore> = Arc::new(
+            crate::session_store::SqliteSessionStore::open_in_memory()
+                .await
+                .expect("store"),
+        );
+        let session_id = SessionId::new("durable-session");
+        let metadata = test_metadata();
+        store
+            .save(&StoredSession::new(
+                session_id.clone(),
+                metadata.name.clone(),
+                SessionLifetime::Persistent,
+                metadata.clone(),
+                vec![agent_id.clone()],
+            ))
+            .await
+            .expect("save session");
+        let caller = sylvander_protocol::SessionContext::new(
+            metadata.user_id.clone(),
+            agent_id,
+            session_id.clone(),
+        );
+        store
+            .append_message(
+                &caller,
+                &session_id,
+                StoredMessageRole::User,
+                serde_json::to_value(
+                    sylvander_llm_anthropic::api::types::MessageParam::user("remember me"),
+                )
+                .expect("serialize"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("append");
+
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .session_store(store)
+            .build()
+            .expect("build");
+        let restored = run
+            .inner
+            .restore_session_context(&session_id, &metadata)
+            .await;
+
+        assert_eq!(restored.len(), 1);
+    }
+
+    #[tokio::test]
     async fn memory_is_infrastructure_not_tool() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
@@ -928,4 +1118,3 @@ mod tests {
         assert!(!filter.matches(&BusMessage { recipient: Recipient::Agent(AgentId::new("other")), ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi") }));
     }
 }
-
