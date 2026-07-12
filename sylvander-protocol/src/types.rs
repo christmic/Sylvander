@@ -171,6 +171,12 @@ pub enum StreamEvent {
     ThinkingDelta {
         delta: String,
     },
+    ModelRetry {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: String,
+    },
     ToolCall {
         call_id: String,
         tool_name: String,

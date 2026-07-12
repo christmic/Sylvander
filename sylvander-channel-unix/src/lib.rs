@@ -116,6 +116,13 @@ enum ServerMsg {
         session_id: String,
         delta: String,
     },
+    ModelRetry {
+        session_id: String,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: String,
+    },
     ToolCall {
         session_id: String,
         call_id: String,
@@ -472,6 +479,18 @@ async fn handle_client_msg(
                                     delta,
                                 })
                             }
+                            StreamEvent::ModelRetry {
+                                attempt,
+                                max_attempts,
+                                delay_ms,
+                                reason,
+                            } => Some(ServerMsg::ModelRetry {
+                                session_id: s.0.clone(),
+                                attempt,
+                                max_attempts,
+                                delay_ms,
+                                reason,
+                            }),
                             StreamEvent::ToolCall {
                                 call_id,
                                 tool_name,

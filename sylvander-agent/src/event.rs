@@ -35,6 +35,18 @@ pub enum AgentEvent {
     /// Incremental thinking content (when extended thinking enabled).
     ThinkingChunk(String),
 
+    /// A transient model failure will be retried after a bounded backoff.
+    ModelRetry {
+        /// Retry number about to run, 1-indexed.
+        attempt: u32,
+        /// Maximum retries configured for this request phase.
+        max_attempts: u32,
+        /// Backoff delay before the retry starts.
+        delay_ms: u64,
+        /// Sanitized provider error suitable for diagnostics and UI.
+        reason: String,
+    },
+
     /// The model invoked a tool — about to execute it.
     ToolCallStart {
         /// Tool call ID (matches `tool_use.id`).

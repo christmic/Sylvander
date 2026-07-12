@@ -87,6 +87,13 @@ pub enum ServerMsg {
         session_id: String,
         delta: String,
     },
+    ModelRetry {
+        session_id: String,
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: String,
+    },
     ToolCall {
         session_id: String,
         #[serde(default)]
@@ -388,6 +395,18 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
+        ServerMsg::ModelRetry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            reason,
+            ..
+        } => DomainEvent::ModelRetry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            reason,
+        },
         ServerMsg::ToolCall {
             call_id,
             tool_name,
@@ -574,6 +593,26 @@ mod tests {
             event,
             Some(DomainEvent::OperationFailed { operation, message })
                 if operation == "load_session" && message == "not found"
+        ));
+    }
+
+    #[test]
+    fn model_retry_wire_event_preserves_backoff_context() {
+        let event = parse_server_msg(ServerMsg::ModelRetry {
+            session_id: "s1".into(),
+            attempt: 2,
+            max_attempts: 3,
+            delay_ms: 200,
+            reason: "rate limited".into(),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::ModelRetry {
+                attempt: 2,
+                max_attempts: 3,
+                delay_ms: 200,
+                reason,
+            }) if reason == "rate limited"
         ));
     }
 

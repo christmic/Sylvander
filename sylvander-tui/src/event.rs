@@ -68,6 +68,12 @@ pub enum DomainEvent {
     ThinkingChunk {
         delta: String,
     },
+    ModelRetry {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        reason: String,
+    },
     /// A tool call started (status: pending).
     ToolStarted {
         call_id: String,
