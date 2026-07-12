@@ -30,6 +30,80 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+struct BarrierTool {
+    barrier: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait::async_trait]
+impl Tool for BarrierTool {
+    fn name(&self) -> &str { "parallel_probe" }
+    fn description(&self) -> &str { "waits for another invocation" }
+    fn input_schema(&self) -> InputSchema { InputSchema::empty() }
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        self.barrier.wait().await;
+        Ok(ToolOutput::ok("ready"))
+    }
+}
+
+#[tokio::test]
+async fn ordinary_tool_batch_starts_and_executes_concurrently() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_parallel","type":"message","role":"assistant",
+            "content":[
+                {"type":"tool_use","id":"one","name":"parallel_probe","input":{}},
+                {"type":"tool_use","id":"two","name":"parallel_probe","input":{}}
+            ],
+            "model":"claude-sonnet-5-20260601","stop_reason":"tool_use",
+            "usage":{"input_tokens":10,"output_tokens":5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_done","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"done"}],
+            "model":"claude-sonnet-5-20260601","stop_reason":"end_turn",
+            "usage":{"input_tokens":20,"output_tokens":3}
+        })))
+        .mount(&server)
+        .await;
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .tool(BarrierTool { barrier: Arc::new(tokio::sync::Barrier::new(2)) })
+        .build()
+        .expect("build");
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        run_with_events(&loop_, vec![MessageParam::user("parallel")], move |event| {
+            captured.lock().unwrap().push(event);
+        }),
+    )
+    .await
+    .expect("parallel tools must not deadlock")
+    .expect("run");
+
+    let events = events.lock().unwrap();
+    let lifecycle = events.iter().filter_map(|event| match event {
+        AgentEvent::ToolCallStart { id, .. } => Some(format!("start:{id}")),
+        AgentEvent::ToolCallEnd { id, .. } => Some(format!("end:{id}")),
+        _ => None,
+    }).collect::<Vec<_>>();
+    assert_eq!(lifecycle, ["start:one", "start:two", "end:one", "end:two"]);
+}
+
 #[tokio::test]
 async fn single_iteration_end_turn_returns_final_message() {
     let server = MockServer::start().await;

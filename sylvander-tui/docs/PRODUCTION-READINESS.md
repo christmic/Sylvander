@@ -68,7 +68,9 @@ completed backend feature.
 - [x] Search results group matches by file with counts and line numbers.
 - [x] MCP and unknown tools have a bounded, safe fallback presentation.
 - [x] MCP/web/resource tools have dedicated typed presentations.
-- [ ] Parallel calls, retries, timeouts, cancellation, and partial output render.
+- [x] Independent tool calls execute concurrently and render as one deterministic batch.
+- [x] Tool timeout, rejection, error, and turn cancellation settle pending rows explicitly.
+- [ ] LLM retries and partial tool output have typed lifecycle events and render incrementally.
 - [ ] Long output supports expand, focused inspection, copy, and search.
 - [x] ANSI/control sequences are sanitized and secrets are masked.
 
