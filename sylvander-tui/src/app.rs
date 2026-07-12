@@ -392,6 +392,19 @@ impl AppState {
                     self.status = "Archived session restored".into();
                 }
             }
+            DomainEvent::SessionDeleted { session_id } => {
+                self.sessions.retain(|session| session.id != session_id);
+                self.last_archived_session = self
+                    .last_archived_session
+                    .take()
+                    .filter(|session| session.id != session_id);
+                if self.session_id.as_deref() == Some(session_id.as_str()) {
+                    self.session_id = None;
+                    self.messages.clear();
+                    self.welcomed = false;
+                }
+                self.status = "Session permanently deleted".into();
+            }
             DomainEvent::OperationFailed { operation, message } => {
                 self.status = format!("{operation} failed: {message}");
                 self.messages.push(ChatMessage::Info(self.status.clone()));

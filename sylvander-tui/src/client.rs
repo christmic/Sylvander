@@ -63,6 +63,9 @@ pub enum ClientMsg {
     RestoreSession {
         session_id: String,
     },
+    DeleteSession {
+        session_id: String,
+    },
     ForkSession {
         session_id: String,
     },
@@ -196,6 +199,9 @@ pub enum ServerMsg {
         session_id: String,
         label: Option<String>,
         archived: bool,
+    },
+    SessionDeleted {
+        session_id: String,
     },
     RuntimeInfo {
         model: String,
@@ -516,6 +522,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             label,
             archived,
         },
+        ServerMsg::SessionDeleted { session_id } => DomainEvent::SessionDeleted { session_id },
         ServerMsg::OperationError { operation, message } => {
             DomainEvent::OperationFailed { operation, message }
         }
