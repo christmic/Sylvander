@@ -129,9 +129,9 @@ async fn read_e2e_wiremock() {
 
     // Verify the tool was actually called
     let event_log = events.lock().unwrap();
-    let saw_read_call = event_log.iter().any(
-        |e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read"),
-    );
+    let saw_read_call = event_log
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read"));
     let saw_read_ok = event_log.iter().any(
         |e| matches!(e, AgentEvent::ToolCallEnd { name, is_error: false, .. } if name == "Read"),
     );
@@ -226,8 +226,7 @@ fn require_env(name: &str) -> Option<String> {
 }
 
 fn real_client() -> Option<(AnthropicClient, ModelInfo)> {
-    let token = require_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| require_env("ANTHROPIC_API_KEY"))?;
+    let token = require_env("ANTHROPIC_AUTH_TOKEN").or_else(|| require_env("ANTHROPIC_API_KEY"))?;
     let base_url = require_env("ANTHROPIC_BASE_URL")?;
     let model_id = require_env("SYLVANDER_MODEL")?;
 
@@ -255,7 +254,8 @@ async fn read_e2e_real_api_single_iteration() {
 
     // Set up a real test file the agent can read
     let test_file = std::path::PathBuf::from("/tmp/sylvander_test_notes.md");
-    let test_content = "# Sylvander E2E\nPhase 1: M1 done.\nPhase 2: M2 done.\nPhase 3: M3 in progress.\n";
+    let test_content =
+        "# Sylvander E2E\nPhase 1: M1 done.\nPhase 2: M2 done.\nPhase 3: M3 in progress.\n";
     if let Err(e) = fs::write(&test_file, test_content) {
         eprintln!("cannot write {test_file:?}: {e}, skipping");
         return;
@@ -304,9 +304,9 @@ async fn read_e2e_real_api_single_iteration() {
     // The CRITICAL assertion: the model received the Read tool and
     // chose to invoke it in iteration 1. This proves the SDK correctly
     // transmits the tool definition to the real API.
-    let tool_call_started = events.iter().any(|e| {
-        matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read")
-    });
+    let tool_call_started = events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read"));
     assert!(
         tool_call_started,
         "model should have invoked Read tool; events did not include ToolCallStart(Read)"

@@ -17,8 +17,8 @@ fn optional_env(name: &str) -> Option<String> {
 #[tokio::test]
 #[ignore = "requires real API env vars"]
 async fn real_api_write_tool_e2e() {
-    let Some(token) = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))
+    let Some(token) =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))
     else {
         eprintln!("token missing; skipping");
         return;
@@ -47,11 +47,7 @@ async fn real_api_write_tool_e2e() {
 
     // Set up workspace with a file the LLM can read and modify.
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(
-        tmp.path().join("greeting.txt"),
-        "Hello, world!",
-    )
-    .expect("write");
+    std::fs::write(tmp.path().join("greeting.txt"), "Hello, world!").expect("write");
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -68,11 +64,9 @@ async fn real_api_write_tool_e2e() {
     let prompt = "Read the file at greeting.txt. Then write a new \
                   file at farewell.txt containing the text \"Goodbye, world!\".";
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user(prompt)],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 
@@ -110,7 +104,10 @@ async fn real_api_write_tool_e2e() {
 
     // Verify the file was actually written.
     let farewell = tmp.path().join("farewell.txt");
-    assert!(farewell.exists(), "farewell.txt should exist after Write call");
+    assert!(
+        farewell.exists(),
+        "farewell.txt should exist after Write call"
+    );
     let content = std::fs::read_to_string(&farewell).unwrap();
     assert_eq!(content, "Goodbye, world!");
 }

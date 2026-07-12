@@ -204,9 +204,14 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
         .iter()
         .filter_map(|e| match e {
             AgentEvent::ToolCallEnd { is_error: true, .. } => Some("err"),
-            AgentEvent::ToolCallEnd { is_error: false, .. } => Some("ok"),
+            AgentEvent::ToolCallEnd {
+                is_error: false, ..
+            } => Some("ok"),
             _ => None,
         })
         .collect();
-    assert!(edit_results.contains(&"err"), "Edit should have returned is_error");
+    assert!(
+        edit_results.contains(&"err"),
+        "Edit should have returned is_error"
+    );
 }

@@ -13,8 +13,8 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
 use serde_json::Value as JsonValue;
+use serde_json::json;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -32,7 +32,8 @@ impl FakeFileSystem {
         let mut files = std::collections::HashMap::new();
         files.insert(
             "/tmp/notes.md".to_string(),
-            "# Project Notes\n- M1 protocol SDK done\n- M2 agent loop in progress\n- M3 tools next".to_string(),
+            "# Project Notes\n- M1 protocol SDK done\n- M2 agent loop in progress\n- M3 tools next"
+                .to_string(),
         );
         Self {
             files: Arc::new(std::sync::Mutex::new(files)),
@@ -59,11 +60,7 @@ impl sylvander_agent::tool::Tool for ReadTool {
             &["file_path"],
         )
     }
-    async fn execute(
-        &self,
-        _ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         let path = input
             .get("file_path")
             .and_then(|v| v.as_str())
@@ -180,7 +177,10 @@ async fn real_use_case_read_and_summarize() {
     .expect("run should succeed");
 
     // === Verify the result ===
-    assert_eq!(run.iterations, 2, "expected 2 iterations (tool_use + end_turn)");
+    assert_eq!(
+        run.iterations, 2,
+        "expected 2 iterations (tool_use + end_turn)"
+    );
     assert!(
         run.final_message
             .content
@@ -346,7 +346,10 @@ async fn real_use_case_tool_error_recovery() {
     let saw_tool_error = event_log
         .iter()
         .any(|e| matches!(e, AgentEvent::ToolCallEnd { is_error: true, .. }));
-    assert!(saw_tool_error, "ToolCallEnd with is_error=true should have fired");
+    assert!(
+        saw_tool_error,
+        "ToolCallEnd with is_error=true should have fired"
+    );
 
     println!("=== real_use_case_tool_error_recovery ===");
     println!("Tool error correctly flowed back to model");

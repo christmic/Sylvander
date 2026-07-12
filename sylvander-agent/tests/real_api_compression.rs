@@ -55,8 +55,8 @@ fn optional_env(name: &str) -> Option<String> {
 }
 
 fn real_client_and_model() -> Option<(AnthropicClient, ModelInfo)> {
-    let token = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))?;
+    let token =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))?;
     let base_url = optional_env("ANTHROPIC_BASE_URL")?;
     let model_id = optional_env("SYLVANDER_MODEL")?;
 
@@ -112,11 +112,9 @@ async fn real_api_l1_drops_prepopulated_orphan() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 
@@ -149,9 +147,7 @@ async fn real_api_l4_smoke_test() {
     let pipeline = CompressionPipeline::builder()
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new())
-        .layer(
-            sylvander_agent::compress::layers::context_collapse::ContextCollapseLayer::new(),
-        )
+        .layer(sylvander_agent::compress::layers::context_collapse::ContextCollapseLayer::new())
         .layer(
             sylvander_agent::compress::layers::auto_compact::AutoCompactLayer::new()
                 .with_trigger_ratio(0.5),
@@ -227,9 +223,10 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
         },
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new("toolu_big", &big_body),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                "toolu_big",
+                &big_body,
+            ))]),
         },
         MessageParam::user("now summarize"),
     ];
@@ -250,11 +247,9 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 
@@ -311,9 +306,10 @@ async fn real_api_l2_condenses_old_tool_results() {
         });
         initial.push(MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new(format!("toolu_{i}"), &long_body),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                format!("toolu_{i}"),
+                &long_body,
+            ))]),
         });
     }
     initial.push(MessageParam::user("summarize everything"));
@@ -332,11 +328,9 @@ async fn real_api_l2_condenses_old_tool_results() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 
@@ -403,11 +397,9 @@ async fn real_api_l3_trims_old_thinking_block() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 

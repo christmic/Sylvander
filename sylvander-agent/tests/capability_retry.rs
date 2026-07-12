@@ -174,7 +174,9 @@ async fn llm_5xx_succeeds_after_retry() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+        .await
+        .expect("run");
     assert_eq!(run.final_message.id, "msg_retry_ok");
     assert_eq!(run.iterations, 1);
 }
@@ -215,7 +217,9 @@ async fn llm_429_retries_and_succeeds() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+        .await
+        .expect("run");
     assert_eq!(run.final_message.id, "msg_429_ok");
 }
 
@@ -276,7 +280,9 @@ async fn tool_use_capability_passes_validation() {
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+        .await
+        .expect("run");
     assert_eq!(run.final_message.id, "msg_cap");
 }
 
@@ -309,6 +315,8 @@ async fn thinking_capability_passes_validation() {
     // Cannot easily set thinking via builder — would need raw request.
     // Skip the thinking setup, just verify no validation error when
     // capability is present but not used.
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await.expect("run");
+    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
+        .await
+        .expect("run");
     assert_eq!(run.final_message.id, "msg_thinking");
 }

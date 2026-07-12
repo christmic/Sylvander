@@ -36,9 +36,15 @@ struct BarrierTool {
 
 #[async_trait::async_trait]
 impl Tool for BarrierTool {
-    fn name(&self) -> &str { "parallel_probe" }
-    fn description(&self) -> &str { "waits for another invocation" }
-    fn input_schema(&self) -> InputSchema { InputSchema::empty() }
+    fn name(&self) -> &str {
+        "parallel_probe"
+    }
+    fn description(&self) -> &str {
+        "waits for another invocation"
+    }
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::empty()
+    }
     async fn execute(
         &self,
         _ctx: &ToolContext,
@@ -80,7 +86,9 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
     let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(test_model())
-        .tool(BarrierTool { barrier: Arc::new(tokio::sync::Barrier::new(2)) })
+        .tool(BarrierTool {
+            barrier: Arc::new(tokio::sync::Barrier::new(2)),
+        })
         .build()
         .expect("build");
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -96,11 +104,14 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
     .expect("run");
 
     let events = events.lock().unwrap();
-    let lifecycle = events.iter().filter_map(|event| match event {
-        AgentEvent::ToolCallStart { id, .. } => Some(format!("start:{id}")),
-        AgentEvent::ToolCallEnd { id, .. } => Some(format!("end:{id}")),
-        _ => None,
-    }).collect::<Vec<_>>();
+    let lifecycle = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallStart { id, .. } => Some(format!("start:{id}")),
+            AgentEvent::ToolCallEnd { id, .. } => Some(format!("end:{id}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(lifecycle, ["start:one", "start:two", "end:one", "end:two"]);
 }
 
@@ -167,7 +178,9 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     // First LLM call: returns tool_use
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(json!({"messages": [{"role": "user", "content": "Get weather"}]})))
+        .and(body_partial_json(
+            json!({"messages": [{"role": "user", "content": "Get weather"}]}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -230,7 +243,9 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     // Verify tool was called and recorded
     let tool_called = {
         let events = events.lock().unwrap();
-        events.iter().any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "get_weather"))
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "get_weather"))
     };
     assert!(tool_called);
 
@@ -276,7 +291,8 @@ async fn max_iterations_returns_the_last_partial_message() {
         .build()
         .expect("build");
 
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Loop forever")]).await;
+    let result =
+        sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Loop forever")]).await;
 
     let result = result.expect("last partial message remains usable at the iteration cap");
     assert_eq!(result.iterations, 3);
@@ -289,7 +305,9 @@ async fn tool_error_continues_loop() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(json!({"messages": [{"role": "user", "content": "Try tool"}]})))
+        .and(body_partial_json(
+            json!({"messages": [{"role": "user", "content": "Try tool"}]}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -322,7 +340,11 @@ async fn tool_error_continues_loop() {
         .mount(&server)
         .await;
 
-    let failing_tool = MockTool::new("failing_tool", "always fails", ToolOutput::err("intentional failure"));
+    let failing_tool = MockTool::new(
+        "failing_tool",
+        "always fails",
+        ToolOutput::err("intentional failure"),
+    );
 
     let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
@@ -344,7 +366,9 @@ async fn tool_not_found_records_error_and_continues() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(json!({"messages": [{"role": "user", "content": "Try missing"}]})))
+        .and(body_partial_json(
+            json!({"messages": [{"role": "user", "content": "Try missing"}]}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -413,7 +437,10 @@ async fn llm_error_propagates_without_retry() {
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Hi")]).await;
 
     // 4xx is non-retryable — propagates with retries: 0
-    assert!(matches!(result, Err(AgentLoopError::Llm { retries: 0, .. })));
+    assert!(matches!(
+        result,
+        Err(AgentLoopError::Llm { retries: 0, .. })
+    ));
 }
 
 #[tokio::test]
