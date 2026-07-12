@@ -105,6 +105,12 @@ pub struct Composer {
     pub(crate) history_idx: Option<usize>,
     /// Collapsed payloads above the draft.
     pub attachments: Vec<Attachment>,
+    /// UX §18 IDLE/FOCUSED: whether the user has interacted with this
+    /// composer at least once. `false` until the first state-mutating
+    /// keystroke (or paste) flips it permanently to `true`. Until then
+    /// the panel renders an IDLE muted border rather than the coral
+    /// FOCUSED stroke.
+    pub(crate) interacted: bool,
 }
 
 impl Default for Composer {
@@ -117,6 +123,7 @@ impl Default for Composer {
             history: VecDeque::new(),
             history_idx: None,
             attachments: Vec::new(),
+            interacted: false,
         }
     }
 }
@@ -222,6 +229,8 @@ impl Composer {
         if text.is_empty() {
             return PasteOutcome::Inlined;
         }
+        // A paste is user interaction — flip the focus flag.
+        self.mark_focused();
         let line_count = if text.is_empty() {
             0
         } else {
@@ -321,6 +330,11 @@ impl Composer {
                 _ => {}
             }
         }
+        // Any key that reaches past the history shortcuts is real user
+        // interaction. Flip the focus flag once so the panel can drop
+        // the IDLE border. (History navigation alone is observed by
+        // `history_move` and does not flip focus.)
+        self.mark_focused();
         // Submit on plain Enter. Shift / Ctrl / Alt on Enter insert a
         // newline (Shift+Enter is the canonical terminal convention; we
         // keep the alt/ctrl variants as fallbacks for terminals that
@@ -626,6 +640,28 @@ impl Composer {
         self.cursor_col = self.rows[self.cursor_row].len();
         self.anchor = None;
         None
+    }
+
+    /// Mark the composer as having received user input. Called by
+    /// `paste()`, `handle_key()`, and `take_submit()` whenever they
+    /// mutate state. Drives the IDLE/FOCUSED border in `panel::input`
+    /// per UX `18 IDLE/FOCUSED` states.
+    pub fn mark_focused(&mut self) {
+        self.interacted = true;
+    }
+
+    /// Whether the user has typed into this composer at least once.
+    /// Read-only, set by `mark_focused`.
+    pub fn has_focus_interaction(&self) -> bool {
+        self.interacted
+    }
+
+    /// Reset focus state. Used by `panel::input` when an explicit
+    /// "lost focus" signal arrives (e.g. user clicked away). Allows
+    /// IDLE styling to return. Not currently wired in main; left for
+    /// future mouse / Ctrl+W handlers.
+    pub fn reset_focus(&mut self) {
+        self.interacted = false;
     }
 }
 
@@ -978,5 +1014,38 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create tempdir");
         dir
+    }
+
+    // ----- M-T15.D focus state tests -----
+
+    #[test]
+    fn fresh_composer_is_idle() {
+        let c = Composer::default();
+        assert!(!c.has_focus_interaction());
+    }
+
+    #[test]
+    fn typing_a_char_marks_focused() {
+        let mut c = Composer::default();
+        assert!(!c.has_focus_interaction());
+        c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(c.has_focus_interaction());
+    }
+
+    #[test]
+    fn paste_marks_focused() {
+        let mut c = Composer::default();
+        assert!(!c.has_focus_interaction());
+        let _ = c.paste("hello world");
+        assert!(c.has_focus_interaction());
+    }
+
+    #[test]
+    fn reset_focus_returns_to_idle() {
+        let mut c = Composer::default();
+        c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(c.has_focus_interaction());
+        c.reset_focus();
+        assert!(!c.has_focus_interaction());
     }
 }
