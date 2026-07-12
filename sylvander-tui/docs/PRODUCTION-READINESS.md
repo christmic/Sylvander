@@ -54,9 +54,9 @@ completed backend feature.
 
 - [x] Render semantic Markdown instead of stripping punctuation.
 - [x] Preserve paragraphs, nested lists, quotes, links, and inline code.
-- [ ] Render fenced code with language-aware styling and safe ANSI handling.
+- [x] Render fenced code with language labels, distinct styling, and safe ANSI handling.
 - [x] Render tables responsively with a readable narrow fallback.
-- [ ] Keep CJK, emoji, URLs, and combining characters width-correct.
+- [x] Keep CJK, emoji, URLs, and combining characters width-correct.
 - [x] Streaming and settled Markdown retain stable geometry.
 
 ### Tool activity
