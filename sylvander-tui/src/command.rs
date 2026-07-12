@@ -16,6 +16,7 @@ pub enum CommandId {
     Theme,
     Tools,
     Queue,
+    Tasks,
     Status,
     Quit,
 }
@@ -99,6 +100,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/queue [drop <n>|edit <n> <text>|clear]",
         description: "Inspect or edit prompts waiting behind active work",
         hint: "working turns",
+    },
+    CommandSpec {
+        id: CommandId::Tasks,
+        name: "tasks",
+        usage: "/tasks [cancel <id-or-prefix>]",
+        description: "Inspect or cancel one background task",
+        hint: "read-only workers",
     },
     CommandSpec {
         id: CommandId::Status,
@@ -290,6 +298,48 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
+        CommandId::Tasks => match invocation.args.as_slice() {
+            [] => {
+                let tasks = state.messages.iter().flat_map(|message| match message {
+                    ChatMessage::TaskList { tasks } => tasks.as_slice(),
+                    _ => &[],
+                }).collect::<Vec<_>>();
+                if tasks.is_empty() {
+                    state.messages.push(ChatMessage::Info("No background tasks".into()));
+                } else {
+                    let text = tasks.iter().map(|task| {
+                        format!(
+                            "{} · {:?} · {}\n  {}",
+                            task.task_id, task.state, task.purpose, task.detail
+                        )
+                    }).collect::<Vec<_>>().join("\n");
+                    state.messages.push(ChatMessage::Info(format!("Background tasks:\n{text}")));
+                }
+            }
+            ["cancel", prefix] => {
+                let session_id = state.session_id.clone()
+                    .ok_or_else(|| "There is no active session".to_string())?;
+                let matches = state.messages.iter().flat_map(|message| match message {
+                    ChatMessage::TaskList { tasks } => tasks.as_slice(),
+                    _ => &[],
+                }).filter(|task| {
+                    task.task_id.starts_with(prefix)
+                        && task.state == crate::app::TaskState::Running
+                }).collect::<Vec<_>>();
+                let task = match matches.as_slice() {
+                    [task] => *task,
+                    [] => return Err(format!("No running task matches `{prefix}`")),
+                    _ => return Err(format!("Task prefix `{prefix}` is ambiguous")),
+                };
+                let task_id = task.task_id.clone();
+                state.pending_actions.push(crate::event::Action::CancelTask {
+                    session_id,
+                    task_id: task_id.clone(),
+                });
+                state.status = format!("Cancelling task {}…", &task_id[..8.min(task_id.len())]);
+            }
+            _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+        },
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -403,5 +453,27 @@ mod tests {
         execute(parse("queue drop 1").unwrap(), &mut state).unwrap();
         assert!(state.queued_prompts.is_empty());
         assert!(state.messages.is_empty());
+    }
+
+    #[test]
+    fn tasks_cancel_requires_one_running_task_and_keeps_session_scope() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        state.messages.push(ChatMessage::TaskList {
+            tasks: vec![crate::app::TaskEntry {
+                task_id: "abcdef12-3456".into(),
+                owner: "sylvander".into(),
+                purpose: "Inspect".into(),
+                state: crate::app::TaskState::Running,
+                detail: "iteration 1".into(),
+            }],
+        });
+
+        execute(parse("tasks cancel abcdef12").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            &state.pending_actions[0],
+            crate::event::Action::CancelTask { session_id, task_id }
+                if session_id == "session-1" && task_id == "abcdef12-3456"
+        ));
     }
 }

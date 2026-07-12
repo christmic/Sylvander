@@ -88,6 +88,9 @@ impl AgentService {
             Action::ResolvePlan { plan_id, decision } => {
                 ClientMsg::ResolvePlan { plan_id, decision }
             }
+            Action::CancelTask { session_id, task_id } => {
+                ClientMsg::CancelTask { session_id, task_id }
+            }
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
             Action::RenameSession { session_id, label } => {

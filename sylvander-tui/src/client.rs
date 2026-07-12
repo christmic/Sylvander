@@ -43,6 +43,10 @@ pub enum ClientMsg {
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
+    CancelTask {
+        session_id: String,
+        task_id: String,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -140,6 +144,11 @@ pub enum ServerMsg {
         steps: Vec<String>,
         current: usize,
     },
+    TaskStarted { session_id: String, task_id: String, owner: String, purpose: String },
+    TaskProgress { session_id: String, task_id: String, message: String },
+    TaskCompleted { session_id: String, task_id: String, summary: String },
+    TaskFailed { session_id: String, task_id: String, error: String },
+    TaskCancelled { session_id: String, task_id: String, reason: String },
     SessionsList {
         sessions: Vec<SessionInfoMsg>,
     },
@@ -344,6 +353,21 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::PlanProposed { plan_id, steps, current, .. } => {
             DomainEvent::PlanReceived { plan_id, steps, current }
         }
+        ServerMsg::TaskStarted { task_id, owner, purpose, .. } => {
+            DomainEvent::TaskStarted { task_id, owner, purpose }
+        }
+        ServerMsg::TaskProgress { task_id, message, .. } => {
+            DomainEvent::TaskProgress { task_id, message }
+        }
+        ServerMsg::TaskCompleted { task_id, summary, .. } => {
+            DomainEvent::TaskCompleted { task_id, summary }
+        }
+        ServerMsg::TaskFailed { task_id, error, .. } => {
+            DomainEvent::TaskFailed { task_id, error }
+        }
+        ServerMsg::TaskCancelled { task_id, reason, .. } => {
+            DomainEvent::TaskCancelled { task_id, reason }
+        }
         ServerMsg::ApprovalRequest {
             batch_id, tools, ..
         } => DomainEvent::ApprovalRequested {
@@ -497,6 +521,28 @@ mod tests {
         .expect("serialize");
         assert_eq!(json["type"], "resolve_plan");
         assert_eq!(json["decision"]["decision"], "approved");
+    }
+
+    #[test]
+    fn background_task_lifecycle_and_scoped_cancel_keep_identity() {
+        let event = parse_server_msg(ServerMsg::TaskCompleted {
+            session_id: "s1".into(),
+            task_id: "task-42".into(),
+            summary: "found it".into(),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::TaskCompleted { task_id, summary })
+                if task_id == "task-42" && summary == "found it"
+        ));
+
+        let json = serde_json::to_value(ClientMsg::CancelTask {
+            session_id: "s1".into(),
+            task_id: "task-42".into(),
+        }).expect("serialize");
+        assert_eq!(json["type"], "cancel_task");
+        assert_eq!(json["session_id"], "s1");
+        assert_eq!(json["task_id"], "task-42");
     }
 
     #[test]

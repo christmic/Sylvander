@@ -492,6 +492,31 @@ fn tasks_summary_line_compacts_running_and_done() {
 }
 
 #[test]
+fn expanded_tasks_show_identity_state_and_latest_detail() {
+    let mut s = AppState::new();
+    s.tool_details_expanded = true;
+    s.apply(DomainEvent::TaskStarted {
+        task_id: "a1b2c3d4-task".into(),
+        owner: "sylvander".into(),
+        purpose: "inspect auth middleware".into(),
+    });
+    s.apply(DomainEvent::TaskProgress {
+        task_id: "a1b2c3d4-task".into(),
+        message: "running read".into(),
+    });
+    s.apply(DomainEvent::TaskStarted {
+        task_id: "e5f6g7h8-task".into(),
+        owner: "sylvander".into(),
+        purpose: "check test coverage".into(),
+    });
+    s.apply(DomainEvent::TaskCompleted {
+        task_id: "e5f6g7h8-task".into(),
+        summary: "coverage gaps found in refresh flow".into(),
+    });
+    insta::assert_snapshot!(render_buf(&s, 80, 24));
+}
+
+#[test]
 fn full_panel_at_user_terminal_size_140x40() {
     // Captures the same dimensions the user's screenshot used (~140×40)
     // so the visual output is directly comparable to docs/
