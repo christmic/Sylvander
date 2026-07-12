@@ -25,11 +25,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::UnixStream;
 
 use sylvander_tui::app::AppState;
-use sylvander_tui::client::{parse_server_msg, ServerMsg};
+use sylvander_tui::client::{ServerMsg, parse_server_msg};
 
 /// Serializes e2e tests so they don't fight over the listener port.
 static E2E_LOCK: Mutex<()> = Mutex::new(());

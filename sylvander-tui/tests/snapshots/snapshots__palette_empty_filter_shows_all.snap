@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 22)"
 ---
-◖S◗  Sylvander  new session                                                       — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
-──────────────────────────────────────────────────────────────────────────────────────────
                                                                                           
-◖S◗  SYLVANDER                                                                            
-      intelligent te┌ Commands ─────────────────────────────────────┐                     
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                    ┌ Commands ─────────────────────────────────────┐                     
                     │/_                                             │                     
-      ~/.../sylvande│───────────────────────────────────────────────│                     
-      What are we bu│  › /new          Start a new session  (/ new-s│                     
+                    │───────────────────────────────────────────────│                     
+                    │  › /new          Start a new session  (/ new-s│                     
                     │    /sessions     Switch sessions  (ctrl+p)    │                     
-────────────────────│    /clear        Clear the transcript  (local)│─────────────────────
-│Ask Sylvander…     │    /help         Show help  (ui-only)         │                    │
-│                   │    /quit         Quit sylvander-tui  (ctrl+c) │                    │
-│                   │                                               │                    │
-│                   │                                               │                    │
-│                   │                                               │                    │
-│                   └───────────────────────────────────────────────┘                    │
-│                                                                                        │
-│                                                                                        │
-│Type while I work — steer, queue, or interrupt.                                         │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+                    │    /clear        Clear the transcript  (local)│                     
+                    │    /help         Show help  (ui-only)         │                     
+                    │    /quit         Quit sylvander-tui  (ctrl+c) │                     
+                    │                                               │                     
+                    │                                               │                     
+                    │                                               │                     
+                    └───────────────────────────────────────────────┘                     
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo

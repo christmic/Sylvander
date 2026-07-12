@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 70, 22)"
 ---
-◖S◗  Sylvander  new session                                   — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —     
-──────────────────────────────────────────────────────────────────────
-You: Add JWT auth.                                                    
-Inspecting router.                                                    
+  › Add JWT auth.                                                     
+                                                                      
+  ◆  Inspecting router.                                               
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
                                                                       
                                                                       
                                                                       
                                                                       
                                                                       
 ──────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                      │
-│                                                                    │
-│                                                                    │
-│                                                                    │
-│                                                                    │
-│                                                                    │
-│                                                                    │
-│                                                                    │
-│Type while I work — steer, queue, or interrupt.                     │
-└────────────────────────────────────────────────────────────────────┘
+>                                                                     
 ──────────────────────────────────────────────────────────────────────
+· idle · model — · branch — · session —

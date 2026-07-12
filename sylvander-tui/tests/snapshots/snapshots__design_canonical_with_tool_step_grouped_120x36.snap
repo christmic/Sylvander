@@ -2,39 +2,39 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&s, 120, 36)"
 ---
-◖S◗  Sylvander  new session                                                                                     — · main
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                       
+  › Review the auth middleware                                                                                          
+  ◌ Run `ls`     00s                                                                                                    
+  │ ✓ $ ls src/http  router.rs                                                                                          
+  │ ◌ read src/http/middleware.rs                                                                                       
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-You: Review the auth middleware                                                                                         
-◌ Run `ls`     00s                                                                                                      
-│ ✓ $ ls src/http  router.rs                                                                                            
-│ ◌ read src/http/middleware.rs                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+>                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│Ask Sylvander…                                                                                                        │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│                                                                                                                      │
-│Type while I work — steer, queue, or interrupt.                                                                       │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ working · model — · branch — · session — · 2t                                                   esc interrupt   /draft

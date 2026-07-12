@@ -2,25 +2,25 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(&state, 90, 22)"
 ---
-◖S◗  Sylvander  new session                                                   — · approval
-/Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                         
-──────────────────────────────────────────────────────────────────────────────────────────
                                                                                           
-◖S◗  SYLVANDER    ┌ Tool Approval (batch 2/2 — 2 total) ───────────────┐                  
-      intelligent │Agent wants to run:                                 │                  
+                                                                                          
+                                                                                          
+                                                                                          
+                  ┌ Tool Approval (batch 2/2 — 2 total) ───────────────┐                  
+                  │Agent wants to run:                                 │                  
                   │  >> 1. write  {}                                   │                  
-      ~/.../sylvan│                                                    │                  
-      What are we │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  │                  
                   │                                                    │                  
-──────────────────│                                                    │──────────────────
-│Ask Sylvander…   │                                                    │                 │
-│                 │                                                    │                 │
-│                 │                                                    │                 │
-│                 │                                                    │                 │
-│                 │                                                    │                 │
-│                 │                                                    │                 │
-│                 └────────────────────────────────────────────────────┘                 │
-│                                                                                        │
-│Approving tools clears this draft.                                                      │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+                  │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  │                                                    │                  
+                  └────────────────────────────────────────────────────┘                  
 ──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo
