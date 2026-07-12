@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set VERSION env
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build Rust server
+        run: |
+          cargo build --release --target aarch64-apple-darwin --manifest-path token9-server/Cargo.toml
+          mkdir -p dist/token9-macos-arm64/bin
+          # workspace shares target/ at repo root
+          cp target/aarch64-apple-darwin/release/token9 dist/token9-macos-arm64/bin/
+          strip dist/token9-macos-arm64/bin/token9
+
+      - name: Install typeshare
+        run: brew install typeshare
+
+      - name: Generate Swift types
+        run: |
+          chmod +x ./scripts/gen-types.sh
+          ./scripts/gen-types.sh
+
+      - name: Build Swift app
+        working-directory: token9-apps/macos
+        run: |
+          swift build -c release
+          BIN=$(swift build -c release --show-bin-path)
+          mkdir -p ../../dist/token9-macos-arm64/Token9.app/Contents/MacOS
+          cp "$BIN/Token9" ../../dist/token9-macos-arm64/Token9.app/Contents/MacOS/Token9
+
+      - name: Assemble Info.plist
+        run: |
+          cat > dist/token9-macos-arm64/Token9.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>Token9</string>
+            <key>CFBundleIdentifier</key><string>ai.oraculo.token9</string>
+            <key>CFBundleName</key><string>token9</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>LSMinimumSystemVersion</key><string>14.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSUIElement</key><true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Package tarball
+        run: |
+          cd dist
+          tar -czf token9-v${VERSION}-macos-arm64.tar.gz token9-macos-arm64
+          shasum -a 256 token9-v${VERSION}-macos-arm64.tar.gz | tee $RUNNER_TEMP/sha256.txt
+          cat $RUNNER_TEMP/sha256.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: token9-macos-arm64
+          path: dist/token9-v*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: token9-macos-arm64
+          path: artifacts
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*.tar.gz

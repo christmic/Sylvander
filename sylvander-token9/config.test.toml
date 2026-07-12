@@ -1,0 +1,8 @@
+# Test config — port 9627, isolated DB. Use with:
+#   token9 --config config.test.toml serve
+#   make dev
+
+port = 9627
+bind = "127.0.0.1"
+domain = "token9.test"
+db_path = "~/.Oraculo/config/token9/token9_test.db"

@@ -1,0 +1,10 @@
+[package]
+name = "token9-contracts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "token9 API wire types — single source of truth for client/server contract"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+typeshare = "1.0"
