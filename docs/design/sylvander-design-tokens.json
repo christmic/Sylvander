@@ -1,111 +1,40 @@
 {
   "$schema": "https://design-tokens.github.io/community-group/format/",
   "meta": {
-    "name": "Sylvander Quiet Technical Confidence",
-    "version": "3.0",
-    "target": "terminal UI and Ghostty desktop shell"
+    "name": "Sylvander TUI Current",
+    "version": "4.0",
+    "sourceOfTruth": "docs/sylvander-tui-ux-design.md"
   },
   "color": {
-    "canvas": { "$value": "#111315", "$type": "color" },
-    "sidebar": { "$value": "#0D0F11", "$type": "color" },
-    "overlay": { "$value": "#1A1E22", "$type": "color" },
-    "focusWash": { "$value": "#E8796A0A", "$type": "color" },
-    "border": { "$value": "#343A40", "$type": "color" },
-    "borderStrong": { "$value": "#4A535C", "$type": "color" },
-    "text": { "$value": "#F0ECE4", "$type": "color" },
-    "textMuted": { "$value": "#989B9D", "$type": "color" },
-    "textFaint": { "$value": "#666C72", "$type": "color" },
-    "coral": { "$value": "#FF806F", "$type": "color" },
-    "agentViolet": { "$value": "#9B8CFF", "$type": "color" },
-    "actionCyan": { "$value": "#6DD6E8", "$type": "color" },
-    "blue": { "$value": "#75A7E8", "$type": "color" },
-    "teal": { "$value": "#72C7B1", "$type": "color" },
-    "amber": { "$value": "#D9AF62", "$type": "color" },
-    "red": { "$value": "#E06C75", "$type": "color" },
-    "purple": { "$value": "#B59BE6", "$type": "color" }
-  },
-  "spacing": {
-    "xs": { "$value": "4px", "$type": "dimension" },
-    "sm": { "$value": "8px", "$type": "dimension" },
-    "md": { "$value": "12px", "$type": "dimension" },
-    "lg": { "$value": "16px", "$type": "dimension" },
-    "xl": { "$value": "24px", "$type": "dimension" },
-    "2xl": { "$value": "32px", "$type": "dimension" }
-  },
-  "radius": {
-    "interactive": { "$value": "8px", "$type": "dimension" },
-    "overlay": { "$value": "8px", "$type": "dimension" },
-    "sidebarItem": { "$value": "4px", "$type": "dimension" }
-  },
-  "typography": {
-    "terminal": {
-      "$type": "typography",
-      "$value": {
-        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
-        "fontSize": "15px",
-        "fontWeight": 400,
-        "letterSpacing": "0px",
-        "lineHeight": 1.55
-      }
-    },
-    "terminalSmall": {
-      "$type": "typography",
-      "$value": {
-        "fontFamily": "Berkeley Mono, SFMono-Regular, Menlo, monospace",
-        "fontSize": "13px",
-        "fontWeight": 400,
-        "letterSpacing": "0px",
-        "lineHeight": 1.45
-      }
-    }
+    "canvas": { "$value": "#000000", "$type": "color" },
+    "text": { "$value": "#ECE7DE", "$type": "color" },
+    "textDim": { "$value": "#989B9D", "$type": "color" },
+    "textMuted": { "$value": "#666C72", "$type": "color" },
+    "rule": { "$value": "#343A40", "$type": "color" },
+    "brandWarm": { "$value": "#F0BE72", "$type": "color" },
+    "brandViolet": { "$value": "#9B72FF", "$type": "color" },
+    "active": { "$value": "#75A7E8", "$type": "color" },
+    "verified": { "$value": "#72C7B1", "$type": "color" },
+    "waiting": { "$value": "#D9AF62", "$type": "color" },
+    "danger": { "$value": "#E06C75", "$type": "color" }
   },
   "terminal": {
-    "cellSpacing": {
-      "inlineGap": { "$value": 1, "$type": "number" },
-      "childIndent": { "$value": 2, "$type": "number" },
-      "turnGapRows": { "$value": 1, "$type": "number" },
-      "majorGapRows": { "$value": 2, "$type": "number" }
-    },
-    "breakpointColumns": {
-      "wide": { "$value": 120, "$type": "number" },
-      "standard": { "$value": 100, "$type": "number" },
-      "compact": { "$value": 80, "$type": "number" },
-      "narrow": { "$value": 60, "$type": "number" },
-      "minimum": { "$value": 40, "$type": "number" }
-    },
-    "contentColumns": {
-      "conversationPreferred": { "$value": 104, "$type": "number" },
-      "conversationMinimum": { "$value": 60, "$type": "number" },
-      "sidebarPreferred": { "$value": 28, "$type": "number" },
-      "sidebarMinimum": { "$value": 22, "$type": "number" },
-      "sidebarRail": { "$value": 3, "$type": "number" }
-    },
-    "motion": {
-      "spinnerFps": { "$value": 5, "$type": "number" },
-      "streamingMaxFps": { "$value": 30, "$type": "number" },
-      "toolCompletionHoldMs": { "$value": 500, "$type": "duration" },
-      "toastDurationMs": { "$value": 2500, "$type": "duration" }
+    "layout": {
+      "leftGutterCells": { "$value": 2, "$type": "number" },
+      "readingMaxCells": { "$value": 110, "$type": "number" },
+      "welcomeHorizontalMinCells": { "$value": 88, "$type": "number" },
+      "welcomeCharacterCells": { "$value": 44, "$type": "number" },
+      "welcomeGapCells": { "$value": 4, "$type": "number" },
+      "composerMinRows": { "$value": 1, "$type": "number" },
+      "composerMaxRows": { "$value": 8, "$type": "number" }
     },
     "symbols": {
-      "brandUnicode": { "$value": "◆›", "$type": "string" },
-      "brandAscii": { "$value": "[o]>", "$type": "string" },
-      "mainAgentUnicode": { "$value": "◆", "$type": "string" },
-      "subagentUnicode": { "$value": "◇", "$type": "string" },
-      "workingUnicode": { "$value": "◐", "$type": "string" },
-      "workingAscii": { "$value": "~", "$type": "string" },
-      "successUnicode": { "$value": "✓", "$type": "string" },
-      "successAscii": { "$value": "OK", "$type": "string" },
-      "failure": { "$value": "!", "$type": "string" }
-    },
-    "colorTier": {
-      "preferred": { "$value": "truecolor", "$type": "string" },
-      "fallback": { "$value": "ansi256", "$type": "string" },
-      "minimum": { "$value": "monochrome", "$type": "string" }
-    },
-    "brandConcept": {
-      "name": { "$value": "Convergence Core", "$type": "string" },
-      "meaning": { "$value": "context and agents converge into a decision that becomes action", "$type": "string" },
-      "normativeBoard": { "$value": "27-convergence-brand-tui.svg", "$type": "string" }
+      "userTurn": { "$value": "›", "$type": "string" },
+      "agentTurn": { "$value": "◆", "$type": "string" },
+      "composerPrompt": { "$value": ">", "$type": "string" },
+      "working": { "$value": "◌", "$type": "string" },
+      "verified": { "$value": "✓", "$type": "string" },
+      "failed": { "$value": "!", "$type": "string" }
     }
   }
 }
