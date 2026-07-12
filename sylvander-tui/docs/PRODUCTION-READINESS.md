@@ -79,7 +79,7 @@ completed backend feature.
 - [x] `@` opens fuzzy workspace-file mention with path completion.
 - [x] Text files and large pasted context use typed protocol attachments.
 - [x] PNG/JPEG images attach through the typed protocol when the model supports vision.
-- [ ] Selections, diffs, and terminal output attach safely.
+- [x] Composer selections, diffs, and terminal output attach through typed context.
 - [x] Attachment capability and size are validated against the active model.
 - [x] Attachments can be inspected, removed, and reordered before submit.
 - [x] Attachments and composer text restore from a crash-safe draft.
