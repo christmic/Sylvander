@@ -73,10 +73,7 @@ mod tests {
             effort: Some(Effort::High),
             format: None,
         };
-        assert_eq!(
-            serde_json::to_string(&oc).unwrap(),
-            r#"{"effort":"high"}"#
-        );
+        assert_eq!(serde_json::to_string(&oc).unwrap(), r#"{"effort":"high"}"#);
     }
 
     #[test]

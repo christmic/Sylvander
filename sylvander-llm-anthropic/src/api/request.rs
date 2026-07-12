@@ -3,9 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{
-    MessageParam, OutputConfig, SystemPrompt, ThinkingConfig, Tool, ToolChoice,
-};
+use super::types::{MessageParam, OutputConfig, SystemPrompt, ThinkingConfig, Tool, ToolChoice};
 
 /// Input for `POST /v1/messages` and `POST /v1/messages/count_tokens`.
 ///
@@ -241,15 +239,15 @@ impl CreateMessageRequestBuilder {
     /// or `max_tokens` is missing.
     pub fn build(self) -> Result<CreateMessageRequest, super::error::AnthropicError> {
         Ok(CreateMessageRequest {
-            model: self
-                .model
-                .ok_or_else(|| super::error::AnthropicError::Validation("model is required".into()))?,
-            max_tokens: self
-                .max_tokens
-                .ok_or_else(|| super::error::AnthropicError::Validation("max_tokens is required".into()))?,
-            messages: self
-                .messages
-                .ok_or_else(|| super::error::AnthropicError::Validation("messages is required".into()))?,
+            model: self.model.ok_or_else(|| {
+                super::error::AnthropicError::Validation("model is required".into())
+            })?,
+            max_tokens: self.max_tokens.ok_or_else(|| {
+                super::error::AnthropicError::Validation("max_tokens is required".into())
+            })?,
+            messages: self.messages.ok_or_else(|| {
+                super::error::AnthropicError::Validation("messages is required".into())
+            })?,
             system: self.system,
             tools: self.tools,
             tool_choice: self.tool_choice,

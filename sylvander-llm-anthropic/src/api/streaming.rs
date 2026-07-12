@@ -356,9 +356,18 @@ data: {\"type\":\"message_stop\"}
         let events = feed_all(&mut p, chunk);
         assert_eq!(events.len(), 6);
         assert!(matches!(events[0], Ok(RawStreamEvent::MessageStart { .. })));
-        assert!(matches!(events[1], Ok(RawStreamEvent::ContentBlockStart { .. })));
-        assert!(matches!(events[2], Ok(RawStreamEvent::ContentBlockDelta { .. })));
-        assert!(matches!(events[3], Ok(RawStreamEvent::ContentBlockStop { .. })));
+        assert!(matches!(
+            events[1],
+            Ok(RawStreamEvent::ContentBlockStart { .. })
+        ));
+        assert!(matches!(
+            events[2],
+            Ok(RawStreamEvent::ContentBlockDelta { .. })
+        ));
+        assert!(matches!(
+            events[3],
+            Ok(RawStreamEvent::ContentBlockStop { .. })
+        ));
         match &events[4] {
             Ok(RawStreamEvent::MessageDelta { delta, usage }) => {
                 assert_eq!(delta.stop_reason, Some(StopReason::EndTurn));

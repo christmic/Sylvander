@@ -39,10 +39,7 @@ impl<'a> MessagesApi<'a> {
     ///   validation
     /// - [`AnthropicError::Api`] for 4xx/5xx responses
     /// - [`AnthropicError::Http`] for transport failures
-    pub async fn create(
-        &self,
-        request: &CreateMessageRequest,
-    ) -> Result<Message, AnthropicError> {
+    pub async fn create(&self, request: &CreateMessageRequest) -> Result<Message, AnthropicError> {
         request.validate()?;
 
         let url = self
@@ -181,7 +178,8 @@ impl<'a> MessagesApi<'a> {
     /// produce the full URL for an endpoint.
     #[allow(dead_code)]
     pub(crate) fn endpoint_url(base: &Url, path: &str) -> Result<Url, AnthropicError> {
-        base.join(path).map_err(|e| AnthropicError::Validation(format!("invalid URL: {e}")))
+        base.join(path)
+            .map_err(|e| AnthropicError::Validation(format!("invalid URL: {e}")))
     }
 }
 
