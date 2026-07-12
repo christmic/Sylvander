@@ -4,9 +4,7 @@ import SwiftUI
 ///
 /// Per checklist §7:
 ///   Collapsed: [name] [proportional bar] [total tokens] [share %] [chevron]
-///   Expanded:  same row + 2×3 metric grid (input / output / cacheRead /
-///              cacheWrite / requests / cache hit) + secondary-dimension
-///              disclosure.
+///   Every row remains expanded. The parent list owns vertical scrolling.
 ///
 /// No colored dot, no rank number, no request pill beside the name.
 /// Bar width = group.totalTokens / largestGroup.totalTokens.
@@ -17,34 +15,27 @@ struct GroupRowView: View {
     var allTotal: Int64
     var largestTotal: Int64
     var subTitle: String
-    var isExpanded: Bool
-    var onToggle: () -> Void
     private var tint: Color { T.groupTint(card.name) }
 
     var body: some View {
         VStack(spacing: 0) {
             collapsedRow
-            if isExpanded {
-                Divider().background(T.borderSubtle)
-                expandedContent
-                    .padding(.top, 10)
-                    .padding(.bottom, 12)
-                    .transition(.opacity)
-            }
+            Divider().background(T.borderSubtle)
+            expandedContent
+                .padding(.top, 10)
+                .padding(.bottom, 12)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(minHeight: L.rowMinHit, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: L.rowRadius, style: .continuous)
-                .fill(isExpanded ? Color.white.opacity(0.04) : .clear)
+                .fill(Color.white.opacity(0.04))
         )
         .overlay(
             RoundedRectangle(cornerRadius: L.rowRadius, style: .continuous)
-                .strokeBorder(isExpanded ? tint.opacity(0.55) : T.borderSubtle, lineWidth: L.hairline)
+                .strokeBorder(tint.opacity(0.55), lineWidth: L.hairline)
         )
-        .contentShape(Rectangle())
-        .onTapGesture { onToggle() }
     }
 
     // MARK: Collapsed
@@ -56,7 +47,7 @@ struct GroupRowView: View {
                 .foregroundStyle(T.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: 110, alignment: .leading)
+                .frame(width: 160, alignment: .leading)
 
             bar
                 .frame(maxWidth: .infinity)
@@ -72,10 +63,6 @@ struct GroupRowView: View {
                 .frame(width: 38, alignment: .trailing)
                 .lineLimit(1)
 
-            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(T.textTertiary)
-                .frame(width: 12)
         }
     }
 

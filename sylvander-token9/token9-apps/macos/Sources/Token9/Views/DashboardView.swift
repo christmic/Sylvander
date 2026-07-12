@@ -6,7 +6,6 @@ import SwiftUI
 /// offline-no-cache, offline-with-cached-data, and rate-limit warning.
 struct DashboardView: View {
     @StateObject private var vm = DashboardViewModel()
-    @State private var expandedGroupID: String?
     private var dimensionBinding: Binding<DimensionToggle.Dimension> {
         Binding(
             get: { vm.groupBy == .tool ? .tool : .model },
@@ -61,13 +60,6 @@ struct DashboardView: View {
         .frame(width: L.popoverW, height: L.popoverH)
         .onAppear { vm.start() }
         .onDisappear { vm.stop() }
-        .onChange(of: vm.cards.map(\.id)) { _, ids in
-            guard expandedGroupID == nil, vm.range != .year else { return }
-            expandedGroupID = ids.first
-        }
-        .onChange(of: vm.range) { _, range in
-            if range == .year { expandedGroupID = nil }
-        }
     }
 
     // MARK: Header
@@ -75,7 +67,7 @@ struct DashboardView: View {
     private var header: some View {
         HStack(spacing: 10) {
             BrandMark()
-                .frame(width: 42, height: 42)
+                .frame(width: 50, height: 50)
             VStack(alignment: .leading, spacing: 1) {
                 Text("token9").font(.system(size: 15, weight: .bold))
                     .foregroundStyle(T.textPrimary)
@@ -181,17 +173,11 @@ struct DashboardView: View {
                         card: card,
                         allTotal: allTotal,
                         largestTotal: largestTotal,
-                        subTitle: vm.groupBy.subTitle,
-                        isExpanded: expandedGroupID == card.id,
-                        onToggle: { toggle(card.id) }
+                        subTitle: vm.groupBy.subTitle
                     )
                 }
             }
         }
         .frame(maxHeight: .infinity)
-    }
-
-    private func toggle(_ id: String) {
-        expandedGroupID = (expandedGroupID == id) ? nil : id
     }
 }
