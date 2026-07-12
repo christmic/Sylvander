@@ -89,6 +89,9 @@ enum ClientMsg {
     ArchiveSession {
         session_id: String,
     },
+    RestoreSession {
+        session_id: String,
+    },
     ForkSession {
         session_id: String,
     },
@@ -783,6 +786,19 @@ async fn handle_client_msg(
                 Err(error) => warn!(%error, "unix: failed to archive session"),
             }
         }
+        ClientMsg::RestoreSession { session_id } => {
+            let session_id = SessionId::new(session_id);
+            match ctx.sessions.restore(&session_id).await {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: None,
+                        archived: false,
+                    });
+                }
+                Err(error) => warn!(%error, "unix: failed to restore session"),
+            }
+        }
         ClientMsg::ForkSession { session_id } => {
             let source_id = SessionId::new(session_id);
             let caller = unix_session_context(agent_id, source_id.clone());
@@ -1073,6 +1089,21 @@ mod tests {
         )
         .await;
         assert_eq!(archived["archived"], true);
+
+        let restored = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"restore_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(restored["archived"], false);
+        let loaded_again = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"load_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(loaded_again["messages"][0]["text"], "hello");
 
         task.abort();
         let _ = std::fs::remove_file(path);

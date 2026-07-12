@@ -238,12 +238,12 @@ impl Modal for SessionsOverlay {
             ])
         } else if self.filter_focused {
             Line::from(Span::styled(
-                "type to filter   ↓/↑ select   enter open   ctrl+n new   r rename   d delete   esc close",
+                "type to filter   ↓/↑ select   enter open   ctrl+n new   r rename   d archive   ctrl+z undo",
                 theme::text_muted(),
             ))
         } else {
             Line::from(Span::styled(
-                "↓/↑ select   enter open   ctrl+n new   r rename   d delete   / filter   esc close",
+                "↓/↑ select   enter open   ctrl+n new   r rename   d archive   ctrl+z undo",
                 theme::text_muted(),
             ))
         };
@@ -303,12 +303,15 @@ impl Modal for SessionsOverlay {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if idx < self.entries.len() {
-                        let id = self.entries[idx].id.clone();
+                        let archived = self.entries[idx].clone();
+                        let id = archived.id.clone();
+                        state.last_archived_session = Some(archived);
                         state.pending_actions.push(crate::event::Action::ArchiveSession {
                             session_id: id.clone(),
                         });
                         self.entries.remove(idx);
                         state.sessions.retain(|entry| entry.id != id);
+                        state.status = "Session archived · Ctrl+Z to undo".into();
                     }
                     self.pending_delete = None;
                     let new_len = self.filtered().len();
@@ -329,6 +332,17 @@ impl Modal for SessionsOverlay {
 
         // Key routing.
         match key.code {
+            KeyCode::Char('z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if let Some(session) = state.last_archived_session.take() {
+                    let session_id = session.id.clone();
+                    self.entries.insert(0, session.clone());
+                    state.sessions.insert(0, session);
+                    state.pending_actions.push(crate::event::Action::RestoreSession { session_id });
+                    state.status = "Restoring archived session…".into();
+                }
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
             KeyCode::Esc => {
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
@@ -553,6 +567,21 @@ mod tests {
         assert!(matches!(
             state.pending_actions.as_slice(),
             [crate::event::Action::ArchiveSession { session_id }] if session_id == "a"
+        ));
+        assert_eq!(state.last_archived_session.as_ref().map(|session| session.id.as_str()), Some("a"));
+    }
+
+    #[test]
+    fn ctrl_z_restores_the_last_archived_session() {
+        let mut state = AppState::new();
+        let archived = entry("a", "Foo", SessionStatus::Complete, 60);
+        state.last_archived_session = Some(archived);
+        let mut overlay = SessionsOverlay::new(vec![]);
+        overlay.handle_key(&key(KeyCode::Char('z'), KeyModifiers::CONTROL), &mut state);
+        assert_eq!(overlay.entries[0].id, "a");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::RestoreSession { session_id }] if session_id == "a"
         ));
     }
 

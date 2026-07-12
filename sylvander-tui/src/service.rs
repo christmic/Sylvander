@@ -103,6 +103,7 @@ impl AgentService {
                 ClientMsg::RenameSession { session_id, label }
             }
             Action::ArchiveSession { session_id } => ClientMsg::ArchiveSession { session_id },
+            Action::RestoreSession { session_id } => ClientMsg::RestoreSession { session_id },
             Action::ForkSession { session_id } => ClientMsg::ForkSession { session_id },
             Action::Quit => return Ok(()),
         };
