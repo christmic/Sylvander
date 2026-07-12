@@ -24,11 +24,11 @@
 - `20-overlay-system.svg` — Approval, AskUser, Command Palette, and Session Switcher.
 - `21-diff-artifact-viewer.svg` — sticky Diff, Command Output, image, file, and artifact inspection.
 - `22-motion-focus.svg` — timing, focus language, unread/live return, toast, and reduced motion.
-- `23-agent-brand-exploration.svg` — four agent-brand logo directions and recommended Vector Core concept.
-- `24-agent-brand-system.svg` — selected wordmark, app icon, terminal, monochrome, small-size, and multi-agent variants.
-- `25-brand-applied-tui.svg` — current brand applied to Welcome, TUI conversation, and Ghostty Sidebar.
-- `26-brand-refinement.svg` — refinement from generic container shape to final Convergence Core.
-- `27-convergence-brand-tui.svg` — normative final brand applied to entry, turns, subagents, and Ghostty workspace.
+- `23-agent-brand-exploration.svg` — rejected abstract-logo exploration.
+- `24-agent-brand-system.svg` — rejected Vector Core system exploration.
+- `25-brand-applied-tui.svg` — historical Vector Core application study.
+- `26-brand-refinement.svg` — historical Convergence Core refinement study.
+- `27-convergence-brand-tui.svg` — rejected brand application; retained for interaction-layout comparison only.
 - `07-session-management.svg` — large session collections, notification policy, linked views, and draft conflict.
 - `08-execution-control.svg` — steer, queue, interrupt boundaries, and non-interruptible work.
 - `09-permission-center.svg` — pending decisions, scoped permission rules, audit history, and revocation.
@@ -37,6 +37,11 @@
 - `12-resilience-operations.svg` — reconnect, crash ownership, diagnostics, safe mode, and degraded performance.
 - `sylvander-design-tokens.json` — shared visual tokens for the TUI and Ghostty shell.
 - `../sylvander-tui-ux-design.md` — product and interaction source of truth.
+- `../sylvander-brand-system.md` — product character and brand source of truth.
+- `final-brand/sylvander-seed-crab-master.png` — approved detailed pet/agent character master.
+- `final-brand/sylvander-logo-system.png` — rendered logo system and terminal identity study.
+- `final-brand/sylvander-seed-crab-character-faithful.svg` — high-fidelity multicolor vector of the approved character.
+- `final-brand/sylvander-tui-ascii-system.svg` — terminal-only Unicode, ASCII, turn, Ghostty Sidebar, and narrow-layout system.
 
 ## Import into Figma
 

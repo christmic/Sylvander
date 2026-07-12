@@ -2,6 +2,8 @@
 
 > **Author note**: I was reading the markdown design doc (`docs/sylvander-tui-ux-design.md`) instead of the SVG mockups under `docs/design/*.svg`. The user pointed out: "UI 的 TUI 都在 SVG 里面". The SVGs are the ground truth; the markdown is commentary on top.
 > This audit codifies what the SVGs **require** vs what I currently **render**.
+>
+> **Brand supersession note (2026-07-12):** this audit predates the v3 anthropomorphic character specification. Its `◖S◗` references and SVG brand marks are historical implementation evidence, not current brand requirements. Interaction layout remains applicable; brand decisions defer to `docs/sylvander-brand-system.md`.
 
 ## How to read this
 

@@ -2,13 +2,13 @@
 
 > Status: Implementation-ready design baseline
 >
-> Version: 7.0
+> Version: 7.2
 >
 > Date: 2026-07-11
 >
 > Scope: Terminal-native agent interface and its use inside the Sylvander Ghostty desktop shell
 
-> Brand direction: [`sylvander-brand-system.md`](./sylvander-brand-system.md). The Convergence Core system and `design/27-convergence-brand-tui.svg` supersede the earlier `◖S◗` crab-shell mark and the intermediate Vector Core exploration.
+> Brand direction: [`sylvander-brand-system.md`](./sylvander-brand-system.md). Version 4 selects the Seed–Crab–Core companion as Sylvander's final character and product symbol. Convergence Core, Vector Core, and the earlier `◖S◗` mark are historical explorations.
 
 Editable design artifacts:
 
@@ -34,11 +34,11 @@ Editable design artifacts:
 - [`design/20-overlay-system.svg`](./design/20-overlay-system.svg) — approval, AskUser, command palette, and session switcher visual language.
 - [`design/21-diff-artifact-viewer.svg`](./design/21-diff-artifact-viewer.svg) — diff, command output, image, file, and artifact inspection.
 - [`design/22-motion-focus.svg`](./design/22-motion-focus.svg) — streaming, selection, toast, scroll, unread, and reduced-motion feedback.
-- [`design/23-agent-brand-exploration.svg`](./design/23-agent-brand-exploration.svg) — four agent-brand concepts and recommendation.
-- [`design/24-agent-brand-system.svg`](./design/24-agent-brand-system.svg) — Vector Core wordmark, icon, terminal, monochrome, and agent-role variants.
-- [`design/25-brand-applied-tui.svg`](./design/25-brand-applied-tui.svg) — latest brand applied to entry, TUI conversation, and Ghostty workspace.
-- [`design/26-brand-refinement.svg`](./design/26-brand-refinement.svg) — final convergence refinement and selection rationale.
-- [`design/27-convergence-brand-tui.svg`](./design/27-convergence-brand-tui.svg) — normative final brand application with visible multi-agent language.
+- [`design/23-agent-brand-exploration.svg`](./design/23-agent-brand-exploration.svg) — rejected abstract-logo exploration.
+- [`design/24-agent-brand-system.svg`](./design/24-agent-brand-system.svg) — rejected Vector Core system exploration.
+- [`design/25-brand-applied-tui.svg`](./design/25-brand-applied-tui.svg) — historical Vector Core application study.
+- [`design/26-brand-refinement.svg`](./design/26-brand-refinement.svg) — historical Convergence Core refinement study.
+- [`design/27-convergence-brand-tui.svg`](./design/27-convergence-brand-tui.svg) — rejected Convergence Core application study; retained for interaction-layout comparison only.
 - [`design/sylvander-design-tokens.json`](./design/sylvander-design-tokens.json) — color, spacing, typography, and state tokens.
 - [`design/README.md`](./design/README.md) — import, editing, and handoff guidance.
 
@@ -98,37 +98,29 @@ The desired aesthetic is **quiet technical confidence**:
 - Strong alignment, indentation, and whitespace replace heavy separators and cards.
 - Symbols always paired with text so meaning survives monochrome terminals.
 
-### 2.2 Brand mark and session entry
+### 2.2 Agent character and session entry
 
-> Historical note: the `◖S◗` mark below established the original compact-logo requirement but is superseded in v7 by Vector Core. Current terminal mark: `◆›`; ASCII fallback: `[o]>`.
+Sylvander uses a compact anthropomorphic product character rather than a workflow diagram or decorative mascot. The character visibly attends, thinks, acts, coordinates, and settles, using one stable anatomy across product states.
 
-Sylvander uses a compact mark rather than a large ASCII-art banner. The goal is the clarity of Codex/Qwen entry screens without copying their geometry or consuming the conversation viewport.
-
-The mark is a minimal crab-shell symbol: two open claws around a central `S`. It expresses crab energy at small sizes and remains recognizable in monochrome.
+The approved character combines a split seed shell, crab-like action body, paired luminous core eyes, warm/calm duality, sprout, and connection orbit. TUI renditions simplify the approved anatomy by scale rather than inventing a different symbol.
 
 ```text
-  ◖S◗  SYLVANDER
-       intelligent terminal workspace
+  [seed-crab]  Sylvander
+               ~/Projects/acme-api · model · permission mode
 
-       ~/Projects/acme-api
-       What are we building today?
+  What should we work through?
 ```
-
-| Context | Mark | Rule |
-|---|---|---|
-| Ghostty/native vector | Two coral claw arcs + central shell | May use vector curves; no enclosing badge |
-| Unicode terminal | `◖S◗ SYLVANDER` | Primary terminal wordmark |
-| ASCII fallback | `[S] SYLVANDER` | Used when glyph width is uncertain |
-| Active session header | `◖S◗` or `Sylvander` | Never show the full welcome lockup inside a conversation |
-| Narrow terminal | `S ›` | One-cell identity plus prompt direction |
 
 Rules:
 
-- Maximum welcome lockup height is five terminal rows.
-- Brand appears once on entry, not before every assistant response.
-- No gradient-filled badge, giant block letters, mascot illustration, or animated logo loop.
-- Coral is limited to the mark; `SYLVANDER` uses primary text color.
-- Version, model, workspace, and permission mode appear as quiet metadata below the welcome prompt, not inside the logo.
+- Hero character: 6–10 rows, only on first entry or an intentionally empty workspace.
+- Daily terminal character: 2–4 rows, compact enough to accompany useful session context.
+- Presence glyph: one or two cells, used only at meaningful agent or session boundaries.
+- Brand appears once on entry and then recedes; it is not stamped before every paragraph.
+- The character may animate briefly to express a real transition, then becomes still.
+- Narrow terminals and reduced-motion mode render the resolved compact pose immediately.
+- Ordinary conversation remains borderless and visually dominant.
+- Version, model, workspace, and permission mode remain quiet metadata rather than becoming part of the character.
 
 ### 2.3 Design synthesis from leading agents
 
@@ -743,8 +735,8 @@ The native shell must not:
 The first launch avoids a blank chat box. It uses the compact Sylvander wordmark, one question, and three low-pressure starting actions:
 
 ```text
-                         ◖S◗  SYLVANDER
-                              intelligent terminal workspace
+                    [seed-crab hero]  Sylvander
+                                     agent workspace
 
                  What are we building today?
 
@@ -1228,7 +1220,7 @@ Destructive approval → AskUser → draft/recovery conflict → temporary overl
 | 100–119 | Short model/session metadata | Result summaries retained | Reduced hints | 24–28 cols |
 | 80–99 | One-line title + path | Durations may move below | One status row | 22–24 cols or collapsed |
 | 60–79 | Compact mark and title | Single-column tool evidence | Context/mode only | State rail in desktop |
-| 40–59 | `S ›` identity | Aggressive path middle-elision | One-line composer + overlay help | Hidden/temporary rail |
+| 40–59 | Presence glyph + title | Aggressive path middle-elision | One-line composer + overlay help | Hidden/temporary rail |
 | <40 | Resize/recovery view | No corrupted partial UI | Draft remains accessible | Hidden |
 
 Minimum height is 12 rows. Below 18 rows, header metadata and persistent help collapse before transcript or composer. Resize never changes semantic selection or live-follow state.
@@ -1239,7 +1231,7 @@ Minimum height is 12 rows. Below 18 rows, header metadata and persistent help co
 |---|---|---|
 | Truecolor | Design-token RGB | ANSI 256 nearest color |
 | ANSI color only | Semantic ANSI palette | Monochrome icon + label |
-| Unicode | `◖S◗`, `◐`, `✓`, box drawing | `[S]`, `~`, `OK`, ASCII rules |
+| Unicode | Character glyph, `◐`, `✓`, box drawing | Authored ASCII character, `~`, `OK`, ASCII rules |
 | Animation | Spinner/progress update | Static `working` + elapsed time |
 | Images | Kitty/iTerm/Sixel preview | Type, size, dimensions, path |
 | Screen reader | Stable semantic regions | Linear event narration, no rewrite animation |
@@ -1284,7 +1276,7 @@ Turn markers replace repeated uppercase speaker headings:
 ```text
 ›  User instruction
 
-◖S◗  Sylvander response
+[seed-crab glyph]  Sylvander response
 ```
 
 The full brand appears once on entry. Consecutive assistant paragraphs do not repeat the mark. Subagents use a short textual marker such as `explorer ›`.
@@ -1350,23 +1342,25 @@ When the user scrolls away from live output, streaming does not move the viewpor
 
 Reduced-motion mode removes spinner animation, pulsing, and rewrite effects while preserving elapsed time and textual state.
 
-## 41. Brand-led UI refinement
+## 41. Character-led UI refinement
 
-The v7 brand system introduces a semantic color grammar rather than a logo-only change. The final Convergence Core mark makes orchestration visible: multiple signals enter a decision core and leave as directed action.
+The v7.1 brand system introduces a product character with one stable anatomy across ready, thinking, acting, coordinating, waiting, and resolved states. The character provides presence and attention; conventional text and symbols continue to communicate precise status.
 
-- Violet identifies Sylvander intelligence and main-agent presence.
-- Coral identifies user intent, selection, and input focus.
-- Cyan identifies active execution and streaming progress.
-- Teal identifies verified completion.
+- One identity hue identifies Sylvander without taking over semantic state colors.
+- Active execution, decisions, verification, and errors retain their own accessible symbol-plus-label language.
+- The hero character is limited to first entry and intentionally empty surfaces.
+- A compact terminal character may begin a meaningful agent turn, then recedes behind the content.
+- The one-cell presence glyph identifies the main agent or active session but never substitutes for a state icon.
+- Subagents use a reduced seed form derived from the character plus an explicit role label; they are not portraits or recolored clones.
 
-Turn markers change from `◖S◗` to `◆`; the full terminal wordmark is `◆› SYLVANDER`. Subagents use hollow `◇` markers, allowing multi-agent activity to remain visually legible without portraits or avatars.
-
-The latest representative surface is `design/27-convergence-brand-tui.svg`. Earlier boards remain useful for interaction detail, but their old brand marks and coral-only role assignment are not normative.
+`design/final-brand/sylvander-seed-crab-master.png` and its faithful vector derivative are normative for the detailed pet character. `design/final-brand/sylvander-tui-ascii-system.svg` is normative only for terminal adaptation and placement. Earlier boards remain useful for interaction structure, but their `◖S◗`, Vector Core, and Convergence Core marks are historical placeholders.
 
 ## 42. Version History
 
 | Version | Date | Change |
 |---|---|---|
+| 7.2 | 2026-07-12 | Selected the Seed–Crab–Core companion as the final mascot, logo basis, terminal identity, and Ghostty/TUI presence system |
+| 7.1 | 2026-07-12 | Replaced the rejected abstract-logo direction with an anthropomorphic product-character contract; final silhouette remains gated on multi-scale and state-performance exploration |
 | 7.0 | 2026-07-12 | Replaced the mascot-like crab-shell/S mark with the Convergence Core agent brand, introduced semantic multi-agent roles, and applied the new identity to entry, TUI conversation, and Ghostty Sidebar |
 | 6.0 | 2026-07-11 | Added UI-only refinement for immersive turn rhythm, Composer states, Sidebar micro-interactions, overlay visual language, Diff/artifact inspection, and motion/focus feedback |
 | 5.0 | 2026-07-11 | Closed implementation-readiness gaps with end-to-end journeys, keyboard/focus/state ownership contracts, exact responsive and accessibility matrices, event-component lifecycle mapping, and replayable design QA scenarios |
