@@ -282,6 +282,35 @@ impl AppState {
                     self.status = "Permissions updated · next turn".into();
                 }
             }
+            DomainEvent::ContextReported { report } => {
+                let percent = if report.context_window == 0 {
+                    0
+                } else {
+                    u64::from(report.used_tokens) * 100 / u64::from(report.context_window)
+                };
+                let sources = if report.sources.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    report
+                        .sources
+                        .iter()
+                        .map(|source| format!("{} ({})", source.label, source.items))
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                };
+                self.messages.push(ChatMessage::Info(format!(
+                    "context · {} · {} / {} tokens ({}%) · {} remaining\ncache · {} read · {} written\nsources · {}",
+                    report.model,
+                    report.used_tokens,
+                    report.context_window,
+                    percent,
+                    report.remaining_tokens,
+                    report.cache_read_tokens,
+                    report.cache_write_tokens,
+                    sources
+                )));
+                self.status = "Context report updated".into();
+            }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
                 self.turn_active = false;
@@ -1095,6 +1124,33 @@ mod tests {
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    }
+
+    #[test]
+    fn context_report_renders_provider_usage_cache_and_sources() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ContextReported {
+            report: sylvander_protocol::ContextReport {
+                model: "deep-code".into(),
+                context_window: 200_000,
+                used_tokens: 50_000,
+                remaining_tokens: 150_000,
+                cache_read_tokens: 40_000,
+                cache_write_tokens: 2_000,
+                sources: vec![sylvander_protocol::ContextSource {
+                    kind: sylvander_protocol::ContextSourceKind::Conversation,
+                    label: "conversation messages".into(),
+                    items: 8,
+                }],
+            },
+        });
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text))
+                if text.contains("50000 / 200000 tokens (25%)")
+                    && text.contains("40000 read")
+                    && text.contains("conversation messages (8)")
+        ));
     }
 
     #[test]

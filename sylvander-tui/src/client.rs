@@ -71,6 +71,10 @@ pub enum ClientMsg {
         session_id: String,
     },
     GetRuntimeInfo,
+    GetContext {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -238,6 +242,9 @@ pub enum ServerMsg {
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
+    },
+    ContextReport {
+        report: sylvander_protocol::ContextReport,
     },
     OperationError {
         operation: String,
@@ -422,6 +429,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             approval_enabled,
             max_attachment_bytes,
         },
+        ServerMsg::ContextReport { report } => DomainEvent::ContextReported { report },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
         ServerMsg::ModelRetry {
@@ -665,6 +673,33 @@ mod tests {
         assert_eq!(value["type"], "select_permissions");
         assert_eq!(value["profile"]["file_access"], "read_only");
         assert_eq!(value["profile"]["approval_policy"], "deny");
+    }
+
+    #[test]
+    fn context_report_round_trips_as_typed_server_truth() {
+        let request = serde_json::to_value(ClientMsg::GetContext {
+            session_id: Some("session-1".into()),
+        })
+        .expect("serialize");
+        assert_eq!(request["type"], "get_context");
+        assert_eq!(request["session_id"], "session-1");
+
+        let event = parse_server_msg(ServerMsg::ContextReport {
+            report: sylvander_protocol::ContextReport {
+                model: "deep-code".into(),
+                context_window: 100_000,
+                used_tokens: 25_000,
+                remaining_tokens: 75_000,
+                cache_read_tokens: 20_000,
+                cache_write_tokens: 1_000,
+                sources: vec![],
+            },
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::ContextReported { report })
+                if report.used_tokens == 25_000 && report.cache_read_tokens == 20_000
+        ));
     }
 
     #[test]
