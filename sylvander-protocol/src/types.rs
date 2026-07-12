@@ -10,6 +10,45 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// User-facing reasoning intensity. The runtime maps these stable semantic
+/// levels to provider-specific token budgets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    #[must_use]
+    pub fn budget_tokens(self) -> Option<u32> {
+        match self {
+            Self::Off => None,
+            Self::Low => Some(2_048),
+            Self::Medium => Some(8_192),
+            Self::High => Some(20_000),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDescriptor {
+    pub id: String,
+    pub provider: String,
+    pub capabilities: u8,
+    pub reasoning_efforts: Vec<ReasoningEffort>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeModelInfo {
+    pub current_model: String,
+    pub reasoning_effort: ReasoningEffort,
+    pub models: Vec<ModelDescriptor>,
+}
+
 // ===========================================================================
 // ID types
 // ===========================================================================
@@ -554,5 +593,13 @@ mod tests {
         value.as_object_mut().unwrap().remove("attachments");
         let message: BusMessage = serde_json::from_value(value).expect("legacy decode");
         assert!(message.attachments.is_empty());
+    }
+
+    #[test]
+    fn reasoning_effort_has_stable_provider_neutral_budgets() {
+        assert_eq!(ReasoningEffort::Off.budget_tokens(), None);
+        assert_eq!(ReasoningEffort::Low.budget_tokens(), Some(2_048));
+        assert_eq!(ReasoningEffort::Medium.budget_tokens(), Some(8_192));
+        assert_eq!(ReasoningEffort::High.budget_tokens(), Some(20_000));
     }
 }

@@ -29,6 +29,7 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::ask_user_gate::AskUserGate;
@@ -63,6 +64,9 @@ pub(crate) struct AgentRunInner {
     spec: AgentSpec,
     /// The pre-built loop configuration.
     loop_config: AgentLoop,
+    /// Mutable selection read once at the start of every turn. Active turns
+    /// keep their cloned `AgentLoop` and are never mutated underneath.
+    runtime_models: RwLock<RuntimeModels>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -118,6 +122,48 @@ struct ActiveTurn {
     interrupt: oneshot::Sender<()>,
 }
 
+struct RuntimeModels {
+    available: HashMap<String, ModelInfo>,
+    current_model: String,
+    reasoning_effort: sylvander_protocol::ReasoningEffort,
+}
+
+impl RuntimeModels {
+    fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
+        let mut models = self
+            .available
+            .values()
+            .map(|model| {
+                let reasoning_efforts = if model
+                    .capabilities
+                    .contains(ModelCapabilities::EXTENDED_THINKING)
+                {
+                    vec![
+                        sylvander_protocol::ReasoningEffort::Off,
+                        sylvander_protocol::ReasoningEffort::Low,
+                        sylvander_protocol::ReasoningEffort::Medium,
+                        sylvander_protocol::ReasoningEffort::High,
+                    ]
+                } else {
+                    vec![sylvander_protocol::ReasoningEffort::Off]
+                };
+                sylvander_protocol::ModelDescriptor {
+                    id: model.id.clone(),
+                    provider: "anthropic-compatible".into(),
+                    capabilities: model.capabilities.bits(),
+                    reasoning_efforts,
+                }
+            })
+            .collect::<Vec<_>>();
+        models.sort_by(|left, right| left.id.cmp(&right.id));
+        sylvander_protocol::RuntimeModelInfo {
+            current_model: self.current_model.clone(),
+            reasoning_effort: self.reasoning_effort,
+            models,
+        }
+    }
+}
+
 /// A running agent instance — cheap `Clone` handle.
 #[derive(Clone)]
 pub struct AgentRun {
@@ -143,6 +189,37 @@ impl AgentRun {
     #[must_use]
     pub fn tool_context(&self) -> &ToolContext {
         &self.inner.tool_context
+    }
+
+    pub async fn runtime_model_info(&self) -> sylvander_protocol::RuntimeModelInfo {
+        let runtime = self.inner.runtime_models.read().await;
+        runtime.public_info()
+    }
+
+    /// Select the model configuration used by subsequently started turns.
+    /// Existing turns continue with the immutable snapshot they started with.
+    pub async fn select_model(
+        &self,
+        model_id: &str,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
+        let mut runtime = self.inner.runtime_models.write().await;
+        let model = runtime
+            .available
+            .get(model_id)
+            .ok_or_else(|| format!("model `{model_id}` is not available"))?;
+        if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
+            && !model
+                .capabilities
+                .contains(ModelCapabilities::EXTENDED_THINKING)
+        {
+            return Err(format!(
+                "model `{model_id}` does not support reasoning effort"
+            ));
+        }
+        runtime.current_model = model_id.to_string();
+        runtime.reasoning_effort = reasoning_effort;
+        Ok(runtime.public_info())
     }
 
     /// Return this agent's subscription filter.
@@ -845,6 +922,15 @@ impl AgentRunInner {
     {
         let session_id = msg.session_id.clone();
         let user_message = self.message_to_param(&msg);
+        let (selected_model, selected_effort) = {
+            let runtime = self.runtime_models.read().await;
+            let model = runtime
+                .available
+                .get(&runtime.current_model)
+                .expect("current runtime model must exist")
+                .clone();
+            (model, runtime.reasoning_effort)
+        };
 
         // 1. Append user message + take history snapshot
         let history = {
@@ -872,7 +958,7 @@ impl AgentRunInner {
                         &session_id,
                         StoredMessageRole::User,
                         content,
-                        Some(&self.loop_config.model().id),
+                        Some(&selected_model.id),
                         None,
                         None,
                     )
@@ -900,10 +986,15 @@ impl AgentRunInner {
                 ))
             };
             let mut cfg = self.loop_config.clone();
+            cfg.model = selected_model.clone();
+            cfg.reasoning_effort = selected_effort;
             cfg.approval_gate = Some(gate);
             cfg
         } else {
-            self.loop_config.clone()
+            let mut cfg = self.loop_config.clone();
+            cfg.model = selected_model.clone();
+            cfg.reasoning_effort = selected_effort;
+            cfg
         };
         loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
@@ -918,6 +1009,8 @@ impl AgentRunInner {
             pending_plans: self.pending_plans.clone(),
         }));
         let mut background_loop = self.loop_config.clone();
+        background_loop.model = selected_model.clone();
+        background_loop.reasoning_effort = selected_effort;
         background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
         background_loop.tool_definitions = background_loop.tools.definitions();
         background_loop.approval_gate = None;
@@ -1148,7 +1241,7 @@ impl AgentRunInner {
                             &session_id,
                             StoredMessageRole::Assistant,
                             content,
-                            Some(&self.loop_config.model().id),
+                            Some(&msg.model),
                             None,
                             None,
                         )
@@ -1247,6 +1340,7 @@ pub struct AgentRunBuilder {
     memory: Option<Arc<dyn MemoryStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
+    available_models: Vec<ModelInfo>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
 }
@@ -1262,6 +1356,7 @@ impl AgentRunBuilder {
             memory: None,
             session_store: None,
             model_capabilities: None,
+            available_models: Vec::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
         }
@@ -1297,6 +1392,14 @@ impl AgentRunBuilder {
         caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
     ) -> Self {
         self.model_capabilities = Some(caps);
+        self
+    }
+
+    /// Register alternate models reachable through the same configured
+    /// provider client. The spec model remains the initial selection.
+    #[must_use]
+    pub fn available_models(mut self, models: Vec<ModelInfo>) -> Self {
+        self.available_models = models;
         self
     }
 
@@ -1344,6 +1447,19 @@ impl AgentRunBuilder {
         if let Some(caps) = self.model_capabilities {
             model_info.capabilities = caps;
         }
+        let mut available_models = self
+            .available_models
+            .into_iter()
+            .map(|model| (model.id.clone(), model))
+            .collect::<HashMap<_, _>>();
+        available_models
+            .entry(model_info.id.clone())
+            .or_insert_with(|| model_info.clone());
+        let runtime_models = RuntimeModels {
+            available: available_models,
+            current_model: model_info.id.clone(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+        };
 
         let mut loop_builder = AgentLoop::builder()
             .client(self.client)
@@ -1374,6 +1490,7 @@ impl AgentRunBuilder {
                 id,
                 spec: self.spec,
                 loop_config,
+                runtime_models: RwLock::new(runtime_models),
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 session_store: self.session_store,
@@ -1449,6 +1566,49 @@ mod tests {
             .expect("build");
         let run2 = run.clone();
         assert_eq!(run.id(), run2.id());
+    }
+
+    #[tokio::test]
+    async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let thinking = ModelInfo::builder()
+            .id("thinking-model")
+            .context_window(200_000)
+            .max_output_tokens(32_000)
+            .capability(ModelCapabilities::EXTENDED_THINKING)
+            .build()
+            .expect("model");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .available_models(vec![thinking])
+            .build()
+            .expect("build");
+
+        let initial = run.runtime_model_info().await;
+        assert_eq!(initial.current_model, "claude-sonnet-5-20260601");
+        assert_eq!(initial.models.len(), 2);
+        let selected = run
+            .select_model("thinking-model", sylvander_protocol::ReasoningEffort::High)
+            .await
+            .expect("select");
+        assert_eq!(selected.current_model, "thinking-model");
+        assert_eq!(
+            selected.reasoning_effort,
+            sylvander_protocol::ReasoningEffort::High
+        );
+        assert!(
+            run.select_model(
+                "claude-sonnet-5-20260601",
+                sylvander_protocol::ReasoningEffort::Low,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            run.runtime_model_info().await.current_model,
+            "thinking-model"
+        );
     }
 
     #[tokio::test]
