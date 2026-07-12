@@ -6,4 +6,5 @@ use sylvander_protocol::PlanDecision;
 #[async_trait]
 pub trait PlanGate: Send + Sync {
     async fn review(&self, plan_id: &str, steps: Vec<String>) -> PlanDecision;
+    async fn update(&self, plan_id: &str, steps: Vec<String>, current: usize);
 }

@@ -209,6 +209,11 @@ pub enum StreamEvent {
         steps: Vec<String>,
         current: usize,
     },
+    PlanUpdated {
+        plan_id: String,
+        steps: Vec<String>,
+        current: usize,
+    },
     TaskStarted {
         task_id: String,
         owner: String,

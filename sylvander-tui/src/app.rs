@@ -542,6 +542,24 @@ impl AppState {
                 self.modals.push(Box::new(modal));
                 self.mode = AppMode::Normal;
             }
+            DomainEvent::PlanUpdated { plan_id, steps, current } => {
+                if let Some(ChatMessage::Plan {
+                    steps: visible_steps,
+                    current: visible_current,
+                    ..
+                }) = self.messages.iter_mut().rev().find(|message| {
+                    matches!(message, ChatMessage::Plan { plan_id: id, .. } if id == &plan_id)
+                }) {
+                    *visible_steps = steps;
+                    *visible_current = current.min(visible_steps.len().saturating_sub(1));
+                } else {
+                    self.messages.push(ChatMessage::Plan {
+                        plan_id,
+                        current: current.min(steps.len().saturating_sub(1)),
+                        steps,
+                    });
+                }
+            }
             DomainEvent::TaskStarted {
                 task_id,
                 owner,
@@ -821,6 +839,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::ToolStarted { .. }
             | DomainEvent::ToolFinished { .. }
             | DomainEvent::PlanReceived { .. }
+            | DomainEvent::PlanUpdated { .. }
             | DomainEvent::TaskStarted { .. }
             | DomainEvent::TaskProgress { .. }
             | DomainEvent::TaskCompleted { .. }
@@ -1282,6 +1301,27 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].state, TaskState::Done);
         assert_eq!(tasks[0].detail, "No failures");
+    }
+
+    #[test]
+    fn plan_progress_updates_existing_block_without_opening_another_modal() {
+        let mut s = AppState::new();
+        s.messages.push(ChatMessage::Plan {
+            plan_id: "plan-1".into(),
+            steps: vec!["inspect".into(), "verify".into()],
+            current: 0,
+        });
+        s.apply(DomainEvent::PlanUpdated {
+            plan_id: "plan-1".into(),
+            steps: vec!["inspect".into(), "verify".into()],
+            current: 1,
+        });
+        assert_eq!(s.messages.len(), 1);
+        assert!(matches!(
+            s.messages[0],
+            ChatMessage::Plan { current: 1, .. }
+        ));
+        assert!(s.modals.is_empty());
     }
 }
 

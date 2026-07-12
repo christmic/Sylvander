@@ -11,6 +11,7 @@ pub mod memory_write;
 pub mod plan;
 pub mod read;
 pub mod write;
+pub mod update_plan;
 
 pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;
@@ -21,3 +22,4 @@ pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
+pub use update_plan::UpdatePlanTool;

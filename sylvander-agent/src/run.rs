@@ -531,6 +531,18 @@ impl PlanGate for BusPlanGate {
         self.pending_plans.lock().await.remove(plan_id);
         decision
     }
+
+    async fn update(&self, plan_id: &str, steps: Vec<String>, current: usize) {
+        let _ = self.bus.publish(BusMessage::stream_event(
+            self.session_id.clone(),
+            self.agent_id.clone(),
+            StreamEvent::PlanUpdated {
+                plan_id: plan_id.into(),
+                steps,
+                current,
+            },
+        )).await;
+    }
 }
 
 // ===========================================================================
@@ -906,7 +918,7 @@ impl AgentRunInner {
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ThinkingDelta { delta: text }).await;
                 }
                 crate::event::AgentEvent::ToolCallStart { id, name, input } => {
-                    if name == "present_plan" || name == "start_background_task" {
+                    if matches!(name.as_str(), "present_plan" | "update_plan" | "start_background_task") {
                         continue;
                     }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolCall {
@@ -914,7 +926,7 @@ impl AgentRunInner {
                     }).await;
                 }
                 crate::event::AgentEvent::ToolCallEnd { id, name, output, is_error } => {
-                    if name == "present_plan" || name == "start_background_task" {
+                    if matches!(name.as_str(), "present_plan" | "update_plan" | "start_background_task") {
                         continue;
                     }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolResult {

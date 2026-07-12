@@ -167,6 +167,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::UserAnswer { .. } => "UserAnswer",
                 StreamEvent::TurnInterrupted { .. } => "TurnInterrupted",
                 StreamEvent::PlanProposed { .. } => "PlanProposed",
+                StreamEvent::PlanUpdated { .. } => "PlanUpdated",
                 StreamEvent::TaskStarted { .. } => "TaskStarted",
                 StreamEvent::TaskProgress { .. } => "TaskProgress",
                 StreamEvent::TaskCompleted { .. } => "TaskCompleted",
@@ -204,13 +205,36 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_update",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "tool_use",
+            "content": [{
+                "type": "tool_use",
+                "id": "plan_update_1",
+                "name": "update_plan",
+                "input": {
+                    "plan_id": "plan_001",
+                    "steps": ["inspect", "implement", "verify"],
+                    "current": 1
+                }
+            }],
+            "usage": {"input_tokens": 15, "output_tokens": 5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_done",
             "type": "message",
             "role": "assistant",
             "model": "claude-sonnet-5-20260601",
             "stop_reason": "end_turn",
             "content": [{"type": "text", "text": "Starting the approved work."}],
-            "usage": {"input_tokens": 15, "output_tokens": 5}
+            "usage": {"input_tokens": 18, "output_tokens": 5}
         })))
         .up_to_n_times(1)
         .mount(&server)
@@ -223,7 +247,9 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
         .model_name("claude-sonnet-5-20260601")
         .build()
         .expect("spec");
-    let tools = ToolRegistry::new().register(PresentPlanTool::new());
+    let tools = ToolRegistry::new()
+        .register(PresentPlanTool::new())
+        .register(UpdatePlanTool::new());
     let run = AgentRun::builder(spec, mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
@@ -269,6 +295,18 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
         timestamp: sylvander_agent::session::now_secs(),
         id: MessageId::new(),
     }).await.expect("resolve");
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event");
+            if matches!(
+                message.kind,
+                MessageKind::Stream(StreamEvent::PlanUpdated { current: 1, .. })
+            ) {
+                break;
+            }
+        }
+    }).await.expect("plan progress update");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {

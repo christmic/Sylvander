@@ -41,7 +41,7 @@ completed backend feature.
 
 ### Plan and background work
 
-- [ ] Plan proposal/update/decision are typed public protocol operations.
+- [x] Plan proposal/update/decision are typed public protocol operations.
 - [x] Plan approve, revise, reject, and cancel unblock the Agent explicitly.
 - [x] Plan current-step state is preserved and rendered correctly.
 - [x] Background task start/progress/complete/fail/cancel events are public.

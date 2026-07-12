@@ -582,6 +582,7 @@ pub fn run_stream(
                             .iter()
                             .filter(|t| {
                                 t.name != "present_plan" && t.name != "start_background_task"
+                                    && t.name != "update_plan"
                             })
                             .map(|t| crate::approval::ToolUseRequest {
                                 call_id: t.id.clone(),
@@ -595,6 +596,7 @@ pub fn run_stream(
                             .map(|tool| {
                                 if tool.name == "present_plan"
                                     || tool.name == "start_background_task"
+                                    || tool.name == "update_plan"
                                 {
                                     crate::approval::ApprovalDecision::Approved
                                 } else {
@@ -757,6 +759,44 @@ pub fn run_stream(
                                         false,
                                     ),
                                     Err(error) => (error, true),
+                                };
+                                yield AgentEvent::ToolCallEnd {
+                                    id: tool_use.id.clone(),
+                                    name: tool_use.name.clone(),
+                                    output: output.clone(),
+                                    is_error,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(tool_use.id.clone(), output)
+                                        .with_error(is_error),
+                                ));
+                                continue;
+                            }
+
+                            if tool_use.name == "update_plan" {
+                                let plan_id = tool_use.input["plan_id"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string();
+                                let steps = tool_use.input["steps"]
+                                    .as_array()
+                                    .map(|values| values.iter().filter_map(|value| {
+                                        value.as_str().map(String::from)
+                                    }).collect::<Vec<_>>())
+                                    .unwrap_or_default();
+                                let current = tool_use.input["current"]
+                                    .as_u64()
+                                    .and_then(|value| usize::try_from(value).ok())
+                                    .unwrap_or(0)
+                                    .min(steps.len().saturating_sub(1));
+                                let (output, is_error): (String, bool) =
+                                    if plan_id.is_empty() || steps.is_empty() {
+                                    ("plan_id and at least one step are required".into(), true)
+                                } else if let Some(gate) = &config.plan_gate {
+                                    gate.update(&plan_id, steps, current).await;
+                                    ("Visible plan progress updated.".into(), false)
+                                } else {
+                                    ("plan runtime is unavailable".into(), true)
                                 };
                                 yield AgentEvent::ToolCallEnd {
                                     id: tool_use.id.clone(),
