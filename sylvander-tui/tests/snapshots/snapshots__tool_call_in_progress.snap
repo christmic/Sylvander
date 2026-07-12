@@ -6,8 +6,8 @@ expression: "render_buf(&state, 80, 24)"
 /Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —               
 ────────────────────────────────────────────────────────────────────────────────
 You: list src                                                                   
-● Run `ls`     00s                                                              
-│ ◐ $ ls src                                                                    
+◌ Run `ls`     00s                                                              
+│ ◌ $ ls src                                                                    
                                                                                 
                                                                                 
                                                                                 

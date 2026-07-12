@@ -321,7 +321,6 @@ impl Composer {
                 _ => {}
             }
         }
-
         // Submit on plain Enter. Shift / Ctrl / Alt on Enter insert a
         // newline (Shift+Enter is the canonical terminal convention; we
         // keep the alt/ctrl variants as fallbacks for terminals that

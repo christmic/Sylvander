@@ -6,9 +6,9 @@ expression: "render_buf(&s, 120, 36)"
 /Users/christmix/OraculoSpace/Sylvander/sylvander-tui · session —                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 You: Review the auth middleware                                                                                         
-● Run `ls`     00s                                                                                                      
+◌ Run `ls`     00s                                                                                                      
 │ ✓ $ ls src/http  router.rs                                                                                            
-│ ◐ read src/http/middleware.rs                                                                                         
+│ ◌ read src/http/middleware.rs                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         

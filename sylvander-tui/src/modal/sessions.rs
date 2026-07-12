@@ -22,6 +22,7 @@ use ratatui::{
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
 use crate::modal::{Consumed, Modal};
+use crate::theme;
 
 /// Status badge for a session row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +47,11 @@ impl SessionStatus {
 
     fn color(self) -> Color {
         match self {
-            Self::Working => Color::Yellow,
-            Self::Waiting => Color::Cyan,
-            Self::Complete => Color::Green,
-            Self::Failed => Color::Red,
-            Self::Disconnected => Color::DarkGray,
+            Self::Working => ratatui::style::Color::Yellow,
+            Self::Waiting => ratatui::style::Color::Cyan,
+            Self::Complete => ratatui::style::Color::Green,
+            Self::Failed => ratatui::style::Color::Red,
+            Self::Disconnected => ratatui::style::Color::DarkGray,
         }
     }
 }
@@ -135,7 +136,7 @@ impl Modal for SessionsOverlay {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Sessions ")
-                .title_style(Style::default().fg(Color::Magenta)),
+                .title_style(theme::modal_title_coral()),
             popup_area,
         );
 
@@ -153,14 +154,14 @@ impl Modal for SessionsOverlay {
         // 1. Filter input
         let search_line = if self.filter_focused {
             Line::from(vec![
-                Span::styled("Search sessions… ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Search sessions… ", theme::text_muted()),
                 Span::styled(&self.filter, Style::default()),
                 Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
             ])
         } else {
             Line::from(Span::styled(
                 format!("Search sessions… {}", self.filter),
-                Style::default().fg(Color::DarkGray),
+                theme::text_muted(),
             ))
         };
         frame.render_widget(Paragraph::new(search_line), layout[0]);
@@ -174,7 +175,7 @@ impl Modal for SessionsOverlay {
         if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no sessions match)",
-                Style::default().fg(Color::DarkGray).italic(),
+                theme::text_muted().italic(),
             )));
         } else {
             for (row_i, (orig_idx, entry)) in filtered.iter().enumerate() {
@@ -186,7 +187,7 @@ impl Modal for SessionsOverlay {
                 let is_cursor = row_i == self.cursor;
                 let cursor_marker = if is_cursor { "  › " } else { "    " };
                 let active_marker = if is_active { "● " } else { "  " };
-                let color = if is_cursor { Color::Cyan } else { Color::Gray };
+                let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray };
 
                 let status_color = entry.status.color();
                 lines.push(Line::from(vec![
@@ -202,11 +203,11 @@ impl Modal for SessionsOverlay {
                     ),
                     Span::styled(
                         format!("{:<30}", truncate(&entry.workspace, 30)),
-                        Style::default().fg(Color::DarkGray),
+                        theme::text_muted(),
                     ),
                     Span::styled(
                         entry.format_time(),
-                        Style::default().fg(Color::DarkGray),
+                        theme::text_muted(),
                     ),
                 ]));
                 let _ = orig_idx; // surfacing only used in confirm-delete
@@ -217,18 +218,18 @@ impl Modal for SessionsOverlay {
         // 4. Footer
         let footer = if self.pending_delete.is_some() {
             Line::from(vec![
-                Span::styled("Delete this session? ", Style::default().fg(Color::Red)),
-                Span::styled("[y] confirm  [n/Esc] cancel", Style::default().fg(Color::DarkGray)),
+                Span::styled("Delete this session? ", theme::warning()),
+                Span::styled("[y] confirm  [n/Esc] cancel", theme::text_muted()),
             ])
         } else if self.filter_focused {
             Line::from(Span::styled(
                 "type to filter   ↓/↑ select   enter open   ctrl+n new   r rename   d delete   esc close",
-                Style::default().fg(Color::DarkGray),
+                theme::text_muted(),
             ))
         } else {
             Line::from(Span::styled(
                 "↓/↑ select   enter open   ctrl+n new   r rename   d delete   / filter   esc close",
-                Style::default().fg(Color::DarkGray),
+                theme::text_muted(),
             ))
         };
         frame.render_widget(Paragraph::new(footer), layout[3]);

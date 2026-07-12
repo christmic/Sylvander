@@ -24,6 +24,7 @@ use ratatui::{
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
 use crate::modal::{Consumed, Modal};
+use crate::theme;
 
 /// Selection state — `None` means single-select with no choice yet, OR
 /// free-text only. For multi-select, the bit-mask aligns with `options`.
@@ -136,7 +137,7 @@ impl Modal for AskUserModal {
             Block::default()
                 .borders(Borders::ALL)
                 .title(title)
-                .title_style(Style::default().fg(Color::Magenta)),
+                .title_style(theme::modal_title_coral()),
             popup_area,
         );
 
@@ -144,7 +145,7 @@ impl Modal for AskUserModal {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             wrap_text(&self.question, (inner.width as usize).saturating_sub(2)),
-            Style::default().fg(Color::White).bold(),
+            theme::text().bold(),
         )));
         lines.push(Line::from(""));
 
@@ -157,17 +158,17 @@ impl Modal for AskUserModal {
                         (
                             format!("{} [{}] ", check, i + 1),
                             if mask[i] {
-                                Color::Green
+                                ratatui::style::Color::Green
                             } else if is_cursor {
-                                Color::Cyan
+                                ratatui::style::Color::Cyan
                             } else {
-                                Color::Gray
+                                ratatui::style::Color::Gray
                             },
                         )
                     }
                     _ => (
                         format!("  [{}] ", i + 1),
-                        if is_cursor { Color::Cyan } else { Color::Gray },
+                        if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray },
                     ),
                 };
 
@@ -186,7 +187,7 @@ impl Modal for AskUserModal {
                         Span::styled(label, Style::default().fg(marker_color)),
                     ]));
                 } else {
-                    let color = if is_cursor { Color::Cyan } else { Color::Gray };
+                    let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray };
                     lines.push(Line::from(Span::styled(
                         format!("{prefix}{label}"),
                         Style::default().fg(color),
@@ -204,10 +205,10 @@ impl Modal for AskUserModal {
         };
         lines.push(Line::from(Span::styled(
             answer_label,
-            Style::default().fg(Color::DarkGray),
+            theme::text_muted(),
         )));
         lines.push(Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Green)),
+            Span::styled("> ", theme::verified()),
             Span::styled(&self.answer, Style::default()),
         ]));
         lines.push(Line::from(""));
@@ -218,7 +219,7 @@ impl Modal for AskUserModal {
         };
         lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(Color::DarkGray),
+            theme::text_muted(),
         )));
 
         frame.render_widget(
