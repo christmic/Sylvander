@@ -78,7 +78,7 @@ completed backend feature.
 - [ ] Images, selections, diffs, and terminal output attach safely.
 - [ ] Attachment capability and size are validated against the active model.
 - [x] Attachments can be inspected, removed, and reordered before submit.
-- [ ] Attachments and composer text restore from a crash-safe draft.
+- [x] Attachments and composer text restore from a crash-safe draft.
 - [x] Large paste payloads survive submission without leaking into visible history.
 - [ ] Copy/cut/selection and external-editor workflows are complete.
 
@@ -118,7 +118,7 @@ completed backend feature.
 - [ ] Reconnect reattaches to the active session and reconciles missed events.
 - [ ] Approval, question, tool, and task timeouts have explicit recovery UI.
 - [ ] `/doctor` can export a redacted diagnostic report.
-- [ ] Crash-safe drafts and session state restore after terminal/server failure.
+- [x] Crash-safe drafts and session state restore after terminal/server failure.
 - [ ] Logs carry session, turn, request, call, and trace identifiers.
 
 ### Accessibility and configuration

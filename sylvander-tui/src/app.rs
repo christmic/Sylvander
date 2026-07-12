@@ -71,6 +71,7 @@ pub struct AppState {
     /// Path to write the composer history ring to on every submit.
     /// `None` keeps history in memory only.
     pub history_path: Option<std::path::PathBuf>,
+    pub draft_path: Option<std::path::PathBuf>,
 
     /// The session has crossed from an empty entry state into a conversation.
     /// The Welcome remains the transcript prelude after this flips to `true`;
@@ -101,6 +102,10 @@ impl AppState {
                 composer.history = loaded;
             }
         }
+        let draft_path = path.as_ref().map(|path| path.with_file_name("draft.json"));
+        if let Some(path) = &draft_path {
+            let _ = composer.restore_draft_from(path);
+        }
         let state = Self {
             metadata,
             messages: Vec::new(),
@@ -127,6 +132,7 @@ impl AppState {
             pending_actions: Vec::new(),
             dirty: DirtyFlag::default(),
             history_path: path,
+            draft_path,
             welcomed: false,
         };
         state.dirty.mark();
@@ -139,6 +145,14 @@ impl AppState {
         if let Some(path) = self.history_path.clone() {
             if let Err(e) = self.composer.save_history_to(&path) {
                 self.status = format!("history save failed: {e}");
+            }
+        }
+    }
+
+    pub fn save_draft(&mut self) {
+        if let Some(path) = self.draft_path.clone() {
+            if let Err(error) = self.composer.save_draft_to(&path) {
+                self.status = format!("draft save failed: {error}");
             }
         }
     }
