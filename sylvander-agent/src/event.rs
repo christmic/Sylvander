@@ -57,6 +57,13 @@ pub enum AgentEvent {
         input: JsonValue,
     },
 
+    /// Incremental output produced while a tool call is still running.
+    ToolCallOutputDelta {
+        id: String,
+        name: String,
+        delta: String,
+    },
+
     /// Tool execution finished.
     ToolCallEnd {
         /// Tool call ID.

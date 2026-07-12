@@ -154,7 +154,9 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
             MessageKind::Stream(ev) => Some(match ev {
                 StreamEvent::TextDelta { .. } => "TextDelta",
                 StreamEvent::ThinkingDelta { .. } => "ThinkingDelta",
+                StreamEvent::ModelRetry { .. } => "ModelRetry",
                 StreamEvent::ToolCall { .. } => "ToolCall",
+                StreamEvent::ToolOutputDelta { .. } => "ToolOutputDelta",
                 StreamEvent::ToolResult { .. } => "ToolResult",
                 StreamEvent::IterationStart { .. } => "IterationStart",
                 StreamEvent::IterationEnd { .. } => "IterationEnd",

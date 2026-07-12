@@ -1005,6 +1005,17 @@ impl AgentRunInner {
                     )
                     .await;
                 }
+                crate::event::AgentEvent::ToolCallOutputDelta { id, name, delta } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolOutputDelta {
+                            call_id: id,
+                            tool_name: name,
+                            delta,
+                        },
+                    )
+                    .await;
+                }
                 crate::event::AgentEvent::ToolCallEnd {
                     id,
                     name,

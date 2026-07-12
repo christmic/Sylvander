@@ -16,6 +16,25 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool_context::ToolContext;
 
+/// Bounded interface for a tool to expose user-visible output while it runs.
+/// The Agent owns transport and call identity; tools only emit text deltas.
+#[derive(Clone)]
+pub struct ToolProgressSink {
+    emit_delta: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+impl ToolProgressSink {
+    pub(crate) fn new(emit_delta: impl Fn(String) + Send + Sync + 'static) -> Self {
+        Self {
+            emit_delta: Arc::new(emit_delta),
+        }
+    }
+
+    pub fn emit(&self, delta: impl Into<String>) {
+        (self.emit_delta)(delta.into());
+    }
+}
+
 /// Output of a tool execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutput {
@@ -98,6 +117,18 @@ pub trait Tool: Send + Sync {
     /// For model-visible failures (e.g., "file not found"), return
     /// [`ToolOutput::err`] and let the loop continue.
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError>;
+
+    /// Execute with optional incremental output. Existing tools remain source
+    /// compatible; tools that can stream override this method and call
+    /// `progress.emit(...)` without knowing anything about UI or transports.
+    async fn execute_streaming(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+        _progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute(ctx, input).await
+    }
 }
 
 /// Registry of tools available to the agent. Builder-style.

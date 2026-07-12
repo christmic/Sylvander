@@ -642,6 +642,7 @@ pub fn run_stream(
                             };
                         }
                     }
+                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
                     let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
                         let id = tool_use.id.clone();
                         let name = tool_use.name.clone();
@@ -649,11 +650,28 @@ pub fn run_stream(
                         let decision = decision.clone();
                         let tool = config.tools.get(&name).cloned();
                         let context = config.tool_context.clone();
+                        let progress_id = id.clone();
+                        let progress_name = name.clone();
+                        let progress_tx = progress_tx.clone();
+                        let progress = crate::tool::ToolProgressSink::new(move |delta| {
+                            let _ = progress_tx.send((
+                                progress_id.clone(),
+                                progress_name.clone(),
+                                delta,
+                            ));
+                        });
                         async move {
                             let outcome = match decision {
                                 crate::approval::ApprovalDecision::Approved => {
                                     ParallelToolOutcome::Executed(
-                                        execute_registered_tool(tool, &context, input, &name, TOOL_TIMEOUT).await,
+                                        execute_registered_tool(
+                                            tool,
+                                            &context,
+                                            input,
+                                            &name,
+                                            TOOL_TIMEOUT,
+                                            progress,
+                                        ).await,
                                     )
                                 }
                                 crate::approval::ApprovalDecision::Rejected { reason } => {
@@ -663,7 +681,20 @@ pub fn run_stream(
                             (id, name, outcome)
                         }
                     });
-                    let outcomes = futures_util::future::join_all(executions).await;
+                    let executions = futures_util::future::join_all(executions);
+                    tokio::pin!(executions);
+                    let outcomes = loop {
+                        tokio::select! {
+                            biased;
+                            Some((id, name, delta)) = progress_rx.recv() => {
+                                yield AgentEvent::ToolCallOutputDelta { id, name, delta };
+                            }
+                            outcomes = &mut executions => break outcomes,
+                        }
+                    };
+                    while let Ok((id, name, delta)) = progress_rx.try_recv() {
+                        yield AgentEvent::ToolCallOutputDelta { id, name, delta };
+                    }
                     let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
                     for (id, name, outcome) in outcomes {
                         match outcome {
@@ -887,41 +918,49 @@ pub fn run_stream(
                                 continue;
                             }
 
-                            let tool = config.tools.get(tool_use.name.as_str());
+                            let tool = config.tools.get(tool_use.name.as_str()).cloned();
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
-                            let (output, is_error) = if let Some(tool) = tool {
-                                match tokio::time::timeout(
-                                    TOOL_TIMEOUT,
-                                    tool.execute(&config.tool_context, input),
-                                )
-                                .await
-                                {
-                                    Ok(Ok(out)) => (out.content, out.is_error),
-                                    Ok(Err(e)) => {
-                                        warn!(tool = %name, error = %e, "tool execution failed");
-                                        (format!("tool execution failed: {e}"), true)
+                            let (progress_tx, mut progress_rx) =
+                                tokio::sync::mpsc::unbounded_channel();
+                            let progress_id = tool_use.id.clone();
+                            let progress_name = name.clone();
+                            let progress = crate::tool::ToolProgressSink::new(move |delta| {
+                                let _ = progress_tx.send(delta);
+                            });
+                            let execution = execute_registered_tool(
+                                tool,
+                                &config.tool_context,
+                                input,
+                                &name,
+                                TOOL_TIMEOUT,
+                                progress,
+                            );
+                            tokio::pin!(execution);
+                            let (output, is_error) = loop {
+                                tokio::select! {
+                                    biased;
+                                    Some(delta) = progress_rx.recv() => {
+                                        yield AgentEvent::ToolCallOutputDelta {
+                                            id: progress_id.clone(),
+                                            name: progress_name.clone(),
+                                            delta,
+                                        };
                                     }
-                                    Err(_) => {
-                                        warn!(tool = %name, "tool execution timed out");
-                                        (
-                                            format!(
-                                                "tool `{}` timed out after {}s",
-                                                name,
-                                                TOOL_TIMEOUT.as_secs()
-                                            ),
-                                            true,
-                                        )
-                                    }
+                                    outcome = &mut execution => break outcome,
                                 }
-                            } else {
-                                warn!(tool = %name, "tool not found in registry");
-                                (format!("tool `{name}` not found in registry"), true)
                             };
+                            while let Ok(delta) = progress_rx.try_recv() {
+                                yield AgentEvent::ToolCallOutputDelta {
+                                    id: progress_id.clone(),
+                                    name: progress_name.clone(),
+                                    delta,
+                                };
+                            }
 
                             yield AgentEvent::ToolCallEnd {
                                 id: tool_use.id.clone(),
-                                name,
+                                name: name.clone(),
                                 output: output.clone(),
                                 is_error,
                             };
@@ -1085,12 +1124,13 @@ async fn execute_registered_tool(
     input: serde_json::Value,
     name: &str,
     timeout: std::time::Duration,
+    progress: crate::tool::ToolProgressSink,
 ) -> (String, bool) {
     let Some(tool) = tool else {
         warn!(tool = %name, "tool not found in registry");
         return (format!("tool `{name}` not found in registry"), true);
     };
-    match tokio::time::timeout(timeout, tool.execute(context, input)).await {
+    match tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await {
         Ok(Ok(output)) => (output.content, output.is_error),
         Ok(Err(error)) => {
             warn!(tool = %name, %error, "tool execution failed");

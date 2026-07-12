@@ -19,7 +19,7 @@ use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink};
 use crate::tool_context::ToolContext;
 
 /// Read a file from disk. Paths are resolved relative to `workdir`.
@@ -134,6 +134,43 @@ impl Tool for ReadTool {
 
         Ok(ToolOutput::ok(content))
     }
+
+    async fn execute_streaming(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+        progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        let output = self.execute(ctx, input).await?;
+        if !output.is_error {
+            for delta in output_chunks(&output.content, 4096) {
+                progress.emit(delta);
+                tokio::task::yield_now().await;
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn output_chunks(text: &str, max_chars: usize) -> Vec<String> {
+    if text.is_empty() || max_chars == 0 {
+        return Vec::new();
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_chars = 0;
+    for character in text.chars() {
+        current.push(character);
+        current_chars += 1;
+        if current_chars == max_chars {
+            chunks.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 // Bring `as_str` into scope as a method on `serde_json::Value` (the
@@ -164,6 +201,12 @@ mod tests {
         fs::create_dir(workdir.join("sub")).unwrap();
         fs::write(workdir.join("sub/nested.txt"), "nested content").unwrap();
         (dir, workdir)
+    }
+
+    #[test]
+    fn progress_chunks_preserve_unicode_without_empty_tail() {
+        assert_eq!(output_chunks("蟹🦀abc", 2), ["蟹🦀", "ab", "c"]);
+        assert!(output_chunks("", 2).is_empty());
     }
 
     #[test]

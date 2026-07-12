@@ -120,7 +120,7 @@ pub mod prelude {
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
         ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
-    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
+    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,

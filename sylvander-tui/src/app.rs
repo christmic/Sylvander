@@ -464,6 +464,25 @@ impl AppState {
                     });
                 }
             }
+            DomainEvent::ToolOutputDelta {
+                call_id,
+                tool_name,
+                delta,
+            } => {
+                self.turn_active = true;
+                for message in self.messages.iter_mut().rev() {
+                    let ChatMessage::ToolStep { children, .. } = message else {
+                        continue;
+                    };
+                    if let Some(child) = children.iter_mut().rev().find(|child| {
+                        (!call_id.is_empty() && child.call_id == call_id)
+                            || (call_id.is_empty() && child.name == tool_name)
+                    }) {
+                        child.output.get_or_insert_with(String::new).push_str(&delta);
+                        break;
+                    }
+                }
+            }
             DomainEvent::ToolFinished {
                 call_id,
                 tool_name,
@@ -972,6 +991,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::AgentDone { .. }
             | DomainEvent::TurnInterrupted { .. }
             | DomainEvent::ToolStarted { .. }
+            | DomainEvent::ToolOutputDelta { .. }
             | DomainEvent::ToolFinished { .. }
             | DomainEvent::PlanReceived { .. }
             | DomainEvent::PlanUpdated { .. }
@@ -1200,6 +1220,28 @@ mod tests {
         };
         assert_eq!(children[0].output.as_deref(), Some("first result"));
         assert!(children[1].output.is_none());
+    }
+
+    #[test]
+    fn partial_tool_output_appends_to_the_matching_pending_call() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
+            tool_name: "read".into(),
+            input: serde_json::json!({"path": "a.rs"}),
+        });
+        for delta in ["first ", "second"] {
+            state.apply(DomainEvent::ToolOutputDelta {
+                call_id: "call-1".into(),
+                tool_name: "read".into(),
+                delta: delta.into(),
+            });
+        }
+        let ChatMessage::ToolStep { children, .. } = state.messages.last().unwrap() else {
+            panic!("expected tool step");
+        };
+        assert_eq!(children[0].status, ToolStatus::Pending);
+        assert_eq!(children[0].output.as_deref(), Some("first second"));
     }
 
     #[test]
