@@ -52,10 +52,7 @@ pub enum ApprovalDecision {
 #[async_trait]
 pub trait ApprovalGate: Send + Sync {
     /// Check a batch of tool calls. Returns one decision per tool.
-    async fn check_batch(
-        &self,
-        tools: &[ToolUseRequest],
-    ) -> ApprovalBatchResult;
+    async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +111,7 @@ impl ApprovalGate for RuleBasedApprovalGate {
             if let Some(action) = self.match_rule(&tool.tool_name) {
                 decisions[i] = Some(match action {
                     RuleAction::AutoApprove => ApprovalDecision::Approved,
-                    RuleAction::AutoReject { reason } => {
-                        ApprovalDecision::Rejected { reason }
-                    }
+                    RuleAction::AutoReject { reason } => ApprovalDecision::Rejected { reason },
                 });
             } else {
                 needs_fallback.push(i);
@@ -125,10 +120,8 @@ impl ApprovalGate for RuleBasedApprovalGate {
 
         // Delegate remaining to fallback gate
         if !needs_fallback.is_empty() {
-            let remaining: Vec<ToolUseRequest> = needs_fallback
-                .iter()
-                .map(|&i| tools[i].clone())
-                .collect();
+            let remaining: Vec<ToolUseRequest> =
+                needs_fallback.iter().map(|&i| tools[i].clone()).collect();
             let result = self.fallback.check_batch(&remaining).await;
             for (j, &i) in needs_fallback.iter().enumerate() {
                 decisions[i] = Some(result.decisions[j].clone());

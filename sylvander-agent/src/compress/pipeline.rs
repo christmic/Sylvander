@@ -34,8 +34,8 @@
 
 use std::fmt;
 
-use crate::compress::layer::{CompressionLayer, LayerReport};
 use crate::compress::CompressContext;
+use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// Ordered list of compression layers. Cheap-first, expensive-last.
 pub struct CompressionPipeline {
@@ -324,7 +324,12 @@ mod tests {
         let names = pipeline.layer_names();
         assert_eq!(
             names,
-            vec!["orphan_snip", "micro_compact", "context_collapse", "auto_compact"]
+            vec![
+                "orphan_snip",
+                "micro_compact",
+                "context_collapse",
+                "auto_compact"
+            ]
         );
     }
 
@@ -339,9 +344,10 @@ mod tests {
 
         let mut messages = vec![MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new("orphan", "stale result"),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                "orphan",
+                "stale result",
+            ))]),
         }];
         let mut ctx = CompressContext {
             messages: &mut messages,

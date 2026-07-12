@@ -9,8 +9,8 @@ use std::pin::Pin;
 use serde_json::json;
 use sylvander_llm_anthropic::api::types::{MessageParam, MessageRole, UserContent};
 
-use crate::compress::layer::{CompressionLayer, LayerReport};
 use crate::compress::CompressContext;
+use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// Default trigger ratio (matches Claude Code).
 pub const DEFAULT_TRIGGER_RATIO: f32 = 0.93;
@@ -55,9 +55,7 @@ impl AutoCompactLayer {
     fn summary_message(summary: &str) -> MessageParam {
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::String(format!(
-                "[Earlier conversation summary]\n{summary}"
-            )),
+            content: UserContent::String(format!("[Earlier conversation summary]\n{summary}")),
         }
     }
 }
@@ -73,17 +71,13 @@ impl CompressionLayer for AutoCompactLayer {
     ) -> Pin<Box<dyn Future<Output = LayerReport> + Send + 'a>> {
         Box::pin(async move {
             let used = ctx.last_usage.total_input_tokens();
-            let threshold =
-                (ctx.model_info.context_window as f32 * self.trigger_ratio) as u32;
+            let threshold = (ctx.model_info.context_window as f32 * self.trigger_ratio) as u32;
             if used < threshold {
                 return LayerReport::noop(self.name());
             }
 
             let Some(llm) = ctx.auto_compact_llm else {
-                return LayerReport::failed(
-                    self.name(),
-                    "auto_compact_llm not configured",
-                );
+                return LayerReport::failed(self.name(), "auto_compact_llm not configured");
             };
 
             let keep_count = (self.keep_last_n_turns * 2).min(ctx.messages.len());
@@ -98,10 +92,7 @@ impl CompressionLayer for AutoCompactLayer {
             let summary = match llm.summarize(&to_summarize, ctx.model_info).await {
                 Ok(s) => s,
                 Err(e) => {
-                    return LayerReport::failed(
-                        self.name(),
-                        format!("summarize call failed: {e}"),
-                    );
+                    return LayerReport::failed(self.name(), format!("summarize call failed: {e}"));
                 }
             };
 
@@ -110,10 +101,7 @@ impl CompressionLayer for AutoCompactLayer {
             new_messages.push(summary_msg);
             new_messages.extend(kept);
 
-            let original_chars: usize = to_summarize
-                .iter()
-                .map(|m| format!("{m:?}").len())
-                .sum();
+            let original_chars: usize = to_summarize.iter().map(|m| format!("{m:?}").len()).sum();
             let new_chars = summary.len() + 80;
             let saved = original_chars.saturating_sub(new_chars);
             let freed_tokens = (saved / 4) as u32;
@@ -183,8 +171,9 @@ mod tests {
     #[tokio::test]
     async fn records_failure_when_llm_not_configured() {
         let layer = AutoCompactLayer::new();
-        let mut messages: Vec<MessageParam> =
-            (0..10).map(|i| MessageParam::user(format!("msg {i}"))).collect();
+        let mut messages: Vec<MessageParam> = (0..10)
+            .map(|i| MessageParam::user(format!("msg {i}")))
+            .collect();
         let usage = usage_with(950);
         let mut ctx = CompressContext {
             messages: &mut messages,

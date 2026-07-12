@@ -37,8 +37,8 @@ use sylvander_llm_anthropic::api::types::{
     MessageRole, ToolResultContent, UserContent, UserContentBlock,
 };
 
-use crate::compress::layer::{CompressionLayer, LayerReport};
 use crate::compress::CompressContext;
+use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// Default number of recent user messages to keep intact.
 pub const DEFAULT_KEEP_LAST_N: usize = 3;
@@ -194,9 +194,10 @@ mod tests {
     fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> MessageParam {
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new(tool_use_id, body),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                tool_use_id,
+                body,
+            ))]),
         }
     }
 
