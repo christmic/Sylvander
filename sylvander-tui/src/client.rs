@@ -34,6 +34,7 @@ pub enum ClientMsg {
         call_id: String,
         answer: String,
     },
+    ListSessions,
     Ping,
 }
 
@@ -53,10 +54,16 @@ pub enum ServerMsg {
     },
     ToolCall {
         session_id: String,
+        #[serde(default)]
+        call_id: String,
         tool_name: String,
+        #[serde(default)]
+        input: serde_json::Value,
     },
     ToolResult {
         session_id: String,
+        #[serde(default)]
+        call_id: String,
         tool_name: String,
         output: String,
         is_error: bool,
@@ -64,6 +71,12 @@ pub enum ServerMsg {
     IterationStart {
         session_id: String,
         iteration: u32,
+    },
+    IterationEnd {
+        session_id: String,
+        iteration: u32,
+        input_tokens: u32,
+        output_tokens: u32,
     },
     Done {
         session_id: String,
@@ -95,6 +108,9 @@ pub enum ServerMsg {
         options: Vec<String>,
         multi_select: bool,
     },
+    SessionsList {
+        sessions: Vec<SessionInfoMsg>,
+    },
     Pong,
 }
 
@@ -104,6 +120,14 @@ pub struct ToolInfoMsg {
     pub call_id: String,
     pub tool_name: String,
     pub input: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SessionInfoMsg {
+    pub id: String,
+    pub label: String,
+    pub workspace: String,
+    pub last_seen_secs: u64,
 }
 
 impl From<ToolInfoMsg> for ToolInfo {
@@ -245,16 +269,24 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
-        ServerMsg::ToolCall { tool_name, .. } => DomainEvent::ToolStarted {
+        ServerMsg::ToolCall {
+            call_id,
             tool_name,
-            input: serde_json::Value::Null,
+            input,
+            ..
+        } => DomainEvent::ToolStarted {
+            call_id,
+            tool_name,
+            input,
         },
         ServerMsg::ToolResult {
+            call_id,
             tool_name,
             output,
             is_error,
             ..
         } => DomainEvent::ToolFinished {
+            call_id,
             tool_name,
             output,
             is_error,
@@ -282,7 +314,61 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::ToolRejected {
             tool_name, reason, ..
         } => DomainEvent::ToolRejected { tool_name, reason },
+        ServerMsg::SessionsList { sessions } => DomainEvent::SessionsLoaded {
+            sessions: sessions
+                .into_iter()
+                .map(|session| crate::model::SessionSummary {
+                    id: session.id,
+                    label: session.label,
+                    workspace: session.workspace,
+                    last_seen_secs: session.last_seen_secs,
+                })
+                .collect(),
+        },
+        ServerMsg::IterationEnd {
+            iteration,
+            input_tokens,
+            output_tokens,
+            ..
+        } => DomainEvent::UsageUpdated {
+            iteration,
+            input_tokens,
+            output_tokens,
+        },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_call_adapter_preserves_identity_and_input() {
+        let event = parse_server_msg(ServerMsg::ToolCall {
+            session_id: "s1".into(),
+            call_id: "call-42".into(),
+            tool_name: "read".into(),
+            input: serde_json::json!({"path": "src/lib.rs"}),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::ToolStarted { call_id, tool_name, input })
+                if call_id == "call-42"
+                    && tool_name == "read"
+                    && input["path"] == "src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn answer_uses_the_server_supported_wire_shape() {
+        let json = serde_json::to_value(ClientMsg::Answer {
+            call_id: "c1".into(),
+            answer: "blue".into(),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "answer");
+        assert_eq!(json["call_id"], "c1");
+    }
 }

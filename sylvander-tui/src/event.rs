@@ -10,6 +10,7 @@
 use serde_json::Value;
 
 use crate::app::ToolInfo;
+use crate::model::SessionSummary;
 
 // ===========================================================================
 // Inbound: DomainEvent
@@ -22,27 +23,52 @@ pub enum DomainEvent {
     /// Socket connected.
     Connected,
     /// Socket disconnected (graceful or otherwise).
-    Disconnected { reason: String },
+    Disconnected {
+        reason: String,
+    },
 
     /// Server assigned us a session id.
-    SessionCreated { session_id: String },
+    SessionCreated {
+        session_id: String,
+    },
+    SessionsLoaded {
+        sessions: Vec<SessionSummary>,
+    },
 
     /// Streaming text chunk from the model.
-    TextChunk { delta: String },
+    TextChunk {
+        delta: String,
+    },
     /// Streaming thinking chunk from the model.
-    ThinkingChunk { delta: String },
+    ThinkingChunk {
+        delta: String,
+    },
     /// A tool call started (status: pending).
-    ToolStarted { tool_name: String, input: Value },
+    ToolStarted {
+        call_id: String,
+        tool_name: String,
+        input: Value,
+    },
     /// A tool call finished.
     ToolFinished {
+        call_id: String,
         tool_name: String,
         output: String,
         is_error: bool,
     },
+    UsageUpdated {
+        iteration: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
     /// The agent loop has emitted its final answer.
-    AgentDone { final_text: String },
+    AgentDone {
+        final_text: String,
+    },
     /// The agent loop failed.
-    AgentError { message: String },
+    AgentError {
+        message: String,
+    },
 
     /// Server wants permission to run one or more tools.
     ApprovalRequested {
@@ -106,9 +132,16 @@ pub enum Action {
         session_id: Option<String>,
     },
     /// Approve or reject a specific tool call.
-    SendApprove { call_id: String, approved: bool },
+    SendApprove {
+        call_id: String,
+        approved: bool,
+    },
     /// Answer an AskUser question.
-    SendAnswer { call_id: String, answer: String },
+    SendAnswer {
+        call_id: String,
+        answer: String,
+    },
+    RequestSessions,
     /// Send a feedback message to the agent (e.g. after rejecting a tool
     /// call, so it can adjust its next attempt). Wraps as a chat message
     /// with a `[/feedback]` prefix the agent loop recognizes; the wire

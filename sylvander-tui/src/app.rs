@@ -32,6 +32,11 @@ pub struct AppState {
     pub connected: bool,
     pub status: String,
     pub mode: AppMode,
+    pub iteration: u32,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    /// Whether tool inputs and multi-line results are expanded in transcript.
+    pub tool_details_expanded: bool,
 
     /// Local cache of known sessions (newest first) — populated as
     /// `SessionCreated` events arrive. Survives reconnects so the user
@@ -96,6 +101,10 @@ impl AppState {
             connected: false,
             status: "Connecting...".into(),
             mode: AppMode::Normal,
+            iteration: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            tool_details_expanded: false,
             sessions: Vec::new(),
             modals: ModalStack::new(),
             composer,
@@ -213,13 +222,45 @@ impl AppState {
                 }
                 self.session_id = Some(session_id);
             }
+            DomainEvent::SessionsLoaded { sessions } => {
+                for session in sessions {
+                    let entry = SessionEntry {
+                        id: session.id,
+                        label: session.label,
+                        status: SessionStatus::Complete,
+                        workspace: session.workspace,
+                        last_seen_secs: session.last_seen_secs,
+                    };
+                    if let Some(existing) =
+                        self.sessions.iter_mut().find(|item| item.id == entry.id)
+                    {
+                        *existing = entry;
+                    } else {
+                        self.sessions.push(entry);
+                    }
+                }
+                self.sessions.sort_by_key(|entry| entry.last_seen_secs);
+                if self
+                    .modals
+                    .top()
+                    .is_some_and(|modal| modal.title() == "Sessions")
+                {
+                    self.modals.pop();
+                    self.modals
+                        .push(Box::new(SessionsOverlay::new(self.sessions.clone())));
+                }
+            }
             DomainEvent::TextChunk { delta } => {
                 self.streaming.push_str(&delta);
             }
             DomainEvent::ThinkingChunk { delta } => {
                 self.streaming_thinking.push_str(&delta);
             }
-            DomainEvent::ToolStarted { tool_name, input } => {
+            DomainEvent::ToolStarted {
+                call_id,
+                tool_name,
+                input,
+            } => {
                 // Group consecutive tool events into a single ToolStep
                 // block per UX §6. A new step starts when the last
                 // trailing message is not a ToolStep, or when a previous
@@ -239,6 +280,7 @@ impl AppState {
                 }
                 if let Some(ChatMessage::ToolStep { children, .. }) = self.messages.last_mut() {
                     children.push(ToolStepChild {
+                        call_id,
                         name: tool_name,
                         status: ToolStatus::Pending,
                         input,
@@ -248,12 +290,16 @@ impl AppState {
                 }
             }
             DomainEvent::ToolFinished {
+                call_id,
                 tool_name,
                 output,
                 is_error,
             } => {
                 if let Some(ChatMessage::ToolStep { children, .. }) = self.messages.last_mut() {
-                    if let Some(child) = children.iter_mut().rev().find(|c| c.name == tool_name) {
+                    if let Some(child) = children.iter_mut().rev().find(|child| {
+                        (!call_id.is_empty() && child.call_id == call_id)
+                            || (call_id.is_empty() && child.name == tool_name)
+                    }) {
                         child.status = if is_error {
                             ToolStatus::Error
                         } else {
@@ -280,6 +326,15 @@ impl AppState {
                     }
                 }
             }
+            DomainEvent::UsageUpdated {
+                iteration,
+                input_tokens,
+                output_tokens,
+            } => {
+                self.iteration = iteration;
+                self.input_tokens = input_tokens;
+                self.output_tokens = output_tokens;
+            }
             DomainEvent::AgentDone { final_text } => {
                 if !self.streaming.is_empty() {
                     self.messages
@@ -297,6 +352,12 @@ impl AppState {
                 self.streaming_thinking.clear();
             }
             DomainEvent::ApprovalRequested { batch_id, tools } => {
+                if tools.is_empty() {
+                    self.messages.push(ChatMessage::Info(
+                        "approval request contained no tools".into(),
+                    ));
+                    return None;
+                }
                 use crate::modal::approval::ApprovalModal;
                 let mut modal = ApprovalModal::new(batch_id, tools);
                 modal.stack_position = self.modals.len();
@@ -412,6 +473,8 @@ impl AppState {
             match result {
                 crate::modal::Consumed::Ignored => {
                     self.modals.push(modal);
+                    self.dirty.mark();
+                    return None;
                 }
                 crate::modal::Consumed::Yes { dismiss } => {
                     if !dismiss {
@@ -449,6 +512,7 @@ impl AppState {
             // handles Ctrl+P (closes itself). So we only open when nothing
             // is on top.
             if self.modals.is_empty() {
+                self.pending_actions.push(Action::RequestSessions);
                 let overlay = SessionsOverlay::new(self.sessions.clone());
                 self.modals.push(Box::new(overlay));
                 self.mode = AppMode::Normal; // overlay isn't modal-blocked
@@ -457,13 +521,30 @@ impl AppState {
             return None;
         }
 
+        let is_ctrl_o = key.code == crossterm::event::KeyCode::Char('o')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl_o {
+            self.tool_details_expanded = !self.tool_details_expanded;
+            self.status = if self.tool_details_expanded {
+                "Expanded tool details".into()
+            } else {
+                "Collapsed tool details".into()
+            };
+            self.dirty.mark();
+            return None;
+        }
+
         // 3b. `/` opens the command palette (UX §12) — only when the composer
         //     is empty and no modal is on top.
-        if key.code == crossterm::event::KeyCode::Char('/')
-            && key.modifiers == crossterm::event::KeyModifiers::NONE
-            && self.composer.is_empty()
-            && self.modals.is_empty()
-        {
+        let opens_commands = (key.code == crossterm::event::KeyCode::Char('/')
+            && key.modifiers == crossterm::event::KeyModifiers::NONE)
+            || (key.code == crossterm::event::KeyCode::Char('k')
+                && key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL));
+        if opens_commands && self.composer.is_empty() && self.modals.is_empty() {
             use crate::modal::palette::CommandPalette;
             self.modals.push(Box::new(CommandPalette::new()));
             self.dirty.mark();
@@ -606,6 +687,7 @@ mod tests {
         // the child's status when the finish lands.
         let mut s = AppState::new();
         s.apply(DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"cmd": "ls"}),
         });
@@ -620,6 +702,7 @@ mod tests {
             other => panic!("expected ToolStep, got {other:?}"),
         }
         s.apply(DomainEvent::ToolFinished {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             output: "a.txt".into(),
             is_error: false,
@@ -647,15 +730,18 @@ mod tests {
         // one step group, exactly the §6 immersive behavior.
         let mut s = AppState::new();
         s.apply(DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             input: serde_json::json!({"command": "ls src"}),
         });
         s.apply(DomainEvent::ToolFinished {
+            call_id: "call-1".into(),
             tool_name: "bash".into(),
             output: "a.rs".into(),
             is_error: false,
         });
         s.apply(DomainEvent::ToolStarted {
+            call_id: "call-2".into(),
             tool_name: "read".into(),
             input: serde_json::json!({"path": "src/a.rs"}),
         });
@@ -669,6 +755,30 @@ mod tests {
             }
             other => panic!("expected ToolStep, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn same_named_tool_results_match_by_call_id() {
+        let mut state = AppState::new();
+        for call_id in ["first", "second"] {
+            state.apply(DomainEvent::ToolStarted {
+                call_id: call_id.into(),
+                tool_name: "read".into(),
+                input: serde_json::json!({"path": format!("{call_id}.rs")}),
+            });
+        }
+        state.apply(DomainEvent::ToolFinished {
+            call_id: "first".into(),
+            tool_name: "read".into(),
+            output: "first result".into(),
+            is_error: false,
+        });
+
+        let Some(ChatMessage::ToolStep { children, .. }) = state.messages.last() else {
+            panic!("expected tool step");
+        };
+        assert_eq!(children[0].output.as_deref(), Some("first result"));
+        assert!(children[1].output.is_none());
     }
 
     #[test]
