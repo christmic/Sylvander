@@ -6,21 +6,21 @@ expression: "render_buf(&state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                  ┌ Tool Approval (batch 2/2 — 2 total) ───────────────┐                  
-                  │Agent wants to run:                                 │                  
-                  │  >> 1. write  {}                                   │                  
-                  │                                                    │                  
-                  │Tool 1/1  y=approve  n=reject  Y=all  N=reject all  │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  │                                                    │                  
-                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+             ┌ Tool Approval (batch 2/2 — 2 total) ─────────────────────────┐             
+             │Review the requested capabilities:                            │             
+             │  >> 1. MEDIUM   Write file                                   │             
+             │       scope  current workspace                               │             
+             │                                                              │             
+             │1/1  ↵/y approve · n reject · a all · N none · esc deny       │             
+             │                                                              │             
+             │                                                              │             
+             └──────────────────────────────────────────────────────────────┘             
+                                                                                          
+                                                                                          
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo
+◌ connecting · model — · branch — · session —

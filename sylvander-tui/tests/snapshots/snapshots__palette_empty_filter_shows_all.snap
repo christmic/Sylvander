@@ -10,17 +10,17 @@ expression: "render_buf(&state, 90, 22)"
                     ┌ Commands ─────────────────────────────────────┐                     
                     │/_                                             │                     
                     │───────────────────────────────────────────────│                     
-                    │  › /new          Start a new session  (/ new-s│                     
-                    │    /sessions     Switch sessions  (ctrl+p)    │                     
-                    │    /clear        Clear the transcript  (local)│                     
-                    │    /help         Show help  (ui-only)         │                     
-                    │    /quit         Quit sylvander-tui  (ctrl+c) │                     
-                    │                                               │                     
-                    │                                               │                     
-                    │                                               │                     
+                    │  › /new          Start a clean local session  │                     
+                    │    /sessions     Browse and switch sessions   │                     
+                    │    /clear        Clear the local transcript   │                     
+                    │    /help         Show interaction help        │                     
+                    │    /theme        Change the active TUI theme  │                     
+                    │    /tools        Toggle tool details          │                     
+                    │    /status       Show runtime and token usage │                     
+                    │    /quit         Quit sylvander-tui           │                     
                     └───────────────────────────────────────────────┘                     
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0t                  connecting…   draft lo
+◌ connecting · model — · branch — · session —

@@ -7,22 +7,22 @@ expression: "render_buf(&state, 80, 24)"
   │ ◌ $ rm -rf /                                                                
                                                                                 
                                                                                 
-                ┌ Tool Approval ───────────────────────────────┐                
-                │Agent wants to run:                           │                
-                │  >> 1. bash  {"command":"rm -rf /"}          │                
-                │                                              │                
-                │Tool 1/1  y=approve  n=reject  Y=all  N=reject│                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                │                                              │                
-                └──────────────────────────────────────────────┘                
+                                                                                
+                                                                                
+           ┌ Tool Approval ─────────────────────────────────────────┐           
+           │Review the requested capabilities:                      │           
+           │  >> 1. CRITICAL $ rm -rf /                             │           
+           │       scope  current workspace                         │           
+           │                                                        │           
+           │1/1  ↵/y approve · n reject · a all · N none · esc deny │           
+           │                                                        │           
+           │                                                        │           
+           └────────────────────────────────────────────────────────┘           
+                                                                                
+                                                                                
+                                                                                
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 >                                                                               
 ────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 1t          connecting…   draft
+◌ connecting · model — · branch — · session —
