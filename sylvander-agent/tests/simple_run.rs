@@ -34,6 +34,93 @@ struct BarrierTool {
     barrier: Arc<tokio::sync::Barrier>,
 }
 
+struct ProgressTool;
+
+#[async_trait::async_trait]
+impl Tool for ProgressTool {
+    fn name(&self) -> &str {
+        "progress_probe"
+    }
+    fn description(&self) -> &str {
+        "emits output before completion"
+    }
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::empty()
+    }
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("first second"))
+    }
+    async fn execute_streaming(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+        progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        progress.emit("first ");
+        tokio::task::yield_now().await;
+        progress.emit("second");
+        Ok(ToolOutput::ok("first second"))
+    }
+}
+
+#[tokio::test]
+async fn tool_output_deltas_arrive_before_final_result() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_progress","type":"message","role":"assistant",
+            "content":[{"type":"tool_use","id":"probe","name":"progress_probe","input":{}}],
+            "model":"claude-sonnet-5-20260601","stop_reason":"tool_use",
+            "usage":{"input_tokens":10,"output_tokens":5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_done","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"done"}],
+            "model":"claude-sonnet-5-20260601","stop_reason":"end_turn",
+            "usage":{"input_tokens":20,"output_tokens":3}
+        })))
+        .mount(&server)
+        .await;
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .tool(ProgressTool)
+        .build()
+        .expect("build");
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    run_with_events(&loop_, vec![MessageParam::user("progress")], move |event| {
+        captured.lock().unwrap().push(event);
+    })
+    .await
+    .expect("run");
+
+    let lifecycle = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallOutputDelta { delta, .. } => Some(format!("delta:{delta}")),
+            AgentEvent::ToolCallEnd { output, .. } => Some(format!("end:{output}")),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle,
+        ["delta:first ", "delta:second", "end:first second"]
+    );
+}
+
 #[async_trait::async_trait]
 impl Tool for BarrierTool {
     fn name(&self) -> &str {

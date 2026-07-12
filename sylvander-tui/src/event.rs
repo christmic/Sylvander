@@ -80,6 +80,11 @@ pub enum DomainEvent {
         tool_name: String,
         input: Value,
     },
+    ToolOutputDelta {
+        call_id: String,
+        tool_name: String,
+        delta: String,
+    },
     /// A tool call finished.
     ToolFinished {
         call_id: String,

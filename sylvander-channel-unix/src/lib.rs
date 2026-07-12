@@ -129,6 +129,12 @@ enum ServerMsg {
         tool_name: String,
         input: serde_json::Value,
     },
+    ToolOutputDelta {
+        session_id: String,
+        call_id: String,
+        tool_name: String,
+        delta: String,
+    },
     ToolResult {
         session_id: String,
         call_id: String,
@@ -500,6 +506,16 @@ async fn handle_client_msg(
                                 call_id,
                                 tool_name,
                                 input,
+                            }),
+                            StreamEvent::ToolOutputDelta {
+                                call_id,
+                                tool_name,
+                                delta,
+                            } => Some(ServerMsg::ToolOutputDelta {
+                                session_id: s.0.clone(),
+                                call_id,
+                                tool_name,
+                                delta,
                             }),
                             StreamEvent::ToolResult {
                                 call_id,

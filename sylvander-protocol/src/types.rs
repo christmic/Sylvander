@@ -182,6 +182,11 @@ pub enum StreamEvent {
         tool_name: String,
         input: serde_json::Value,
     },
+    ToolOutputDelta {
+        call_id: String,
+        tool_name: String,
+        delta: String,
+    },
     ToolResult {
         call_id: String,
         tool_name: String,

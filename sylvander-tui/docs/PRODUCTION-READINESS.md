@@ -70,7 +70,7 @@ completed backend feature.
 - [x] MCP/web/resource tools have dedicated typed presentations.
 - [x] Independent tool calls execute concurrently and render as one deterministic batch.
 - [x] Tool timeout, rejection, error, and turn cancellation settle pending rows explicitly.
-- [ ] LLM retries and partial tool output have typed lifecycle events and render incrementally.
+- [x] LLM retries and partial tool output have typed lifecycle events and render incrementally.
 - [x] Long output supports expand, focused inspection, copy, and search.
 - [x] ANSI/control sequences are sanitized and secrets are masked.
 

@@ -102,6 +102,13 @@ pub enum ServerMsg {
         #[serde(default)]
         input: serde_json::Value,
     },
+    ToolOutputDelta {
+        session_id: String,
+        #[serde(default)]
+        call_id: String,
+        tool_name: String,
+        delta: String,
+    },
     ToolResult {
         session_id: String,
         #[serde(default)]
@@ -417,6 +424,16 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             tool_name,
             input,
         },
+        ServerMsg::ToolOutputDelta {
+            call_id,
+            tool_name,
+            delta,
+            ..
+        } => DomainEvent::ToolOutputDelta {
+            call_id,
+            tool_name,
+            delta,
+        },
         ServerMsg::ToolResult {
             call_id,
             tool_name,
@@ -630,6 +647,21 @@ mod tests {
                 if call_id == "call-42"
                     && tool_name == "read"
                     && input["path"] == "src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn tool_delta_adapter_preserves_call_identity() {
+        let event = parse_server_msg(ServerMsg::ToolOutputDelta {
+            session_id: "s1".into(),
+            call_id: "call-42".into(),
+            tool_name: "read".into(),
+            delta: "partial".into(),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::ToolOutputDelta { call_id, tool_name, delta })
+                if call_id == "call-42" && tool_name == "read" && delta == "partial"
         ));
     }
 
