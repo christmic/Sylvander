@@ -380,6 +380,7 @@ async fn handle_client_msg(
                         },
                     }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
@@ -548,6 +549,7 @@ async fn handle_client_msg(
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::ApproveTool { call_id, approved }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
@@ -562,6 +564,7 @@ async fn handle_client_msg(
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
@@ -584,6 +587,7 @@ async fn handle_client_msg(
                 recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                 kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
                 payload: String::new(),
+                attachments: Vec::new(),
                 timestamp: sylvander_agent::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             }).await;
@@ -596,6 +600,7 @@ async fn handle_client_msg(
                 recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                 kind: MessageKind::System(SystemMessage::CancelTask { session_id, task_id }),
                 payload: String::new(),
+                attachments: Vec::new(),
                 timestamp: sylvander_agent::session::now_secs(),
                 id: sylvander_agent::bus::MessageId::new(),
             }).await;

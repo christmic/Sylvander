@@ -300,6 +300,7 @@ async fn handle_client_msg(
                         },
                     }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
@@ -416,6 +417,7 @@ async fn handle_client_msg(
                         approved,
                     }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })
@@ -433,6 +435,7 @@ async fn handle_client_msg(
                         answer,
                     }),
                     payload: String::new(),
+                    attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
                     id: sylvander_agent::bus::MessageId::new(),
                 })

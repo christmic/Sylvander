@@ -1032,13 +1032,45 @@ impl AgentRunInner {
             recipient: Recipient::Broadcast,
             kind: MessageKind::Chat,
             payload: format!("Error: {err}"),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: crate::bus::MessageId::new(),
         }).await;
     }
 
     fn message_to_param(&self, msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
-        sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload)
+        use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
+        if msg.attachments.is_empty() {
+            return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
+        }
+        let mut blocks = Vec::new();
+        if !msg.payload.is_empty() {
+            blocks.push(UserContentBlock::text(&msg.payload));
+        }
+        for attachment in &msg.attachments {
+            match &attachment.content {
+                crate::bus::AttachmentContent::Text { text } => {
+                    blocks.push(UserContentBlock::text(format!(
+                        "Attached {:?} `{}` ({}):\n{}",
+                        attachment.kind, attachment.name, attachment.mime_type, text
+                    )));
+                }
+                crate::bus::AttachmentContent::Base64 { data } => {
+                    let image = match attachment.mime_type.as_str() {
+                        "image/png" => Some(ImageBlock::png(data.clone())),
+                        "image/jpeg" => Some(ImageBlock::jpeg(data.clone())),
+                        _ => None,
+                    };
+                    if let Some(image) = image {
+                        blocks.push(UserContentBlock::text(format!(
+                            "Attached image `{}`:", attachment.name
+                        )));
+                        blocks.push(UserContentBlock::Image(image));
+                    }
+                }
+            }
+        }
+        sylvander_llm_anthropic::api::types::MessageParam::user_blocks(blocks)
     }
 }
 
@@ -1349,6 +1381,32 @@ mod tests {
         let (spec, client) = test_spec_and_client();
         let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
         assert!(run.memory_tools().is_empty());
+    }
+
+    #[test]
+    fn typed_attachments_become_provider_content_blocks() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let message = BusMessage::user_chat_with_attachments(
+            SessionId::new("s1"),
+            "u1",
+            "review this",
+            vec![crate::bus::MessageAttachment {
+                id: "a1".into(),
+                kind: crate::bus::AttachmentKind::File,
+                name: "src/main.rs".into(),
+                mime_type: "text/x-rust".into(),
+                content: crate::bus::AttachmentContent::Text {
+                    text: "fn main() {}".into(),
+                },
+                byte_count: 12,
+            }],
+        );
+        let value = serde_json::to_value(run.inner.message_to_param(&message)).expect("json");
+        let content = value["content"].as_array().expect("content blocks");
+        assert_eq!(content.len(), 2);
+        assert!(content[1]["text"].as_str().unwrap().contains("src/main.rs"));
     }
 
     #[tokio::test]

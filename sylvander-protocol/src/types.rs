@@ -310,6 +310,34 @@ pub enum SystemMessage {
 // BusMessage
 // ===========================================================================
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttachmentKind {
+    Paste,
+    File,
+    Image,
+    Selection,
+    Diff,
+    TerminalOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "encoding", rename_all = "snake_case")]
+pub enum AttachmentContent {
+    Text { text: String },
+    Base64 { data: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageAttachment {
+    pub id: String,
+    pub kind: AttachmentKind,
+    pub name: String,
+    pub mime_type: String,
+    pub content: AttachmentContent,
+    pub byte_count: usize,
+}
+
 /// A message on the bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusMessage {
@@ -318,6 +346,8 @@ pub struct BusMessage {
     pub recipient: Recipient,
     pub kind: MessageKind,
     pub payload: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachment>,
     pub timestamp: i64,
     pub id: MessageId,
 }
@@ -342,9 +372,21 @@ impl BusMessage {
             recipient: Recipient::Broadcast,
             kind: MessageKind::Chat,
             payload: text.into(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
+    }
+
+    pub fn user_chat_with_attachments(
+        session_id: SessionId,
+        user_id: impl Into<String>,
+        text: impl Into<String>,
+        attachments: Vec<MessageAttachment>,
+    ) -> Self {
+        let mut message = Self::user_chat(session_id, user_id, text);
+        message.attachments = attachments;
+        message
     }
 
     pub fn agent_response(
@@ -358,6 +400,7 @@ impl BusMessage {
             recipient: Recipient::Broadcast,
             kind: MessageKind::Chat,
             payload: text.into(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -370,6 +413,7 @@ impl BusMessage {
             recipient: Recipient::Agent(agent_id),
             kind: MessageKind::System(SystemMessage::Stop),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -389,6 +433,7 @@ impl BusMessage {
                 metadata,
             }),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -401,6 +446,7 @@ impl BusMessage {
             recipient: Recipient::Agent(agent_id),
             kind: MessageKind::System(SystemMessage::LeaveSession { session_id }),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -413,6 +459,7 @@ impl BusMessage {
             recipient: Recipient::Agent(agent_id),
             kind: MessageKind::System(SystemMessage::InterruptTurn { session_id }),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -425,6 +472,7 @@ impl BusMessage {
             recipient: Recipient::Broadcast,
             kind: MessageKind::System(SystemMessage::StatusUpdate { status }),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -441,6 +489,7 @@ impl BusMessage {
             recipient: Recipient::Broadcast,
             kind: MessageKind::Stream(event),
             payload: String::new(),
+            attachments: Vec::new(),
             timestamp: now_secs(),
             id: MessageId::new(),
         }
@@ -481,5 +530,14 @@ mod tests {
         let _a: AgentId = "a".into();
         let _s: SessionId = "s".into();
         let _u: UserId = "u".into();
+    }
+
+    #[test]
+    fn legacy_bus_messages_default_to_no_attachments() {
+        let mut value = serde_json::to_value(BusMessage::user_chat("s".into(), "u", "hi"))
+            .expect("serialize");
+        value.as_object_mut().unwrap().remove("attachments");
+        let message: BusMessage = serde_json::from_value(value).expect("legacy decode");
+        assert!(message.attachments.is_empty());
     }
 }

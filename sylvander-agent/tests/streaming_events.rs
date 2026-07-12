@@ -292,6 +292,7 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
             decision: PlanDecision::Approved,
         }),
         payload: String::new(),
+        attachments: Vec::new(),
         timestamp: sylvander_agent::session::now_secs(),
         id: MessageId::new(),
     }).await.expect("resolve");
@@ -427,6 +428,7 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
             task_id: expected_task_id.clone(),
         }),
         payload: String::new(),
+        attachments: Vec::new(),
         timestamp: sylvander_agent::session::now_secs(),
         id: MessageId::new(),
     }).await.expect("cancel");

@@ -345,6 +345,7 @@ impl AgentRunEngine {
             recipient: target,
             kind: MessageKind::Chat,
             payload: text.into(),
+            attachments: Vec::new(),
             timestamp: crate::session::now_secs(),
             id: crate::bus::MessageId::new(),
         };
