@@ -88,7 +88,7 @@ completed backend feature.
 
 ### Model, permission, and context controls
 
-- [ ] `/model` selects provider/model and reasoning effort from server truth.
+- [x] `/model` selects provider/model and reasoning effort from server truth.
 - [ ] `/permissions` edits sandbox, filesystem, network, and approval policy.
 - [ ] Approval supports once/session/persistent decisions where policy permits.
 - [ ] `/context` reports window use, cache use, and contributing sources.

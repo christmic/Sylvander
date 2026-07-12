@@ -22,6 +22,8 @@ instead of mid-flight.
 | `DINGTALK_APP_KEY`   | —                             | DingTalk channel only enabled when *both* this and `DINGTALK_APP_SECRET` are set. |
 | `DINGTALK_APP_SECRET`| —                             | (ditto)                                         |
 | `SYLVANDER_APPROVAL` | unset                         | Set to any value to enable tool approval gate.  |
+| `SYLVANDER_MODELS` | primary model only | Comma-separated model ids exposed to `/model`; `SYLVANDER_MODEL` is inserted if omitted. |
+| `SYLVANDER_REASONING_MODELS` | empty | Comma-separated subset of model ids that support low/medium/high reasoning. Other models advertise `off` only. |
 | `SYLVANDER_SESSION_DB` | `$XDG_DATA_HOME/sylvander/sessions.db`, or `$HOME/.local/share/sylvander/sessions.db` | Persistent SQLite session/history database. |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
 
@@ -53,6 +55,9 @@ export ANTHROPIC_BASE_URL=https://api.anthropic.com
 ```sh
 export ANTHROPIC_API_KEY=anything-here
 export ANTHROPIC_BASE_URL=http://my-gateway.internal:9527
+export SYLVANDER_MODEL=fast-code
+export SYLVANDER_MODELS=fast-code,deep-code
+export SYLVANDER_REASONING_MODELS=deep-code
 ./target/debug/sylvander
 ```
 
