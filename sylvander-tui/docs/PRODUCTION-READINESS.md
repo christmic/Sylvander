@@ -32,10 +32,10 @@ completed backend feature.
 ### Sessions
 
 - [ ] The service reports real model, workspace, branch, and session metadata.
-- [ ] Session selection loads persisted conversation history.
-- [ ] Rename persists to `SessionStore`.
+- [x] Session selection loads persisted conversation history.
+- [x] Rename persists to `SessionStore`.
 - [ ] Archive/delete persists and has undo-safe behavior where applicable.
-- [ ] Fork creates an independent session at a selected turn boundary.
+- [x] Fork creates an independent session at the current completed turn boundary.
 - [ ] Resume restores token/accounting and does not mix transcripts.
 - [ ] Session search, recency, workspace grouping, and empty/error states work.
 

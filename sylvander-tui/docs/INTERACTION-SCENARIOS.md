@@ -52,6 +52,9 @@ arguments. Invalid arguments remain in the command line with an inline error.
 |---|---|
 | `/new` | Clears current session state locally; next prompt creates a session |
 | `/sessions` | Refreshes and opens the session browser |
+| `/resume` | Opens the persisted session browser |
+| `/rename <name>` | Persists a new label for the current session |
+| `/fork` | Copies the current session and its message history |
 | `/clear` | Clears local transcript but keeps current session identity |
 | `/help [commands\|approval\|tools]` | Opens visible contextual help |
 | `/theme <name>` | Switches semantic palette without changing layout |
@@ -88,14 +91,18 @@ required.
 
 ## Sessions
 
-- Opening the browser requests current session metadata from the service and
-  merges it with locally observed sessions.
+- Opening the browser requests current persisted session metadata from the
+  service and merges it with locally observed sessions.
 - Filtering and selection have separate focus; `Tab` switches focus.
 - `Ctrl+N` prepares a new session without sending an empty Agent message.
-- Rename is an inline local label edit. Delete confirmation removes the same
+- Rename persists through `SessionStore`; delete confirmation archives the same
   original entry even when the list is filtered.
-- Switching clears the previous transcript to prevent cross-session content
-  from appearing under the newly selected session identity.
+- Switching requests stored history and replaces the transcript only after the
+  service responds. It is disabled while a turn is active.
+- Fork copies stored message history into a new session id and opens the fork.
+- The Agent and Unix channel share one SQLite store. The Agent restores model
+  history when joining a known session and persists terminal assistant output
+  before publishing Done.
 
 ## Connectivity
 
