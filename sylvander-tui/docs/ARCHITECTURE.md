@@ -59,6 +59,9 @@ Accepts `UserIntent`, invokes the reducer or Composer, and exposes queued
 `Action`s. It performs no I/O and renders nothing. This is the preferred entry
 point for input tests.
 
+`command.rs` owns command parsing, argument validation, and application-level
+effects. Command palette rendering does not implement command behavior itself.
+
 ### `service.rs` and `client.rs` — service boundary
 
 `client.rs` mirrors the Unix JSON wire format. `service.rs` hides it from the
@@ -76,6 +79,8 @@ keyboard arrow event.
 Presentation owns the component graph and reads `&AppState`. It cannot execute
 Git, read environment variables, connect to a server, or mutate application
 state during render. Semantic theme roles are used instead of concrete colors.
+`tool_presenter.rs` and `approval_presenter.rs` are pure semantic formatting
+helpers shared by transcript and decision surfaces.
 
 ### `runtime.rs` — orchestration
 

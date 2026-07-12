@@ -15,6 +15,8 @@ expected from a coding Agent TUI.
 | Shift+Enter | Composer | Insert newline |
 | Bracketed paste | Composer | Inline short text or create an attachment token |
 | Resize | Presentation | Mark the frame dirty and recompute layout |
+| `Ctrl+O` | Transcript presentation | Toggle structured tool input/result detail |
+| `/` / `Ctrl+K` | Command line | Open command selection and argument input |
 
 Decision overlays own keyboard input while open. Mouse-wheel transcript scrolling
 does not dismiss an overlay or synthesize selection keys.
@@ -38,6 +40,7 @@ terminal input ───────── immediate state update + immediate re
 service event ────────── state update, render on next frame clock
 frame clock (30 FPS) ─── coalesced streaming render
 animation clock (200ms)  low-frequency status/elapsed update
+reconnect clock (1500ms) retry a disconnected Agent service
 ```
 
 `SYLVANDER_TUI_RENDER_FPS` and `SYLVANDER_TUI_ANIMATION_MS` configure these
