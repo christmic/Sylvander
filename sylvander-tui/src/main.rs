@@ -27,7 +27,9 @@ enum InputEvent {
 }
 
 const SOCKET_PATH: &str = "/tmp/sylvander.sock";
-const TICK_MS: u64 = 50;
+/// Five frames per second matches the motion contract and avoids needless
+/// cursor churn in terminals while still keeping elapsed work readable.
+const TICK_MS: u64 = 200;
 
 #[tokio::main]
 async fn main() {
@@ -66,6 +68,7 @@ async fn main() {
         });
 
     // App state (single-threaded, owned by main)
+    sylvander_tui::panel::status::initialize_branch_label();
     let mut state = AppState::with_history_path(history_path);
 
     // ---- Input channel (keys + bracketed paste) ----

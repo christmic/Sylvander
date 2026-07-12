@@ -4,10 +4,10 @@
 //! palette + state glyphs stay in a single module.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 use crate::app::{AppState, ChatMessage, ToolStatus};
@@ -17,35 +17,27 @@ use crate::theme;
 pub struct ChatPanel;
 
 impl Component for ChatPanel {
-    fn height(&self) -> Constraint {
+    fn height(&self, _state: &AppState, _viewport_width: u16) -> Constraint {
         Constraint::Min(0)
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let block = Block::default().borders(Borders::NONE);
-        let inner = block.inner(area);
+        let inner = readable_area(area);
         frame.render_widget(block, area);
 
         let width = inner.width as usize;
 
-        // Welcome lockup (UX §2.2): first launch before any messages
-        // and any known sessions.
-        if !state.welcomed && state.messages.is_empty() && state.sessions.is_empty() {
-            if let Some(welcome_lines) = build_welcome_lockup(width) {
-                let total = welcome_lines.len() as u16;
-                let top_pad = inner.height.saturating_sub(total) / 2;
-                let centered = Rect {
-                    x: inner.x,
-                    y: inner.y + top_pad,
-                    width: inner.width,
-                    height: total.min(inner.height),
-                };
-                frame.render_widget(Paragraph::new(welcome_lines), centered);
-                return;
-            }
-        }
-
-        let mut lines: Vec<Line> = Vec::new();
+        // Welcome is the first block in a newly started conversation, not a
+        // separate page. Once the user submits, turns append below it and the
+        // lockup leaves the viewport only through ordinary transcript scroll.
+        let show_welcome = state.welcomed
+            || (state.messages.is_empty() && state.sessions.is_empty() && state.modals.is_empty());
+        let mut lines: Vec<Line> = if show_welcome {
+            build_welcome_lockup(width, state).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         for msg in &state.messages {
             push_message_lines(msg, &mut lines, width);
         }
@@ -60,12 +52,14 @@ impl Component for ChatPanel {
         }
 
         if !state.streaming.is_empty() {
-            for chunk in char_chunks(&state.streaming, width) {
-                lines.push(Line::from(Span::styled(chunk.to_string(), theme::text())));
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
             }
+            push_agent_turn(&state.streaming, &mut lines, width);
         }
 
-        let visible = inner.height as usize;
+        let has_unread = state.chat_scroll > 0 && state.unread_events > 0;
+        let visible = inner.height.saturating_sub(u16::from(has_unread)) as usize;
         let total = lines.len();
         let start = if total > visible + state.chat_scroll {
             total - visible - state.chat_scroll
@@ -85,25 +79,49 @@ impl Component for ChatPanel {
             };
             frame.render_widget(line.clone(), line_area);
         }
+
+        if has_unread {
+            let unread_area = Rect {
+                x: inner.x,
+                y: inner.y + inner.height.saturating_sub(1),
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    format!("↓ {} new events · PgDn return to live", state.unread_events),
+                    theme::active(),
+                ))),
+                unread_area,
+            );
+        }
     }
 }
 
 fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width: usize) {
     match msg {
         ChatMessage::User(text) => {
-            for chunk in char_chunks(text, width.saturating_sub(5)) {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            for chunk in char_chunks(text, width.saturating_sub(2)) {
                 lines.push(Line::from(vec![
-                    Span::styled("You: ", theme::user_speaker()),
+                    Span::styled("› ", theme::user_speaker()),
                     Span::styled(chunk.to_string(), theme::text()),
                 ]));
             }
         }
         ChatMessage::Agent(text) => {
-            for chunk in char_chunks(text, width) {
-                lines.push(Line::from(Span::styled(chunk.to_string(), theme::text())));
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
             }
+            push_agent_turn(text, lines, width);
         }
-        ChatMessage::ToolCall { name, status, input } => {
+        ChatMessage::ToolCall {
+            name,
+            status,
+            input,
+        } => {
             let (icon, st) = theme::tool_status_glyph_and_style(*status);
             lines.push(Line::from(vec![
                 Span::styled(format!("{icon} "), st),
@@ -115,7 +133,11 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
         }
         ChatMessage::ToolResult { name, output, ok } => {
             let icon = if *ok { "  ✓" } else { "  ✗" };
-            let st = if *ok { theme::verified() } else { theme::warning() };
+            let st = if *ok {
+                theme::verified()
+            } else {
+                theme::warning()
+            };
             let summary = truncate(output, width.saturating_sub(name.len() + 6));
             lines.push(Line::from(vec![
                 Span::styled(icon, st),
@@ -123,14 +145,22 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                 Span::styled(summary, st),
             ]));
         }
-        ChatMessage::ToolStep { name, started_at_secs, children } => {
-            let all_done = children
-                .iter()
-                .all(|c| c.status != ToolStatus::Pending);
+        ChatMessage::ToolStep {
+            name,
+            started_at_secs,
+            children,
+        } => {
+            let all_done = children.iter().all(|c| c.status != ToolStatus::Pending);
             let (step_glyph, step_style) = if all_done {
-                (theme::tool_status_glyph(ToolStatus::Done), theme::verified())
+                (
+                    theme::tool_status_glyph(ToolStatus::Done),
+                    theme::verified(),
+                )
             } else {
-                (theme::tool_status_glyph(ToolStatus::Pending), theme::active_bold())
+                (
+                    theme::tool_status_glyph(ToolStatus::Pending),
+                    theme::active_bold(),
+                )
             };
             let elapsed = format_elapsed(*started_at_secs);
             lines.push(Line::from(vec![
@@ -175,16 +205,16 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                 theme::text_muted(),
             )));
         }
-        ChatMessage::Plan { plan_id: _, steps, current } => {
-            lines.push(Line::from(Span::styled(
-                "Proposed plan",
-                theme::header(),
-            )));
+        ChatMessage::Plan {
+            plan_id: _,
+            steps,
+            current,
+        } => {
+            lines.push(Line::from(Span::styled("Proposed plan", theme::header())));
             for (i, step) in steps.iter().enumerate() {
                 let completed = i < *current;
                 let current_step = i == *current;
-                let (marker, st) =
-                    theme::plan_step_glyph_and_style(completed, current_step);
+                let (marker, st) = theme::plan_step_glyph_and_style(completed, current_step);
                 lines.push(Line::from(Span::styled(
                     format!("  {marker} {}. {step}", i + 1),
                     st,
@@ -206,6 +236,155 @@ fn push_message_lines<'a>(msg: &'a ChatMessage, lines: &mut Vec<Line<'a>>, width
                 theme::task_summary_line(),
             )));
         }
+    }
+}
+
+/// Render one meaningful Sylvander turn. The compact presence mark appears
+/// once; it is not a miniature replacement for the welcome character.
+fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
+    let body_width = width.saturating_sub(3).max(1);
+    let body = format_agent_body(text, body_width);
+    for (index, row) in body.into_iter().enumerate() {
+        if row.is_empty() {
+            lines.push(Line::from(""));
+            continue;
+        }
+        let marker = if index == 0 { "◆  " } else { "   " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, theme::agent_speaker()),
+            Span::styled(row, theme::text()),
+        ]));
+    }
+}
+
+fn format_agent_body(text: &str, width: usize) -> Vec<String> {
+    let normalized = break_inline_numbered_lists(text);
+    let mut output = Vec::new();
+
+    for raw in normalized.lines() {
+        let clean = strip_markdown_markers(raw.trim());
+        if clean.is_empty() {
+            if !output.is_empty() && output.last().is_some_and(|line: &String| !line.is_empty()) {
+                output.push(String::new());
+            }
+            continue;
+        }
+
+        let (first_prefix, continuation, content) = list_prefix(&clean);
+        output.extend(wrap_words(
+            content,
+            first_prefix,
+            continuation,
+            width.max(1),
+        ));
+    }
+
+    while output.last().is_some_and(String::is_empty) {
+        output.pop();
+    }
+    output
+}
+
+fn break_inline_numbered_lists(text: &str) -> String {
+    let chars: Vec<char> = text.replace('\r', "").chars().collect();
+    let mut output = String::with_capacity(chars.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index].is_ascii_digit() {
+            let mut end = index;
+            while end < chars.len() && chars[end].is_ascii_digit() {
+                end += 1;
+            }
+            let is_marker =
+                end + 1 < chars.len() && chars[end] == '.' && chars[end + 1].is_whitespace();
+            let line_has_content = output
+                .rsplit_once('\n')
+                .map_or(!output.trim().is_empty(), |(_, line)| {
+                    !line.trim().is_empty()
+                });
+            if is_marker && line_has_content {
+                while output.ends_with(' ') {
+                    output.pop();
+                }
+                output.push('\n');
+            }
+        }
+        output.push(chars[index]);
+        index += 1;
+    }
+    output
+}
+
+fn strip_markdown_markers(line: &str) -> String {
+    let without_heading = line.trim_start_matches('#').trim_start();
+    without_heading
+        .replace("**", "")
+        .replace("__", "")
+        .replace('`', "")
+}
+
+fn list_prefix(line: &str) -> (&str, String, &str) {
+    if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+        return ("• ", "  ".into(), rest);
+    }
+
+    let digit_count = line.chars().take_while(char::is_ascii_digit).count();
+    if digit_count > 0 {
+        let marker_end = digit_count + 2;
+        if line.get(digit_count..marker_end) == Some(". ") {
+            let prefix = &line[..marker_end];
+            return (
+                prefix,
+                " ".repeat(prefix.chars().count()),
+                &line[marker_end..],
+            );
+        }
+    }
+    ("", String::new(), line)
+}
+
+fn wrap_words(text: &str, first_prefix: &str, continuation: String, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = first_prefix.to_string();
+    let mut has_word = false;
+
+    for word in text.split_whitespace() {
+        let separator = usize::from(has_word);
+        if has_word && current.chars().count() + separator + word.chars().count() > width {
+            rows.push(current);
+            current = continuation.clone();
+            has_word = false;
+        }
+        if has_word {
+            current.push(' ');
+        }
+        current.push_str(word);
+        has_word = true;
+    }
+
+    if has_word || !first_prefix.is_empty() {
+        rows.push(current);
+    }
+    rows
+}
+
+fn readable_area(area: Rect) -> Rect {
+    // Anchor the transcript and welcome lockup to a stable left gutter.
+    // Centering a capped reading column makes the whole interface drift
+    // toward the middle as a terminal is widened or taken fullscreen.
+    const LEFT_GUTTER: u16 = 2;
+    const RIGHT_GUTTER: u16 = 2;
+    const MAX_READING_WIDTH: u16 = 110;
+
+    let available = area
+        .width
+        .saturating_sub(LEFT_GUTTER.saturating_add(RIGHT_GUTTER));
+    Rect {
+        x: area.x + LEFT_GUTTER.min(area.width),
+        y: area.y,
+        width: available.min(MAX_READING_WIDTH),
+        height: area.height,
     }
 }
 
@@ -356,34 +535,108 @@ fn format_elapsed(started_at_secs: u64) -> String {
     }
 }
 
-fn build_welcome_lockup(width: usize) -> Option<Vec<Line<'static>>> {
-    if width < 40 {
+fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'static>>> {
+    if width < 24 {
         return None;
     }
     let workspace_label = std::env::current_dir()
         .ok()
-        .map(|p| theme::compact_workspace(&p, 50))
+        .map(|p| theme::compact_workspace(&p, 34))
         .unwrap_or_else(|| "~".into());
+    let model = std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into());
+    let branch = crate::panel::status::branch_label();
+    let session = state
+        .session_id
+        .as_deref()
+        .map(|id| id.chars().take(12).collect::<String>())
+        .unwrap_or_else(|| "new".into());
 
-    Some(vec![
-        Line::from(vec![
-            Span::styled("◖S◗  ", theme::coral()),
-            Span::styled("SYLVANDER", theme::header()),
-        ]),
-        Line::from(Span::styled(
-            "      intelligent terminal workspace",
-            theme::composer_helper(),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("      ", theme::text_dim()),
-            Span::styled(workspace_label, theme::text_dim()),
-        ]),
-        Line::from(Span::styled(
-            "      What are we building today?",
+    let info = vec![
+        vec![],
+        vec![Span::styled("Sylvander", theme::brand_wordmark())],
+        vec![Span::styled("agent workspace", theme::brand_tagline())],
+        vec![],
+        welcome_meta("model", model),
+        welcome_meta("workspace", workspace_label),
+        welcome_meta("branch", branch),
+        welcome_meta("session", session),
+        vec![],
+        vec![Span::styled(
+            "What should we work through?",
             theme::text_dim(),
-        )),
-    ])
+        )],
+        vec![],
+    ];
+
+    let mut lines = Vec::new();
+    if width >= WELCOME_HORIZONTAL_MIN_WIDTH {
+        for (row, right) in TERMINAL_LARGE_SEED_CRAB.into_iter().zip(info) {
+            let mut spans = seed_crab_spans(row);
+            let row_width = row.chars().count();
+            spans.push(Span::raw(" ".repeat(
+                SEED_CRAB_CELL_WIDTH.saturating_sub(row_width) + WELCOME_GAP,
+            )));
+            spans.extend(right);
+            lines.push(Line::from(spans));
+        }
+    } else {
+        for row in TERMINAL_LARGE_SEED_CRAB {
+            lines.push(Line::from(seed_crab_spans(row)));
+        }
+        lines.push(Line::from(""));
+        lines.extend(info.into_iter().map(Line::from));
+    }
+    Some(lines)
+}
+
+const WELCOME_HORIZONTAL_MIN_WIDTH: usize = 88;
+const SEED_CRAB_CELL_WIDTH: usize = 44;
+const WELCOME_GAP: usize = 4;
+const SEED_CRAB_COLOR_SPLIT: usize = 22;
+
+// One canonical terminal character. The complete silhouette includes the
+// sprout, both claws, the full shell, both eyes, and the lower walking legs.
+// Narrow viewports reflow this same asset; they never substitute another logo.
+const TERMINAL_LARGE_SEED_CRAB: [&str; 11] = [
+    "                     ⢀⣠⢠⡖",
+    "                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀",
+    "                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀",
+    "             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄",
+    "      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀",
+    "  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿",
+    "   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆",
+    "   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀",
+    " ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷",
+    " ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇",
+    "   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟",
+];
+
+fn seed_crab_spans(row: &str) -> Vec<Span<'static>> {
+    let (warm, violet) = split_chars(row, SEED_CRAB_COLOR_SPLIT);
+    vec![
+        Span::styled(warm, theme::brand_warm()),
+        Span::styled(violet, theme::brand_violet()),
+    ]
+}
+
+fn welcome_meta(label: &'static str, value: String) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{label:<10}"), theme::text_muted()),
+        Span::styled(value, theme::text()),
+    ]
+}
+
+fn split_chars(text: &str, index: usize) -> (String, String) {
+    let mut left = String::new();
+    let mut right = String::new();
+    for (i, ch) in text.chars().enumerate() {
+        if i < index {
+            left.push(ch);
+        } else {
+            right.push(ch);
+        }
+    }
+    (left, right)
 }
 
 #[cfg(test)]
@@ -391,8 +644,8 @@ mod tests {
     use super::*;
     use crate::app::{AppState, ChatMessage, ToolStatus};
     use crate::component::Component;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(w, h)).expect("terminal")
@@ -417,7 +670,13 @@ mod tests {
         let mut t = terminal(60, 12);
         t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 60, 12), &s))
             .unwrap();
-        let cell = t.backend().buffer().cell((0, 0)).expect("cell");
+        let cell = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == "›")
+            .expect("user speaker cell");
         assert_eq!(cell.fg, crate::theme::TEXT_DIM);
     }
 
@@ -452,25 +711,75 @@ mod tests {
         t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 120, 36), &s))
             .unwrap();
         let buf = t.backend().buffer().clone();
-        let mut found = false;
+        let mut found_warm = false;
+        let mut found_violet = false;
         for y in 0..36 {
             for x in 0..120 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "◖" {
-                        found = true;
-                        break;
+                    if c.fg == crate::theme::BRAND_WARM && c.symbol() != " " {
+                        found_warm = true;
+                    }
+                    if c.fg == crate::theme::BRAND_VIOLET && c.symbol() != " " {
+                        found_violet = true;
                     }
                 }
             }
-            if found {
-                break;
-            }
         }
-        assert!(found, "expected ◖ glyph in welcome lockup");
+        assert!(found_warm, "expected warm half of Terminal Large Seed-Crab");
+        assert!(
+            found_violet,
+            "expected violet half of Terminal Large Seed-Crab"
+        );
     }
 
     #[test]
-    fn welcome_lockup_absent_when_welcomed() {
+    fn welcome_uses_complete_canonical_character_and_horizontal_info() {
+        let state = AppState::new();
+        assert_eq!(TERMINAL_LARGE_SEED_CRAB.len(), 11);
+        assert!(
+            TERMINAL_LARGE_SEED_CRAB[8..]
+                .iter()
+                .all(|row| !row.trim().is_empty()),
+            "lower claws and walking legs must remain in the canonical asset"
+        );
+        assert!(
+            TERMINAL_LARGE_SEED_CRAB
+                .iter()
+                .all(|row| row.chars().count() <= SEED_CRAB_CELL_WIDTH),
+            "canonical character must stay inside its reserved column"
+        );
+
+        let wide = build_welcome_lockup(110, &state).expect("wide welcome");
+        assert_eq!(wide.len(), TERMINAL_LARGE_SEED_CRAB.len());
+        assert!(
+            wide.iter()
+                .any(|line| line.to_string().contains("Sylvander")),
+            "brand information must render beside the character"
+        );
+
+        let narrow = build_welcome_lockup(70, &state).expect("narrow welcome");
+        assert!(
+            narrow.len() > TERMINAL_LARGE_SEED_CRAB.len(),
+            "narrow welcome reflows information below the same character"
+        );
+        for (rendered, canonical) in narrow.iter().zip(TERMINAL_LARGE_SEED_CRAB.iter()) {
+            assert_eq!(rendered.to_string(), *canonical);
+        }
+    }
+
+    #[test]
+    fn readable_column_stays_left_anchored_when_terminal_goes_fullscreen() {
+        let normal = readable_area(Rect::new(0, 0, 120, 36));
+        let fullscreen = readable_area(Rect::new(0, 0, 240, 60));
+
+        assert_eq!(normal.x, 2);
+        assert_eq!(fullscreen.x, normal.x);
+        assert_eq!(normal.width, 110);
+        assert_eq!(fullscreen.width, normal.width);
+    }
+
+    #[test]
+    fn welcome_prelude_remains_when_first_turn_is_appended() {
         let mut s = AppState::new();
         s.welcomed = true;
         s.messages.push(ChatMessage::User("x".into()));
@@ -478,15 +787,73 @@ mod tests {
         t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 120, 36), &s))
             .unwrap();
         let buf = t.backend().buffer().clone();
+        let mut found_brand = false;
+        let mut found_turn = false;
         for y in 0..36 {
             for x in 0..120 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "◖" {
-                        panic!("welcome lockup must not show when welcomed=true");
+                    if c.fg == crate::theme::BRAND_WARM && c.symbol() != " " {
+                        found_brand = true;
+                    }
+                    if c.symbol() == "›" {
+                        found_turn = true;
                     }
                 }
             }
         }
+        assert!(found_brand, "Welcome must remain as the transcript prelude");
+        assert!(found_turn, "submitted turn must append below Welcome");
+    }
+
+    #[test]
+    fn agent_turn_is_clean_word_wrapped_content_with_one_presence_mark() {
+        let mut lines = Vec::new();
+        push_agent_turn(
+            "I have tools:1. **`ask_user`** — Ask for missing information.2. **`Read`** — Read a workspace file.",
+            &mut lines,
+            42,
+        );
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(rendered.matches('◆').count(), 1);
+        assert!(!rendered.contains("/\\"));
+        assert!(!rendered.contains("(••)"));
+        assert!(!rendered.contains("<__>"));
+        assert!(!rendered.contains("**"));
+        assert!(!rendered.contains('`'));
+        assert!(rendered.contains("\n   1. ask_user"));
+        assert!(rendered.contains("\n   2. Read"));
+        assert!(lines.iter().all(|line| line.width() <= 42));
+    }
+
+    #[test]
+    fn streaming_and_settled_agent_turn_keep_the_same_vertical_origin() {
+        let mut state = AppState::new();
+        state.welcomed = true;
+        state.messages.push(ChatMessage::User("hello".into()));
+        state.streaming = "A stable reply".into();
+
+        let marker_y = |state: &AppState| {
+            let mut terminal = terminal(120, 36);
+            terminal
+                .draw(|frame| ChatPanel.render(frame, Rect::new(0, 0, 120, 36), state))
+                .expect("render chat");
+            let buffer = terminal.backend().buffer();
+            (0..36)
+                .find(|&y| (0..120).any(|x| buffer.cell((x, y)).is_some_and(|c| c.symbol() == "◆")))
+                .expect("agent presence mark")
+        };
+
+        let streaming_y = marker_y(&state);
+        state.apply(crate::event::DomainEvent::AgentDone {
+            final_text: "A stable reply".into(),
+        });
+        let settled_y = marker_y(&state);
+        assert_eq!(streaming_y, settled_y);
     }
 
     #[test]
@@ -499,8 +866,7 @@ mod tests {
     fn input_kv_lines_emits_pair_per_object_key() {
         // serde_json::Map defaults to BTreeMap, so keys come back in
         // alphabetical order — assert set membership instead of ordering.
-        let lines =
-            input_kv_lines(&serde_json::json!({"path": "/tmp", "mode": "r"}), 60);
+        let lines = input_kv_lines(&serde_json::json!({"path": "/tmp", "mode": "r"}), 60);
         assert_eq!(lines.len(), 2);
         let labels: Vec<String> = lines
             .iter()
@@ -568,16 +934,15 @@ mod tests {
         t.draw(|f| ChatPanel.render(f, Rect::new(0, 0, 60, 20), &s))
             .unwrap();
         let buf = t.backend().buffer().clone();
-        // Find the first row of each message kind. We do this by
-        // searching the first column of each row for "Y" (the
-        // "You:" speaker label). Once found, the user row is the
-        // smallest such y. The agent body is the row above any tool
+        // Find the first row of each message kind. User turns use the
+        // immersive `›` marker rather than a repeated "You:" heading.
+        // The agent body is the row above any tool
         // step (which renders `● Run ...` or `✓ Run ...`).
         let mut you_y = None;
         for y in 0..20 {
             for x in 0..60 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "Y" {
+                    if c.symbol() == "›" {
                         you_y = Some(y);
                         break;
                     }
@@ -587,7 +952,7 @@ mod tests {
                 break;
             }
         }
-        let you_y = you_y.expect("expected to find 'Y' from 'You:' label");
+        let you_y = you_y.expect("expected to find the user-turn marker");
         // Tool step row has `●` or `✓` glyph in the step header.
         let mut toolstep_y = None;
         for y in 0..20 {
@@ -609,6 +974,9 @@ mod tests {
         // Order: user (y=0 by convention but at least smallest) precedes
         // toolstep. They are guaranteed by the way push_message_lines
         // walks the messages vec.
-        assert!(you_y < toolstep_y, "user row {you_y} must precede toolstep {toolstep_y}");
+        assert!(
+            you_y < toolstep_y,
+            "user row {you_y} must precede toolstep {toolstep_y}"
+        );
     }
 }

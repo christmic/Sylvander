@@ -19,20 +19,25 @@
 //! - `Idle`                 — everything else (`·` glyph + dim).
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::app::{AppMode, AppState};
 use crate::component::Component;
 use crate::theme::{self, StatusMode};
 
+static BRANCH_LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Single source of truth for which status mode is current.
 /// Pure function — no side effects, easy to unit-test.
 pub fn status_mode_for(state: &AppState) -> StatusMode {
     if !state.connected {
+        if state.status == "Connecting..." {
+            return StatusMode::Connecting;
+        }
         return StatusMode::Disconnected;
     }
 
@@ -69,7 +74,7 @@ pub fn status_mode_for(state: &AppState) -> StatusMode {
 pub struct StatusPanel;
 
 impl Component for StatusPanel {
-    fn height(&self) -> Constraint {
+    fn height(&self, _state: &AppState, _viewport_width: u16) -> Constraint {
         Constraint::Length(1)
     }
 
@@ -87,84 +92,121 @@ impl Component for StatusPanel {
             _ => false,
         });
 
-        // Context% placeholder until the server pushes a context event.
-        let context_pct = "—";
-        let plan_label = "main";
         let task_span: Span = if task_running {
             Span::styled(" · task running", theme::warning())
         } else {
             Span::raw("")
         };
 
+        let session = state
+            .session_id
+            .as_deref()
+            .map(|id| id.chars().take(8).collect::<String>())
+            .unwrap_or_else(|| "—".into());
+        let model = std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into());
+        let branch = git_branch();
+        if area.width < 80 {
+            let compact = Line::from(vec![
+                Span::styled(format!("{} {}", mode.glyph(), mode.label()), mode.style()),
+                Span::styled(
+                    format!(" · model {model} · branch {branch} · session {session}"),
+                    theme::text_dim(),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(compact), area);
+            return;
+        }
         let left = Line::from(vec![
             Span::styled(format!("{} ", mode.glyph()), mode.style()),
-            Span::styled(format!("{} ", mode.label()), mode.style()),
+            Span::styled(mode.label(), mode.style()),
             Span::styled(
-                format!("· context {context_pct}% · {tool_count} tools"),
+                format!(" · model {model} · branch {branch} · session {session} · {tool_count}t"),
                 theme::text_dim(),
             ),
             task_span,
-            Span::styled(format!(" · {plan_label}"), theme::text_muted()),
         ])
         .alignment(Alignment::Left);
 
-        let hints: Vec<Span> = hints_for_mode(state.mode, mode)
-            .into_iter()
-            .collect();
+        let hints: Vec<Span> = hints_for_mode(state.mode, mode).into_iter().collect();
         let right = Line::from(hints).alignment(Alignment::Right);
 
         let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(60),
-                Constraint::Percentage(40),
-            ])
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
             .split(area);
         frame.render_widget(Paragraph::new(left), layout[0]);
         frame.render_widget(Paragraph::new(right), layout[1]);
     }
 }
 
+fn git_branch() -> String {
+    BRANCH_LABEL.get_or_init(|| "—".into()).clone()
+}
+
+pub(crate) fn branch_label() -> String {
+    git_branch()
+}
+
+pub fn initialize_branch_label() {
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+    {
+        if output.status.success() {
+            let branch: String = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .chars()
+                .take(20)
+                .collect();
+            if !branch.is_empty() {
+                let _ = BRANCH_LABEL.set(branch);
+            }
+        }
+    }
+}
+
 /// Up to three contextual hints per `18-composer-interactions.svg`.
 /// Compact, mode-aware, ≤ 3 entries. No permanent shortcut manual.
-fn hints_for_mode(
-    app_mode: AppMode,
-    status_mode: StatusMode,
-) -> [Span<'static>; 3] {
+fn hints_for_mode(app_mode: AppMode, status_mode: StatusMode) -> [Span<'static>; 3] {
     match (app_mode, status_mode) {
+        (_, StatusMode::Connecting) => [
+            Span::styled("connecting…", theme::active()),
+            Span::raw("   "),
+            Span::styled("draft local", theme::text_muted()),
+        ],
         (_, StatusMode::Disconnected) => [
             Span::styled("! reconnecting…", theme::warning()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("/draft preserved", theme::text_muted()),
         ],
         (_, StatusMode::WaitingApproval) => [
             Span::styled("y approve", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("n reject", theme::text_muted()),
         ],
         (_, StatusMode::Asking) => [
             Span::styled("↵ submit", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("esc cancel", theme::text_muted()),
         ],
         (_, StatusMode::Working) => [
             Span::styled("esc interrupt", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("/draft", theme::text_muted()),
         ],
         (AppMode::Normal, StatusMode::Idle) => [
             Span::styled("↵ send", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("⇧↵ newline", theme::text_muted()),
         ],
         (AppMode::ApprovalPending, StatusMode::Idle) => [
             Span::styled("y approve", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("esc cancel", theme::text_muted()),
         ],
         (AppMode::AskPending, StatusMode::Idle) => [
             Span::styled("↵ submit", theme::text_muted()),
-            Span::raw(" "),
+            Span::raw("   "),
             Span::styled("esc cancel", theme::text_muted()),
         ],
     }
@@ -189,9 +231,15 @@ mod tests {
 
     #[test]
     fn disconnected_state_overrides_everything_else() {
-        let mut s = AppState::new(); // connected=false
-        s.messages
-            .push(ChatMessage::ToolStep { name: "x".into(), started_at_secs: 0, children: vec![] });
+        let mut s = AppState::new();
+        s.apply(DomainEvent::Disconnected {
+            reason: "offline".into(),
+        });
+        s.messages.push(ChatMessage::ToolStep {
+            name: "x".into(),
+            started_at_secs: 0,
+            children: vec![],
+        });
         assert_eq!(status_mode_for(&s), StatusMode::Disconnected);
     }
 
@@ -251,8 +299,12 @@ mod tests {
     #[test]
     fn asking_when_askuser_or_plan_or_palette_modal_open() {
         let mut s = fresh_state();
-        s.modals
-            .push(Box::new(AskUserModal::new("c".into(), "q".into(), vec![], false)));
+        s.modals.push(Box::new(AskUserModal::new(
+            "c".into(),
+            "q".into(),
+            vec![],
+            false,
+        )));
         assert_eq!(status_mode_for(&s), StatusMode::Asking);
         s.modals.pop();
         s.modals.push(Box::new(PlanReviewModal::new(
@@ -274,8 +326,12 @@ mod tests {
         // not a stale `Working` observed from residual streaming.
         let mut s = fresh_state();
         s.streaming.push_str("partial");
-        s.modals
-            .push(Box::new(AskUserModal::new("c".into(), "?".into(), vec![], false)));
+        s.modals.push(Box::new(AskUserModal::new(
+            "c".into(),
+            "?".into(),
+            vec![],
+            false,
+        )));
         assert_eq!(status_mode_for(&s), StatusMode::Asking);
     }
 

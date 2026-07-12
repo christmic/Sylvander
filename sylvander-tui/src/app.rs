@@ -45,6 +45,8 @@ pub struct AppState {
     pub composer: Composer,
     /// Chat vertical scroll offset (0 = pinned to bottom).
     pub chat_scroll: usize,
+    /// Events received while the viewport is detached from live output.
+    pub unread_events: usize,
     /// Quit signal — set by handle_key on Ctrl+C / Esc.
     pub should_quit: bool,
 
@@ -56,10 +58,9 @@ pub struct AppState {
     /// `None` keeps history in memory only.
     pub history_path: Option<std::path::PathBuf>,
 
-    /// UX §2.2 + §5.3: the welcome lockup renders once on first launch
-    /// (empty transcript + no known sessions). The welcome flips to
-    /// `true` the first time the user sends any chat content,
-    /// signaling the lockup should never show again.
+    /// The session has crossed from an empty entry state into a conversation.
+    /// The Welcome remains the transcript prelude after this flips to `true`;
+    /// subsequent turns append below it and ordinary scrolling moves it away.
     pub welcomed: bool,
 
     // ---- render trigger ----
@@ -95,6 +96,7 @@ impl AppState {
             modals: ModalStack::new(),
             composer,
             chat_scroll: 0,
+            unread_events: 0,
             should_quit: false,
             pending_actions: Vec::new(),
             dirty: DirtyFlag::default(),
@@ -102,6 +104,7 @@ impl AppState {
             welcomed: false,
         };
         state.register_default_panels();
+        state.dirty.mark();
         state
     }
 
@@ -117,13 +120,11 @@ impl AppState {
 
     fn register_default_panels(&mut self) {
         // Order = layout order, top to bottom. Header replaces the
-        // old StatusPanel position (M-T14.B / §5.1: 2-line identity
-        // block, hairline rule). The status semantics now live in
-        // the bottom row (M-T14.C).
-        self.panels.push(Box::new(panel::HeaderPanel));
+        // Stable vertical regions: identity, immersive transcript,
+        // adaptive composer, and contextual status.
         self.panels.push(Box::new(panel::ChatPanel));
         self.panels.push(Box::new(panel::InputPanel));
-        self.panels.push(Box::new(panel::HelpPanel));
+        self.panels.push(Box::new(panel::StatusPanel));
     }
 }
 
@@ -246,9 +247,31 @@ impl AppState {
     /// Apply a domain event. Always marks the dirty flag (whether the
     /// state changed or not — simpler, and the render is cheap).
     pub fn apply(&mut self, event: DomainEvent) -> Option<Action> {
+        if matches!(event, DomainEvent::Tick) {
+            // A still interface must remain still. Ticks only repaint while
+            // elapsed time or an active state can visibly change.
+            if self.has_live_activity() {
+                self.dirty.mark();
+            }
+            return None;
+        }
+        if self.chat_scroll > 0 && event_adds_transcript_content(&event) {
+            self.unread_events = self.unread_events.saturating_add(1);
+        }
         let action = self.apply_inner(event);
         self.dirty.mark();
         action
+    }
+
+    fn has_live_activity(&self) -> bool {
+        !self.streaming.is_empty()
+            || !self.streaming_thinking.is_empty()
+            || self.messages.iter().any(|message| match message {
+                ChatMessage::ToolStep { children, .. } => children
+                    .iter()
+                    .any(|child| child.status == ToolStatus::Pending),
+                _ => false,
+            })
     }
 
     fn apply_inner(&mut self, event: DomainEvent) -> Option<Action> {
@@ -260,7 +283,8 @@ impl AppState {
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
                 self.status = format!("Disconnected: {reason}");
-                self.messages.push(ChatMessage::Info(format!("Disconnected: {reason}")));
+                self.messages
+                    .push(ChatMessage::Info(format!("Disconnected: {reason}")));
             }
             DomainEvent::SessionCreated { session_id } => {
                 // First time we see this id — push a local session entry.
@@ -299,10 +323,8 @@ impl AppState {
                 // block per UX §6. A new step starts when the last
                 // trailing message is not a ToolStep, or when a previous
                 // step was already finalized by AgentDone / AgentError.
-                let need_new_step = !matches!(
-                    self.messages.last(),
-                    Some(ChatMessage::ToolStep { .. })
-                );
+                let need_new_step =
+                    !matches!(self.messages.last(), Some(ChatMessage::ToolStep { .. }));
                 if need_new_step {
                     // Synthesize a step name from the verb: "Read file",
                     // "Run bash command", "Search code". Truncated later
@@ -314,9 +336,7 @@ impl AppState {
                         children: Vec::new(),
                     });
                 }
-                if let Some(ChatMessage::ToolStep { children, .. }) =
-                    self.messages.last_mut()
-                {
+                if let Some(ChatMessage::ToolStep { children, .. }) = self.messages.last_mut() {
                     children.push(ToolStepChild {
                         name: tool_name,
                         status: ToolStatus::Pending,
@@ -331,9 +351,7 @@ impl AppState {
                 output,
                 is_error,
             } => {
-                if let Some(ChatMessage::ToolStep { children, .. }) =
-                    self.messages.last_mut()
-                {
+                if let Some(ChatMessage::ToolStep { children, .. }) = self.messages.last_mut() {
                     if let Some(child) = children.iter_mut().rev().find(|c| c.name == tool_name) {
                         child.status = if is_error {
                             ToolStatus::Error
@@ -363,7 +381,8 @@ impl AppState {
             }
             DomainEvent::AgentDone { final_text } => {
                 if !self.streaming.is_empty() {
-                    self.messages.push(ChatMessage::Agent(self.streaming.clone()));
+                    self.messages
+                        .push(ChatMessage::Agent(self.streaming.clone()));
                     self.streaming.clear();
                 } else if !final_text.is_empty() {
                     self.messages.push(ChatMessage::Agent(final_text));
@@ -371,7 +390,8 @@ impl AppState {
                 self.streaming_thinking.clear();
             }
             DomainEvent::AgentError { message } => {
-                self.messages.push(ChatMessage::Info(format!("Error: {message}")));
+                self.messages
+                    .push(ChatMessage::Info(format!("Error: {message}")));
                 self.streaming.clear();
                 self.streaming_thinking.clear();
             }
@@ -562,13 +582,48 @@ impl AppState {
             return None;
         }
 
+        // Transcript navigation is global while no decision layer owns focus.
+        // Returning to the bottom clears the stable unread indicator.
+        match key.code {
+            crossterm::event::KeyCode::PageUp => {
+                self.chat_scroll = self.chat_scroll.saturating_add(8);
+                self.dirty.mark();
+                return None;
+            }
+            crossterm::event::KeyCode::PageDown => {
+                self.chat_scroll = self.chat_scroll.saturating_sub(8);
+                if self.chat_scroll == 0 {
+                    self.unread_events = 0;
+                }
+                self.dirty.mark();
+                return None;
+            }
+            crossterm::event::KeyCode::End
+                if key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                self.chat_scroll = 0;
+                self.unread_events = 0;
+                self.dirty.mark();
+                return None;
+            }
+            _ => {}
+        }
+
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
         if let Some(text) = self.composer.handle_key(key) {
             self.save_history();
-            // First user submission dismisses the welcome lockup
-            // forever (UX §2.2 — lockup appears once on first launch).
+            // First submission establishes the Welcome as this session's
+            // transcript prelude. It remains above the appended turn.
             self.welcomed = true;
+            // The user's turn belongs in the transcript immediately. The
+            // server assigns identity and streams the response, but it does
+            // not echo the submitted prompt back to this client.
+            self.messages.push(ChatMessage::User(text.clone()));
+            self.chat_scroll = 0;
+            self.unread_events = 0;
             self.dirty.mark();
             return Some(Action::SendChat {
                 text,
@@ -590,6 +645,19 @@ impl AppState {
     }
 }
 
+fn event_adds_transcript_content(event: &DomainEvent) -> bool {
+    matches!(
+        event,
+        DomainEvent::TextChunk { .. }
+            | DomainEvent::ThinkingChunk { .. }
+            | DomainEvent::AgentDone { .. }
+            | DomainEvent::ToolStarted { .. }
+            | DomainEvent::ToolFinished { .. }
+            | DomainEvent::PlanReceived { .. }
+            | DomainEvent::TaskStarted { .. }
+    )
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -603,8 +671,12 @@ mod tests {
     #[test]
     fn apply_text_chunks_accumulate_into_streaming() {
         let mut s = AppState::new();
-        s.apply(DomainEvent::TextChunk { delta: "hel".into() });
-        s.apply(DomainEvent::TextChunk { delta: "lo!".into() });
+        s.apply(DomainEvent::TextChunk {
+            delta: "hel".into(),
+        });
+        s.apply(DomainEvent::TextChunk {
+            delta: "lo!".into(),
+        });
         assert_eq!(s.streaming, "hello!");
         assert!(s.messages.is_empty());
     }
@@ -613,7 +685,9 @@ mod tests {
     fn apply_agent_done_promotes_streaming_to_messages() {
         let mut s = AppState::new();
         s.apply(DomainEvent::TextChunk { delta: "hi".into() });
-        s.apply(DomainEvent::AgentDone { final_text: "hi".into() });
+        s.apply(DomainEvent::AgentDone {
+            final_text: "hi".into(),
+        });
         assert_eq!(s.streaming, "");
         assert_eq!(s.messages.len(), 1);
         assert!(matches!(s.messages[0], ChatMessage::Agent(ref t) if t == "hi"));
@@ -622,11 +696,12 @@ mod tests {
     #[test]
     fn apply_agent_done_with_empty_streaming_uses_final_text() {
         let mut s = AppState::new();
-        s.apply(DomainEvent::AgentDone { final_text: "bye".into() });
+        s.apply(DomainEvent::AgentDone {
+            final_text: "bye".into(),
+        });
         assert_eq!(s.messages.len(), 1);
     }
 
-    #[test]
     #[test]
     fn apply_tool_started_then_finished_groups_into_step() {
         // Per UX §6 / M-T14.E: consecutive `ToolStarted` + `ToolFinished`
@@ -748,6 +823,17 @@ mod tests {
     }
 
     #[test]
+    fn submitted_prompt_is_visible_before_the_server_replies() {
+        let mut s = AppState::new();
+        s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        s.handle_key(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(matches!(action, Some(Action::SendChat { .. })));
+        assert!(matches!(s.messages.last(), Some(ChatMessage::User(text)) if text == "hi"));
+    }
+
+    #[test]
     fn shift_enter_inserts_newline_and_does_not_submit() {
         let mut s = AppState::new();
         s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
@@ -820,6 +906,45 @@ mod tests {
     }
 
     #[test]
+    fn transcript_navigation_detaches_and_returns_to_live() {
+        let mut s = AppState::new();
+        s.handle_key(&KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(s.chat_scroll, 8);
+
+        s.apply(DomainEvent::TextChunk {
+            delta: "new output".into(),
+        });
+        assert_eq!(s.chat_scroll, 8, "streaming must not steal the viewport");
+        assert_eq!(s.unread_events, 1);
+
+        s.handle_key(&KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(s.chat_scroll, 0);
+        assert_eq!(s.unread_events, 0);
+    }
+
+    #[test]
+    fn ctrl_end_returns_directly_to_live() {
+        let mut s = AppState::new();
+        s.chat_scroll = 40;
+        s.unread_events = 7;
+        s.handle_key(&KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert_eq!(s.chat_scroll, 0);
+        assert_eq!(s.unread_events, 0);
+    }
+
+    #[test]
+    fn idle_tick_does_not_schedule_a_repaint() {
+        let mut s = AppState::new();
+        assert!(s.dirty.take(), "initial frame must render");
+        s.apply(DomainEvent::Tick);
+        assert!(!s.dirty.take(), "idle terminal must remain still");
+
+        s.streaming.push_str("working");
+        s.apply(DomainEvent::Tick);
+        assert!(s.dirty.take(), "live output may animate on a tick");
+    }
+
+    #[test]
     fn session_created_populates_sessions_cache() {
         let mut s = AppState::new();
         s.apply(DomainEvent::SessionCreated {
@@ -857,17 +982,11 @@ fn now_secs() -> u64 {
 fn step_name_for(tool: &str, input: &serde_json::Value) -> String {
     match tool {
         "read" => {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("file");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("file");
             format!("Read {path}")
         }
         "write" => {
-            let path = input
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("file");
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("file");
             format!("Write {path}")
         }
         "edit" => "Edit file".into(),

@@ -9,11 +9,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 use crate::app::{AppMode, AppState};
@@ -35,8 +35,7 @@ impl Command {
         }
         let n = needle.to_lowercase();
         // Match against command name first; fall back to label.
-        self.cmd.to_lowercase().contains(&n)
-            || self.label.to_lowercase().contains(&n)
+        self.cmd.to_lowercase().contains(&n) || self.label.to_lowercase().contains(&n)
     }
 }
 
@@ -90,7 +89,13 @@ impl CommandPalette {
         self.filtered = COMMANDS
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| if c.matches(&self.filter) { Some(i) } else { None })
+            .filter_map(|(i, c)| {
+                if c.matches(&self.filter) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
             .collect();
         if self.cursor >= self.filtered.len() {
             self.cursor = 0;
@@ -210,7 +215,11 @@ impl Modal for CommandPalette {
                 let cmd = &COMMANDS[cmd_idx];
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };
-                let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::White };
+                let color = if is_cursor {
+                    ratatui::style::Color::Cyan
+                } else {
+                    ratatui::style::Color::White
+                };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
@@ -222,10 +231,7 @@ impl Modal for CommandPalette {
                         }),
                     ),
                     Span::styled(cmd.label, Style::default().fg(color)),
-                    Span::styled(
-                        format!("  ({})", cmd.hint),
-                        theme::text_muted(),
-                    ),
+                    Span::styled(format!("  ({})", cmd.hint), theme::text_muted()),
                 ]));
             }
         }
@@ -300,8 +306,8 @@ fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
     h[1]
 }
 
-use ratatui::style::Modifier;
 use crate::theme;
+use ratatui::style::Modifier;
 
 // ===========================================================================
 // Tests
@@ -326,11 +332,7 @@ mod tests {
         let mut p = CommandPalette::new();
         p.filter = "ses".into();
         p.recompute();
-        let names: Vec<&'static str> = p
-            .filtered
-            .iter()
-            .map(|&i| COMMANDS[i].cmd)
-            .collect();
+        let names: Vec<&'static str> = p.filtered.iter().map(|&i| COMMANDS[i].cmd).collect();
         assert!(names.contains(&"/sessions"));
         assert!(!names.contains(&"/clear"));
     }

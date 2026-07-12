@@ -1,7 +1,7 @@
 //! Header panel — top of the screen, 2-line identity block per UX §5.1.
 //!
-//! Mirrors `02-tui-immersive.svg` line 5: a `◖S◗` coral crab mark +
-//! session name on line 1 (left), `<model> · <mode>` on line 1 (right),
+//! Uses the approved Seed-Crab terminal presence + session name on line 1
+//! (left), `<role> · <mode>` on line 1 (right),
 //! workspace + branch + session-id on line 2, hairline rule below.
 //!
 //! This panel replaces the old one-line status bar (`Sylvander · model
@@ -11,10 +11,10 @@
 use std::path::PathBuf;
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Rect},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
 use crate::app::AppState;
@@ -24,18 +24,16 @@ use crate::theme;
 pub struct HeaderPanel;
 
 impl Component for HeaderPanel {
-    fn height(&self) -> Constraint {
+    fn height(&self, _state: &AppState, _viewport_width: u16) -> Constraint {
         Constraint::Length(3) // 2 content rows + 1 hairline
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let session_label = session_label_for(state);
         let workspace = workspace_label_for(state);
-        let model = state
-            .sessions
-            .first()
-            .map(|s| format_model_label(s))
-            .unwrap_or_else(|| "—".into());
+        // The transport does not expose model identity yet. Never mislabel
+        // a workspace path as a model name; use the honest product role.
+        let model = "agent";
         let mode = mode_label(state);
         let session_id = state
             .session_id
@@ -43,15 +41,15 @@ impl Component for HeaderPanel {
             .map(|s| truncate(s, 8))
             .unwrap_or_else(|| "—".into());
 
-        // Line 1 left: ◖S◗ + space + <session-label> (bold ivory)
+        // Compact Seed-Crab presence from the approved terminal system.
         // Line 1 right: <model> · <mode>  (coral model + dim mode)
         let left = Line::from(vec![
-            Span::styled("◖S◗", theme::coral()),
+            Span::styled("/\\", theme::coral()),
             Span::raw("  Sylvander  "),
             Span::styled(session_label, theme::header()),
         ]);
         let right = Line::from(vec![
-            Span::styled(model.clone(), theme::coral()),
+            Span::styled(model, theme::text_dim()),
             Span::styled(" · ", theme::text_muted()),
             Span::styled(mode, theme::text_dim()),
         ]);
@@ -61,8 +59,7 @@ impl Component for HeaderPanel {
         let (left_area, right_area) = split_left_right(area, 30);
         frame.render_widget(Paragraph::new(left), left_area);
         frame.render_widget(
-            Paragraph::new(right)
-                .alignment(Alignment::Right),
+            Paragraph::new(right).alignment(Alignment::Right),
             right_area,
         );
 
@@ -81,8 +78,7 @@ impl Component for HeaderPanel {
         frame.render_widget(Paragraph::new(subtitle), subtitle_area);
 
         // Line 3: hairline rule (a full-width `─` line in RULE color).
-        let rule_line = Line::from("─".repeat(area.width as usize))
-            .style(theme::rule());
+        let rule_line = Line::from("─".repeat(area.width as usize)).style(theme::rule());
         let rule_area = Rect {
             x: area.x,
             y: area.y + 2,
@@ -125,27 +121,20 @@ fn session_label_for(state: &AppState) -> String {
 }
 
 fn workspace_label_for(state: &AppState) -> String {
-    if let Some(e) = state
-        .sessions
-        .iter()
-        .find(|s| state.session_id.as_deref().map(|id| s.id == id).unwrap_or(false))
-    {
+    if let Some(e) = state.sessions.iter().find(|s| {
+        state
+            .session_id
+            .as_deref()
+            .map(|id| s.id == id)
+            .unwrap_or(false)
+    }) {
         if !e.workspace.is_empty() {
-            return e.workspace.clone();
+            return theme::compact_workspace(&std::path::PathBuf::from(&e.workspace), 54);
         }
     }
     std::env::current_dir()
-        .map(|p: PathBuf| p.display().to_string())
+        .map(|p: PathBuf| theme::compact_workspace(&p, 54))
         .unwrap_or_else(|_| "~/".into())
-}
-
-fn format_model_label(session: &crate::modal::sessions::SessionEntry) -> String {
-    // Show workspace basename if present, else fall back to a stub.
-    if session.workspace.is_empty() {
-        session.label.clone()
-    } else {
-        session.workspace.clone()
-    }
 }
 
 fn mode_label(state: &AppState) -> &'static str {
@@ -186,18 +175,14 @@ mod tests {
     fn header_renders_brand_when_connected() {
         let mut s = crate::app::AppState::new();
         s.apply(crate::event::DomainEvent::Connected);
-        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 6))
-            .expect("terminal");
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 6)).expect("terminal");
         t.draw(|f| {
             super::HeaderPanel.render(f, ratatui::layout::Rect::new(0, 0, 120, 6), &s);
         })
         .unwrap();
         let buf = t.backend().buffer().clone();
-        // The header is built as `◖S◗` (3 glyphs). Their widths depend
-        // on terminal width tables; some cells may render empty, others
-        // may carry the glyph. We assert the brand mark glyphs OR
-        // the wordmark "SYLVANDER" survives — both are visible
-        // evidence of a rendered header.
+        // Assert the compact Seed-Crab slash or the wordmark survives.
         let mut found_brand = false;
         for y in 0..6 {
             for x in 0..120 {
@@ -213,15 +198,18 @@ mod tests {
                 break;
             }
         }
-        assert!(found_brand, "expected brand mark or wordmark in connected header");
+        assert!(
+            found_brand,
+            "expected brand mark or wordmark in connected header"
+        );
     }
 
     #[test]
     fn header_renders_no_crab_when_disconnected() {
         let s = crate::app::AppState::new();
         // No Connected event applied → state.connected stays false.
-        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 6))
-            .expect("terminal");
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 6)).expect("terminal");
         t.draw(|f| {
             super::HeaderPanel.render(f, ratatui::layout::Rect::new(0, 0, 120, 6), &s);
         })
@@ -242,8 +230,8 @@ mod tests {
     fn header_carries_hairline_rule_on_row_2() {
         let mut s = crate::app::AppState::new();
         s.apply(crate::event::DomainEvent::Connected);
-        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6))
-            .expect("terminal");
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).expect("terminal");
         t.draw(|f| {
             super::HeaderPanel.render(f, ratatui::layout::Rect::new(0, 0, 40, 6), &s);
         })

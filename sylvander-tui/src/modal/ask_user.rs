@@ -14,11 +14,11 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::{AppMode, AppState};
@@ -43,7 +43,7 @@ pub struct AskUserModal {
     pub question: String,
     pub options: Vec<String>,
     pub multi_select: bool,
-    pub selection: Selection,
+    selection: Selection,
     /// Cursor for single-select / multi-select navigation.
     pub cursor: usize,
     /// Free-text answer the user has typed (always available).
@@ -168,7 +168,11 @@ impl Modal for AskUserModal {
                     }
                     _ => (
                         format!("  [{}] ", i + 1),
-                        if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray },
+                        if is_cursor {
+                            ratatui::style::Color::Cyan
+                        } else {
+                            ratatui::style::Color::Gray
+                        },
                     ),
                 };
 
@@ -187,7 +191,11 @@ impl Modal for AskUserModal {
                         Span::styled(label, Style::default().fg(marker_color)),
                     ]));
                 } else {
-                    let color = if is_cursor { ratatui::style::Color::Cyan } else { ratatui::style::Color::Gray };
+                    let color = if is_cursor {
+                        ratatui::style::Color::Cyan
+                    } else {
+                        ratatui::style::Color::Gray
+                    };
                     lines.push(Line::from(Span::styled(
                         format!("{prefix}{label}"),
                         Style::default().fg(color),
@@ -203,10 +211,7 @@ impl Modal for AskUserModal {
         } else {
             "Or type a free-text reply:"
         };
-        lines.push(Line::from(Span::styled(
-            answer_label,
-            theme::text_muted(),
-        )));
+        lines.push(Line::from(Span::styled(answer_label, theme::text_muted())));
         lines.push(Line::from(vec![
             Span::styled("> ", theme::verified()),
             Span::styled(&self.answer, Style::default()),
@@ -217,15 +222,9 @@ impl Modal for AskUserModal {
             "multi-select" => "Space: toggle   Enter: submit   Esc: cancel",
             _ => "Enter: submit option   Esc: cancel",
         };
-        lines.push(Line::from(Span::styled(
-            hint,
-            theme::text_muted(),
-        )));
+        lines.push(Line::from(Span::styled(hint, theme::text_muted())));
 
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            inner,
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
         // Hardware cursor at end of free-text answer.
         let cursor_x = inner.x + 2 + self.answer.chars().count() as u16;
@@ -273,14 +272,14 @@ impl Modal for AskUserModal {
                 let answer = self.submit_answer();
                 state.mode = AppMode::Normal;
                 if !answer.is_empty() {
-                    state.pending_actions.push(Action::SendAnswer { call_id, answer });
+                    state
+                        .pending_actions
+                        .push(Action::SendAnswer { call_id, answer });
                 }
                 Consumed::Yes { dismiss: true }
             }
             KeyCode::Char(c) => {
-                if key
-                    .modifiers
-                    .contains(KeyModifiers::CONTROL)
+                if key.modifiers.contains(KeyModifiers::CONTROL)
                     || key.modifiers.contains(KeyModifiers::ALT)
                 {
                     return Consumed::Ignored;
