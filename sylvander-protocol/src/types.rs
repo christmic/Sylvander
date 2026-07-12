@@ -199,6 +199,11 @@ pub enum StreamEvent {
         call_id: String,
         answer: Vec<String>,
     },
+    /// The active turn for this session was cancelled by its user. This is a
+    /// turn terminal event; it does not stop the Agent or discard the session.
+    TurnInterrupted {
+        reason: String,
+    },
 }
 
 /// Info about a single tool call.
@@ -244,6 +249,13 @@ pub enum SystemMessage {
     AnswerQuestion {
         call_id: String,
         answer: String,
+    },
+    /// Cancel only the active turn belonging to `session_id`.
+    ///
+    /// This is deliberately distinct from `Stop`, which terminates the whole
+    /// Agent process and therefore affects every session it serves.
+    InterruptTurn {
+        session_id: SessionId,
     },
 }
 
@@ -341,6 +353,18 @@ impl BusMessage {
             sender: Sender::System,
             recipient: Recipient::Agent(agent_id),
             kind: MessageKind::System(SystemMessage::LeaveSession { session_id }),
+            payload: String::new(),
+            timestamp: now_secs(),
+            id: MessageId::new(),
+        }
+    }
+
+    pub fn system_interrupt_turn(agent_id: AgentId, session_id: SessionId) -> Self {
+        Self {
+            session_id: session_id.clone(),
+            sender: Sender::System,
+            recipient: Recipient::Agent(agent_id),
+            kind: MessageKind::System(SystemMessage::InterruptTurn { session_id }),
             payload: String::new(),
             timestamp: now_secs(),
             id: MessageId::new(),

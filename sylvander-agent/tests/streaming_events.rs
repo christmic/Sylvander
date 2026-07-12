@@ -60,6 +60,95 @@ async fn subscribe_stream(
         .expect("subscribe")
 }
 
+#[tokio::test]
+async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(5))
+                .set_body_json(json!({
+                    "id": "msg_slow",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "too late"}],
+                    "model": "claude-sonnet-5-20260601",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 2}
+                })),
+        )
+        .mount(&server)
+        .await;
+
+    let bus = Arc::new(InProcessMessageBus::new());
+    let spec = AgentSpec::builder()
+        .id("interrupt-test")
+        .name("Interrupt Test")
+        .model_name("claude-sonnet-5-20260601")
+        .build()
+        .expect("spec");
+    let run = AgentRun::builder(spec, mock_client(&server))
+        .bus(bus.clone())
+        .build()
+        .expect("build");
+    let agent_id = run.id().clone();
+    let inbox = bus
+        .subscribe(run.subscription_filter())
+        .await
+        .expect("agent inbox");
+    let task = tokio::spawn(run.run(inbox));
+    let mut events = subscribe_stream(&bus).await;
+    let session_id = SessionId::new("interrupt-session");
+    bus.publish(BusMessage::system_join_session(
+        agent_id.clone(),
+        session_id.clone(),
+        SessionMetadata {
+            workspace: "/tmp".into(),
+            name: "interrupt".into(),
+            user_id: "user-1".into(),
+        },
+    ))
+    .await
+    .expect("join");
+    bus.publish(BusMessage::user_chat(
+        session_id.clone(),
+        "user-1",
+        "wait",
+    ))
+    .await
+    .expect("chat");
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    bus.publish(BusMessage::system_interrupt_turn(
+        agent_id.clone(),
+        session_id.clone(),
+    ))
+    .await
+    .expect("interrupt");
+
+    let interrupted = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let message = events.recv().await.expect("event stream");
+            if message.session_id == session_id
+                && matches!(
+                    message.kind,
+                    MessageKind::Stream(StreamEvent::TurnInterrupted { .. })
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(interrupted.is_ok(), "interrupt must not wait for the LLM response");
+
+    bus.publish(BusMessage::system_stop(agent_id))
+        .await
+        .expect("stop");
+    task.await.expect("agent task");
+}
+
 /// Collect stream events into a vec of variant names
 fn event_names(events: &[BusMessage]) -> Vec<String> {
     events
@@ -76,6 +165,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::ToolApprovalRequired { .. } => "ToolApprovalRequired",
                 StreamEvent::AskUser { .. } => "AskUser",
                 StreamEvent::UserAnswer { .. } => "UserAnswer",
+                StreamEvent::TurnInterrupted { .. } => "TurnInterrupted",
             }),
             _ => None,
         })
