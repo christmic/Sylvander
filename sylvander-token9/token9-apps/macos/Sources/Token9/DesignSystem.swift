@@ -83,6 +83,28 @@ struct StatusDot: View {
     }
 }
 
+/// Loads the explicit PNG resource to avoid ambiguous lookup when the
+/// SwiftPM bundle also contains a PDF with the same basename.
+struct BrandMark: View {
+    var body: some View {
+        Group {
+            if let url = Bundle.module.url(forResource: "SeedCrabMark", withExtension: "png"),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+            } else {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(T.seedOrange)
+            }
+        }
+        .scaledToFit()
+        .accessibilityHidden(true)
+    }
+}
+
 /// Plain icon button — hover changes opacity, never scales.
 struct IconButton: View {
     var systemName: String

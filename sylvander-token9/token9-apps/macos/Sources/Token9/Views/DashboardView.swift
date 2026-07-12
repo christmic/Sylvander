@@ -61,39 +61,45 @@ struct DashboardView: View {
         .frame(width: L.popoverW, height: L.popoverH)
         .onAppear { vm.start() }
         .onDisappear { vm.stop() }
+        .onChange(of: vm.cards.map(\.id)) { _, ids in
+            guard expandedGroupID == nil, vm.range != .year else { return }
+            expandedGroupID = ids.first
+        }
+        .onChange(of: vm.range) { _, range in
+            if range == .year { expandedGroupID = nil }
+        }
     }
 
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image("SeedCrabMark", bundle: .module)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: L.logoSize, height: L.logoSize)
-            VStack(alignment: .leading, spacing: 0) {
+            BrandMark()
+                .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 1) {
                 Text("token9").font(.system(size: 15, weight: .bold))
                     .foregroundStyle(T.textPrimary)
                 Text("本地 LLM 网关").font(.system(size: 10))
                     .foregroundStyle(T.textTertiary)
+                HStack(spacing: 5) {
+                    StatusDot(active: vm.error == nil)
+                    Text(vm.error == nil ? "在线 · 127.0.0.1:9527" : "离线 · 127.0.0.1:9527")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(T.textTertiary)
+                }
             }
             Spacer()
-            HStack(spacing: 6) {
-                StatusDot(active: vm.error == nil)
-                Text(vm.error == nil ? "在线 · 127.0.0.1:9527" : "离线 · 127.0.0.1:9527")
-                    .font(.system(size: 10)).foregroundStyle(T.textTertiary)
-            }
             IconButton(systemName: "arrow.clockwise") { vm.reload() }
         }
     }
 
     private var aggregationHeading: some View {
         HStack(alignment: .center, spacing: 10) {
-            Text("汇总维度")
-                .font(.system(size: 11))
-                .foregroundStyle(T.textTertiary)
-            DimensionToggle(sel: dimensionBinding)
+            Text(vm.groupBy == .tool ? "按工具" : "按模型")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(T.textSecondary)
             Spacer()
+            DimensionToggle(sel: dimensionBinding)
         }
     }
 

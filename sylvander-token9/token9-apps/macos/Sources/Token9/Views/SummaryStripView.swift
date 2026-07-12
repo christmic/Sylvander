@@ -45,23 +45,21 @@ struct SummaryStripView: View {
 
     private var cacheCard: some View {
         Panel(radius: L.cardRadius) {
-            HStack(alignment: .center, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        MetricIcon(systemName: "bolt.fill", tint: T.coreViolet)
-                        Text("缓存命中")
-                            .font(.system(size: 10))
-                            .foregroundStyle(T.textTertiary)
-                    }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("缓存命中")
+                    .font(.system(size: 10))
+                    .foregroundStyle(T.textTertiary)
+                    .lineLimit(1)
+                HStack(spacing: 8) {
                     Text(Fmt.percent(summary.cacheHitPercent))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundStyle(T.textPrimary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
+                    Spacer(minLength: 0)
+                    CacheRing(value: summary.cacheHitPercent, tint: T.coreViolet, lineWidth: 4)
+                        .frame(width: 30, height: 30)
                 }
-                Spacer(minLength: 0)
-                CacheRing(value: summary.cacheHitPercent, tint: T.coreViolet, lineWidth: 4)
-                    .frame(width: 32, height: 32)
             }
         }
     }
