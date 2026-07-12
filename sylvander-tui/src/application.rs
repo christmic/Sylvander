@@ -39,7 +39,9 @@ impl Application {
     }
 
     pub fn apply(&mut self, event: DomainEvent) {
-        self.state.apply(event);
+        if let Some(action) = self.state.apply(event) {
+            self.state.pending_actions.push(action);
+        }
     }
 
     pub fn take_effects(&mut self) -> Vec<Action> {
@@ -87,5 +89,28 @@ mod tests {
         app.handle(UserIntent::ScrollTranscript { lines: -4 });
         assert_eq!(app.state.chat_scroll, 0);
         assert_eq!(app.state.unread_events, 0);
+    }
+
+    #[test]
+    fn terminal_event_starts_exactly_one_locally_queued_prompt() {
+        let mut app = Application::new(AppState::new());
+        app.state.session_id = Some("session-1".into());
+        app.state.turn_active = true;
+        app.state.queued_prompts.push_back("follow up".into());
+        app.state
+            .messages
+            .push(crate::app::ChatMessage::QueuedUser("follow up".into()));
+
+        app.apply(DomainEvent::AgentDone {
+            final_text: "done".into(),
+        });
+
+        assert!(app.state.turn_active);
+        assert!(app.state.queued_prompts.is_empty());
+        assert!(matches!(
+            app.take_effects().as_slice(),
+            [Action::SendChat { text, session_id: Some(session_id) }]
+                if text == "follow up" && session_id == "session-1"
+        ));
     }
 }

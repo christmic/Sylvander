@@ -32,6 +32,7 @@ pub enum AppMode {
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
     User(String),
+    QueuedUser(String),
     Agent(String),
     ToolCall {
         name: String,

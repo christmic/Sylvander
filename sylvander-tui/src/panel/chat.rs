@@ -119,6 +119,22 @@ fn push_message_lines<'a>(
                 ]));
             }
         }
+        ChatMessage::QueuedUser(text) => {
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            for (index, row) in wrap_words(text, "", "  ".into(), width.saturating_sub(3))
+                .into_iter()
+                .enumerate()
+            {
+                let marker = if index == 0 { "↳  " } else { "   " };
+                lines.push(Line::from(vec![
+                    Span::styled(marker, theme::text_muted()),
+                    Span::styled(row, theme::text_dim()),
+                ]));
+            }
+            lines.push(Line::from(Span::styled("   queued", theme::text_muted())));
+        }
         ChatMessage::Agent(text) => {
             if !lines.is_empty() {
                 lines.push(Line::from(""));

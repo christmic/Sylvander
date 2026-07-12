@@ -52,9 +52,10 @@ pub fn status_mode_for(state: &AppState) -> StatusMode {
         }
     }
 
-    // Working is detected observationally since the agent loop doesn't
-    // currently push WorkingStarted/Ended events.
-    let working = !state.streaming.is_empty()
+    // Local submission marks the turn active immediately; streamed content
+    // then keeps the same state until Done/Error/Interrupted settles it.
+    let working = state.turn_active
+        || !state.streaming.is_empty()
         || !state.streaming_thinking.is_empty()
         || state.messages.iter().any(|m| match m {
             crate::app::ChatMessage::ToolStep { children, .. } => children
@@ -95,6 +96,14 @@ impl Component for StatusPanel {
         } else {
             Span::raw("")
         };
+        let queue_span: Span = if state.queued_prompts.is_empty() {
+            Span::raw("")
+        } else {
+            Span::styled(
+                format!(" · {} queued", state.queued_prompts.len()),
+                theme::active(),
+            )
+        };
 
         let session = state
             .session_id
@@ -130,6 +139,7 @@ impl Component for StatusPanel {
                 theme::text_dim(),
             ),
             task_span,
+            queue_span,
         ])
         .alignment(Alignment::Left);
 

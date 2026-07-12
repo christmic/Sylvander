@@ -8,6 +8,7 @@
 //! Both paths automatically mark the dirty flag so the render loop wakes.
 
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
 
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
@@ -35,6 +36,13 @@ pub struct AppState {
     pub iteration: u32,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// True from local submit until a terminal Done/Error/Interrupted event.
+    pub turn_active: bool,
+    /// Handles the small window before a new session receives its server id.
+    pub interrupt_requested: bool,
+    /// Prompts accepted while a turn is active. They are sent one at a time
+    /// only after the previous turn reaches a terminal event.
+    pub queued_prompts: VecDeque<String>,
     /// Whether tool inputs and multi-line results are expanded in transcript.
     pub tool_details_expanded: bool,
 
@@ -104,6 +112,9 @@ impl AppState {
             iteration: 0,
             input_tokens: 0,
             output_tokens: 0,
+            turn_active: false,
+            interrupt_requested: false,
+            queued_prompts: VecDeque::new(),
             tool_details_expanded: false,
             sessions: Vec::new(),
             modals: ModalStack::new(),
@@ -176,7 +187,8 @@ impl AppState {
     }
 
     fn has_live_activity(&self) -> bool {
-        !self.streaming.is_empty()
+        self.turn_active
+            || !self.streaming.is_empty()
             || !self.streaming_thinking.is_empty()
             || self.messages.iter().any(|message| match message {
                 ChatMessage::ToolStep { children, .. } => children
@@ -184,6 +196,28 @@ impl AppState {
                     .any(|child| child.status == ToolStatus::Pending),
                 _ => false,
             })
+    }
+
+    fn start_next_queued_prompt(&mut self) -> Option<Action> {
+        let text = self.queued_prompts.pop_front()?;
+        if let Some(message) = self
+            .messages
+            .iter_mut()
+            .find(|message| matches!(message, ChatMessage::QueuedUser(queued) if queued == &text))
+        {
+            *message = ChatMessage::User(text.clone());
+        }
+        self.turn_active = true;
+        self.interrupt_requested = false;
+        self.status = if self.queued_prompts.is_empty() {
+            "Working".into()
+        } else {
+            format!("Working · {} queued", self.queued_prompts.len())
+        };
+        Some(Action::SendChat {
+            text,
+            session_id: self.session_id.clone(),
+        })
     }
 
     fn apply_inner(&mut self, event: DomainEvent) -> Option<Action> {
@@ -194,6 +228,8 @@ impl AppState {
             }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
+                self.turn_active = false;
+                self.interrupt_requested = false;
                 self.status = format!("Disconnected: {reason}");
                 self.messages
                     .push(ChatMessage::Info(format!("Disconnected: {reason}")));
@@ -221,6 +257,12 @@ impl AppState {
                     }
                 }
                 self.session_id = Some(session_id);
+                if self.interrupt_requested {
+                    if let Some(session_id) = self.session_id.clone() {
+                        self.pending_actions
+                            .push(Action::InterruptTurn { session_id });
+                    }
+                }
             }
             DomainEvent::SessionsLoaded { sessions } => {
                 for session in sessions {
@@ -251,9 +293,11 @@ impl AppState {
                 }
             }
             DomainEvent::TextChunk { delta } => {
+                self.turn_active = true;
                 self.streaming.push_str(&delta);
             }
             DomainEvent::ThinkingChunk { delta } => {
+                self.turn_active = true;
                 self.streaming_thinking.push_str(&delta);
             }
             DomainEvent::ToolStarted {
@@ -261,6 +305,7 @@ impl AppState {
                 tool_name,
                 input,
             } => {
+                self.turn_active = true;
                 // Group consecutive tool events into a single ToolStep
                 // block per UX §6. A new step starts when the last
                 // trailing message is not a ToolStep, or when a previous
@@ -336,6 +381,8 @@ impl AppState {
                 self.output_tokens = output_tokens;
             }
             DomainEvent::AgentDone { final_text } => {
+                self.turn_active = false;
+                self.interrupt_requested = false;
                 if !self.streaming.is_empty() {
                     self.messages
                         .push(ChatMessage::Agent(self.streaming.clone()));
@@ -344,12 +391,49 @@ impl AppState {
                     self.messages.push(ChatMessage::Agent(final_text));
                 }
                 self.streaming_thinking.clear();
+                return self.start_next_queued_prompt();
             }
             DomainEvent::AgentError { message } => {
+                self.turn_active = false;
+                self.interrupt_requested = false;
                 self.messages
                     .push(ChatMessage::Info(format!("Error: {message}")));
                 self.streaming.clear();
                 self.streaming_thinking.clear();
+                return self.start_next_queued_prompt();
+            }
+            DomainEvent::TurnInterrupted { reason } => {
+                self.turn_active = false;
+                self.interrupt_requested = false;
+                if !self.streaming.is_empty() {
+                    self.messages
+                        .push(ChatMessage::Agent(std::mem::take(&mut self.streaming)));
+                }
+                self.streaming_thinking.clear();
+                for message in &mut self.messages {
+                    if let ChatMessage::ToolStep { children, .. } = message {
+                        for child in children {
+                            if child.status == ToolStatus::Pending {
+                                child.status = ToolStatus::Error;
+                                child.output = Some("interrupted".into());
+                                child.is_error = Some(true);
+                            }
+                        }
+                    }
+                }
+                while self.modals.top().is_some_and(|modal| {
+                    matches!(
+                        modal.title(),
+                        "Tool Approval" | "Agent asks" | "Plan review" | "Plan · Edit step"
+                    )
+                }) {
+                    self.modals.pop();
+                }
+                self.mode = AppMode::Normal;
+                self.status = "Interrupted".into();
+                self.messages
+                    .push(ChatMessage::Info(format!("Turn interrupted: {reason}")));
+                return self.start_next_queued_prompt();
             }
             DomainEvent::ApprovalRequested { batch_id, tools } => {
                 if tools.is_empty() {
@@ -486,21 +570,33 @@ impl AppState {
             }
         }
 
-        // 2. Global keys — Ctrl+C quits only when composer is empty.
-        //    When the composer has content we let it through so it can either
-        //    accept the keystroke (no-op) or handle a future copy binding.
+        // 2. Global keys — Ctrl+C interrupts active work before it can quit.
         let is_ctrl_c = key.code == crossterm::event::KeyCode::Char('c')
             && key
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::CONTROL);
+        if is_ctrl_c && self.turn_active {
+            if self.interrupt_requested {
+                return None;
+            }
+            self.interrupt_requested = true;
+            if let Some(session_id) = self.session_id.clone() {
+                self.pending_actions
+                    .push(Action::InterruptTurn { session_id });
+                self.status = "Interrupting…".into();
+            } else {
+                self.status = "Interrupt queued until session is created".into();
+            }
+            self.dirty.mark();
+            return None;
+        }
         if is_ctrl_c && self.composer.is_empty() {
             self.should_quit = true;
             self.dirty.mark();
             return None;
         }
-        if is_ctrl_c {
-            // fall through to composer handler; it will ignore Ctrl+C.
-        }
+        // With a draft present Ctrl+C is currently left to the Composer. A
+        // dedicated draft-stash interaction is tracked in the readiness list.
 
         // 3. Ctrl+P toggles the sessions overlay (UX §10).
         let is_ctrl_p = key.code == crossterm::event::KeyCode::Char('p')
@@ -551,11 +647,20 @@ impl AppState {
             return None;
         }
 
-        // 4. Esc cancels current mode or quits.
+        // 4. Esc interrupts an active turn. It never terminates the Agent.
         if key.code == crossterm::event::KeyCode::Esc {
-            if !self.modals.is_empty() {
-                self.modals.pop();
-                self.mode = AppMode::Normal;
+            if self.turn_active {
+                if self.interrupt_requested {
+                    return None;
+                }
+                self.interrupt_requested = true;
+                if let Some(session_id) = self.session_id.clone() {
+                    self.pending_actions
+                        .push(Action::InterruptTurn { session_id });
+                    self.status = "Interrupting…".into();
+                } else {
+                    self.status = "Interrupt queued until session is created".into();
+                }
                 self.dirty.mark();
                 return None;
             }
@@ -598,7 +703,18 @@ impl AppState {
             // The user's turn belongs in the transcript immediately. The
             // server assigns identity and streams the response, but it does
             // not echo the submitted prompt back to this client.
+            if self.turn_active {
+                self.messages.push(ChatMessage::QueuedUser(text.clone()));
+                self.queued_prompts.push_back(text);
+                self.status = format!("Working · {} queued", self.queued_prompts.len());
+                self.chat_scroll = 0;
+                self.unread_events = 0;
+                self.dirty.mark();
+                return None;
+            }
             self.messages.push(ChatMessage::User(text.clone()));
+            self.turn_active = true;
+            self.interrupt_requested = false;
             self.chat_scroll = 0;
             self.unread_events = 0;
             self.dirty.mark();
@@ -628,6 +744,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
         DomainEvent::TextChunk { .. }
             | DomainEvent::ThinkingChunk { .. }
             | DomainEvent::AgentDone { .. }
+            | DomainEvent::TurnInterrupted { .. }
             | DomainEvent::ToolStarted { .. }
             | DomainEvent::ToolFinished { .. }
             | DomainEvent::PlanReceived { .. }
@@ -858,6 +975,76 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         s.handle_key(&esc);
         assert!(s.should_quit);
+    }
+
+    #[test]
+    fn esc_interrupts_active_turn_without_quitting() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        state.turn_active = true;
+
+        state.handle_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+        assert!(!state.should_quit);
+        assert!(state.interrupt_requested);
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [Action::InterruptTurn { session_id }] if session_id == "session-1"
+        ));
+    }
+
+    #[test]
+    fn interrupted_turn_settles_partial_output_and_pending_tools() {
+        let mut state = AppState::new();
+        state.turn_active = true;
+        state.streaming = "partial answer".into();
+        state.messages.push(ChatMessage::ToolStep {
+            name: "Read file".into(),
+            started_at_secs: 0,
+            children: vec![ToolStepChild {
+                call_id: "call-1".into(),
+                name: "Read".into(),
+                status: ToolStatus::Pending,
+                input: serde_json::json!({"path": "README.md"}),
+                output: None,
+                is_error: None,
+            }],
+        });
+
+        state.apply(DomainEvent::TurnInterrupted {
+            reason: "interrupted by user".into(),
+        });
+
+        assert!(!state.turn_active);
+        assert!(state.messages.iter().any(
+            |message| matches!(message, ChatMessage::Agent(text) if text == "partial answer")
+        ));
+        assert!(state.messages.iter().any(|message| matches!(
+            message,
+            ChatMessage::ToolStep { children, .. }
+                if children[0].status == ToolStatus::Error
+        )));
+    }
+
+    #[test]
+    fn submit_during_active_turn_queues_without_sending_concurrently() {
+        let mut state = AppState::new();
+        state.turn_active = true;
+        for character in "next request".chars() {
+            state.handle_key(&KeyEvent::new(
+                KeyCode::Char(character),
+                KeyModifiers::NONE,
+            ));
+        }
+
+        let action = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(action.is_none());
+        assert_eq!(state.queued_prompts.front().map(String::as_str), Some("next request"));
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::QueuedUser(text)) if text == "next request"
+        ));
     }
 
     #[test]

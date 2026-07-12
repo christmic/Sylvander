@@ -34,6 +34,9 @@ pub enum ClientMsg {
         call_id: String,
         answer: String,
     },
+    Interrupt {
+        session_id: String,
+    },
     ListSessions,
     Ping,
 }
@@ -107,6 +110,10 @@ pub enum ServerMsg {
         question: String,
         options: Vec<String>,
         multi_select: bool,
+    },
+    TurnInterrupted {
+        session_id: String,
+        reason: String,
     },
     SessionsList {
         sessions: Vec<SessionInfoMsg>,
@@ -293,6 +300,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         ServerMsg::Done { text, .. } => DomainEvent::AgentDone { final_text: text },
         ServerMsg::Error { message, .. } => DomainEvent::AgentError { message },
+        ServerMsg::TurnInterrupted { reason, .. } => DomainEvent::TurnInterrupted { reason },
         ServerMsg::ApprovalRequest {
             batch_id, tools, ..
         } => DomainEvent::ApprovalRequested {
@@ -370,5 +378,28 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "answer");
         assert_eq!(json["call_id"], "c1");
+    }
+
+    #[test]
+    fn interrupt_is_scoped_to_one_session_on_the_wire() {
+        let json = serde_json::to_value(ClientMsg::Interrupt {
+            session_id: "session-7".into(),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "interrupt");
+        assert_eq!(json["session_id"], "session-7");
+    }
+
+    #[test]
+    fn interrupted_wire_event_has_a_terminal_domain_state() {
+        let event = parse_server_msg(ServerMsg::TurnInterrupted {
+            session_id: "session-7".into(),
+            reason: "interrupted by user".into(),
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::TurnInterrupted { reason })
+                if reason == "interrupted by user"
+        ));
     }
 }

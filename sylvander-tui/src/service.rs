@@ -71,6 +71,7 @@ impl AgentService {
             }
             Action::SendApprove { call_id, approved } => ClientMsg::Approve { call_id, approved },
             Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
+            Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::Quit => return Ok(()),
         };
