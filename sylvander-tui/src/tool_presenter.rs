@@ -56,8 +56,8 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
             .map(|command| format!("$ {}", one_line(command)))
             .unwrap_or_else(|| tool_name.to_string()),
         "read" | "read_file" => path_with_range(input, "Read"),
-        "write" | "write_file" => path_with_range(input, "Write"),
-        "edit" | "edit_file" => path_with_range(input, "Edit"),
+        "write" | "write_file" => mutation_target(input, "Write"),
+        "edit" | "edit_file" => mutation_target(input, "Edit"),
         "search" | "grep" | "rg" => {
             let query = string_field(input, &["query", "pattern"]).unwrap_or("…");
             let path = string_field(input, &["path", "directory"]).unwrap_or(".");
@@ -94,21 +94,24 @@ fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
         }
         "read" | "read_file" => file_rows("path", input, width),
         "write" | "write_file" => {
-            let mut rows = file_rows("path", input, width);
-            if let Some(content) = string_field(input, &["content"]) {
-                rows.push(DetailRow::new(format!("content  {} lines", content.lines().count()), DetailKind::Meta));
+            let files = write_specs(input);
+            let mut rows = Vec::new();
+            for (index, (path, content)) in files.iter().enumerate() {
+                if index > 0 { rows.push(DetailRow::new("", DetailKind::Normal)); }
+                rows.extend(file_heading(path, width));
+                rows.extend(unified_diff_rows(path, "", content, width));
             }
-            rows
+            if rows.is_empty() { generic_input_rows(input, width) } else { rows }
         }
         "edit" | "edit_file" => {
-            let mut rows = file_rows("path", input, width);
-            if let (Some(old), Some(new)) = (
-                string_field(input, &["old_string", "old_text"]),
-                string_field(input, &["new_string", "new_text"]),
-            ) {
-                rows.extend(unified_diff_rows(old, new, width));
+            let edits = edit_specs(input);
+            let mut rows = Vec::new();
+            for (index, (path, old, new)) in edits.iter().enumerate() {
+                if index > 0 { rows.push(DetailRow::new("", DetailKind::Normal)); }
+                rows.extend(file_heading(path, width));
+                rows.extend(unified_diff_rows(path, old, new, width));
             }
-            rows
+            if rows.is_empty() { generic_input_rows(input, width) } else { rows }
         }
         "search" | "grep" | "rg" => vec![DetailRow::new(compact_target(tool_name, input), DetailKind::Normal)],
         _ => generic_input_rows(input, width),
@@ -132,11 +135,13 @@ fn output_rows(output: &str, width: usize, limit: usize) -> Vec<DetailRow> {
     rows
 }
 
-fn unified_diff_rows(old: &str, new: &str, width: usize) -> Vec<DetailRow> {
+fn unified_diff_rows(path: &str, old: &str, new: &str, width: usize) -> Vec<DetailRow> {
+    let before = format!("a/{path}");
+    let after = format!("b/{path}");
     let diff = similar::TextDiff::from_lines(old, new)
         .unified_diff()
         .context_radius(3)
-        .header("before", "after")
+        .header(&before, &after)
         .to_string();
     diff.lines()
         .map(|line| {
@@ -152,6 +157,48 @@ fn unified_diff_rows(old: &str, new: &str, width: usize) -> Vec<DetailRow> {
             DetailRow::new(truncate(line, width), kind)
         })
         .collect()
+}
+
+fn edit_specs(input: &Value) -> Vec<(&str, &str, &str)> {
+    let values = input.get("edits").and_then(Value::as_array);
+    values.map_or_else(
+        || edit_spec(input).into_iter().collect(),
+        |values| values.iter().filter_map(edit_spec).collect(),
+    )
+}
+
+fn edit_spec(value: &Value) -> Option<(&str, &str, &str)> {
+    Some((
+        string_field(value, &["path", "file_path"] )?,
+        string_field(value, &["old_string", "old_text", "before"] )?,
+        string_field(value, &["new_string", "new_text", "after"] )?,
+    ))
+}
+
+fn write_specs(input: &Value) -> Vec<(&str, &str)> {
+    let values = input.get("files").and_then(Value::as_array);
+    values.map_or_else(
+        || write_spec(input).into_iter().collect(),
+        |values| values.iter().filter_map(write_spec).collect(),
+    )
+}
+
+fn write_spec(value: &Value) -> Option<(&str, &str)> {
+    Some((
+        string_field(value, &["path", "file_path"] )?,
+        string_field(value, &["content", "new_string", "after"] )?,
+    ))
+}
+
+fn file_heading(path: &str, width: usize) -> Vec<DetailRow> {
+    let mut rows = vec![DetailRow::new(
+        format!("file  {}", truncate(path, width.saturating_sub(6))),
+        DetailKind::Label,
+    )];
+    if let Some(language) = language_for_path(path) {
+        rows.push(DetailRow::new(format!("language  {language}"), DetailKind::Meta));
+    }
+    rows
 }
 
 fn shell_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
@@ -320,6 +367,19 @@ fn path_with_range(input: &Value, verb: &str) -> String {
     }
 }
 
+fn mutation_target(input: &Value, verb: &str) -> String {
+    let count = input
+        .get(if verb == "Edit" { "edits" } else { "files" })
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if count > 1 {
+        format!("{verb} {count} files")
+    } else {
+        path_with_range(input, verb)
+    }
+}
+
 fn normalized_name(name: &str) -> String {
     name.strip_prefix("mcp__")
         .and_then(|name| name.rsplit("__").next())
@@ -399,6 +459,27 @@ mod tests {
         let rows = detail_rows("edit", &input, None, false, 60);
         assert!(rows.iter().any(|row| row.text.contains("let old = true;") && row.kind == DetailKind::Removed));
         assert!(rows.iter().any(|row| row.text.contains("let new = true;") && row.kind == DetailKind::Added));
+    }
+
+    #[test]
+    fn multi_file_edit_and_write_render_real_file_scoped_diffs() {
+        let edit = serde_json::json!({"edits": [
+            {"path":"src/a.rs","before":"old a\n","after":"new a\n"},
+            {"path":"src/b.rs","before":"old b\n","after":"new b\n"}
+        ]});
+        assert_eq!(compact_target("edit", &edit), "Edit 2 files");
+        let rows = detail_rows("edit", &edit, None, false, 80);
+        assert!(rows.iter().any(|row| row.text == "--- a/src/a.rs"));
+        assert!(rows.iter().any(|row| row.text == "+++ b/src/b.rs"));
+
+        let write = serde_json::json!({"files": [
+            {"path":"new/a.rs","content":"fn a() {}\n"},
+            {"path":"new/b.rs","content":"fn b() {}\n"}
+        ]});
+        assert_eq!(compact_target("write", &write), "Write 2 files");
+        let rows = detail_rows("write", &write, None, false, 80);
+        assert!(rows.iter().any(|row| row.text == "+++ b/new/a.rs"));
+        assert!(rows.iter().any(|row| row.text.contains("fn b()") && row.kind == DetailKind::Added));
     }
 
     #[test]

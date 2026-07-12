@@ -64,7 +64,7 @@ completed backend feature.
 
 - [x] Shell rows include command, cwd, exit code, duration, stdout, and stderr.
 - [x] File reads include path, range, and language.
-- [ ] Edits/writes use a real multi-file unified-diff renderer.
+- [x] Edits/writes use a real multi-file unified-diff renderer.
 - [x] Search results group matches by file with counts and line numbers.
 - [x] MCP and unknown tools have a bounded, safe fallback presentation.
 - [ ] MCP/web/resource tools have dedicated typed presentations.
