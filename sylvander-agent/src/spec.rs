@@ -125,7 +125,10 @@ impl MemoryStoreConfig {
     /// Returns an error for unknown store types.
     pub fn build(
         &self,
-    ) -> Result<std::sync::Arc<dyn crate::tools::memory::MemoryStore>, crate::tools::memory::MemoryStoreError> {
+    ) -> Result<
+        std::sync::Arc<dyn crate::tools::memory::MemoryStore>,
+        crate::tools::memory::MemoryStoreError,
+    > {
         match self.store_type.as_str() {
             "in_memory" => Ok(std::sync::Arc::new(
                 crate::tools::memory::InMemoryMemoryStore::new(),
@@ -314,9 +317,7 @@ impl AgentSpecBuilder {
     /// Register a built-in tool by name.
     #[must_use]
     pub fn builtin_tool(mut self, name: impl Into<String>) -> Self {
-        self.tools.push(ToolRef::Builtin {
-            name: name.into(),
-        });
+        self.tools.push(ToolRef::Builtin { name: name.into() });
         self
     }
 
@@ -449,19 +450,13 @@ mod tests {
 
     #[test]
     fn builder_missing_id() {
-        let err = AgentSpec::builder()
-            .name("No ID")
-            .build()
-            .unwrap_err();
+        let err = AgentSpec::builder().name("No ID").build().unwrap_err();
         assert!(matches!(err, AgentSpecError::MissingId));
     }
 
     #[test]
     fn builder_missing_name() {
-        let err = AgentSpec::builder()
-            .id("no-name")
-            .build()
-            .unwrap_err();
+        let err = AgentSpec::builder().id("no-name").build().unwrap_err();
         assert!(matches!(err, AgentSpecError::MissingName));
     }
 

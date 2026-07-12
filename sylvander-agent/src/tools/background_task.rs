@@ -11,12 +11,16 @@ pub struct StartBackgroundTaskTool;
 
 impl StartBackgroundTaskTool {
     #[must_use]
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl Tool for StartBackgroundTaskTool {
-    fn name(&self) -> &str { "start_background_task" }
+    fn name(&self) -> &str {
+        "start_background_task"
+    }
 
     fn description(&self) -> &str {
         "Start an independent read-only background investigation and continue the main turn."
@@ -32,7 +36,11 @@ impl Tool for StartBackgroundTaskTool {
         )
     }
 
-    async fn execute(&self, _ctx: &ToolContext, _input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
         Err(ToolError::Other(
             "start_background_task must be intercepted at the loop level".into(),
         ))

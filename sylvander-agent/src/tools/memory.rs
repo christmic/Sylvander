@@ -17,8 +17,8 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use sylvander_protocol::types::SessionId;
 use sylvander_protocol::SessionContext;
+use sylvander_protocol::types::SessionId;
 
 // ---------------------------------------------------------------------------
 // MemoryEntry
@@ -79,11 +79,7 @@ impl MemoryEntry {
     /// owning session context. Kind defaults to `AgentNote`;
     /// importance to `Medium`.
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        content: impl Into<String>,
-        owner: SessionContext,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, content: impl Into<String>, owner: SessionContext) -> Self {
         Self {
             id: id.into(),
             owner,
@@ -186,7 +182,9 @@ pub enum MemoryReference {
 
 /// How important this memory is. Drives recall priority and
 /// future compaction policy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Importance {
     Low,
@@ -218,19 +216,12 @@ pub trait MemoryStore: Send + Sync {
 
     /// Store a new entry. The entry's `owner` is what gets persisted;
     /// the `ctx` is just for authorization.
-    async fn store(
-        &self,
-        ctx: &SessionContext,
-        entry: MemoryEntry,
-    ) -> Result<(), MemoryStoreError>;
+    async fn store(&self, ctx: &SessionContext, entry: MemoryEntry)
+    -> Result<(), MemoryStoreError>;
 
     /// Delete an entry by ID. Refuses if the entry's owner doesn't
     /// match `ctx`.
-    async fn delete(
-        &self,
-        ctx: &SessionContext,
-        id: &str,
-    ) -> Result<(), MemoryStoreError>;
+    async fn delete(&self, ctx: &SessionContext, id: &str) -> Result<(), MemoryStoreError>;
 
     /// Get a single entry by ID. Refuses if the entry's owner
     /// doesn't match `ctx`.
@@ -305,9 +296,7 @@ impl MemoryStore for InMemoryMemoryStore {
         let mut results: Vec<MemoryEntry> = entries
             .iter()
             .filter(|e| same_owner(&e.owner, ctx))
-            .filter(|e| {
-                query.is_empty() || e.content.to_lowercase().contains(&query_lower)
-            })
+            .filter(|e| query.is_empty() || e.content.to_lowercase().contains(&query_lower))
             .filter(|e| filter.kind.as_ref().is_none_or(|k| &e.kind == k))
             .filter(|e| filter.min_importance.is_none_or(|i| e.importance >= i))
             .cloned()
@@ -327,11 +316,7 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(())
     }
 
-    async fn delete(
-        &self,
-        ctx: &SessionContext,
-        id: &str,
-    ) -> Result<(), MemoryStoreError> {
+    async fn delete(&self, ctx: &SessionContext, id: &str) -> Result<(), MemoryStoreError> {
         let mut entries = self.entries.write().await;
         let before = entries.len();
         entries.retain(|e| !(e.id == id && same_owner(&e.owner, ctx)));
@@ -352,10 +337,7 @@ impl MemoryStore for InMemoryMemoryStore {
         id: &str,
     ) -> Result<Option<MemoryEntry>, MemoryStoreError> {
         let entries = self.entries.read().await;
-        let entry = entries
-            .iter()
-            .find(|e| e.id == id)
-            .cloned();
+        let entry = entries.iter().find(|e| e.id == id).cloned();
         Ok(entry.filter(|e| same_owner(&e.owner, ctx)))
     }
 }
@@ -364,8 +346,7 @@ impl MemoryStore for InMemoryMemoryStore {
 /// match. (Session id is intentionally excluded — memories persist
 /// across sessions by design.)
 fn same_owner(a: &SessionContext, b: &SessionContext) -> bool {
-    a.identity.user_id == b.identity.user_id
-        && a.identity.agent_id == b.identity.agent_id
+    a.identity.user_id == b.identity.user_id && a.identity.agent_id == b.identity.agent_id
 }
 
 // ---------------------------------------------------------------------------
@@ -386,11 +367,7 @@ mod tests {
     }
 
     fn bob_session() -> SessionContext {
-        SessionContext::new(
-            UserId::new("bob"),
-            AgentId::new("a1"),
-            SessionId::new("s2"),
-        )
+        SessionContext::new(UserId::new("bob"), AgentId::new("a1"), SessionId::new("s2"))
     }
 
     #[tokio::test]
@@ -445,7 +422,10 @@ mod tests {
             .search(
                 &ctx,
                 "item",
-                MemoryFilter { limit: Some(3), ..Default::default() },
+                MemoryFilter {
+                    limit: Some(3),
+                    ..Default::default()
+                },
             )
             .await
             .expect("search");
@@ -537,12 +517,18 @@ mod tests {
             .unwrap();
 
         // Alice sees only her own.
-        let alice_sees = store.search(&alice, "", MemoryFilter::default()).await.unwrap();
+        let alice_sees = store
+            .search(&alice, "", MemoryFilter::default())
+            .await
+            .unwrap();
         assert_eq!(alice_sees.len(), 1);
         assert_eq!(alice_sees[0].id, "1");
 
         // Bob sees only his own.
-        let bob_sees = store.search(&bob, "", MemoryFilter::default()).await.unwrap();
+        let bob_sees = store
+            .search(&bob, "", MemoryFilter::default())
+            .await
+            .unwrap();
         assert_eq!(bob_sees.len(), 1);
         assert_eq!(bob_sees[0].id, "2");
     }
@@ -606,7 +592,9 @@ mod tests {
         let entry = MemoryEntry::new("1", "we chose Rust", ctx)
             .with_kind(MemoryKind::Decision)
             .with_importance(Importance::High)
-            .with_reference(MemoryReference::File { path: "/Cargo.toml".into() });
+            .with_reference(MemoryReference::File {
+                path: "/Cargo.toml".into(),
+            });
         assert_eq!(entry.kind, MemoryKind::Decision);
         assert_eq!(entry.importance, Importance::High);
         assert_eq!(entry.references.len(), 1);

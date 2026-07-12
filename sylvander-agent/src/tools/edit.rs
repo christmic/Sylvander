@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
@@ -77,13 +77,11 @@ impl Tool for EditTool {
         )
     }
 
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Write) {
-            return Ok(ToolOutput::err("write capability not granted for this invocation"));
+            return Ok(ToolOutput::err(
+                "write capability not granted for this invocation",
+            ));
         }
         let path_str = input
             .get("file_path")
@@ -118,9 +116,7 @@ impl Tool for EditTool {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                return Ok(ToolOutput::err(format!(
-                    "cannot read `{path_str}`: {e}"
-                )));
+                return Ok(ToolOutput::err(format!("cannot read `{path_str}`: {e}")));
             }
         };
 
@@ -152,9 +148,7 @@ impl Tool for EditTool {
                     path_str
                 )))
             }
-            Err(e) => Ok(ToolOutput::err(format!(
-                "cannot write `{path_str}`: {e}"
-            ))),
+            Err(e) => Ok(ToolOutput::err(format!("cannot write `{path_str}`: {e}"))),
         }
     }
 }
@@ -166,7 +160,13 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
+    fn ctx() -> ToolContext {
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
+    }
 
     fn setup_workspace() -> TempDir {
         TempDir::new().expect("tempdir")
@@ -179,15 +179,21 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "world",
-                "new_string": "rust"
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "world",
+                    "new_string": "rust"
+                }),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
-        assert_eq!(fs::read_to_string(dir.path().join("f.txt")).unwrap(), "hello rust");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "hello rust"
+        );
     }
 
     #[tokio::test]
@@ -197,17 +203,23 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "aaa",
-                "new_string": "bbb"
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "aaa",
+                    "new_string": "bbb"
+                }),
+            )
             .await
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("appears 3 times"));
         // File unchanged
-        assert_eq!(fs::read_to_string(dir.path().join("f.txt")).unwrap(), "aaa aaa aaa");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "aaa aaa aaa"
+        );
     }
 
     #[tokio::test]
@@ -217,16 +229,22 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "aaa",
-                "new_string": "bbb",
-                "replace_all": true
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "aaa",
+                    "new_string": "bbb",
+                    "replace_all": true
+                }),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
-        assert_eq!(fs::read_to_string(dir.path().join("f.txt")).unwrap(), "bbb bbb bbb");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "bbb bbb bbb"
+        );
     }
 
     #[tokio::test]
@@ -236,11 +254,14 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "missing",
-                "new_string": "x"
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "missing",
+                    "new_string": "x"
+                }),
+            )
             .await
             .unwrap();
         assert!(out.is_error);
@@ -254,11 +275,14 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "hello",
-                "new_string": "hello"
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "hello",
+                    "new_string": "hello"
+                }),
+            )
             .await
             .unwrap();
         assert!(out.is_error);
@@ -306,11 +330,14 @@ mod tests {
         let tool = EditTool::new(dir.path());
         let c = ctx();
         let out = tool
-            .execute(&c, json!({
-                "file_path": "f.txt",
-                "old_string": "line2\nline3",
-                "new_string": "REPLACED"
-            }))
+            .execute(
+                &c,
+                json!({
+                    "file_path": "f.txt",
+                    "old_string": "line2\nline3",
+                    "new_string": "REPLACED"
+                }),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);

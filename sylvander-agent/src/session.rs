@@ -149,8 +149,8 @@ mod tests {
         let mut ctx = SessionContext::new(SessionId::new("s1"), test_metadata());
 
         use sylvander_llm_anthropic::api::types::{
-            block::TextBlockKind, ContentBlock, Message, MessageKind as ApiMessageKind,
-            MessageRole, StopReason, TextBlock, Usage,
+            ContentBlock, Message, MessageKind as ApiMessageKind, MessageRole, StopReason,
+            TextBlock, Usage, block::TextBlockKind,
         };
         let msg = Message {
             id: "msg_1".into(),

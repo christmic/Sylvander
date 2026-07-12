@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -39,14 +39,16 @@ use crate::bus::{
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
-use crate::task_gate::TaskGate;
-use crate::session::{now_secs, SessionContext, SessionMetadata};
-use crate::session_store::{MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession};
+use crate::session::{SessionContext, SessionMetadata, now_secs};
+use crate::session_store::{
+    MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession,
+};
 use crate::spec::{AgentId, AgentSpec, SessionId};
+use crate::task_gate::TaskGate;
 use crate::tool::{Tool, ToolRegistry};
-use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
 use crate::tool_context::ToolContext;
 use crate::tools::MemoryReadTool;
+use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
 
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
@@ -194,14 +196,22 @@ impl AgentRun {
     /// concurrently process approval responses (M12).
     pub async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
         // Publish initial status
-        let _ = self.inner.bus.publish(BusMessage::system_status_update(
-            self.inner.id.clone(),
-            BusAgentStatus::Starting,
-        )).await;
-        let _ = self.inner.bus.publish(BusMessage::system_status_update(
-            self.inner.id.clone(),
-            BusAgentStatus::Running,
-        )).await;
+        let _ = self
+            .inner
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.inner.id.clone(),
+                BusAgentStatus::Starting,
+            ))
+            .await;
+        let _ = self
+            .inner
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.inner.id.clone(),
+                BusAgentStatus::Running,
+            ))
+            .await;
 
         while let Some(msg) = inbox.recv().await {
             match &msg.kind {
@@ -215,12 +225,19 @@ impl AgentRun {
                         }
                         break;
                     }
-                    SystemMessage::JoinSession { session_id, metadata } => {
+                    SystemMessage::JoinSession {
+                        session_id,
+                        metadata,
+                    } => {
                         let ctx = self
                             .inner
                             .restore_session_context(session_id, metadata)
                             .await;
-                        self.inner.sessions.write().await.insert(session_id.clone(), ctx);
+                        self.inner
+                            .sessions
+                            .write()
+                            .await
+                            .insert(session_id.clone(), ctx);
                         info!(agent_id = %self.inner.id, %session_id, "joined session");
                     }
                     SystemMessage::LeaveSession { session_id } => {
@@ -272,9 +289,15 @@ impl AgentRun {
                             let _ = request.sender.send(decision.clone());
                         }
                     }
-                    SystemMessage::CancelTask { session_id, task_id } => {
+                    SystemMessage::CancelTask {
+                        session_id,
+                        task_id,
+                    } => {
                         let mut tasks = self.inner.background_tasks.lock().await;
-                        if tasks.get(task_id).is_some_and(|task| &task.session_id == session_id) {
+                        if tasks
+                            .get(task_id)
+                            .is_some_and(|task| &task.session_id == session_id)
+                        {
                             if let Some(task) = tasks.remove(task_id) {
                                 let _ = task.cancel.send(());
                             }
@@ -303,7 +326,10 @@ impl AgentRun {
                         let (interrupt, interrupted) = oneshot::channel();
                         inner.active_turns.lock().await.insert(
                             sid.clone(),
-                            ActiveTurn { id: turn_id, interrupt },
+                            ActiveTurn {
+                                id: turn_id,
+                                interrupt,
+                            },
                         );
                         let result = inner.handle_message_interruptible(msg, interrupted).await;
                         let mut active = inner.active_turns.lock().await;
@@ -323,10 +349,14 @@ impl AgentRun {
         }
 
         // Final status
-        let _ = self.inner.bus.publish(BusMessage::system_status_update(
-            self.inner.id.clone(),
-            BusAgentStatus::Stopped,
-        )).await;
+        let _ = self
+            .inner
+            .bus
+            .publish(BusMessage::system_status_update(
+                self.inner.id.clone(),
+                BusAgentStatus::Stopped,
+            ))
+            .await;
         info!(agent_id = %self.inner.id, "agent loop exited");
     }
 
@@ -356,16 +386,20 @@ impl AgentRun {
         content: impl Into<String>,
         tags: &[&str],
     ) -> Result<MemoryEntry, MemoryStoreError> {
-        let store = self.inner.memory.as_ref().ok_or_else(|| {
-            MemoryStoreError::Store("no memory store configured".into())
-        })?;
+        let store = self
+            .inner
+            .memory
+            .as_ref()
+            .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
         let entry = MemoryEntry::new(
             uuid::Uuid::new_v4().to_string(),
             content,
             self.tool_context().session.as_ref().clone(),
         );
         let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag, "true"));
-        store.store(&self.tool_context().session, entry.clone()).await?;
+        store
+            .store(&self.tool_context().session, entry.clone())
+            .await?;
         Ok(entry)
     }
 }
@@ -512,15 +546,18 @@ impl PlanGate for BusPlanGate {
                 sender: tx,
             },
         );
-        let _ = self.bus.publish(BusMessage::stream_event(
-            self.session_id.clone(),
-            self.agent_id.clone(),
-            StreamEvent::PlanProposed {
-                plan_id: plan_id.into(),
-                steps,
-                current: 0,
-            },
-        )).await;
+        let _ = self
+            .bus
+            .publish(BusMessage::stream_event(
+                self.session_id.clone(),
+                self.agent_id.clone(),
+                StreamEvent::PlanProposed {
+                    plan_id: plan_id.into(),
+                    steps,
+                    current: 0,
+                },
+            ))
+            .await;
 
         let decision = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
             Ok(Ok(decision)) => decision,
@@ -533,15 +570,18 @@ impl PlanGate for BusPlanGate {
     }
 
     async fn update(&self, plan_id: &str, steps: Vec<String>, current: usize) {
-        let _ = self.bus.publish(BusMessage::stream_event(
-            self.session_id.clone(),
-            self.agent_id.clone(),
-            StreamEvent::PlanUpdated {
-                plan_id: plan_id.into(),
-                steps,
-                current,
-            },
-        )).await;
+        let _ = self
+            .bus
+            .publish(BusMessage::stream_event(
+                self.session_id.clone(),
+                self.agent_id.clone(),
+                StreamEvent::PlanUpdated {
+                    plan_id: plan_id.into(),
+                    steps,
+                    current,
+                },
+            ))
+            .await;
     }
 }
 
@@ -572,15 +612,18 @@ impl TaskGate for BusTaskGate {
                 cancel,
             },
         );
-        let _ = self.bus.publish(BusMessage::stream_event(
-            self.session_id.clone(),
-            self.agent_id.clone(),
-            StreamEvent::TaskStarted {
-                task_id: task_id.clone(),
-                owner: self.agent_id.0.clone(),
-                purpose,
-            },
-        )).await;
+        let _ = self
+            .bus
+            .publish(BusMessage::stream_event(
+                self.session_id.clone(),
+                self.agent_id.clone(),
+                StreamEvent::TaskStarted {
+                    task_id: task_id.clone(),
+                    owner: self.agent_id.0.clone(),
+                    purpose,
+                },
+            ))
+            .await;
 
         let bus = self.bus.clone();
         let agent_id = self.agent_id.clone();
@@ -590,9 +633,9 @@ impl TaskGate for BusTaskGate {
         let running_id = task_id.clone();
         tokio::spawn(async move {
             use futures_util::StreamExt;
-            let history = vec![
-                sylvander_llm_anthropic::api::types::MessageParam::user(prompt),
-            ];
+            let history = vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+                prompt,
+            )];
             let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
             loop {
                 let event = tokio::select! {
@@ -624,12 +667,10 @@ impl TaskGate for BusTaskGate {
                             message: format!("running {name}"),
                         })
                     }
-                    crate::event::AgentEvent::Done(message) => {
-                        Some(StreamEvent::TaskCompleted {
-                            task_id: running_id.clone(),
-                            summary: message.text(),
-                        })
-                    }
+                    crate::event::AgentEvent::Done(message) => Some(StreamEvent::TaskCompleted {
+                        task_id: running_id.clone(),
+                        summary: message.text(),
+                    }),
                     crate::event::AgentEvent::Error(error) => Some(StreamEvent::TaskFailed {
                         task_id: running_id.clone(),
                         error: error.to_string(),
@@ -641,13 +682,17 @@ impl TaskGate for BusTaskGate {
                     Some(StreamEvent::TaskCompleted { .. } | StreamEvent::TaskFailed { .. })
                 );
                 if let Some(event) = public {
-                    let _ = bus.publish(BusMessage::stream_event(
-                        session_id.clone(),
-                        agent_id.clone(),
-                        event,
-                    )).await;
+                    let _ = bus
+                        .publish(BusMessage::stream_event(
+                            session_id.clone(),
+                            agent_id.clone(),
+                            event,
+                        ))
+                        .await;
                 }
-                if terminal { break }
+                if terminal {
+                    break;
+                }
             }
             tasks.lock().await.remove(&running_id);
         });
@@ -778,7 +823,8 @@ impl AgentRunInner {
 
     /// Core: handle a chat message. Runs the loop with streaming.
     async fn handle_message(&self, msg: BusMessage) -> Result<(), AgentRunError> {
-        self.handle_message_with_interrupt(msg, std::future::pending::<()>()).await
+        self.handle_message_with_interrupt(msg, std::future::pending::<()>())
+            .await
     }
 
     async fn handle_message_interruptible(
@@ -912,34 +958,77 @@ impl AgentRunInner {
             };
             match event {
                 crate::event::AgentEvent::TextChunk(text) => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::TextDelta { delta: text }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::TextDelta { delta: text },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::ThinkingChunk(text) => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::ThinkingDelta { delta: text }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ThinkingDelta { delta: text },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::ToolCallStart { id, name, input } => {
-                    if matches!(name.as_str(), "present_plan" | "update_plan" | "start_background_task") {
+                    if matches!(
+                        name.as_str(),
+                        "present_plan" | "update_plan" | "start_background_task"
+                    ) {
                         continue;
                     }
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::ToolCall {
-                        call_id: id, tool_name: name, input,
-                    }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolCall {
+                            call_id: id,
+                            tool_name: name,
+                            input,
+                        },
+                    )
+                    .await;
                 }
-                crate::event::AgentEvent::ToolCallEnd { id, name, output, is_error } => {
-                    if matches!(name.as_str(), "present_plan" | "update_plan" | "start_background_task") {
+                crate::event::AgentEvent::ToolCallEnd {
+                    id,
+                    name,
+                    output,
+                    is_error,
+                } => {
+                    if matches!(
+                        name.as_str(),
+                        "present_plan" | "update_plan" | "start_background_task"
+                    ) {
                         continue;
                     }
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::ToolResult {
-                        call_id: id, tool_name: name, output, is_error,
-                    }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolResult {
+                            call_id: id,
+                            tool_name: name,
+                            output,
+                            is_error,
+                        },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::ToolRejected { id, name, reason } => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::ToolResult {
-                        call_id: id, tool_name: name, output: reason, is_error: true,
-                    }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::ToolResult {
+                            call_id: id,
+                            tool_name: name,
+                            output: reason,
+                            is_error: true,
+                        },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::IterationStart { iteration } => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::IterationStart { iteration }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::IterationStart { iteration },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::IterationEnd { iteration, usage } => {
                     let mut input_tokens = u64::from(usage.input_tokens);
@@ -958,22 +1047,40 @@ impl AgentRunInner {
                             }
                         }
                     }
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::IterationEnd {
-                        iteration,
-                        input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
-                        output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
-                    }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::IterationEnd {
+                            iteration,
+                            input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
+                            output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
+                        },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::Compressed { .. } => {}
-                crate::event::AgentEvent::AskUser { call_id, question, options, multi_select } => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::AskUser {
-                        call_id, question, options, multi_select,
-                    }).await;
+                crate::event::AgentEvent::AskUser {
+                    call_id,
+                    question,
+                    options,
+                    multi_select,
+                } => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::AskUser {
+                            call_id,
+                            question,
+                            options,
+                            multi_select,
+                        },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::UserAnswer { call_id, answer } => {
-                    self.publish_stream(&session_id, crate::bus::StreamEvent::UserAnswer {
-                        call_id, answer,
-                    }).await;
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::UserAnswer { call_id, answer },
+                    )
+                    .await;
                 }
                 crate::event::AgentEvent::PlanProposed { .. }
                 | crate::event::AgentEvent::PlanResolved { .. } => {}
@@ -1028,7 +1135,8 @@ impl AgentRunInner {
                 ctx.append_assistant_message(msg);
             }
             drop(sessions);
-            self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text }).await;
+            self.publish_stream(&session_id, crate::bus::StreamEvent::Done { text })
+                .await;
         }
 
         Ok(())
@@ -1042,19 +1150,25 @@ impl AgentRunInner {
     }
 
     async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
-        let _ = self.bus.publish(BusMessage {
-            session_id: session_id.clone(),
-            sender: Sender::Agent(self.id.clone()),
-            recipient: Recipient::Broadcast,
-            kind: MessageKind::Chat,
-            payload: format!("Error: {err}"),
-            attachments: Vec::new(),
-            timestamp: now_secs(),
-            id: crate::bus::MessageId::new(),
-        }).await;
+        let _ = self
+            .bus
+            .publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: Sender::Agent(self.id.clone()),
+                recipient: Recipient::Broadcast,
+                kind: MessageKind::Chat,
+                payload: format!("Error: {err}"),
+                attachments: Vec::new(),
+                timestamp: now_secs(),
+                id: crate::bus::MessageId::new(),
+            })
+            .await;
     }
 
-    fn message_to_param(&self, msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
+    fn message_to_param(
+        &self,
+        msg: &BusMessage,
+    ) -> sylvander_llm_anthropic::api::types::MessageParam {
         use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
         if msg.attachments.is_empty() {
             return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
@@ -1079,7 +1193,8 @@ impl AgentRunInner {
                     };
                     if let Some(image) = image {
                         blocks.push(UserContentBlock::text(format!(
-                            "Attached image `{}`:", attachment.name
+                            "Attached image `{}`:",
+                            attachment.name
                         )));
                         blocks.push(UserContentBlock::Image(image));
                     }
@@ -1125,10 +1240,16 @@ impl AgentRunBuilder {
     }
 
     #[must_use]
-    pub fn bus(mut self, bus: Arc<dyn MessageBus>) -> Self { self.bus = Some(bus); self }
+    pub fn bus(mut self, bus: Arc<dyn MessageBus>) -> Self {
+        self.bus = Some(bus);
+        self
+    }
 
     #[must_use]
-    pub fn memory(mut self, store: Arc<dyn MemoryStore>) -> Self { self.memory = Some(store); self }
+    pub fn memory(mut self, store: Arc<dyn MemoryStore>) -> Self {
+        self.memory = Some(store);
+        self
+    }
 
     #[must_use]
     pub fn session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
@@ -1137,12 +1258,19 @@ impl AgentRunBuilder {
     }
 
     #[must_use]
-    pub fn override_tools(mut self, tools: ToolRegistry) -> Self { self.tool_overrides = Some(tools); self }
+    pub fn override_tools(mut self, tools: ToolRegistry) -> Self {
+        self.tool_overrides = Some(tools);
+        self
+    }
 
     #[must_use]
     pub fn model_capabilities(
-        mut self, caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
-    ) -> Self { self.model_capabilities = Some(caps); self }
+        mut self,
+        caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
+    ) -> Self {
+        self.model_capabilities = Some(caps);
+        self
+    }
 
     /// Enable bus-based tool approval (opt-in).
     #[must_use]
@@ -1161,18 +1289,27 @@ impl AgentRunBuilder {
     }
 
     pub fn override_compression(
-        mut self, pipeline: crate::compress::pipeline::CompressionPipeline,
-    ) -> Self { self.compression_overrides = Some(pipeline); self }
+        mut self,
+        pipeline: crate::compress::pipeline::CompressionPipeline,
+    ) -> Self {
+        self.compression_overrides = Some(pipeline);
+        self
+    }
 
     /// Build the [`AgentRun`].
     pub fn build(self) -> Result<AgentRun, AgentRunError> {
         let id = self.spec.id.clone();
-        let bus = self.bus.ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
+        let bus = self
+            .bus
+            .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
 
         let memory = if self.memory.is_some() {
             self.memory
         } else {
-            self.spec.memory_stores.first().and_then(|cfg| cfg.build().ok())
+            self.spec
+                .memory_stores
+                .first()
+                .and_then(|cfg| cfg.build().ok())
         };
 
         let mut model_info = self.spec.to_model_info();
@@ -1196,7 +1333,8 @@ impl AgentRunBuilder {
             loop_builder = loop_builder.compression_pipeline(pipeline);
         }
 
-        let loop_config = loop_builder.build()
+        let loop_config = loop_builder
+            .build()
             .map_err(|e| AgentRunError::Build(format!("loop build failed: {e}")))?;
 
         // Clone the session for the run-level tool context before
@@ -1252,12 +1390,24 @@ mod tests {
     use std::path::PathBuf;
 
     fn test_metadata() -> SessionMetadata {
-        SessionMetadata { workspace: PathBuf::from("/tmp/sylvander-test"), name: "test-session".into(), user_id: "user-1".into() }
+        SessionMetadata {
+            workspace: PathBuf::from("/tmp/sylvander-test"),
+            name: "test-session".into(),
+            user_id: "user-1".into(),
+        }
     }
 
     fn test_spec_and_client() -> (AgentSpec, AnthropicClient) {
-        let spec = AgentSpec::builder().id("test-agent").name("Test").model_name("claude-sonnet-5-20260601").build().expect("spec");
-        let client = AnthropicClient::builder().api_key("test-key").build().expect("client");
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("claude-sonnet-5-20260601")
+            .build()
+            .expect("spec");
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .expect("client");
         (spec, client)
     }
 
@@ -1265,7 +1415,10 @@ mod tests {
     async fn agent_run_is_cloneable() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         let run2 = run.clone();
         assert_eq!(run.id(), run2.id());
     }
@@ -1274,18 +1427,27 @@ mod tests {
     async fn interrupt_is_scoped_to_the_selected_session() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         let session_a = SessionId::new("session-a");
         let session_b = SessionId::new("session-b");
         let (interrupt_a, interrupted_a) = oneshot::channel();
         let (interrupt_b, mut interrupted_b) = oneshot::channel();
         run.inner.active_turns.lock().await.insert(
             session_a.clone(),
-            ActiveTurn { id: uuid::Uuid::new_v4(), interrupt: interrupt_a },
+            ActiveTurn {
+                id: uuid::Uuid::new_v4(),
+                interrupt: interrupt_a,
+            },
         );
         run.inner.active_turns.lock().await.insert(
             session_b,
-            ActiveTurn { id: uuid::Uuid::new_v4(), interrupt: interrupt_b },
+            ActiveTurn {
+                id: uuid::Uuid::new_v4(),
+                interrupt: interrupt_b,
+            },
         );
 
         run.inner.interrupt_turn(&session_a).await;
@@ -1329,9 +1491,9 @@ mod tests {
                 &caller,
                 &session_id,
                 StoredMessageRole::User,
-                serde_json::to_value(
-                    sylvander_llm_anthropic::api::types::MessageParam::user("remember me"),
-                )
+                serde_json::to_value(sylvander_llm_anthropic::api::types::MessageParam::user(
+                    "remember me",
+                ))
                 .expect("serialize"),
                 None,
                 None,
@@ -1358,7 +1520,11 @@ mod tests {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
         let store = Arc::new(InMemoryMemoryStore::new());
-        let run = AgentRun::builder(spec, client).bus(bus).memory(store).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store)
+            .build()
+            .expect("build");
         let tools = run.memory_tools();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "read_memory");
@@ -1369,8 +1535,14 @@ mod tests {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
         let store = Arc::new(InMemoryMemoryStore::new());
-        let run = AgentRun::builder(spec, client).bus(bus).memory(store.clone()).build().expect("build");
-        run.remember("User prefers dark mode", &["preference"]).await.expect("remember");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store.clone())
+            .build()
+            .expect("build");
+        run.remember("User prefers dark mode", &["preference"])
+            .await
+            .expect("remember");
         let results = store
             .search(
                 &run.tool_context().session,
@@ -1386,7 +1558,10 @@ mod tests {
     async fn remember_fails_without_memory_configured() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         let err = run.remember("something", &[]).await.unwrap_err();
         assert!(err.to_string().contains("no memory store"));
     }
@@ -1395,7 +1570,10 @@ mod tests {
     async fn memory_tools_empty_without_memory_configured() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         assert!(run.memory_tools().is_empty());
     }
 
@@ -1403,7 +1581,10 @@ mod tests {
     fn typed_attachments_become_provider_content_blocks() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         let message = BusMessage::user_chat_with_attachments(
             SessionId::new("s1"),
             "u1",
@@ -1429,7 +1610,10 @@ mod tests {
     async fn join_and_leave_session() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client).bus(bus).build().expect("build");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
         let sid = run.join_session(test_metadata()).await;
         assert_eq!(run.list_sessions().await.len(), 1);
         run.leave_session(&sid).await;
@@ -1439,13 +1623,33 @@ mod tests {
     #[tokio::test]
     async fn subscription_filter_matches_agent_and_broadcast() {
         let bus = Arc::new(InProcessMessageBus::new());
-        let spec = AgentSpec::builder().id("filter-test").name("Filter Test").model_name("claude-sonnet-5-20260601").build().expect("spec");
-        let client = AnthropicClient::builder().api_key("test-key").build().expect("client");
-        let run = AgentRun::builder(spec, client).bus(bus.clone()).build().expect("build");
+        let spec = AgentSpec::builder()
+            .id("filter-test")
+            .name("Filter Test")
+            .model_name("claude-sonnet-5-20260601")
+            .build()
+            .expect("spec");
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .expect("client");
+        let run = AgentRun::builder(spec, client)
+            .bus(bus.clone())
+            .build()
+            .expect("build");
         let filter = run.subscription_filter();
         let agent_id = AgentId::new("filter-test");
-        assert!(filter.matches(&BusMessage { recipient: Recipient::Agent(agent_id.clone()), ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi") }));
-        assert!(filter.matches(&BusMessage { recipient: Recipient::Broadcast, ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi") }));
-        assert!(!filter.matches(&BusMessage { recipient: Recipient::Agent(AgentId::new("other")), ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi") }));
+        assert!(filter.matches(&BusMessage {
+            recipient: Recipient::Agent(agent_id.clone()),
+            ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi")
+        }));
+        assert!(filter.matches(&BusMessage {
+            recipient: Recipient::Broadcast,
+            ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi")
+        }));
+        assert!(!filter.matches(&BusMessage {
+            recipient: Recipient::Agent(AgentId::new("other")),
+            ..BusMessage::user_chat(SessionId::new("s1"), "u1", "hi")
+        }));
     }
 }

@@ -31,8 +31,8 @@ use sylvander_llm_anthropic::api::error::AnthropicError;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::{
-    ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock,
-    ToolUseBlock, Usage, UserContentBlock,
+    ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
+    Usage, UserContentBlock,
 };
 
 use super::error::AgentLoopError;
@@ -221,10 +221,7 @@ impl AgentLoopBuilder {
     /// [`ApprovalGate::check_batch`](crate::approval::ApprovalGate::check_batch)
     /// before executing each batch of tool calls.
     #[must_use]
-    pub fn approval_gate(
-        mut self,
-        gate: Arc<dyn crate::approval::ApprovalGate>,
-    ) -> Self {
+    pub fn approval_gate(mut self, gate: Arc<dyn crate::approval::ApprovalGate>) -> Self {
         self.approval_gate = Some(gate);
         self
     }
@@ -232,10 +229,7 @@ impl AgentLoopBuilder {
     /// Set the AskUser gate (M18). If set, the loop intercepts
     /// `ask_user` tool calls and routes through the gate.
     #[must_use]
-    pub fn ask_user_gate(
-        mut self,
-        gate: Arc<dyn crate::ask_user_gate::AskUserGate>,
-    ) -> Self {
+    pub fn ask_user_gate(mut self, gate: Arc<dyn crate::ask_user_gate::AskUserGate>) -> Self {
         self.ask_user_gate = Some(gate);
         self
     }
@@ -268,11 +262,9 @@ impl AgentLoopBuilder {
         // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
         // Opt-in to L0 (disk offload) or L4 (LLM summary) by
         // building a custom pipeline.
-        let compression_pipeline = self
-            .compression_pipeline
-            .unwrap_or_else(|| {
-                Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
-            });
+        let compression_pipeline = self.compression_pipeline.unwrap_or_else(|| {
+            Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
+        });
 
         // Default tool context = system user, agent named after the
         // model id, no session. Production code should call
@@ -1056,8 +1048,8 @@ where
         }
     }
 
-    let final_message = final_message
-        .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
+    let final_message =
+        final_message.ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
 
     Ok(AgentLoopResult {
         final_message,
@@ -1180,7 +1172,10 @@ impl AgentLoop {
     /// Validate the request against the model's capabilities.
     fn validate_capabilities(&self, request: &CreateMessageRequest) -> Result<(), AgentLoopError> {
         if !request.tools.is_empty()
-            && !self.model.capabilities.contains(ModelCapabilities::TOOL_USE)
+            && !self
+                .model
+                .capabilities
+                .contains(ModelCapabilities::TOOL_USE)
         {
             return Err(AgentLoopError::IncompatibleModel(format!(
                 "model `{}` does not support TOOL_USE (required because tools are set)",
@@ -1229,8 +1224,7 @@ impl AgentLoop {
                 CacheControl, SystemBlock, SystemPrompt, SystemTextBlock,
             };
             builder = builder.system(SystemPrompt::Blocks(vec![SystemBlock::Text(
-                SystemTextBlock::new(sp.clone())
-                    .with_cache_control(CacheControl::ephemeral()),
+                SystemTextBlock::new(sp.clone()).with_cache_control(CacheControl::ephemeral()),
             )]));
         }
 
@@ -1285,8 +1279,8 @@ async fn consume_stream_to_run(
         }
     }
 
-    let final_message = final_message
-        .ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
+    let final_message =
+        final_message.ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
     Ok(AgentLoopResult {
         final_message,
         iterations,
