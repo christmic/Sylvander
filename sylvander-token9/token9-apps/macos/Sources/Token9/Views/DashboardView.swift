@@ -5,12 +5,18 @@ import SwiftUI
 /// Heatmap + aggregation rows land in commits 4 and 5 respectively.
 struct DashboardView: View {
     @StateObject private var vm = DashboardViewModel()
+    /// Parent-owned expansion state per checklist §4 B3. Only one row
+    /// expands at a time; clicking the same row again collapses.
+    @State private var expandedGroupID: String?
     private var dimensionBinding: Binding<DimensionToggle.Dimension> {
         Binding(
             get: { vm.groupBy == .tool ? .tool : .model },
             set: { vm.groupBy = $0 == .tool ? .tool : .model }
         )
     }
+
+    private var allTotal: Int64 { vm.cards.reduce(0) { $0 + $1.totalTokens } }
+    private var largestTotal: Int64 { vm.cards.map(\.totalTokens).max() ?? 0 }
 
     var body: some View {
         ZStack {
@@ -25,6 +31,7 @@ struct DashboardView: View {
                     ActivityHeatmapView(range: vm.range, daily: vm.daily)
                 }
                 aggregationHeading
+                rowList
                 Spacer(minLength: 0)
             }
             .padding(L.outerPad)
@@ -64,5 +71,27 @@ struct DashboardView: View {
             DimensionToggle(sel: dimensionBinding)
             Spacer()
         }
+    }
+
+    private var rowList: some View {
+        ScrollView {
+            VStack(spacing: 6) {
+                ForEach(vm.cards) { card in
+                    GroupRowView(
+                        card: card,
+                        allTotal: allTotal,
+                        largestTotal: largestTotal,
+                        subTitle: vm.groupBy.subTitle,
+                        isExpanded: expandedGroupID == card.id,
+                        onToggle: { toggle(card.id) }
+                    )
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private func toggle(_ id: String) {
+        expandedGroupID = (expandedGroupID == id) ? nil : id
     }
 }
