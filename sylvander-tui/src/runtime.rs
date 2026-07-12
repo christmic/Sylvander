@@ -3,8 +3,9 @@
 //! User input renders immediately. Service streaming is coalesced to the
 //! configured frame rate, while lower-frequency animation ticks are isolated.
 
-use std::io::stdout;
+use std::io::{Write, stdout};
 
+use base64::Engine as _;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
@@ -111,6 +112,14 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         for effect in application.take_effects() {
+            if let crate::event::Action::CopyText { text } = effect {
+                match copy_osc52(&text) {
+                    Ok(()) => application.state.status = "Copied tool output".into(),
+                    Err(error) => application.state.status = format!("Copy failed: {error}"),
+                }
+                application.state.dirty.mark();
+                continue;
+            }
             if let Err(error) = service.execute(effect).await {
                 application.apply(DomainEvent::Disconnected {
                     reason: error.to_string(),
@@ -131,5 +140,40 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         if !input_open && !service_open {
             return Ok(());
         }
+    }
+}
+
+fn copy_osc52(text: &str) -> std::io::Result<()> {
+    let sequence = osc52_sequence(text)?;
+    let mut output = stdout().lock();
+    output.write_all(sequence.as_bytes())?;
+    output.flush()
+}
+
+fn osc52_sequence(text: &str) -> std::io::Result<String> {
+    const MAX_CLIPBOARD_BYTES: usize = 100 * 1024;
+    if text.len() > MAX_CLIPBOARD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output exceeds the 100 KiB terminal clipboard limit",
+        ));
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    Ok(format!("\x1b]52;c;{encoded}\x07"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn osc52_clipboard_is_bounded_and_round_trips_utf8() {
+        let sequence = osc52_sequence("蟹 helper").unwrap();
+        let encoded = sequence.strip_prefix("\x1b]52;c;").unwrap().strip_suffix('\x07').unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(),
+            "蟹 helper".as_bytes()
+        );
+        assert!(osc52_sequence(&"x".repeat(100 * 1024 + 1)).is_err());
     }
 }

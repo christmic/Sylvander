@@ -105,6 +105,7 @@ pub mod help;
 pub mod palette;
 pub mod plan;
 pub mod sessions;
+pub mod tool_inspector;
 
 pub use approval::ApprovalModal;
 pub use file_mention::FileMentionModal;
@@ -113,3 +114,4 @@ pub use help::HelpModal;
 pub use palette::{COMMANDS, Command, CommandPalette};
 pub use plan::PlanReviewModal;
 pub use sessions::{SessionEntry, SessionStatus, SessionsOverlay};
+pub use tool_inspector::ToolInspector;

@@ -223,6 +223,9 @@ pub enum Action {
     DeleteSession {
         session_id: String,
     },
+    CopyText {
+        text: String,
+    },
     ForkSession {
         session_id: String,
     },
