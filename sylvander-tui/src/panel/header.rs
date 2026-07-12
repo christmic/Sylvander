@@ -8,8 +8,6 @@
 //! · connected`) that lived at the top. The status semantics now live
 //! at the BOTTOM (`M-T14.C`), matching the SVG ground truth.
 
-use std::path::PathBuf;
-
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Rect},
@@ -31,9 +29,7 @@ impl Component for HeaderPanel {
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let session_label = session_label_for(state);
         let workspace = workspace_label_for(state);
-        // The transport does not expose model identity yet. Never mislabel
-        // a workspace path as a model name; use the honest product role.
-        let model = "agent";
+        let model = &state.metadata.model;
         let mode = mode_label(state);
         let session_id = state
             .session_id
@@ -132,9 +128,7 @@ fn workspace_label_for(state: &AppState) -> String {
             return theme::compact_workspace(&std::path::PathBuf::from(&e.workspace), 54);
         }
     }
-    std::env::current_dir()
-        .map(|p: PathBuf| theme::compact_workspace(&p, 54))
-        .unwrap_or_else(|_| "~/".into())
+    theme::compact_workspace(&state.metadata.workspace, 54)
 }
 
 fn mode_label(state: &AppState) -> &'static str {
