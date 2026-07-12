@@ -47,7 +47,7 @@ use crate::session_store::{
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
 use crate::tool::{Tool, ToolRegistry};
-use crate::tool_context::ToolContext;
+use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
 use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
 
@@ -67,6 +67,7 @@ pub(crate) struct AgentRunInner {
     /// Mutable selection read once at the start of every turn. Active turns
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
+    runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -220,6 +221,23 @@ impl AgentRun {
         runtime.current_model = model_id.to_string();
         runtime.reasoning_effort = reasoning_effort;
         Ok(runtime.public_info())
+    }
+
+    pub async fn permission_profile(&self) -> sylvander_protocol::PermissionProfile {
+        self.inner.runtime_permissions.read().await.clone()
+    }
+
+    pub async fn select_permissions(
+        &self,
+        profile: sylvander_protocol::PermissionProfile,
+    ) -> Result<sylvander_protocol::PermissionProfile, String> {
+        if profile.approval_policy == sylvander_protocol::ApprovalPolicy::Ask
+            && !self.inner.approval_enabled
+        {
+            return Err("approval prompts are disabled by the server operator".into());
+        }
+        *self.inner.runtime_permissions.write().await = profile.clone();
+        Ok(profile)
     }
 
     /// Return this agent's subscription filter.
@@ -491,6 +509,22 @@ struct BusApprovalGate {
     agent_id: AgentId,
     session_id: SessionId,
     pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+}
+
+struct DenyAllApprovalGate;
+
+#[async_trait::async_trait]
+impl ApprovalGate for DenyAllApprovalGate {
+    async fn check_batch(&self, tools: &[ToolUseRequest]) -> ApprovalBatchResult {
+        ApprovalBatchResult {
+            decisions: tools
+                .iter()
+                .map(|_| ApprovalDecision::Rejected {
+                    reason: "tool execution denied by runtime permission policy".into(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -933,14 +967,15 @@ impl AgentRunInner {
         };
 
         // 1. Append user message + take history snapshot
-        let history = {
+        let (history, session_metadata) = {
             let mut sessions = self.sessions.write().await;
             let ctx = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
             ctx.append_user_message(user_message.clone());
-            ctx.history_snapshot()
+            (ctx.history_snapshot(), ctx.metadata.clone())
         };
+        let permissions = self.runtime_permissions.read().await.clone();
         if let Some(store) = &self.session_store {
             let user_id = match &msg.sender {
                 Sender::User(user_id) => user_id.as_str(),
@@ -969,33 +1004,46 @@ impl AgentRunInner {
             }
         }
 
-        // 2. Build per-session approval gate (if enabled)
-        let mut loop_config = if self.approval_enabled {
-            let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
-                bus: self.bus.clone(),
-                agent_id: self.id.clone(),
-                session_id: session_id.clone(),
-                pending_approvals: self.pending_approvals.clone(),
-            });
-            let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
-                bus_gate
+        // 2. Build per-session approval gate and tool surface from one
+        // permission snapshot. Changes made mid-turn apply to the next turn.
+        let mut loop_config =
+            if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
+                let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
+                    bus: self.bus.clone(),
+                    agent_id: self.id.clone(),
+                    session_id: session_id.clone(),
+                    pending_approvals: self.pending_approvals.clone(),
+                });
+                let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
+                    bus_gate
+                } else {
+                    Arc::new(crate::approval::RuleBasedApprovalGate::new(
+                        self.approval_rules.clone(),
+                        bus_gate,
+                    ))
+                };
+                let mut cfg = self.loop_config.clone();
+                cfg.model = selected_model.clone();
+                cfg.reasoning_effort = selected_effort;
+                cfg.approval_gate = Some(gate);
+                cfg
             } else {
-                Arc::new(crate::approval::RuleBasedApprovalGate::new(
-                    self.approval_rules.clone(),
-                    bus_gate,
-                ))
+                let mut cfg = self.loop_config.clone();
+                cfg.model = selected_model.clone();
+                cfg.reasoning_effort = selected_effort;
+                cfg
             };
-            let mut cfg = self.loop_config.clone();
-            cfg.model = selected_model.clone();
-            cfg.reasoning_effort = selected_effort;
-            cfg.approval_gate = Some(gate);
-            cfg
-        } else {
-            let mut cfg = self.loop_config.clone();
-            cfg.model = selected_model.clone();
-            cfg.reasoning_effort = selected_effort;
-            cfg
-        };
+        if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
+            loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
+        }
+        let tool_context = tool_context_for_permissions(
+            &session_metadata,
+            &self.id,
+            &session_id,
+            &permissions,
+            self.memory.is_some(),
+        );
+        loop_config.tool_context = tool_context.clone();
         loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
             bus: self.bus.clone(),
             agent_id: self.id.clone(),
@@ -1011,6 +1059,7 @@ impl AgentRunInner {
         let mut background_loop = self.loop_config.clone();
         background_loop.model = selected_model.clone();
         background_loop.reasoning_effort = selected_effort;
+        background_loop.tool_context = tool_context;
         background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
         background_loop.tool_definitions = background_loop.tools.definitions();
         background_loop.approval_gate = None;
@@ -1326,6 +1375,42 @@ impl AgentRunInner {
     }
 }
 
+fn tool_context_for_permissions(
+    metadata: &SessionMetadata,
+    agent_id: &AgentId,
+    session_id: &SessionId,
+    permissions: &sylvander_protocol::PermissionProfile,
+    memory_enabled: bool,
+) -> ToolContext {
+    let mut context = ToolContext::new(sylvander_protocol::SessionContext::new(
+        metadata.user_id.clone(),
+        agent_id.clone(),
+        session_id.clone(),
+    ))
+    .with_fs_root(metadata.workspace.clone());
+    match permissions.file_access {
+        sylvander_protocol::FileAccess::None => {}
+        sylvander_protocol::FileAccess::ReadOnly => {
+            context = context.with_capability(Cap::Read);
+        }
+        sylvander_protocol::FileAccess::WorkspaceWrite => {
+            context = context
+                .with_capability(Cap::Read)
+                .with_capability(Cap::Write);
+        }
+    }
+    if permissions.network_access == sylvander_protocol::NetworkAccess::Allowed {
+        context = context.with_capability(Cap::Network);
+        context.surface.network = NetworkPolicy::All;
+    }
+    if memory_enabled {
+        context = context
+            .with_capability(Cap::MemoryRead)
+            .with_capability(Cap::MemoryWrite);
+    }
+    context
+}
+
 // ---------------------------------------------------------------------------
 // AgentRunBuilder
 // ---------------------------------------------------------------------------
@@ -1460,6 +1545,15 @@ impl AgentRunBuilder {
             current_model: model_info.id.clone(),
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         };
+        let runtime_permissions = sylvander_protocol::PermissionProfile {
+            file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
+            network_access: sylvander_protocol::NetworkAccess::Denied,
+            approval_policy: if self.approval_enabled {
+                sylvander_protocol::ApprovalPolicy::Ask
+            } else {
+                sylvander_protocol::ApprovalPolicy::Allow
+            },
+        };
 
         let mut loop_builder = AgentLoop::builder()
             .client(self.client)
@@ -1491,6 +1585,7 @@ impl AgentRunBuilder {
                 spec: self.spec,
                 loop_config,
                 runtime_models: RwLock::new(runtime_models),
+                runtime_permissions: RwLock::new(runtime_permissions),
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 session_store: self.session_store,
@@ -1609,6 +1704,63 @@ mod tests {
             run.runtime_model_info().await.current_model,
             "thinking-model"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_permissions_are_validated_against_operator_capabilities() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .build()
+            .expect("build");
+        assert_eq!(
+            run.permission_profile().await,
+            sylvander_protocol::PermissionProfile::default()
+        );
+        let restricted = sylvander_protocol::PermissionProfile {
+            file_access: sylvander_protocol::FileAccess::ReadOnly,
+            network_access: sylvander_protocol::NetworkAccess::Denied,
+            approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+        };
+        assert_eq!(
+            run.select_permissions(restricted.clone()).await.unwrap(),
+            restricted
+        );
+        assert!(
+            run.select_permissions(sylvander_protocol::PermissionProfile {
+                approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+                ..Default::default()
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn permission_profile_builds_a_workspace_scoped_tool_context() {
+        let metadata = test_metadata();
+        let context = tool_context_for_permissions(
+            &metadata,
+            &AgentId::new("agent"),
+            &SessionId::new("session"),
+            &sylvander_protocol::PermissionProfile {
+                file_access: sylvander_protocol::FileAccess::ReadOnly,
+                network_access: sylvander_protocol::NetworkAccess::Allowed,
+                approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+            },
+            true,
+        );
+        assert_eq!(
+            context.surface.fs_root.as_deref(),
+            Some(metadata.workspace.as_path())
+        );
+        assert!(context.has_cap(Cap::Read));
+        assert!(!context.has_cap(Cap::Write));
+        assert!(context.has_cap(Cap::Network));
+        assert!(context.host_allowed("example.com"));
+        assert!(context.has_cap(Cap::MemoryRead));
+        assert_eq!(context.user_id().0, metadata.user_id);
     }
 
     #[tokio::test]

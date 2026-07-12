@@ -49,6 +49,39 @@ pub struct RuntimeModelInfo {
     pub models: Vec<ModelDescriptor>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileAccess {
+    None,
+    ReadOnly,
+    #[default]
+    WorkspaceWrite,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccess {
+    #[default]
+    Denied,
+    Allowed,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    Ask,
+    #[default]
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionProfile {
+    pub file_access: FileAccess,
+    pub network_access: NetworkAccess,
+    pub approval_policy: ApprovalPolicy,
+}
+
 // ===========================================================================
 // ID types
 // ===========================================================================
