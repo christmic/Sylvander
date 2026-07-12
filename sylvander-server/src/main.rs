@@ -16,6 +16,23 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.into())
 }
 
+fn session_db_path() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("SYLVANDER_SESSION_DB") {
+        return path.into();
+    }
+    std::env::var("XDG_DATA_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|home| std::path::PathBuf::from(home).join(".local/share"))
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from(".local/share"))
+        .join("sylvander")
+        .join("sessions.db")
+}
+
 fn require_env(key: &str) -> String {
     let v = std::env::var(key).unwrap_or_else(|_| {
         eprintln!(
@@ -99,8 +116,20 @@ async fn main() {
 
     let bus = Arc::new(InProcessMessageBus::new());
 
+    let session_db = session_db_path();
+    if let Some(parent) = session_db.parent() {
+        std::fs::create_dir_all(parent).expect("create session database directory");
+    }
+    let session_store: Arc<dyn sylvander_agent::session_store::SessionStore> = Arc::new(
+        sylvander_agent::session_store::SqliteSessionStore::open(&session_db)
+            .await
+            .expect("open persistent session store"),
+    );
+    info!(path = %session_db.display(), "persistent session store ready");
+
     let mut run_builder = sylvander_agent::run::AgentRun::builder(spec.clone(), client.clone())
         .bus(bus.clone())
+        .session_store(session_store.clone())
         .override_tools(tools)
         .model_capabilities(ModelCapabilities::TOOL_USE);
 
@@ -115,14 +144,6 @@ async fn main() {
     let _agent_task = tokio::spawn(async move { run.run(inbox).await });
 
     info!(%agent_id, "agent spawned");
-
-    // One shared SQLite-backed session store for all channels.
-    let session_store: Arc<dyn sylvander_agent::session_store::SessionStore> =
-        Arc::new(
-            sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
-                .await
-                .expect("open session store"),
-        );
 
     // DingTalk channel
     let dt_key = std::env::var("DINGTALK_APP_KEY");
