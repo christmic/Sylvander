@@ -742,6 +742,24 @@ impl AppState {
             self.dirty.mark();
             return None;
         }
+        let is_ctrl_x = key.code == crossterm::event::KeyCode::Char('x')
+            && key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL);
+        if (is_ctrl_c || is_ctrl_x) && !self.turn_active {
+            if let Some(text) = self.composer.selected_text() {
+                if is_ctrl_x {
+                    self.composer.delete_selection();
+                }
+                self.status = if is_ctrl_x {
+                    "Cut selection".into()
+                } else {
+                    "Copying selection…".into()
+                };
+                self.dirty.mark();
+                return Some(Action::CopyText { text });
+            }
+        }
         if is_ctrl_c && self.composer.is_empty() {
             self.should_quit = true;
             self.dirty.mark();
@@ -978,6 +996,31 @@ mod tests {
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    }
+
+    #[test]
+    fn composer_copy_and_cut_use_local_clipboard_effects() {
+        let mut state = AppState::new();
+        for character in "hello".chars() {
+            state
+                .composer
+                .handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state
+            .composer
+            .handle_key(&KeyEvent::new(KeyCode::Home, KeyModifiers::SHIFT));
+        assert!(matches!(
+            state.handle_key(&KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Some(Action::CopyText { text }) if text == "hello"
+        ));
+        state
+            .composer
+            .handle_key(&KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
+        assert!(matches!(
+            state.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)),
+            Some(Action::CopyText { text }) if text == "hello"
+        ));
+        assert!(state.composer.is_empty());
     }
 
     #[test]
@@ -1299,7 +1342,10 @@ mod tests {
         assert!(
             matches!(state.messages[1], ChatMessage::Agent(ref text) if text == "restored answer")
         );
-        assert_eq!((state.iteration, state.input_tokens, state.output_tokens), (4, 800, 120));
+        assert_eq!(
+            (state.iteration, state.input_tokens, state.output_tokens),
+            (4, 800, 120)
+        );
     }
 
     #[test]

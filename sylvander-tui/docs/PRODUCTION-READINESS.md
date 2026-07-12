@@ -84,7 +84,7 @@ completed backend feature.
 - [x] Attachments can be inspected, removed, and reordered before submit.
 - [x] Attachments and composer text restore from a crash-safe draft.
 - [x] Large paste payloads survive submission without leaking into visible history.
-- [ ] Copy/cut/selection and external-editor workflows are complete.
+- [x] Copy/cut/selection and `$VISUAL`/`$EDITOR` workflows preserve draft safety.
 
 ### Model, permission, and context controls
 
