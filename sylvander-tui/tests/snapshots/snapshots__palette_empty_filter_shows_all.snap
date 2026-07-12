@@ -5,12 +5,14 @@ expression: "render_buf(&state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
                     ┌ Commands ─────────────────────────────────────┐                     
                     │/_                                             │                     
                     │───────────────────────────────────────────────│                     
                     │  › /new          Start a clean local session  │                     
                     │    /sessions     Browse and switch sessions   │                     
+                    │    /resume       Resume a persisted session   │                     
+                    │    /rename       Rename the current persisted │                     
+                    │    /fork         Fork the current persisted se│                     
                     │    /clear        Clear the local transcript   │                     
                     │    /help         Show interaction help        │                     
                     │    /theme        Change the active TUI theme  │                     
@@ -18,9 +20,7 @@ expression: "render_buf(&state, 90, 22)"
                     │    /queue        Inspect or edit prompts waiti│                     
                     │    /status       Show runtime and token usage │                     
                     │    /quit         Quit sylvander-tui           │                     
-                    └───────────────────────────────────────────────┘                     
-                                                                                          
-──────────────────────────────────────────────────────────────────────────────────────────
+────────────────────└───────────────────────────────────────────────┘─────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
