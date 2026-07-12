@@ -100,6 +100,11 @@ Unix wire → AgentService → DomainEvent → Application → AppState → UI
 No Panel sends service messages. No service holds a Panel. No wire message is
 stored directly in presentation state.
 
+Approval follows the same boundary: the modal selects only a server-advertised
+`ApprovalScope`, `Action` and the service carry that intent, and the Agent owns
+validation, session isolation, and durable storage. The TUI never caches an
+approval rule or claims persistence based on local state.
+
 ## Adding a feature
 
 1. Add or reuse a model type in `model.rs`.

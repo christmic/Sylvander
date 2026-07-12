@@ -48,7 +48,10 @@ curl -X POST http://localhost:8080/chat \
   -d '{"session_id":"test","message":"hello"}'
 ```
 
-For tool approval, set `SYLVANDER_APPROVAL=1`.
+For tool approval, set `SYLVANDER_APPROVAL=1`. Add
+`SYLVANDER_APPROVAL_STORE=/path/to/approvals.json` only when durable
+exact-request approval is permitted; otherwise the TUI offers one-shot and
+session scopes only.
 
 ## AskUser tool
 
