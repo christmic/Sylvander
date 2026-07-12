@@ -616,7 +616,75 @@ pub fn run_stream(
                         ]
                     };
 
-                // Execute approved tools, skip rejected ones
+                let has_control_tool = tool_blocks.iter().any(|tool| {
+                    matches!(
+                        tool.name.as_str(),
+                        "ask_user" | "present_plan" | "start_background_task" | "update_plan"
+                    )
+                });
+                if !has_control_tool {
+                    // Ordinary tools are independent within one model batch. Emit every
+                    // start first, execute concurrently, then publish results in model order.
+                    for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
+                        if matches!(decision, crate::approval::ApprovalDecision::Approved) {
+                            yield AgentEvent::ToolCallStart {
+                                id: tool_use.id.clone(),
+                                name: tool_use.name.clone(),
+                                input: tool_use.input.clone(),
+                            };
+                        }
+                    }
+                    let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
+                        let id = tool_use.id.clone();
+                        let name = tool_use.name.clone();
+                        let input = tool_use.input.clone();
+                        let decision = decision.clone();
+                        let tool = config.tools.get(&name).cloned();
+                        let context = config.tool_context.clone();
+                        async move {
+                            let outcome = match decision {
+                                crate::approval::ApprovalDecision::Approved => {
+                                    ParallelToolOutcome::Executed(
+                                        execute_registered_tool(tool, &context, input, &name, TOOL_TIMEOUT).await,
+                                    )
+                                }
+                                crate::approval::ApprovalDecision::Rejected { reason } => {
+                                    ParallelToolOutcome::Rejected(reason)
+                                }
+                            };
+                            (id, name, outcome)
+                        }
+                    });
+                    let outcomes = futures_util::future::join_all(executions).await;
+                    let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
+                    for (id, name, outcome) in outcomes {
+                        match outcome {
+                            ParallelToolOutcome::Executed((output, is_error)) => {
+                                yield AgentEvent::ToolCallEnd {
+                                    id: id.clone(),
+                                    name,
+                                    output: output.clone(),
+                                    is_error,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(id, output).with_error(is_error),
+                                ));
+                            }
+                            ParallelToolOutcome::Rejected(reason) => {
+                                yield AgentEvent::ToolRejected {
+                                    id: id.clone(),
+                                    name,
+                                    reason: reason.clone(),
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(id, reason).with_error(true),
+                                ));
+                            }
+                        }
+                    }
+                    messages.push(MessageParam::user_blocks(tool_result_blocks));
+                } else {
+                // Control tools own interactive gates and remain ordered.
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
                 for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
                     match decision {
@@ -870,6 +938,7 @@ pub fn run_stream(
                     }
                 }
                 messages.push(MessageParam::user_blocks(tool_result_blocks));
+                }
             }
 
             // 8. Update running usage (needed for next iteration's
@@ -995,6 +1064,38 @@ where
         iterations,
         total_usage,
     })
+}
+
+enum ParallelToolOutcome {
+    Executed((String, bool)),
+    Rejected(String),
+}
+
+async fn execute_registered_tool(
+    tool: Option<Arc<dyn crate::tool::Tool>>,
+    context: &crate::tool_context::ToolContext,
+    input: serde_json::Value,
+    name: &str,
+    timeout: std::time::Duration,
+) -> (String, bool) {
+    let Some(tool) = tool else {
+        warn!(tool = %name, "tool not found in registry");
+        return (format!("tool `{name}` not found in registry"), true);
+    };
+    match tokio::time::timeout(timeout, tool.execute(context, input)).await {
+        Ok(Ok(output)) => (output.content, output.is_error),
+        Ok(Err(error)) => {
+            warn!(tool = %name, %error, "tool execution failed");
+            (format!("tool execution failed: {error}"), true)
+        }
+        Err(_) => {
+            warn!(tool = %name, "tool execution timed out");
+            (
+                format!("tool `{name}` timed out after {}s", timeout.as_secs()),
+                true,
+            )
+        }
+    }
 }
 
 // =====================================================================
