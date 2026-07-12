@@ -322,9 +322,12 @@ mod tests {
         use crate::app::ChatMessage;
         state.messages.push(ChatMessage::User("hi".into()));
         let mut p = CommandPalette::new();
-        // Move to /clear (index 2).
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
+        for character in "clear".chars() {
+            let _ = p.handle_key(
+                &key(KeyCode::Char(character), KeyModifiers::NONE),
+                &mut state,
+            );
+        }
         let consumed = p.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         assert!(state.messages.is_empty());

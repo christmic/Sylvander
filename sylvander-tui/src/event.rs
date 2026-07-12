@@ -10,7 +10,7 @@
 use serde_json::Value;
 
 use crate::app::ToolInfo;
-use crate::model::SessionSummary;
+use crate::model::{HistoryEntry, SessionSummary};
 
 // ===========================================================================
 // Inbound: DomainEvent
@@ -33,6 +33,15 @@ pub enum DomainEvent {
     },
     SessionsLoaded {
         sessions: Vec<SessionSummary>,
+    },
+    SessionHistoryLoaded {
+        session: SessionSummary,
+        messages: Vec<HistoryEntry>,
+    },
+    SessionUpdated {
+        session_id: String,
+        label: Option<String>,
+        archived: bool,
     },
 
     /// Streaming text chunk from the model.
@@ -134,6 +143,7 @@ pub enum Action {
     SendChat {
         text: String,
         session_id: Option<String>,
+        workspace: String,
     },
     /// Approve or reject a specific tool call.
     SendApprove {
@@ -150,6 +160,19 @@ pub enum Action {
         session_id: String,
     },
     RequestSessions,
+    LoadSession {
+        session_id: String,
+    },
+    RenameSession {
+        session_id: String,
+        label: String,
+    },
+    ArchiveSession {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
     /// Send a feedback message to the agent (e.g. after rejecting a tool
     /// call, so it can adjust its next attempt). Wraps as a chat message
     /// with a `[/feedback]` prefix the agent loop recognizes; the wire

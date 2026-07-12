@@ -15,7 +15,7 @@ use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
 use crate::modal::{ModalStack, SessionEntry, SessionStatus, SessionsOverlay};
 pub use crate::model::{
-    AppMode, ChatMessage, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
+    AppMode, ChatMessage, HistoryRole, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
     ToolStepChild,
 };
 
@@ -217,6 +217,7 @@ impl AppState {
         Some(Action::SendChat {
             text,
             session_id: self.session_id.clone(),
+            workspace: self.metadata.workspace.display().to_string(),
         })
     }
 
@@ -290,6 +291,57 @@ impl AppState {
                     self.modals.pop();
                     self.modals
                         .push(Box::new(SessionsOverlay::new(self.sessions.clone())));
+                }
+            }
+            DomainEvent::SessionHistoryLoaded { session, messages } => {
+                self.session_id = Some(session.id.clone());
+                self.metadata.workspace = session.workspace.clone().into();
+                self.messages = messages
+                    .into_iter()
+                    .map(|message| match message.role {
+                        HistoryRole::User => ChatMessage::User(message.text),
+                        HistoryRole::Assistant => ChatMessage::Agent(message.text),
+                        HistoryRole::Tool => ChatMessage::Info(message.text),
+                    })
+                    .collect();
+                self.streaming.clear();
+                self.streaming_thinking.clear();
+                self.turn_active = false;
+                self.interrupt_requested = false;
+                self.queued_prompts.clear();
+                self.chat_scroll = 0;
+                self.unread_events = 0;
+                self.welcomed = !self.messages.is_empty();
+                self.status = format!("Resumed {}", session.label);
+                if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == session.id)
+                {
+                    existing.label = session.label;
+                    existing.workspace = session.workspace;
+                    existing.last_seen_secs = session.last_seen_secs;
+                }
+            }
+            DomainEvent::SessionUpdated {
+                session_id,
+                label,
+                archived,
+            } => {
+                if archived {
+                    self.sessions.retain(|session| session.id != session_id);
+                    if self.session_id.as_deref() == Some(session_id.as_str()) {
+                        self.session_id = None;
+                        self.messages.clear();
+                        self.welcomed = false;
+                    }
+                    self.status = "Session archived".into();
+                } else if let Some(label) = label {
+                    if let Some(session) = self
+                        .sessions
+                        .iter_mut()
+                        .find(|session| session.id == session_id)
+                    {
+                        session.label = label.clone();
+                    }
+                    self.status = format!("Renamed session to {label}");
                 }
             }
             DomainEvent::TextChunk { delta } => {
@@ -721,6 +773,7 @@ impl AppState {
             return Some(Action::SendChat {
                 text,
                 session_id: self.session_id.clone(),
+                workspace: self.metadata.workspace.display().to_string(),
             });
         }
         // Even if composer returned None, it may have mutated (insert char,
@@ -1045,6 +1098,35 @@ mod tests {
             state.messages.last(),
             Some(ChatMessage::QueuedUser(text)) if text == "next request"
         ));
+    }
+
+    #[test]
+    fn persisted_session_history_replaces_the_visible_transcript() {
+        let mut state = AppState::new();
+        state.messages.push(ChatMessage::User("old session".into()));
+        state.apply(DomainEvent::SessionHistoryLoaded {
+            session: crate::model::SessionSummary {
+                id: "s2".into(),
+                label: "Restored".into(),
+                workspace: "/workspace/project".into(),
+                last_seen_secs: 1,
+            },
+            messages: vec![
+                crate::model::HistoryEntry {
+                    role: HistoryRole::User,
+                    text: "restored question".into(),
+                },
+                crate::model::HistoryEntry {
+                    role: HistoryRole::Assistant,
+                    text: "restored answer".into(),
+                },
+            ],
+        });
+
+        assert_eq!(state.session_id.as_deref(), Some("s2"));
+        assert_eq!(state.messages.len(), 2);
+        assert!(matches!(state.messages[0], ChatMessage::User(ref text) if text == "restored question"));
+        assert!(matches!(state.messages[1], ChatMessage::Agent(ref text) if text == "restored answer"));
     }
 
     #[test]

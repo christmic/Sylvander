@@ -267,6 +267,10 @@ impl Modal for SessionsOverlay {
                     if !label.is_empty() {
                         if let Some(entry) = self.entries.get_mut(index) {
                             entry.label = label.to_string();
+                            state.pending_actions.push(crate::event::Action::RenameSession {
+                                session_id: entry.id.clone(),
+                                label: label.to_string(),
+                            });
                         }
                         if let Some(entry) = state.sessions.get_mut(index) {
                             entry.label = label.to_string();
@@ -300,6 +304,9 @@ impl Modal for SessionsOverlay {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     if idx < self.entries.len() {
                         let id = self.entries[idx].id.clone();
+                        state.pending_actions.push(crate::event::Action::ArchiveSession {
+                            session_id: id.clone(),
+                        });
                         self.entries.remove(idx);
                         state.sessions.retain(|entry| entry.id != id);
                     }
@@ -346,17 +353,16 @@ impl Modal for SessionsOverlay {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter if !self.filter_focused => {
-                // Open the session — set session_id locally; the agent
-                // picks up on next message.
+                if state.turn_active {
+                    state.status = "Interrupt active work before switching sessions".into();
+                    state.dirty.mark();
+                    return Consumed::Yes { dismiss: false };
+                }
                 if let Some((_, entry)) = self.filtered().get(self.cursor) {
-                    state.session_id = Some(entry.id.clone());
-                    state.messages.clear();
-                    state.streaming.clear();
-                    state.streaming_thinking.clear();
-                    state.chat_scroll = 0;
-                    state.unread_events = 0;
-                    state.welcomed = false;
-                    state.status = format!("Switched to {}", entry.label);
+                    state.pending_actions.push(crate::event::Action::LoadSession {
+                        session_id: entry.id.clone(),
+                    });
+                    state.status = format!("Loading {}…", entry.label);
                     state.mode = AppMode::Normal;
                     state.dirty.mark();
                     return Consumed::Yes { dismiss: true };
@@ -509,9 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_switches_session_id() {
-        // Construct a fresh overlay, call handle_key directly with Enter
-        // after putting cursor on row 1; session_id should land on row 1.
+    fn enter_requests_persisted_session_history() {
         let mut state = AppState::new();
         let mut overlay = SessionsOverlay::new(vec![
             entry("a", "Auth-Refactor", SessionStatus::Working, 120),
@@ -520,7 +524,10 @@ mod tests {
         overlay.filter_focused = false;
         overlay.cursor = 1;
         let _ = overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
-        assert_eq!(state.session_id.as_deref(), Some("b"));
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::LoadSession { session_id }] if session_id == "b"
+        ));
     }
 
     #[test]
@@ -543,6 +550,10 @@ mod tests {
         assert!(matches!(result, Consumed::Yes { dismiss: false }));
         assert_eq!(overlay.entries.len(), 0);
         assert!(state.sessions.is_empty());
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::ArchiveSession { session_id }] if session_id == "a"
+        ));
     }
 
     #[test]
@@ -556,6 +567,11 @@ mod tests {
         overlay.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert_eq!(overlay.entries[0].label, "New name");
         assert_eq!(state.sessions[0].label, "New name");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::RenameSession { session_id, label }]
+                if session_id == "a" && label == "New name"
+        ));
     }
 
     #[test]

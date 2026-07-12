@@ -66,13 +66,32 @@ impl AgentService {
 
     pub async fn execute(&mut self, action: Action) -> std::io::Result<()> {
         let message = match action {
-            Action::SendChat { text, session_id } | Action::SendFeedback { text, session_id } => {
-                ClientMsg::Chat { text, session_id }
+            Action::SendChat {
+                text,
+                session_id,
+                workspace,
+            } => ClientMsg::Chat {
+                text,
+                session_id,
+                workspace: Some(workspace),
+            },
+            Action::SendFeedback { text, session_id } => {
+                ClientMsg::Chat {
+                    text,
+                    session_id,
+                    workspace: None,
+                }
             }
             Action::SendApprove { call_id, approved } => ClientMsg::Approve { call_id, approved },
             Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
             Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },
             Action::RequestSessions => ClientMsg::ListSessions,
+            Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
+            Action::RenameSession { session_id, label } => {
+                ClientMsg::RenameSession { session_id, label }
+            }
+            Action::ArchiveSession { session_id } => ClientMsg::ArchiveSession { session_id },
+            Action::ForkSession { session_id } => ClientMsg::ForkSession { session_id },
             Action::Quit => return Ok(()),
         };
         self.client.send(&message).await

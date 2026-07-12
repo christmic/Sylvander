@@ -109,7 +109,7 @@ mod tests {
         assert!(app.state.queued_prompts.is_empty());
         assert!(matches!(
             app.take_effects().as_slice(),
-            [Action::SendChat { text, session_id: Some(session_id) }]
+            [Action::SendChat { text, session_id: Some(session_id), .. }]
                 if text == "follow up" && session_id == "session-1"
         ));
     }
