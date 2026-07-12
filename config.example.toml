@@ -1,0 +1,7 @@
+# Bootstrap config only. Providers and logical models live in SQLite —
+# manage them via `token9 provider ...` / `token9 model ...` or the /admin API.
+
+port = 9527
+bind = "127.0.0.1"
+domain = "token9.test"
+db_path = "~/.Oraculo/config/token9/token9.db"

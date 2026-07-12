@@ -1,0 +1,28 @@
+[package]
+name = "token9-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Local LLM API router & token meter — transparent gateway"
+
+[[bin]]
+name = "token9"
+path = "src/main.rs"
+
+[dependencies]
+token9-contracts = { path = "../token9-contracts" }
+tokio = { version = "1.52", features = ["full"] }
+axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "http2"] }
+futures = "0.3"
+bytes = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.23", features = ["v7"] }
+clap = { version = "4.6", features = ["derive"] }
