@@ -243,7 +243,7 @@ async fn tool_use_triggers_tool_execution_and_continues() {
 }
 
 #[tokio::test]
-async fn max_iterations_limit_enforced() {
+async fn max_iterations_returns_the_last_partial_message() {
     let server = MockServer::start().await;
 
     // Always returns tool_use → infinite loop scenario
@@ -278,10 +278,9 @@ async fn max_iterations_limit_enforced() {
 
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Loop forever")]).await;
 
-    assert!(matches!(
-        result,
-        Err(AgentLoopError::MaxIterationsReached(3))
-    ));
+    let result = result.expect("last partial message remains usable at the iteration cap");
+    assert_eq!(result.iterations, 3);
+    assert_eq!(result.final_message.id, "msg_loop");
 }
 
 #[tokio::test]
