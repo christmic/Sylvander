@@ -95,6 +95,109 @@ enum GroupBy: String, CaseIterable, Identifiable {
     var subKey: String { self == .tool ? "model" : "tool" }
 }
 
+// MARK: - Pure aggregation namespace
+//
+// Pulled out of the @MainActor view model so tests can call them
+// synchronously without an actor hop. All three functions are
+// deterministic given their inputs and safe to invoke from any
+// thread.
+enum DashboardAggregator {
+    /// Aggregate buckets by dateKey, then fill every calendar day in
+    /// the [from, to] range with hasData=true and zeros.
+    static func aggregateDaily(buckets: [StatBucketDto], from: String, to: String) -> [DailyUsage] {
+        let cal = Calendar.current
+        let fromDate = Fmt.parseDateKey(from) ?? Date()
+        let toDate = Fmt.parseDateKey(to) ?? Date()
+        var byKey: [String: (tokens: Int64, requests: Int64)] = [:]
+        for b in buckets {
+            let entry = byKey[b.date] ?? (0, 0)
+            byKey[b.date] = (
+                entry.tokens + b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens,
+                entry.requests + b.requests
+            )
+        }
+        let days = Fmt.enumerateDays(from: fromDate, to: toDate, calendar: cal)
+        return days.map { d in
+            let key = Fmt.dateKey(d, calendar: cal)
+            let entry = byKey[key] ?? (0, 0)
+            return DailyUsage(
+                date: d, dateKey: key,
+                tokens: entry.tokens, requests: entry.requests,
+                hasData: true
+            )
+        }
+    }
+
+    /// Group-by aggregation. The primary key is `groupBy == .tool ? tool : model`.
+    /// The secondary key inside SubLine is the inverse. Rate limits are
+    /// matched by provider name (the closest stable identity in the
+    /// current data model).
+    static func aggregate(buckets: [StatBucketDto], groupBy: GroupBy, rateLimits: [RateLimitDto]) -> [GroupCard] {
+        var groups: [String: (input: Int64, output: Int64, cr: Int64, cw: Int64, req: Int64, provider: String?, subs: [String: (name: String, tokens: Int64, req: Int64, cr: Int64)])] = [:]
+        let primaryKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.tool : \.model
+        let subKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.model : \.tool
+
+        for b in buckets {
+            let name = b[keyPath: primaryKey]
+            guard !name.isEmpty else { continue }
+            var g = groups[name] ?? (0, 0, 0, 0, 0, nil, [:])
+            g.input += b.input_tokens
+            g.output += b.output_tokens
+            g.cr += b.cache_read_tokens
+            g.cw += b.cache_write_tokens
+            g.req += b.requests
+            if g.provider == nil { g.provider = b.provider }
+            let sName = b[keyPath: subKey]
+            if !sName.isEmpty && sName != name {
+                var s = g.subs[sName] ?? (sName, 0, 0, 0)
+                s.tokens += b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens
+                s.req += b.requests
+                s.cr += b.cache_read_tokens
+                g.subs[sName] = s
+            }
+            groups[name] = g
+        }
+
+        return groups.map { name, g in
+            let subs: [SubLine] = g.subs.values
+                .sorted {
+                    if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
+                    return $0.name.localizedCompare($1.name) == .orderedAscending
+                }
+                .map {
+                    let ratio = $0.tokens > 0 ? Double($0.cr) / Double($0.tokens) : 0
+                    return SubLine(id: $0.name, name: $0.name, tokens: $0.tokens, requests: $0.req, cacheRatio: ratio)
+                }
+            let rates = (g.provider.map { p in rateLimits.filter { $0.provider == p } }) ?? []
+            return GroupCard(
+                id: name, name: name,
+                requests: g.req,
+                input: g.input, output: g.output,
+                cacheRead: g.cr, cacheWrite: g.cw,
+                subs: subs, rateLimits: rates
+            )
+        }
+    }
+
+    /// Lowest remaining percent across any rate-limit pair. A pair with
+    /// either limit missing is ignored. Returns nil when no usable data.
+    static func minRateLimit(_ rates: [RateLimitDto]) -> Double? {
+        var lo: Double?
+        for r in rates {
+            let pairs: [(Int32?, Int32?)] = [
+                (r.requests_remaining, r.requests_limit),
+                (r.tokens_remaining,   r.tokens_limit),
+            ]
+            for (rem, lim) in pairs {
+                guard let rem, let lim, lim > 0 else { continue }
+                let pct = Double(rem) / Double(lim) * 100.0
+                if lo == nil || pct < lo! { lo = pct }
+            }
+        }
+        return lo
+    }
+}
+
 // MARK: - View model
 
 /// Owns the dashboard's data + UI state. Refreshes every 30 seconds.
@@ -185,10 +288,14 @@ final class DashboardViewModel: ObservableObject {
 
         // 2. Daily aggregation — independent of groupBy so the heatmap
         // doesn't recolor on tool/model toggle (checklist §6 D).
-        daily = Self.aggregateDaily(buckets: buckets, from: lastQueryFrom, to: lastQueryTo)
+        daily = DashboardAggregator.aggregateDaily(
+            buckets: buckets, from: lastQueryFrom, to: lastQueryTo
+        )
 
         // 3. Group aggregation with stable tiebreak.
-        let grouped = Self.aggregate(buckets: buckets, groupBy: groupBy, rateLimits: rates)
+        let grouped = DashboardAggregator.aggregate(
+            buckets: buckets, groupBy: groupBy, rateLimits: rates
+        )
         // Sort desc by totalTokens, then asc by name for stability.
         cards = grouped.sorted {
             if $0.totalTokens != $1.totalTokens { return $0.totalTokens > $1.totalTokens }
@@ -196,108 +303,8 @@ final class DashboardViewModel: ObservableObject {
         }
 
         // 4. Rate-limit floor.
-        minimumRateLimitPercent = Self.minRateLimit(rates)
+        minimumRateLimitPercent = DashboardAggregator.minRateLimit(rates)
 
         updatedAt = Date()
-    }
-
-    // MARK: Pure aggregation helpers (testable in commit 7)
-
-    /// Aggregate buckets by dateKey, then fill every calendar day in
-    /// the [from, to] range with hasData=true and zeros.
-    static func aggregateDaily(buckets: [StatBucketDto], from: String, to: String) -> [DailyUsage] {
-        let cal = Calendar.current
-        let fromDate = Fmt.parseDateKey(from) ?? Date()
-        let toDate = Fmt.parseDateKey(to) ?? Date()
-        var byKey: [String: (tokens: Int64, requests: Int64)] = [:]
-        for b in buckets {
-            let entry = byKey[b.date] ?? (0, 0)
-            byKey[b.date] = (
-                entry.tokens + b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens,
-                entry.requests + b.requests
-            )
-        }
-        let days = Fmt.enumerateDays(from: fromDate, to: toDate, calendar: cal)
-        return days.map { d in
-            let key = Fmt.dateKey(d, calendar: cal)
-            let entry = byKey[key] ?? (0, 0)
-            return DailyUsage(
-                date: d, dateKey: key,
-                tokens: entry.tokens, requests: entry.requests,
-                hasData: true
-            )
-        }
-    }
-
-    /// Group-by aggregation. The primary key is `groupBy == .tool ? tool : model`.
-    /// The secondary key inside SubLine is the inverse. Rate limits are
-    /// matched by provider name (the closest stable identity in the
-    /// current data model).
-    static func aggregate(buckets: [StatBucketDto], groupBy: GroupBy, rateLimits: [RateLimitDto]) -> [GroupCard] {
-        var groups: [String: (input: Int64, output: Int64, cr: Int64, cw: Int64, req: Int64, provider: String?, subs: [String: (name: String, tokens: Int64, req: Int64, cr: Int64)])] = [:]
-        let primaryKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.tool : \.model
-        let subKey: KeyPath<StatBucketDto, String> = (groupBy == .tool) ? \.model : \.tool
-
-        for b in buckets {
-            let name = b[keyPath: primaryKey]
-            guard !name.isEmpty else { continue }
-            var g = groups[name] ?? (0, 0, 0, 0, 0, nil, [:])
-            g.input += b.input_tokens
-            g.output += b.output_tokens
-            g.cr += b.cache_read_tokens
-            g.cw += b.cache_write_tokens
-            g.req += b.requests
-            if g.provider == nil { g.provider = b.provider }
-            let sName = b[keyPath: subKey]
-            if !sName.isEmpty && sName != name {
-                var s = g.subs[sName] ?? (sName, 0, 0, 0)
-                s.tokens += b.input_tokens + b.output_tokens + b.cache_read_tokens + b.cache_write_tokens
-                s.req += b.requests
-                s.cr += b.cache_read_tokens
-                g.subs[sName] = s
-            }
-            groups[name] = g
-        }
-
-        return groups.map { name, g in
-            let subs: [SubLine] = g.subs.values
-                .sorted {
-                    if $0.tokens != $1.tokens { return $0.tokens > $1.tokens }
-                    return $0.name.localizedCompare($1.name) == .orderedAscending
-                }
-                .map {
-                    // Sub-level cache ratio: cr / subTotalTokens. The
-                    // /stats/summary payload doesn't carry per-sub
-                    // input tokens, so we approximate against sub total.
-                    let ratio = $0.tokens > 0 ? Double($0.cr) / Double($0.tokens) : 0
-                    return SubLine(id: $0.name, name: $0.name, tokens: $0.tokens, requests: $0.req, cacheRatio: ratio)
-                }
-            let rates = (g.provider.map { p in rateLimits.filter { $0.provider == p } }) ?? []
-            return GroupCard(
-                id: name, name: name,
-                requests: g.req,
-                input: g.input, output: g.output,
-                cacheRead: g.cr, cacheWrite: g.cw,
-                subs: subs, rateLimits: rates
-            )
-        }
-    }
-
-    /// Lowest remaining percent across any rate-limit pair. A pair with
-    /// either limit missing is ignored. Returns nil when no usable data.
-    static func minRateLimit(_ rates: [RateLimitDto]) -> Double? {
-        var lo: Double?
-        for r in rates {
-            let pairs: [(Int32?, Int32?)] = [
-                (r.requests_remaining, r.requests_limit),
-                (r.tokens_remaining,   r.tokens_limit),
-            ]
-            for (rem, lim) in pairs {
-                guard let rem, let lim, lim > 0 else { continue }
-                let pct = Double(rem) / Double(lim) * 100.0
-                if lo == nil || pct < lo! { lo = pct }
-            }
-        }
-        return lo
     }
 }

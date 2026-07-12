@@ -9,6 +9,11 @@ let package = Package(
             name: "Token9",
             path: "Sources/Token9",
             resources: [.process("Resources")]
+        ),
+        .testTarget(
+            name: "Token9Tests",
+            dependencies: ["Token9"],
+            path: "Tests/Token9Tests"
         )
     ]
 )
