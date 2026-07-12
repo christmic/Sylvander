@@ -2,7 +2,7 @@
 
 use crate::app::{AppMode, AppState, ChatMessage};
 use crate::input::AttachmentKind;
-use crate::modal::{HelpModal, SessionsOverlay, ToolInspector};
+use crate::modal::{HelpModal, ModelPicker, SessionsOverlay, ToolInspector};
 use crate::theme::ThemeName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub enum CommandId {
     Inspect,
     Copy,
     Editor,
+    Model,
     Status,
     Quit,
 }
@@ -147,6 +148,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/editor",
         description: "Edit the current draft in $VISUAL or $EDITOR",
         hint: "keeps attachments",
+    },
+    CommandSpec {
+        id: CommandId::Model,
+        name: "model",
+        usage: "/model [model-id] [off|low|medium|high]",
+        description: "Select a server-advertised model and reasoning effort",
+        hint: "next turn",
     },
     CommandSpec {
         id: CommandId::Quit,
@@ -514,6 +522,45 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.pending_actions.push(crate::event::Action::EditDraft);
             state.status = "Opening external editor…".into();
         }
+        CommandId::Model => match invocation.args.as_slice() {
+            [] => {
+                if state.metadata.models.is_empty() {
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::RequestRuntimeInfo);
+                    return Err("Model catalog is still loading".into());
+                }
+                state.modals.push(Box::new(ModelPicker::new(state)));
+            }
+            [model] | [model, _] => {
+                let descriptor = state
+                    .metadata
+                    .models
+                    .iter()
+                    .find(|entry| entry.id == *model)
+                    .ok_or_else(|| format!("Model `{model}` is not advertised by the server"))?;
+                let effort = invocation
+                    .args
+                    .get(1)
+                    .map(|value| parse_reasoning_effort(value))
+                    .transpose()?
+                    .unwrap_or(sylvander_protocol::ReasoningEffort::Off);
+                if !descriptor.reasoning_efforts.contains(&effort) {
+                    return Err(format!(
+                        "Model `{model}` does not advertise reasoning `{}`",
+                        crate::app::reasoning_label(effort)
+                    ));
+                }
+                state
+                    .pending_actions
+                    .push(crate::event::Action::SelectModel {
+                        model: (*model).to_string(),
+                        reasoning_effort: effort,
+                    });
+                state.status = "Selecting model…".into();
+            }
+            _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+        },
         CommandId::Quit => {
             require_no_args(&invocation)?;
             state.should_quit = true;
@@ -521,6 +568,16 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
     }
     state.dirty.mark();
     Ok(())
+}
+
+fn parse_reasoning_effort(value: &str) -> Result<sylvander_protocol::ReasoningEffort, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "off" => Ok(sylvander_protocol::ReasoningEffort::Off),
+        "low" => Ok(sylvander_protocol::ReasoningEffort::Low),
+        "medium" => Ok(sylvander_protocol::ReasoningEffort::Medium),
+        "high" => Ok(sylvander_protocol::ReasoningEffort::High),
+        _ => Err("Reasoning must be off, low, medium, or high".into()),
+    }
 }
 
 fn compact_prompt(prompt: &str) -> String {
@@ -647,6 +704,30 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::EditDraft]
         ));
+    }
+
+    #[test]
+    fn model_command_uses_only_server_advertised_combinations() {
+        let mut state = AppState::new();
+        state.metadata.models = vec![sylvander_protocol::ModelDescriptor {
+            id: "thinking".into(),
+            provider: "test".into(),
+            capabilities: 0,
+            reasoning_efforts: vec![
+                sylvander_protocol::ReasoningEffort::Off,
+                sylvander_protocol::ReasoningEffort::Medium,
+            ],
+        }];
+        execute(parse("model thinking medium").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::SelectModel {
+                model,
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            }] if model == "thinking"
+        ));
+        assert!(execute(parse("model thinking high").unwrap(), &mut state).is_err());
+        assert!(execute(parse("model missing off").unwrap(), &mut state).is_err());
     }
 
     #[test]

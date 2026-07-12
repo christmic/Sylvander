@@ -1,0 +1,32 @@
+---
+source: sylvander-tui/tests/snapshots.rs
+expression: "render_buf(&state, 100, 28)"
+---
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+            ┌ Model · applies next turn ───────────────────────────────────────────────┐            
+            │active  claude-sonnet  reasoning low                                      │            
+            │──────────────────────────────────────────────────────────────────────────│            
+            │› ● claude-sonnet               anthropic-compatible low                  │            
+            │  ○ fast-code                   anthropic-compatible off                  │            
+            │                                                                          │            
+            │↑↓ model   ←→ reasoning   enter apply   esc close                         │            
+            └──────────────────────────────────────────────────────────────────────────┘            
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model claude-sonnet / low · branch — · session — · 0 tok    connecting…   draft local

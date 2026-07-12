@@ -70,6 +70,10 @@ pub enum ClientMsg {
         session_id: String,
     },
     GetRuntimeInfo,
+    SelectModel {
+        model: String,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    },
     Ping,
 }
 
@@ -219,6 +223,10 @@ pub enum ServerMsg {
     },
     RuntimeInfo {
         model: String,
+        #[serde(default)]
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+        #[serde(default)]
+        models: Vec<sylvander_protocol::ModelDescriptor>,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -391,11 +399,15 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
         ServerMsg::RuntimeInfo {
             model,
+            reasoning_effort,
+            models,
             capabilities,
             approval_enabled,
             max_attachment_bytes,
         } => DomainEvent::RuntimeInfo {
             model,
+            reasoning_effort,
+            models,
             capabilities,
             approval_enabled,
             max_attachment_bytes,
@@ -585,6 +597,13 @@ mod tests {
     fn runtime_wire_event_preserves_server_capabilities() {
         let event = parse_server_msg(ServerMsg::RuntimeInfo {
             model: "claude-test".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            models: vec![sylvander_protocol::ModelDescriptor {
+                id: "claude-test".into(),
+                provider: "test".into(),
+                capabilities: 0b10001,
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Medium],
+            }],
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
@@ -593,11 +612,25 @@ mod tests {
             event,
             Some(DomainEvent::RuntimeInfo {
                 model,
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+                models,
                 capabilities: 0b10001,
                 approval_enabled: true,
                 max_attachment_bytes: 4096,
-            }) if model == "claude-test"
+                ..
+            }) if model == "claude-test" && models.len() == 1
         ));
+    }
+
+    #[test]
+    fn model_selection_uses_typed_reasoning_effort_on_wire() {
+        let value = serde_json::to_value(ClientMsg::SelectModel {
+            model: "thinking".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::High,
+        })
+        .unwrap();
+        assert_eq!(value["type"], "select_model");
+        assert_eq!(value["reasoning_effort"], "high");
     }
 
     #[test]

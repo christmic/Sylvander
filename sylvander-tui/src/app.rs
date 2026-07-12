@@ -254,14 +254,28 @@ impl AppState {
             }
             DomainEvent::RuntimeInfo {
                 model,
+                reasoning_effort,
+                models,
                 capabilities,
                 approval_enabled,
                 max_attachment_bytes,
             } => {
+                let changed = self.metadata.model != "—"
+                    && (self.metadata.model != model
+                        || self.metadata.reasoning_effort != reasoning_effort);
                 self.metadata.model = model;
+                self.metadata.reasoning_effort = reasoning_effort;
+                self.metadata.models = models;
                 self.metadata.capabilities = capabilities;
                 self.metadata.approval_enabled = approval_enabled;
                 self.metadata.max_attachment_bytes = max_attachment_bytes;
+                if changed {
+                    self.status = format!(
+                        "Model selected · {} · {} · next turn",
+                        self.metadata.model,
+                        reasoning_label(self.metadata.reasoning_effort)
+                    );
+                }
             }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
@@ -1014,6 +1028,15 @@ fn compact_runtime_reason(reason: &str) -> String {
     compact
 }
 
+pub(crate) fn reasoning_label(effort: sylvander_protocol::ReasoningEffort) -> &'static str {
+    match effort {
+        sylvander_protocol::ReasoningEffort::Off => "off",
+        sylvander_protocol::ReasoningEffort::Low => "low",
+        sylvander_protocol::ReasoningEffort::Medium => "medium",
+        sylvander_protocol::ReasoningEffort::High => "high",
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1033,11 +1056,23 @@ mod tests {
         ));
         state.apply(DomainEvent::RuntimeInfo {
             model: "claude-test".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Low,
+            models: vec![sylvander_protocol::ModelDescriptor {
+                id: "claude-test".into(),
+                provider: "test".into(),
+                capabilities: 0b10001,
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+            }],
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
         });
         assert_eq!(state.metadata.model, "claude-test");
+        assert_eq!(
+            state.metadata.reasoning_effort,
+            sylvander_protocol::ReasoningEffort::Low
+        );
+        assert_eq!(state.metadata.models.len(), 1);
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);

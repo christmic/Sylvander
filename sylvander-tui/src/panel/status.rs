@@ -110,7 +110,7 @@ impl Component for StatusPanel {
             .as_deref()
             .map(|id| id.chars().take(8).collect::<String>())
             .unwrap_or_else(|| "—".into());
-        let model = &state.metadata.model;
+        let model = state.metadata.model_label();
         let branch = &state.metadata.branch;
         if area.width < 100 {
             let compact = Line::from(vec![

@@ -98,6 +98,13 @@ impl AgentService {
             },
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
+            Action::SelectModel {
+                model,
+                reasoning_effort,
+            } => ClientMsg::SelectModel {
+                model,
+                reasoning_effort,
+            },
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
             Action::RenameSession { session_id, label } => {
                 ClientMsg::RenameSession { session_id, label }

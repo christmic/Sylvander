@@ -29,7 +29,7 @@ impl Component for HeaderPanel {
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
         let session_label = session_label_for(state);
         let workspace = workspace_label_for(state);
-        let model = &state.metadata.model;
+        let model = state.metadata.model_label();
         let mode = mode_label(state);
         let session_id = state
             .session_id

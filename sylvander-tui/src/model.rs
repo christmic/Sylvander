@@ -10,6 +10,8 @@ pub const CAPABILITY_VISION: u8 = 1 << 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeMetadata {
     pub model: String,
+    pub reasoning_effort: sylvander_protocol::ReasoningEffort,
+    pub models: Vec<sylvander_protocol::ModelDescriptor>,
     pub workspace: PathBuf,
     pub branch: String,
     pub capabilities: u8,
@@ -21,6 +23,8 @@ impl Default for RuntimeMetadata {
     fn default() -> Self {
         Self {
             model: "—".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            models: Vec::new(),
             workspace: PathBuf::from("~/workspace"),
             branch: "—".into(),
             capabilities: 0,
@@ -33,6 +37,13 @@ impl Default for RuntimeMetadata {
 impl RuntimeMetadata {
     pub fn supports_vision(&self) -> bool {
         self.capabilities & CAPABILITY_VISION != 0
+    }
+
+    pub fn model_label(&self) -> String {
+        match self.reasoning_effort {
+            sylvander_protocol::ReasoningEffort::Off => self.model.clone(),
+            effort => format!("{} / {}", self.model, crate::app::reasoning_label(effort)),
+        }
     }
 }
 
