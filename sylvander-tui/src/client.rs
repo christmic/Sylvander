@@ -74,6 +74,9 @@ pub enum ClientMsg {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     },
+    SelectPermissions {
+        profile: sylvander_protocol::PermissionProfile,
+    },
     Ping,
 }
 
@@ -227,6 +230,8 @@ pub enum ServerMsg {
         reasoning_effort: sylvander_protocol::ReasoningEffort,
         #[serde(default)]
         models: Vec<sylvander_protocol::ModelDescriptor>,
+        #[serde(default)]
+        permissions: sylvander_protocol::PermissionProfile,
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
@@ -401,6 +406,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             model,
             reasoning_effort,
             models,
+            permissions,
             capabilities,
             approval_enabled,
             max_attachment_bytes,
@@ -408,6 +414,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             model,
             reasoning_effort,
             models,
+            permissions,
             capabilities,
             approval_enabled,
             max_attachment_bytes,
@@ -604,6 +611,7 @@ mod tests {
                 capabilities: 0b10001,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Medium],
             }],
+            permissions: sylvander_protocol::PermissionProfile::default(),
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
@@ -631,6 +639,21 @@ mod tests {
         .unwrap();
         assert_eq!(value["type"], "select_model");
         assert_eq!(value["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn permission_selection_is_a_typed_wire_profile() {
+        let value = serde_json::to_value(ClientMsg::SelectPermissions {
+            profile: sylvander_protocol::PermissionProfile {
+                file_access: sylvander_protocol::FileAccess::ReadOnly,
+                network_access: sylvander_protocol::NetworkAccess::Denied,
+                approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+            },
+        })
+        .unwrap();
+        assert_eq!(value["type"], "select_permissions");
+        assert_eq!(value["profile"]["file_access"], "read_only");
+        assert_eq!(value["profile"]["approval_policy"], "deny");
     }
 
     #[test]

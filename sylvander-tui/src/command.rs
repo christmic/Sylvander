@@ -2,7 +2,7 @@
 
 use crate::app::{AppMode, AppState, ChatMessage};
 use crate::input::AttachmentKind;
-use crate::modal::{HelpModal, ModelPicker, SessionsOverlay, ToolInspector};
+use crate::modal::{HelpModal, ModelPicker, PermissionsPicker, SessionsOverlay, ToolInspector};
 use crate::theme::ThemeName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub enum CommandId {
     Copy,
     Editor,
     Model,
+    Permissions,
     Status,
     Quit,
 }
@@ -154,6 +155,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "model",
         usage: "/model [model-id] [off|low|medium|high]",
         description: "Select a server-advertised model and reasoning effort",
+        hint: "next turn",
+    },
+    CommandSpec {
+        id: CommandId::Permissions,
+        name: "permissions",
+        usage: "/permissions",
+        description: "Edit workspace, network, and approval policy",
         hint: "next turn",
     },
     CommandSpec {
@@ -493,8 +501,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
             state.messages.push(ChatMessage::Info(format!(
-                "model {} · branch {} · session {} · iteration {} · {} input + {} output tokens",
-                state.metadata.model,
+                "model {} · permissions {} · branch {} · session {} · iteration {} · {} input + {} output tokens",
+                state.metadata.model_label(),
+                permission_summary(&state.metadata.permissions),
                 state.metadata.branch,
                 session,
                 state.iteration,
@@ -561,6 +570,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
+        CommandId::Permissions => {
+            require_no_args(&invocation)?;
+            state.modals.push(Box::new(PermissionsPicker::new(state)));
+        }
         CommandId::Quit => {
             require_no_args(&invocation)?;
             state.should_quit = true;
@@ -568,6 +581,24 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
     }
     state.dirty.mark();
     Ok(())
+}
+
+fn permission_summary(profile: &sylvander_protocol::PermissionProfile) -> String {
+    let files = match profile.file_access {
+        sylvander_protocol::FileAccess::None => "no-files",
+        sylvander_protocol::FileAccess::ReadOnly => "read-only",
+        sylvander_protocol::FileAccess::WorkspaceWrite => "workspace-write",
+    };
+    let network = match profile.network_access {
+        sylvander_protocol::NetworkAccess::Denied => "net-deny",
+        sylvander_protocol::NetworkAccess::Allowed => "net-allow",
+    };
+    let approval = match profile.approval_policy {
+        sylvander_protocol::ApprovalPolicy::Ask => "ask",
+        sylvander_protocol::ApprovalPolicy::Allow => "allow",
+        sylvander_protocol::ApprovalPolicy::Deny => "deny",
+    };
+    format!("{files}/{network}/{approval}")
 }
 
 fn parse_reasoning_effort(value: &str) -> Result<sylvander_protocol::ReasoningEffort, String> {

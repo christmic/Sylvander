@@ -433,6 +433,24 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
 }
 
 #[test]
+fn permissions_picker_shows_workspace_scoped_runtime_policy() {
+    let mut state = AppState::new();
+    state.metadata.workspace = "/workspace/sylvander".into();
+    state.metadata.approval_enabled = true;
+    state.metadata.permissions = sylvander_protocol::PermissionProfile {
+        file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
+        network_access: sylvander_protocol::NetworkAccess::Denied,
+        approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+    };
+    sylvander_tui::command::execute(
+        sylvander_tui::command::parse("permissions").expect("parse"),
+        &mut state,
+    )
+    .expect("open permissions");
+    insta::assert_snapshot!(render_buf(&state, 100, 28));
+}
+
+#[test]
 fn file_mention_picker_is_a_focused_workspace_surface() {
     let mut state = AppState::new();
     state.handle_key(&crossterm::event::KeyEvent::new(

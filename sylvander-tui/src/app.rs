@@ -256,6 +256,7 @@ impl AppState {
                 model,
                 reasoning_effort,
                 models,
+                permissions,
                 capabilities,
                 approval_enabled,
                 max_attachment_bytes,
@@ -263,9 +264,11 @@ impl AppState {
                 let changed = self.metadata.model != "—"
                     && (self.metadata.model != model
                         || self.metadata.reasoning_effort != reasoning_effort);
+                let permissions_changed = self.metadata.permissions != permissions;
                 self.metadata.model = model;
                 self.metadata.reasoning_effort = reasoning_effort;
                 self.metadata.models = models;
+                self.metadata.permissions = permissions;
                 self.metadata.capabilities = capabilities;
                 self.metadata.approval_enabled = approval_enabled;
                 self.metadata.max_attachment_bytes = max_attachment_bytes;
@@ -275,6 +278,8 @@ impl AppState {
                         self.metadata.model,
                         reasoning_label(self.metadata.reasoning_effort)
                     );
+                } else if permissions_changed {
+                    self.status = "Permissions updated · next turn".into();
                 }
             }
             DomainEvent::Disconnected { reason } => {
@@ -1063,6 +1068,11 @@ mod tests {
                 capabilities: 0b10001,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
             }],
+            permissions: sylvander_protocol::PermissionProfile {
+                file_access: sylvander_protocol::FileAccess::ReadOnly,
+                network_access: sylvander_protocol::NetworkAccess::Denied,
+                approval_policy: sylvander_protocol::ApprovalPolicy::Ask,
+            },
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
@@ -1073,6 +1083,10 @@ mod tests {
             sylvander_protocol::ReasoningEffort::Low
         );
         assert_eq!(state.metadata.models.len(), 1);
+        assert_eq!(
+            state.metadata.permissions.file_access,
+            sylvander_protocol::FileAccess::ReadOnly
+        );
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);
