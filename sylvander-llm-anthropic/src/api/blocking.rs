@@ -86,9 +86,7 @@ impl BlockingAnthropicClient {
         let client = builder.build().map_err(BlockingClientError::Client)?;
 
         let mut runtime_builder = tokio::runtime::Builder::new_current_thread();
-        runtime_builder
-            .enable_all()
-            .thread_name(config.thread_name);
+        runtime_builder.enable_all().thread_name(config.thread_name);
 
         // Tokio's `enable_all` enables both IO and time. Override
         // based on config:
@@ -169,10 +167,8 @@ mod tests {
 
     #[test]
     fn blocking_client_builds_with_default_config() {
-        let client = BlockingAnthropicClient::new(
-            AnthropicClient::builder().api_key("test-key"),
-        )
-        .expect("blocking client should build");
+        let client = BlockingAnthropicClient::new(AnthropicClient::builder().api_key("test-key"))
+            .expect("blocking client should build");
         let _ = client.async_client();
     }
 
@@ -202,10 +198,8 @@ mod tests {
 
     #[test]
     fn blocking_messages_api_exposes_async_api() {
-        let client = BlockingAnthropicClient::new(
-            AnthropicClient::builder().api_key("test-key"),
-        )
-        .expect("build should succeed");
+        let client = BlockingAnthropicClient::new(AnthropicClient::builder().api_key("test-key"))
+            .expect("build should succeed");
         let _api = client.messages();
     }
 }

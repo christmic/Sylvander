@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sylvander_agent::prelude::*;
 use sylvander_agent::bus::{PlanDecision, StreamEvent};
+use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -24,9 +24,7 @@ fn mock_client(server: &MockServer) -> AnthropicClient {
         .expect("client build")
 }
 
-async fn build_agent(
-    server: &MockServer,
-) -> (AgentRun, Arc<InProcessMessageBus>, SessionId) {
+async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>, SessionId) {
     let bus = Arc::new(InProcessMessageBus::new());
     let spec = AgentSpec::builder()
         .id("stream-test")
@@ -111,13 +109,9 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
     ))
     .await
     .expect("join");
-    bus.publish(BusMessage::user_chat(
-        session_id.clone(),
-        "user-1",
-        "wait",
-    ))
-    .await
-    .expect("chat");
+    bus.publish(BusMessage::user_chat(session_id.clone(), "user-1", "wait"))
+        .await
+        .expect("chat");
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     bus.publish(BusMessage::system_interrupt_turn(
@@ -141,7 +135,10 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         }
     })
     .await;
-    assert!(interrupted.is_ok(), "interrupt must not wait for the LLM response");
+    assert!(
+        interrupted.is_ok(),
+        "interrupt must not wait for the LLM response"
+    );
 
     bus.publish(BusMessage::system_stop(agent_id))
         .await
@@ -257,7 +254,10 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus.subscribe(run.subscription_filter()).await.expect("inbox");
+    let inbox = bus
+        .subscribe(run.subscription_filter())
+        .await
+        .expect("inbox");
     let task = tokio::spawn(run.run(inbox));
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("plan-session");
@@ -269,7 +269,9 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
             name: "plan".into(),
             user_id: "user-1".into(),
         },
-    )).await.expect("join");
+    ))
+    .await
+    .expect("join");
     bus.publish(BusMessage::user_chat(sid.clone(), "user-1", "make a plan"))
         .await
         .expect("chat");
@@ -277,11 +279,16 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
             let message = events.recv().await.expect("event");
-            if matches!(message.kind, MessageKind::Stream(StreamEvent::PlanProposed { .. })) {
+            if matches!(
+                message.kind,
+                MessageKind::Stream(StreamEvent::PlanProposed { .. })
+            ) {
                 break;
             }
         }
-    }).await.expect("plan proposal");
+    })
+    .await
+    .expect("plan proposal");
 
     bus.publish(BusMessage {
         session_id: sid.clone(),
@@ -295,7 +302,9 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
         attachments: Vec::new(),
         timestamp: sylvander_agent::session::now_secs(),
         id: MessageId::new(),
-    }).await.expect("resolve");
+    })
+    .await
+    .expect("resolve");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -307,7 +316,9 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
                 break;
             }
         }
-    }).await.expect("plan progress update");
+    })
+    .await
+    .expect("plan progress update");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -316,8 +327,12 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
                 break;
             }
         }
-    }).await.expect("done after approval");
-    bus.publish(BusMessage::system_stop(agent_id)).await.expect("stop");
+    })
+    .await
+    .expect("done after approval");
+    bus.publish(BusMessage::system_stop(agent_id))
+        .await
+        .expect("stop");
     task.await.expect("agent task");
 }
 
@@ -394,7 +409,10 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus.subscribe(run.subscription_filter()).await.expect("inbox");
+    let inbox = bus
+        .subscribe(run.subscription_filter())
+        .await
+        .expect("inbox");
     let task = tokio::spawn(run.run(inbox));
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("background-session");
@@ -406,7 +424,9 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
             name: "background".into(),
             user_id: "user-1".into(),
         },
-    )).await.expect("join");
+    ))
+    .await
+    .expect("join");
     bus.publish(BusMessage::user_chat(sid.clone(), "user-1", "delegate"))
         .await
         .expect("chat");
@@ -418,7 +438,9 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
                 break task_id;
             }
         }
-    }).await.expect("task start");
+    })
+    .await
+    .expect("task start");
     bus.publish(BusMessage {
         session_id: sid.clone(),
         sender: Sender::System,
@@ -431,7 +453,9 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         attachments: Vec::new(),
         timestamp: sylvander_agent::session::now_secs(),
         id: MessageId::new(),
-    }).await.expect("cancel");
+    })
+    .await
+    .expect("cancel");
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -444,8 +468,12 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
                 break;
             }
         }
-    }).await.expect("task cancellation");
-    bus.publish(BusMessage::system_stop(agent_id)).await.expect("stop");
+    })
+    .await
+    .expect("task cancellation");
+    bus.publish(BusMessage::system_stop(agent_id))
+        .await
+        .expect("stop");
     task.await.expect("agent task");
 }
 
@@ -484,8 +512,14 @@ async fn text_deltas_published_to_bus() {
     }
 
     let names = event_names(&events);
-    assert!(names.contains(&"IterationStart".into()), "expected IterationStart, got {names:?}");
-    assert!(names.contains(&"Done".into()), "expected Done, got {names:?}");
+    assert!(
+        names.contains(&"IterationStart".into()),
+        "expected IterationStart, got {names:?}"
+    );
+    assert!(
+        names.contains(&"Done".into()),
+        "expected Done, got {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -579,7 +613,10 @@ async fn tool_call_events_published() {
         names.contains(&"ToolResult".into()),
         "expected ToolResult, got {names:?}"
     );
-    assert!(names.contains(&"Done".into()), "expected Done, got {names:?}");
+    assert!(
+        names.contains(&"Done".into()),
+        "expected Done, got {names:?}"
+    );
 }
 
 #[tokio::test]
@@ -607,7 +644,11 @@ async fn session_history_contains_complete_message_not_chunks() {
 
     // Check session history
     let ctx = agent.get_session(&sid).await.expect("session should exist");
-    assert_eq!(ctx.len(), 2, "history should have user + assistant message, not chunks");
+    assert_eq!(
+        ctx.len(),
+        2,
+        "history should have user + assistant message, not chunks"
+    );
 }
 
 #[tokio::test]

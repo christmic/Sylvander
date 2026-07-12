@@ -140,8 +140,8 @@ async fn write_tool_e2e() {
     );
 
     // Verify the file was actually written
-    let written = std::fs::read_to_string(tmp.path().join("notes2.md"))
-        .expect("notes2.md should exist");
+    let written =
+        std::fs::read_to_string(tmp.path().join("notes2.md")).expect("notes2.md should exist");
     assert_eq!(written, "copied content");
 
     println!("=== write_tool_e2e ===");
