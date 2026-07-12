@@ -54,6 +54,8 @@ enum ClientMsg {
         text: String,
         #[serde(default)]
         session_id: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
     },
     Approve {
         call_id: String,
@@ -67,6 +69,19 @@ enum ClientMsg {
         session_id: String,
     },
     ListSessions,
+    LoadSession {
+        session_id: String,
+    },
+    RenameSession {
+        session_id: String,
+        label: String,
+    },
+    ArchiveSession {
+        session_id: String,
+    },
+    ForkSession {
+        session_id: String,
+    },
     Ping,
 }
 
@@ -134,6 +149,15 @@ enum ServerMsg {
     SessionsList {
         sessions: Vec<SessionInfo>,
     },
+    SessionHistory {
+        session: SessionInfo,
+        messages: Vec<HistoryMessage>,
+    },
+    SessionUpdated {
+        session_id: String,
+        label: Option<String>,
+        archived: bool,
+    },
     Pong,
 }
 
@@ -150,6 +174,12 @@ struct SessionInfo {
     label: String,
     workspace: String,
     last_seen_secs: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryMessage {
+    role: String,
+    text: String,
 }
 
 // ===========================================================================
@@ -263,7 +293,11 @@ async fn handle_client_msg(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     match msg {
-        ClientMsg::Chat { text, session_id } => {
+        ClientMsg::Chat {
+            text,
+            session_id,
+            workspace,
+        } => {
             let sid = match session_id {
                 Some(s) => SessionId::new(s),
                 None => SessionId::new(uuid::Uuid::new_v4().to_string()),
@@ -281,6 +315,15 @@ async fn handle_client_msg(
                 .expect("subscribe");
 
             // Send JoinSession for the agent
+            let workspace = workspace
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/tmp"));
+            let session_name = workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Sylvander session")
+                .to_string();
             let _ = ctx
                 .bus
                 .publish(BusMessage {
@@ -290,8 +333,8 @@ async fn handle_client_msg(
                     kind: MessageKind::System(SystemMessage::JoinSession {
                         session_id: sid.clone(),
                         metadata: sylvander_agent::session::SessionMetadata {
-                            workspace: PathBuf::from("/tmp"),
-                            name: "unix".into(),
+                            workspace,
+                            name: session_name,
                             user_id: "unix-client".into(),
                         },
                     }),
@@ -488,8 +531,331 @@ async fn handle_client_msg(
                 Err(error) => warn!(error = %error, "unix: failed to list sessions"),
             }
         }
+        ClientMsg::LoadSession { session_id } => {
+            let session_id = SessionId::new(session_id);
+            let caller = unix_session_context(agent_id, session_id.clone());
+            match ctx.sessions.get(&session_id).await {
+                Ok(Some(session)) => match ctx
+                    .sessions
+                    .read_history(&caller, &session_id, true, None)
+                    .await
+                {
+                    Ok(messages) => {
+                        let messages = messages
+                            .into_iter()
+                            .filter_map(|message| {
+                                history_text(&message.content).map(|text| HistoryMessage {
+                                    role: match message.role {
+                                        sylvander_agent::session_store::MessageRole::User => {
+                                            "user"
+                                        }
+                                        sylvander_agent::session_store::MessageRole::Assistant => {
+                                            "assistant"
+                                        }
+                                        sylvander_agent::session_store::MessageRole::Tool => "tool",
+                                    }
+                                    .into(),
+                                    text,
+                                })
+                            })
+                            .collect();
+                        let _ = tx.send(ServerMsg::SessionHistory {
+                            session: session_info(session),
+                            messages,
+                        });
+                    }
+                    Err(error) => warn!(%error, "unix: failed to load session history"),
+                },
+                Ok(None) => warn!(%session_id, "unix: session not found"),
+                Err(error) => warn!(%error, "unix: failed to get session"),
+            }
+        }
+        ClientMsg::RenameSession { session_id, label } => {
+            let session_id = SessionId::new(session_id);
+            match ctx.sessions.get(&session_id).await {
+                Ok(Some(mut session)) => {
+                    session.name = label.clone();
+                    session.metadata.name = label.clone();
+                    match ctx.sessions.save(&session).await {
+                        Ok(()) => {
+                            let _ = tx.send(ServerMsg::SessionUpdated {
+                                session_id: session_id.0,
+                                label: Some(label),
+                                archived: false,
+                            });
+                        }
+                        Err(error) => warn!(%error, "unix: failed to rename session"),
+                    }
+                }
+                Ok(None) => warn!(%session_id, "unix: rename session not found"),
+                Err(error) => warn!(%error, "unix: failed to get session for rename"),
+            }
+        }
+        ClientMsg::ArchiveSession { session_id } => {
+            let session_id = SessionId::new(session_id);
+            match ctx.sessions.archive(&session_id).await {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: None,
+                        archived: true,
+                    });
+                }
+                Err(error) => warn!(%error, "unix: failed to archive session"),
+            }
+        }
+        ClientMsg::ForkSession { session_id } => {
+            let source_id = SessionId::new(session_id);
+            let caller = unix_session_context(agent_id, source_id.clone());
+            match ctx.sessions.get(&source_id).await {
+                Ok(Some(source)) => {
+                    let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+                    let mut fork = source.clone();
+                    fork.id = fork_id.clone();
+                    fork.name = format!("{} (fork)", source.name);
+                    fork.metadata.name = fork.name.clone();
+                    fork.created_at = sylvander_agent::session::now_secs();
+                    if let Err(error) = ctx.sessions.save(&fork).await {
+                        warn!(%error, "unix: failed to save forked session");
+                        return;
+                    }
+                    let history = match ctx
+                        .sessions
+                        .read_history(&caller, &source_id, true, None)
+                        .await
+                    {
+                        Ok(history) => history,
+                        Err(error) => {
+                            warn!(%error, "unix: failed to read source history for fork");
+                            return;
+                        }
+                    };
+                    let fork_caller = unix_session_context(agent_id, fork_id.clone());
+                    for message in &history {
+                        if let Err(error) = ctx
+                            .sessions
+                            .append_message(
+                                &fork_caller,
+                                &fork_id,
+                                message.role,
+                                message.content.clone(),
+                                message.model_id.as_deref(),
+                                message.tool_name.as_deref(),
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(%error, "unix: failed to copy fork history");
+                            return;
+                        }
+                    }
+                    let messages = history
+                        .into_iter()
+                        .filter_map(|message| {
+                            history_text(&message.content).map(|text| HistoryMessage {
+                                role: match message.role {
+                                    sylvander_agent::session_store::MessageRole::User => "user",
+                                    sylvander_agent::session_store::MessageRole::Assistant => {
+                                        "assistant"
+                                    }
+                                    sylvander_agent::session_store::MessageRole::Tool => "tool",
+                                }
+                                .into(),
+                                text,
+                            })
+                        })
+                        .collect();
+                    let _ = tx.send(ServerMsg::SessionHistory {
+                        session: session_info(fork),
+                        messages,
+                    });
+                }
+                Ok(None) => warn!(%source_id, "unix: fork source not found"),
+                Err(error) => warn!(%error, "unix: failed to get fork source"),
+            }
+        }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
+    }
+}
+
+fn unix_session_context(
+    agent_id: &AgentId,
+    session_id: SessionId,
+) -> sylvander_protocol::SessionContext {
+    sylvander_protocol::SessionContext::new("unix-client", agent_id.clone(), session_id)
+}
+
+fn session_info(session: sylvander_agent::session_store::StoredSession) -> SessionInfo {
+    let now = sylvander_agent::session::now_secs();
+    SessionInfo {
+        id: session.id.0,
+        label: if session.name.is_empty() {
+            "untitled session".into()
+        } else {
+            session.name
+        },
+        workspace: session.metadata.workspace.display().to_string(),
+        last_seen_secs: u64::try_from(now.saturating_sub(session.created_at)).unwrap_or(0),
+    }
+}
+
+fn history_text(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("content")?;
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let text = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| {
+            block
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| block.get("content").and_then(serde_json::Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::{
+        MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+    };
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn socket_path() -> PathBuf {
+        PathBuf::from("/tmp").join(format!(
+            "sylv-u-{}-{}.sock",
+            std::process::id(),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ))
+    }
+
+    async fn connect(path: &std::path::Path) -> tokio::net::UnixStream {
+        for _ in 0..40 {
+            if let Ok(stream) = tokio::net::UnixStream::connect(path).await {
+                return stream;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("unix channel did not start");
+    }
+
+    async fn send_and_read(
+        write: &mut tokio::net::unix::OwnedWriteHalf,
+        reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        message: serde_json::Value,
+    ) -> serde_json::Value {
+        write
+            .write_all(format!("{message}\n").as_bytes())
+            .await
+            .expect("write");
+        let line = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reader.next_line(),
+        )
+        .await
+        .expect("response timeout")
+        .expect("read")
+        .expect("response");
+        serde_json::from_str(&line).expect("json response")
+    }
+
+    #[tokio::test]
+    async fn persisted_session_load_rename_fork_and_archive_round_trip() {
+        let path = socket_path();
+        let agent_id = AgentId::new("agent-1");
+        let store: Arc<dyn SessionStore> = Arc::new(
+            SqliteSessionStore::open_in_memory()
+                .await
+                .expect("store"),
+        );
+        let session_id = SessionId::new("session-1");
+        let metadata = sylvander_agent::session::SessionMetadata {
+            workspace: "/workspace/project".into(),
+            name: "Original".into(),
+            user_id: "unix-client".into(),
+        };
+        store
+            .save(&StoredSession::new(
+                session_id.clone(),
+                "Original",
+                SessionLifetime::Persistent,
+                metadata,
+                vec![agent_id.clone()],
+            ))
+            .await
+            .expect("save");
+        let caller = unix_session_context(&agent_id, session_id.clone());
+        store
+            .append_message(
+                &caller,
+                &session_id,
+                MessageRole::User,
+                serde_json::json!({"role":"user","content":"hello"}),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("append");
+
+        let channel = Arc::new(UnixChannel::new(&path, agent_id));
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: store.clone(),
+        };
+        let task = tokio::spawn(channel.run(context));
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+
+        let loaded = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"load_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(loaded["type"], "session_history");
+        assert_eq!(loaded["messages"][0]["text"], "hello");
+
+        let renamed = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type":"rename_session",
+                "session_id":"session-1",
+                "label":"Renamed"
+            }),
+        )
+        .await;
+        assert_eq!(renamed["label"], "Renamed");
+
+        let forked = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"fork_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(forked["type"], "session_history");
+        assert_ne!(forked["session"]["id"], "session-1");
+        assert_eq!(forked["messages"][0]["text"], "hello");
+
+        let archived = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"archive_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(archived["archived"], true);
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
     }
 }
