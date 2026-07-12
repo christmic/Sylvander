@@ -97,6 +97,7 @@ impl MessageStream {
         let mut tool_input_accum: HashMap<u32, String> = HashMap::new();
         let mut thinking_accum: HashMap<u32, String> = HashMap::new();
         let mut signature_accum: HashMap<u32, String> = HashMap::new();
+        let mut pending = Vec::new();
         for (i, block) in message.content.iter().enumerate() {
             let idx = i as u32;
             block_order.push(idx);
@@ -104,6 +105,14 @@ impl MessageStream {
             match block {
                 ContentBlock::Text(t) => {
                     text_accum.insert(idx, t.text.clone());
+                    if !t.text.is_empty() {
+                        pending.push(Ok(RawStreamEvent::ContentBlockDelta {
+                            index: idx,
+                            delta: crate::api::types::ContentDelta::TextDelta {
+                                text: t.text.clone(),
+                            },
+                        }));
+                    }
                 }
                 ContentBlock::ToolUse(tu) => {
                     tool_input_accum.insert(idx, tu.input.to_string());
@@ -111,6 +120,14 @@ impl MessageStream {
                 ContentBlock::Thinking(th) => {
                     thinking_accum.insert(idx, th.thinking.clone());
                     signature_accum.insert(idx, th.signature.clone());
+                    if !th.thinking.is_empty() {
+                        pending.push(Ok(RawStreamEvent::ContentBlockDelta {
+                            index: idx,
+                            delta: crate::api::types::ContentDelta::ThinkingDelta {
+                                thinking: th.thinking.clone(),
+                            },
+                        }));
+                    }
                 }
             }
         }
@@ -132,7 +149,7 @@ impl MessageStream {
         Self {
             body: Box::pin(futures_util::stream::empty()),
             parser: SseParser::new(),
-            pending: Vec::new(),
+            pending,
             state: Arc::new(Mutex::new(state)),
             body_done: true,
         }
