@@ -97,10 +97,7 @@ impl InputSchema {
     /// Build a simple object schema with the given properties and required
     /// list.
     #[must_use]
-    pub fn new_with_properties(
-        properties: JsonValue,
-        required: &[&str],
-    ) -> Self {
+    pub fn new_with_properties(properties: JsonValue, required: &[&str]) -> Self {
         Self {
             schema: serde_json::json!({
                 "type": "object",

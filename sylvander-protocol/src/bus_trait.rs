@@ -46,7 +46,9 @@ impl SubscriptionFilter {
         if let Some(ref recipients) = self.recipients {
             let ok = recipients.iter().any(|r| match r {
                 Recipient::Broadcast => matches!(msg.recipient, Recipient::Broadcast),
-                Recipient::Agent(id) => matches!(&msg.recipient, Recipient::Agent(rid) if rid == id),
+                Recipient::Agent(id) => {
+                    matches!(&msg.recipient, Recipient::Agent(rid) if rid == id)
+                }
             });
             if !ok {
                 return false;

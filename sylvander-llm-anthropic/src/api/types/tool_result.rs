@@ -152,7 +152,8 @@ mod tests {
 
     #[test]
     fn cache_control_included_when_set() {
-        let block = ToolResultBlock::new("toolu_abc", "x").with_cache_control(CacheControl::ephemeral());
+        let block =
+            ToolResultBlock::new("toolu_abc", "x").with_cache_control(CacheControl::ephemeral());
         let json = serde_json::to_string(&block).unwrap();
         assert!(json.contains(r#""cache_control":"#));
     }
