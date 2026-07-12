@@ -62,6 +62,8 @@ enum ClientMsg {
     Approve {
         call_id: String,
         approved: bool,
+        #[serde(default)]
+        scope: sylvander_agent::bus::ApprovalScope,
     },
     /// User answered an AskUser question.
     Answer {
@@ -100,6 +102,7 @@ enum ServerMsg {
         session_id: String,
         batch_id: String,
         tools: Vec<ToolInfo>,
+        allowed_scopes: Vec<sylvander_agent::bus::ApprovalScope>,
     },
     AskUser {
         session_id: String,
@@ -360,20 +363,23 @@ async fn handle_client_msg(
                                     iteration,
                                 })
                             }
-                            StreamEvent::ToolApprovalRequired { batch_id, tools } => {
-                                Some(ServerMsg::ToolApprovalRequired {
-                                    session_id: s.0.clone(),
-                                    batch_id,
-                                    tools: tools
-                                        .iter()
-                                        .map(|t| ToolInfo {
-                                            call_id: t.call_id.clone(),
-                                            tool_name: t.tool_name.clone(),
-                                            input: t.input.clone(),
-                                        })
-                                        .collect(),
-                                })
-                            }
+                            StreamEvent::ToolApprovalRequired {
+                                batch_id,
+                                tools,
+                                allowed_scopes,
+                            } => Some(ServerMsg::ToolApprovalRequired {
+                                session_id: s.0.clone(),
+                                batch_id,
+                                tools: tools
+                                    .iter()
+                                    .map(|t| ToolInfo {
+                                        call_id: t.call_id.clone(),
+                                        tool_name: t.tool_name.clone(),
+                                        input: t.input.clone(),
+                                    })
+                                    .collect(),
+                                allowed_scopes,
+                            }),
                             StreamEvent::AskUser {
                                 call_id,
                                 question,
@@ -409,14 +415,22 @@ async fn handle_client_msg(
                 }
             });
         }
-        ClientMsg::Approve { call_id, approved } => {
+        ClientMsg::Approve {
+            call_id,
+            approved,
+            scope,
+        } => {
             let _ = ctx
                 .bus
                 .publish(BusMessage {
                     session_id: SessionId::new(String::new()),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool { call_id, approved }),
+                    kind: MessageKind::System(SystemMessage::ApproveTool {
+                        call_id,
+                        approved,
+                        scope,
+                    }),
                     payload: String::new(),
                     attachments: Vec::new(),
                     timestamp: sylvander_agent::session::now_secs(),
@@ -499,20 +513,23 @@ async fn run_outgoing(
                 session_id: s,
                 text: text.clone(),
             }),
-            StreamEvent::ToolApprovalRequired { batch_id, tools } => {
-                Some(ServerMsg::ToolApprovalRequired {
-                    session_id: s,
-                    batch_id: batch_id.clone(),
-                    tools: tools
-                        .iter()
-                        .map(|t| ToolInfo {
-                            call_id: t.call_id.clone(),
-                            tool_name: t.tool_name.clone(),
-                            input: t.input.clone(),
-                        })
-                        .collect(),
-                })
-            }
+            StreamEvent::ToolApprovalRequired {
+                batch_id,
+                tools,
+                allowed_scopes,
+            } => Some(ServerMsg::ToolApprovalRequired {
+                session_id: s,
+                batch_id: batch_id.clone(),
+                tools: tools
+                    .iter()
+                    .map(|t| ToolInfo {
+                        call_id: t.call_id.clone(),
+                        tool_name: t.tool_name.clone(),
+                        input: t.input.clone(),
+                    })
+                    .collect(),
+                allowed_scopes: allowed_scopes.clone(),
+            }),
             StreamEvent::AskUser {
                 call_id,
                 question,

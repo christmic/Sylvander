@@ -20,11 +20,11 @@ expression: "render_buf(&s, 120, 36)"
                  │  >> 1. CRITICAL $ rm -rf /                                                         │                 
                  │       scope  current workspace                                                     │                 
                  │                                                                                    │                 
-                 │1/1  ↵/y approve · n reject · a all · N none · esc deny                             │                 
+                 │1/1  ↵/y once · n reject                                                            │                 
+                 │     a all once · N none · esc deny                                                 │                 
                  │                                                                                    │                 
                  │                                                                                    │                 
                  └────────────────────────────────────────────────────────────────────────────────────┘                 
-                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

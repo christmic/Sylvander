@@ -33,6 +33,7 @@ pub enum ClientMsg {
     Approve {
         call_id: String,
         approved: bool,
+        scope: sylvander_protocol::ApprovalScope,
     },
     Answer {
         call_id: String,
@@ -146,6 +147,8 @@ pub enum ServerMsg {
         session_id: String,
         batch_id: String,
         tools: Vec<ToolInfoMsg>,
+        #[serde(default = "default_approval_scopes")]
+        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
     },
     /// Agent forcefully rejected a tool (server-side policy) — surface
     /// the reason in the transcript so the user understands the failure.
@@ -509,10 +512,14 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             task_id, reason, ..
         } => DomainEvent::TaskCancelled { task_id, reason },
         ServerMsg::ApprovalRequest {
-            batch_id, tools, ..
+            batch_id,
+            tools,
+            allowed_scopes,
+            ..
         } => DomainEvent::ApprovalRequested {
             batch_id,
             tools: tools.into_iter().map(Into::into).collect(),
+            allowed_scopes,
         },
         ServerMsg::AskUser {
             call_id,
@@ -594,6 +601,10 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
     })
+}
+
+fn default_approval_scopes() -> Vec<sylvander_protocol::ApprovalScope> {
+    vec![sylvander_protocol::ApprovalScope::Once]
 }
 
 #[cfg(test)]

@@ -127,6 +127,11 @@ fn approval_modal_overlays_chat() {
         input: serde_json::json!({"command": "rm -rf /"}),
     });
     state.apply(DomainEvent::ApprovalRequested {
+        allowed_scopes: vec![
+            sylvander_protocol::ApprovalScope::Once,
+            sylvander_protocol::ApprovalScope::Session,
+            sylvander_protocol::ApprovalScope::Persistent,
+        ],
         batch_id: "batch-1".into(),
         tools: vec![sylvander_tui::app::ToolInfo {
             call_id: "call-1".into(),
@@ -220,6 +225,10 @@ fn approval_modal_batch_with_three_tools() {
         input: serde_json::json!({"command": "ls"}),
     });
     state.apply(DomainEvent::ApprovalRequested {
+        allowed_scopes: vec![
+            sylvander_protocol::ApprovalScope::Once,
+            sylvander_protocol::ApprovalScope::Session,
+        ],
         batch_id: "batch-1".into(),
         tools: vec![
             ToolInfo {
@@ -256,6 +265,7 @@ fn approval_modal_with_queue_header() {
     let mut state = AppState::new();
     // Two batches stack — second one should show "batch 2/2" header.
     state.apply(DomainEvent::ApprovalRequested {
+        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
         batch_id: "first".into(),
         tools: vec![ToolInfo {
             call_id: "a".into(),
@@ -264,6 +274,7 @@ fn approval_modal_with_queue_header() {
         }],
     });
     state.apply(DomainEvent::ApprovalRequested {
+        allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
         batch_id: "second".into(),
         tools: vec![ToolInfo {
             call_id: "b".into(),

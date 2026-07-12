@@ -75,6 +75,19 @@ pub enum ApprovalPolicy {
     Deny,
 }
 
+/// Lifetime requested for an approved tool capability.
+///
+/// Transports must forward this value unchanged. The Agent remains the
+/// authority that decides which scopes are allowed for a request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+    #[default]
+    Once,
+    Session,
+    Persistent,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionProfile {
     pub file_access: FileAccess,
@@ -279,6 +292,10 @@ pub enum StreamEvent {
     ToolApprovalRequired {
         batch_id: String,
         tools: Vec<ToolCallInfo>,
+        /// Scopes the operator permits for this request. `Once` is always
+        /// present; persistent approval is never implied by the UI.
+        #[serde(default = "default_approval_scopes")]
+        allowed_scopes: Vec<ApprovalScope>,
     },
     AskUser {
         call_id: String,
@@ -375,6 +392,8 @@ pub enum SystemMessage {
     ApproveTool {
         call_id: String,
         approved: bool,
+        #[serde(default)]
+        scope: ApprovalScope,
     },
     AnswerQuestion {
         call_id: String,
@@ -395,6 +414,10 @@ pub enum SystemMessage {
         session_id: SessionId,
         task_id: String,
     },
+}
+
+fn default_approval_scopes() -> Vec<ApprovalScope> {
+    vec![ApprovalScope::Once]
 }
 
 // ===========================================================================
@@ -634,5 +657,34 @@ mod tests {
         assert_eq!(ReasoningEffort::Low.budget_tokens(), Some(2_048));
         assert_eq!(ReasoningEffort::Medium.budget_tokens(), Some(8_192));
         assert_eq!(ReasoningEffort::High.budget_tokens(), Some(20_000));
+    }
+
+    #[test]
+    fn legacy_approval_messages_default_to_one_shot_scope() {
+        let system: SystemMessage = serde_json::from_value(serde_json::json!({
+            "type": "approve_tool",
+            "call_id": "call-1",
+            "approved": true
+        }))
+        .expect("legacy system message");
+        assert!(matches!(
+            system,
+            SystemMessage::ApproveTool {
+                scope: ApprovalScope::Once,
+                ..
+            }
+        ));
+
+        let event: StreamEvent = serde_json::from_value(serde_json::json!({
+            "type": "tool_approval_required",
+            "batch_id": "batch-1",
+            "tools": []
+        }))
+        .expect("legacy stream event");
+        assert!(matches!(
+            event,
+            StreamEvent::ToolApprovalRequired { allowed_scopes, .. }
+                if allowed_scopes == vec![ApprovalScope::Once]
+        ));
     }
 }
