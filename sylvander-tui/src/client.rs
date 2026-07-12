@@ -40,9 +40,17 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    SessionCreated { session_id: String },
-    TextDelta { session_id: String, delta: String },
-    ThinkingDelta { session_id: String, delta: String },
+    SessionCreated {
+        session_id: String,
+    },
+    TextDelta {
+        session_id: String,
+        delta: String,
+    },
+    ThinkingDelta {
+        session_id: String,
+        delta: String,
+    },
     ToolCall {
         session_id: String,
         tool_name: String,
@@ -115,8 +123,6 @@ impl From<ToolInfoMsg> for ToolInfo {
 /// High-level event for the main loop to apply to `AppState`.
 #[derive(Debug, Clone)]
 pub enum ClientEvent {
-    /// Socket just connected — switch status to Connected.
-    Connected,
     /// Socket just disconnected — switch status to Disconnected,
     /// surface an Info message, drop session.
     Disconnected,
@@ -161,7 +167,6 @@ impl UnixClient {
         let (read, write) = stream.into_split();
         self.writer = Some(write);
         self.spawn_reader(read);
-        let _ = self.event_tx.send(ClientEvent::Connected);
         Ok(())
     }
 
@@ -240,9 +245,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
-        ServerMsg::ToolCall {
-            tool_name, ..
-        } => DomainEvent::ToolStarted {
+        ServerMsg::ToolCall { tool_name, .. } => DomainEvent::ToolStarted {
             tool_name,
             input: serde_json::Value::Null,
         },
@@ -278,10 +281,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         ServerMsg::ToolRejected {
             tool_name, reason, ..
-        } => DomainEvent::ToolRejected {
-            tool_name,
-            reason,
-        },
+        } => DomainEvent::ToolRejected { tool_name, reason },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
     })

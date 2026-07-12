@@ -9,18 +9,21 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::component::Component;
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
 use crate::modal::{ModalStack, SessionEntry, SessionStatus, SessionsOverlay};
-use crate::panel;
+pub use crate::model::{
+    AppMode, ChatMessage, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
+    ToolStepChild,
+};
 
 // ===========================================================================
 // Top-level state
 // ===========================================================================
 
 pub struct AppState {
+    pub metadata: RuntimeMetadata,
     // ---- business data (read-only for renderers) ----
     pub messages: Vec<ChatMessage>,
     pub streaming: String,
@@ -35,9 +38,6 @@ pub struct AppState {
     /// can switch back to a previous session even after a server restart.
     pub sessions: Vec<SessionEntry>,
 
-    // ---- component registration ----
-    /// Layout order is `panels[0]` top, last entry bottom.
-    pub panels: Vec<Box<dyn Component>>,
     /// Floating layers (approval, ask, sessions, toast).
     pub modals: ModalStack,
 
@@ -76,6 +76,10 @@ impl AppState {
     /// `Some`). On every submit, the history is persisted back to that
     /// path. Passing `None` keeps history in memory only (the default).
     pub fn with_history_path(path: Option<std::path::PathBuf>) -> Self {
+        Self::with_metadata(path, RuntimeMetadata::default())
+    }
+
+    pub fn with_metadata(path: Option<std::path::PathBuf>, metadata: RuntimeMetadata) -> Self {
         let mut composer = Composer::default();
         if let Some(p) = &path {
             let loaded = Composer::load_history_from(p);
@@ -83,7 +87,8 @@ impl AppState {
                 composer.history = loaded;
             }
         }
-        let mut state = Self {
+        let state = Self {
+            metadata,
             messages: Vec::new(),
             streaming: String::new(),
             streaming_thinking: String::new(),
@@ -92,7 +97,6 @@ impl AppState {
             status: "Connecting...".into(),
             mode: AppMode::Normal,
             sessions: Vec::new(),
-            panels: Vec::new(),
             modals: ModalStack::new(),
             composer,
             chat_scroll: 0,
@@ -103,7 +107,6 @@ impl AppState {
             history_path: path,
             welcomed: false,
         };
-        state.register_default_panels();
         state.dirty.mark();
         state
     }
@@ -118,125 +121,25 @@ impl AppState {
         }
     }
 
-    fn register_default_panels(&mut self) {
-        // Order = layout order, top to bottom. Header replaces the
-        // Stable vertical regions: identity, immersive transcript,
-        // adaptive composer, and contextual status.
-        self.panels.push(Box::new(panel::ChatPanel));
-        self.panels.push(Box::new(panel::InputPanel));
-        self.panels.push(Box::new(panel::StatusPanel));
+    /// Move the transcript viewport without touching composer history.
+    /// Positive values review older content; negative values move toward live.
+    pub fn scroll_transcript(&mut self, lines: isize) {
+        if lines >= 0 {
+            self.chat_scroll = self.chat_scroll.saturating_add(lines as usize);
+        } else {
+            self.chat_scroll = self.chat_scroll.saturating_sub(lines.unsigned_abs());
+        }
+        if self.chat_scroll == 0 {
+            self.unread_events = 0;
+        }
+        self.dirty.mark();
     }
-}
-
-// ===========================================================================
-// AppMode — only used to pick a help-bar hint string
-// ===========================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Normal,
-    ApprovalPending,
-    AskPending,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ===========================================================================
-// ChatMessage — semantic message types, rendered by ChatPanel
-// ===========================================================================
-
-/// A message in the chat history. This type is rendering-layer data
-/// (it describes how a message looks), but lives in AppState because
-/// the Reducer pushes new entries here.
-#[derive(Debug, Clone)]
-pub enum ChatMessage {
-    User(String),
-    Agent(String),
-    /// Legacy flat tool event — kept for snapshots that pre-date
-    /// `ToolStep` grouping. New code folds consecutive `ToolStarted`
-    /// + `ToolFinished` events into a single `ToolStep` block per
-    /// UX §6 (immersive execution rhythm).
-    ToolCall {
-        name: String,
-        status: ToolStatus,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        name: String,
-        output: String,
-        ok: bool,
-    },
-    /// Grouped step block: a step header with a name + start time, and
-    /// a list of indented child tool rows (each child is `●/✓/✗` + verb
-    /// + target + meta). One step per agent iteration; terminated when
-    /// a `TextChunk` / `AgentDone` lands or another step begins.
-    ToolStep {
-        name: String,
-        started_at_secs: u64,
-        children: Vec<ToolStepChild>,
-    },
-    Thinking(String),
-    Info(String),
-    /// Plan block — ordered list of step descriptions with a cursor.
-    /// `current` is the index of the step currently being executed (●);
-    /// steps before it render as ✓; steps after it render as ○.
-    Plan {
-        plan_id: String,
-        steps: Vec<String>,
-        current: usize,
-    },
-    /// Compact task list line — one ChatMessage line per UI slot,
-    /// updated by replacing the most recent TaskList entry on each
-    /// `TaskStarted` event (de-duplicated by task_id).
-    TaskList {
-        tasks: Vec<TaskEntry>,
-    },
-}
-
-/// One row inside a `ToolStep` group. The reducer populates these as
-/// `ToolStarted` / `ToolFinished` events flow in.
-#[derive(Debug, Clone)]
-pub struct ToolStepChild {
-    pub name: String,
-    pub status: ToolStatus,
-    pub input: serde_json::Value,
-    /// Filled in when `ToolFinished` arrives.
-    pub output: Option<String>,
-    pub is_error: Option<bool>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskEntry {
-    pub task_id: String,
-    pub owner: String,
-    pub purpose: String,
-    pub state: TaskState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    Running,
-    Done,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolStatus {
-    Pending,
-    Done,
-    Error,
-}
-
-/// Tool info for approval requests.
-#[derive(Debug, Clone)]
-pub struct ToolInfo {
-    pub call_id: String,
-    pub tool_name: String,
-    pub input: serde_json::Value,
 }
 
 // ===========================================================================
@@ -297,9 +200,7 @@ impl AppState {
                             id: session_id.clone(),
                             label,
                             status: SessionStatus::Working,
-                            workspace: std::env::current_dir()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|_| "/".to_string()),
+                            workspace: self.metadata.workspace.display().to_string(),
                             last_seen_secs: 0,
                         },
                     );
@@ -586,16 +487,11 @@ impl AppState {
         // Returning to the bottom clears the stable unread indicator.
         match key.code {
             crossterm::event::KeyCode::PageUp => {
-                self.chat_scroll = self.chat_scroll.saturating_add(8);
-                self.dirty.mark();
+                self.scroll_transcript(8);
                 return None;
             }
             crossterm::event::KeyCode::PageDown => {
-                self.chat_scroll = self.chat_scroll.saturating_sub(8);
-                if self.chat_scroll == 0 {
-                    self.unread_events = 0;
-                }
-                self.dirty.mark();
+                self.scroll_transcript(-8);
                 return None;
             }
             crossterm::event::KeyCode::End
