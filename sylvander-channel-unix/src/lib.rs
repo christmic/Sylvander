@@ -160,6 +160,7 @@ enum ServerMsg {
         steps: Vec<String>,
         current: usize,
     },
+    PlanUpdated { session_id: String, plan_id: String, steps: Vec<String>, current: usize },
     TaskStarted {
         session_id: String,
         task_id: String,
@@ -489,6 +490,11 @@ async fn handle_client_msg(
                                     plan_id,
                                     steps,
                                     current,
+                                })
+                            }
+                            StreamEvent::PlanUpdated { plan_id, steps, current } => {
+                                Some(ServerMsg::PlanUpdated {
+                                    session_id: s.0.clone(), plan_id, steps, current,
                                 })
                             }
                             StreamEvent::TaskStarted { task_id, owner, purpose } => {

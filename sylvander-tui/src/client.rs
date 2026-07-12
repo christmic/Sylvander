@@ -144,6 +144,7 @@ pub enum ServerMsg {
         steps: Vec<String>,
         current: usize,
     },
+    PlanUpdated { session_id: String, plan_id: String, steps: Vec<String>, current: usize },
     TaskStarted { session_id: String, task_id: String, owner: String, purpose: String },
     TaskProgress { session_id: String, task_id: String, message: String },
     TaskCompleted { session_id: String, task_id: String, summary: String },
@@ -353,6 +354,9 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::PlanProposed { plan_id, steps, current, .. } => {
             DomainEvent::PlanReceived { plan_id, steps, current }
         }
+        ServerMsg::PlanUpdated { plan_id, steps, current, .. } => {
+            DomainEvent::PlanUpdated { plan_id, steps, current }
+        }
         ServerMsg::TaskStarted { task_id, owner, purpose, .. } => {
             DomainEvent::TaskStarted { task_id, owner, purpose }
         }
@@ -521,6 +525,17 @@ mod tests {
         .expect("serialize");
         assert_eq!(json["type"], "resolve_plan");
         assert_eq!(json["decision"]["decision"], "approved");
+
+        let update = parse_server_msg(ServerMsg::PlanUpdated {
+            session_id: "s1".into(),
+            plan_id: "plan-1".into(),
+            steps: vec!["inspect".into(), "verify".into()],
+            current: 1,
+        });
+        assert!(matches!(
+            update,
+            Some(DomainEvent::PlanUpdated { current: 1, .. })
+        ));
     }
 
     #[test]

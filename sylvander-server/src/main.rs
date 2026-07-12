@@ -114,6 +114,7 @@ async fn main() {
         .register(MemoryReadTool::new(memory))
         .register(sylvander_agent::tools::AskUserTool::new())
         .register(sylvander_agent::tools::PresentPlanTool::new())
+        .register(sylvander_agent::tools::UpdatePlanTool::new())
         .register(sylvander_agent::tools::StartBackgroundTaskTool::new());
 
     let bus = Arc::new(InProcessMessageBus::new());
