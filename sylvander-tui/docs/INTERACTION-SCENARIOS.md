@@ -59,8 +59,16 @@ arguments. Invalid arguments remain in the command line with an inline error.
 | `/help [commands\|approval\|tools]` | Opens visible contextual help |
 | `/theme <name>` | Switches semantic palette without changing layout |
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
+| `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
 | `/status` | Appends model, branch, session, iteration, and token usage |
 | `/quit` | Saves input history and exits |
+
+The model picker never carries a hard-coded catalog. `↑`/`↓` chooses among
+server-advertised models and `←`/`→` chooses only reasoning efforts supported by
+the selected model. `Enter` sends one typed selection request. The Agent validates
+the pair and the Unix service returns updated runtime truth; status and Welcome
+change only after that acknowledgement. A selection made during active work is
+applied to the next turn because every turn owns an immutable model snapshot.
 
 ## Approval
 

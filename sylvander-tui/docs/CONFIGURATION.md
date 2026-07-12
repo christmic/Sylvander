@@ -9,7 +9,7 @@ and Panels receive resolved values and must not query environment variables.
 |---|---:|---|---|
 | `SYLVANDER_SOCKET` | `/tmp/sylvander.sock` | path | Unix Agent service socket; positional argument wins |
 | `SYLVANDER_HISTORY_PATH` | `$XDG_CACHE_HOME/sylvander-tui/history.json` | path or empty | Composer history; empty disables persistence |
-| `SYLVANDER_MODEL` | `—` | model label | Startup metadata rendered by Welcome and status |
+| `SYLVANDER_MODEL` | `—` | model label | Pre-connection fallback only; server runtime truth replaces it |
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
 | `SYLVANDER_TUI_RENDER_FPS` | `30` | 5–120 | Maximum coalesced service render rate |
 | `SYLVANDER_TUI_ANIMATION_MS` | `200` | 50–2000 | Low-frequency animation/status heartbeat |
