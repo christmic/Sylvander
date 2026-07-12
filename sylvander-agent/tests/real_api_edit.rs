@@ -18,8 +18,8 @@ fn optional_env(name: &str) -> Option<String> {
 #[tokio::test]
 #[ignore = "requires real API env vars"]
 async fn real_api_edit_tool_e2e() {
-    let Some(token) = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))
+    let Some(token) =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))
     else {
         eprintln!("token missing; skipping");
         return;
@@ -67,11 +67,9 @@ async fn real_api_edit_tool_e2e() {
                   \"TODO: implement feature\" to \"DONE: feature shipped\". \
                   Do not rewrite the whole file — just change that one line.";
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user(prompt)],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run against real API");
 

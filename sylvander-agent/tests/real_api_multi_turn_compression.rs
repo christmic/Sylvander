@@ -22,8 +22,8 @@ fn optional_env(name: &str) -> Option<String> {
 #[tokio::test]
 #[ignore = "requires real API env vars"]
 async fn real_api_natural_multi_turn_with_compression() {
-    let Some(token) = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))
+    let Some(token) =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))
     else {
         eprintln!("token missing; skipping");
         return;
@@ -75,18 +75,16 @@ async fn real_api_natural_multi_turn_with_compression() {
         .max_iterations(4)
         .system_prompt(
             "You are a helpful assistant. When asked to read a file, \
-             always use the Read tool. After reading, respond briefly."
+             always use the Read tool. After reading, respond briefly.",
         )
         .build()
         .expect("build");
 
     let prompt = "Read the file data.txt and tell me how many lines it contains.";
 
-    let run_result = run_with_events(
-        &loop_,
-        vec![MessageParam::user(prompt)],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let run_result = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await;
 
     let events = events.lock().unwrap();
@@ -164,7 +162,9 @@ async fn real_api_natural_multi_turn_with_compression() {
 
     // 4. A Compressed event with L0's report must exist.
     let l0_fired = compressed_events.iter().any(|layers| {
-        layers.iter().any(|l| l.name == "tool_result_budget" && l.condensed_count > 0)
+        layers
+            .iter()
+            .any(|l| l.name == "tool_result_budget" && l.condensed_count > 0)
     });
     assert!(
         l0_fired,

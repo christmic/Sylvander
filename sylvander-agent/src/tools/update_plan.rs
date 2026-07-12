@@ -11,12 +11,16 @@ pub struct UpdatePlanTool;
 
 impl UpdatePlanTool {
     #[must_use]
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl Tool for UpdatePlanTool {
-    fn name(&self) -> &str { "update_plan" }
+    fn name(&self) -> &str {
+        "update_plan"
+    }
 
     fn description(&self) -> &str {
         "Update the visible approved plan and its zero-based current step as work progresses."
@@ -33,7 +37,13 @@ impl Tool for UpdatePlanTool {
         )
     }
 
-    async fn execute(&self, _ctx: &ToolContext, _input: JsonValue) -> Result<ToolOutput, ToolError> {
-        Err(ToolError::Other("update_plan must be intercepted at the loop level".into()))
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
+        Err(ToolError::Other(
+            "update_plan must be intercepted at the loop level".into(),
+        ))
     }
 }

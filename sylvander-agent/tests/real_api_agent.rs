@@ -29,8 +29,8 @@ fn optional_env(name: &str) -> Option<String> {
 /// Build a real `AnthropicClient` + `ModelInfo` from env. Returns
 /// `None` if required env vars are missing.
 fn real_agent() -> Option<(AnthropicClient, ModelInfo)> {
-    let auth_token = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))?;
+    let auth_token =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))?;
     let base_url = optional_env("ANTHROPIC_BASE_URL")?;
     let model_id = optional_env("SYLVANDER_MODEL")?;
 
@@ -52,17 +52,14 @@ fn real_agent() -> Option<(AnthropicClient, ModelInfo)> {
 
 /// Read the prompt from env, or use the default fallback.
 fn prompt_from_env() -> String {
-    optional_env("SYLVANDER_PROMPT")
-        .unwrap_or_else(|| "Reply with just: pong".to_string())
+    optional_env("SYLVANDER_PROMPT").unwrap_or_else(|| "Reply with just: pong".to_string())
 }
 
 #[tokio::test]
 #[ignore = "requires ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL + SYLVANDER_MODEL env vars"]
 async fn real_api_agent_loop_completes() {
     let Some((client, model)) = real_agent() else {
-        eprintln!(
-            "ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / SYLVANDER_MODEL not set, skipping"
-        );
+        eprintln!("ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL / SYLVANDER_MODEL not set, skipping");
         return;
     };
 
@@ -80,7 +77,10 @@ async fn real_api_agent_loop_completes() {
         .expect("build");
 
     // Use the new run_stream API (post-R1 refactor)
-    let mut events = Box::pin(sylvander_agent::prelude::run_stream(&loop_, vec![MessageParam::user(&prompt)]));
+    let mut events = Box::pin(sylvander_agent::prelude::run_stream(
+        &loop_,
+        vec![MessageParam::user(&prompt)],
+    ));
     let mut final_text = String::new();
     let mut final_message: Option<Message> = None;
 
@@ -100,9 +100,7 @@ async fn real_api_agent_loop_completes() {
                 eprintln!("[tool] {name} called");
             }
             AgentEvent::ToolCallEnd {
-                output,
-                is_error,
-                ..
+                output, is_error, ..
             } => {
                 eprintln!(
                     "[tool] result ({}) {}",
@@ -128,10 +126,7 @@ async fn real_api_agent_loop_completes() {
                 for layer in layers {
                     eprintln!(
                         "  - {}: removed={} condensed={} freed={}",
-                        layer.name,
-                        layer.removed_count,
-                        layer.condensed_count,
-                        layer.freed_tokens
+                        layer.name, layer.removed_count, layer.condensed_count, layer.freed_tokens
                     );
                 }
             }
@@ -182,7 +177,10 @@ async fn real_api_streaming_events_in_order() {
         .expect("build");
 
     // Verify event order is exactly: IterationStart, [chunks], IterationEnd, Done
-    let mut events = Box::pin(sylvander_agent::prelude::run_stream(&loop_, vec![MessageParam::user(&prompt)]));
+    let mut events = Box::pin(sylvander_agent::prelude::run_stream(
+        &loop_,
+        vec![MessageParam::user(&prompt)],
+    ));
     let mut saw_iteration_start = false;
     let mut saw_iteration_end_before_done = false;
     let mut saw_done = false;

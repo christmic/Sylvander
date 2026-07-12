@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
@@ -67,13 +67,11 @@ impl Tool for WriteTool {
         )
     }
 
-    async fn execute(
-        &self,
-        ctx: &ToolContext,
-        input: JsonValue,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::Write) {
-            return Ok(ToolOutput::err("write capability not granted for this invocation"));
+            return Ok(ToolOutput::err(
+                "write capability not granted for this invocation",
+            ));
         }
         let path_str = input
             .get("file_path")
@@ -107,9 +105,7 @@ impl Tool for WriteTool {
                 "wrote {} bytes to `{path_str}`",
                 content.len()
             ))),
-            Err(e) => Ok(ToolOutput::err(format!(
-                "cannot write `{path_str}`: {e}"
-            ))),
+            Err(e) => Ok(ToolOutput::err(format!("cannot write `{path_str}`: {e}"))),
         }
     }
 }
@@ -121,7 +117,13 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::tool_context::ToolContext;
-    fn ctx() -> ToolContext { ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s")).with_capability(crate::tool_context::Cap::Read).with_capability(crate::tool_context::Cap::Write).with_capability(crate::tool_context::Cap::MemoryRead).with_capability(crate::tool_context::Cap::MemoryWrite) }
+    fn ctx() -> ToolContext {
+        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+            .with_capability(crate::tool_context::Cap::Read)
+            .with_capability(crate::tool_context::Cap::Write)
+            .with_capability(crate::tool_context::Cap::MemoryRead)
+            .with_capability(crate::tool_context::Cap::MemoryWrite)
+    }
 
     fn setup_workspace() -> TempDir {
         TempDir::new().expect("tempdir")
@@ -178,7 +180,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error);
-        assert_eq!(fs::read_to_string(dir.path().join("empty.txt")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("empty.txt")).unwrap(),
+            ""
+        );
     }
 
     #[tokio::test]

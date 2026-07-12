@@ -147,9 +147,11 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
     // own unit tests. This integration test verifies the pipeline
     // doesn't crash on a normal tool-calling flow.
     let events = events.lock().unwrap();
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read")));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallStart { name, .. } if name == "Read"))
+    );
 }
 
 // =============================================================================

@@ -20,8 +20,8 @@ fn optional_env(name: &str) -> Option<String> {
 #[tokio::test]
 #[ignore = "requires real API env vars"]
 async fn real_api_does_multi_turn_work() {
-    let Some(token) = optional_env("ANTHROPIC_AUTH_TOKEN")
-        .or_else(|| optional_env("ANTHROPIC_API_KEY"))
+    let Some(token) =
+        optional_env("ANTHROPIC_AUTH_TOKEN").or_else(|| optional_env("ANTHROPIC_API_KEY"))
     else {
         eprintln!("token missing; skipping");
         return;
@@ -69,15 +69,11 @@ async fn real_api_does_multi_turn_work() {
         .build()
         .expect("build loop");
 
-    let prompt = format!(
-        "Read the file at {file_name} and tell me its contents."
-    );
+    let prompt = format!("Read the file at {file_name} and tell me its contents.");
 
-    let result = run_with_events(
-        &loop_,
-        vec![MessageParam::user(prompt)],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let result = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await;
 
     let events = events.lock().unwrap();

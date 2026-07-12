@@ -200,7 +200,11 @@ async fn real_use_case_l0_offloads_huge_read_result() {
 
     println!("=== real_use_case_l0_offloads_huge_read_result ===");
     println!("Iterations: {}", run.iterations);
-    println!("L0 disk writes: {} ({} chars saved per block)", disk.write_count(), l0_freed * 4);
+    println!(
+        "L0 disk writes: {} ({} chars saved per block)",
+        disk.write_count(),
+        l0_freed * 4
+    );
     println!("Events:");
     for (i, kind) in kinds.iter().enumerate() {
         println!("  [{i}] {kind}");
@@ -370,7 +374,11 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
     let pipeline = CompressionPipeline::builder()
         .layer(OrphanSnipLayer::new())
         .layer(MicroCompactLayer::new())
-        .layer(ContextCollapseLayer::new().with_keep_last_n(0).with_max_thinking_chars(200))
+        .layer(
+            ContextCollapseLayer::new()
+                .with_keep_last_n(0)
+                .with_max_thinking_chars(200),
+        )
         .layer(AutoCompactLayer::new())
         .build();
 
@@ -390,18 +398,17 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
     let initial = vec![
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new("orphan", "stale result from a previous turn"),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                "orphan",
+                "stale result from a previous turn",
+            ))]),
         },
         MessageParam::user("continue from where we left off"),
     ];
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run");
 
@@ -512,9 +519,10 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         // Add user message with tool_result
         initial.push(MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new(format!("toolu_{i}"), &long_body),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                format!("toolu_{i}"),
+                &long_body,
+            ))]),
         });
     }
     // Plus the user's current request (will trigger iter 1).
@@ -536,11 +544,9 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        initial,
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, initial, move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run");
 
@@ -620,7 +626,11 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
         .layer(MicroCompactLayer::new())
         // keep_last_n=0 → all assistant thinking blocks are
         // considered "old" and get trimmed.
-        .layer(ContextCollapseLayer::new().with_keep_last_n(0).with_max_thinking_chars(200))
+        .layer(
+            ContextCollapseLayer::new()
+                .with_keep_last_n(0)
+                .with_max_thinking_chars(200),
+        )
         .build();
 
     let loop_ = AgentLoop::builder()
@@ -630,11 +640,9 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("read x")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, vec![MessageParam::user("read x")], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run");
 
@@ -760,11 +768,9 @@ async fn real_use_case_l4_summarizes_at_high_usage() {
         .build()
         .expect("build");
 
-    let _run = run_with_events(
-        &loop_,
-        vec![MessageParam::user("hi")],
-        move |event| events_clone.lock().unwrap().push(event),
-    )
+    let _run = run_with_events(&loop_, vec![MessageParam::user("hi")], move |event| {
+        events_clone.lock().unwrap().push(event)
+    })
     .await
     .expect("run");
 
