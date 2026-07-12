@@ -157,8 +157,7 @@ mod tests {
     #[test]
     fn filesystem_disk_writes_and_returns_handle() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf())
-            .expect("disk");
+        let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf()).expect("disk");
 
         let handle = disk
             .persist("toolu_abc", "hello world")
@@ -174,8 +173,7 @@ mod tests {
     #[test]
     fn filesystem_disk_path_for_is_predictable() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf())
-            .expect("disk");
+        let disk = FilesystemToolResultDisk::with_root(dir.path().to_path_buf()).expect("disk");
 
         let p = disk.path_for("toolu_xyz");
         assert!(p.ends_with("toolu_xyz.txt"));
@@ -210,9 +208,8 @@ mod tests {
     #[test]
     fn trait_is_object_safe() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let fs: Box<dyn ToolResultDisk> = Box::new(
-            FilesystemToolResultDisk::with_root(tmp.path().to_path_buf()).unwrap(),
-        );
+        let fs: Box<dyn ToolResultDisk> =
+            Box::new(FilesystemToolResultDisk::with_root(tmp.path().to_path_buf()).unwrap());
         let mem: Box<dyn ToolResultDisk> = Box::new(InMemoryToolResultDisk::new());
 
         // Smoke: both impls callable through trait object.

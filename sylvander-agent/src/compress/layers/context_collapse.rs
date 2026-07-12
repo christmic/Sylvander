@@ -29,11 +29,11 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use sylvander_llm_anthropic::api::types::{MessageRole, UserContent, UserContentBlock};
 
-use crate::compress::layer::{CompressionLayer, LayerReport};
 use crate::compress::CompressContext;
+use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// Default number of recent assistant messages to keep thinking
 /// intact.
@@ -46,8 +46,7 @@ pub const DEFAULT_MAX_THINKING_CHARS: usize = 500;
 /// Placeholder template; embeds the original char count so the
 /// model can see how much reasoning it lost (a hint that the
 /// decision was deliberate, not a glitch).
-const PLACEHOLDER_TEMPLATE: &str =
-    "[...earlier reasoning omitted ({chars} chars)]";
+const PLACEHOLDER_TEMPLATE: &str = "[...earlier reasoning omitted ({chars} chars)]";
 
 /// L3 layer: trim `thinking` blocks in old assistant messages.
 #[derive(Debug, Clone, Copy)]
@@ -110,8 +109,7 @@ impl CompressionLayer for ContextCollapseLayer {
             .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .count();
-        let active_threshold =
-            total_assistant.saturating_sub(self.keep_last_n_assistant_messages);
+        let active_threshold = total_assistant.saturating_sub(self.keep_last_n_assistant_messages);
 
         let mut condensed = 0usize;
         let mut freed_tokens = 0u32;
@@ -134,12 +132,10 @@ impl CompressionLayer for ContextCollapseLayer {
                 let UserContentBlock::Other(json_value) = block else {
                     continue;
                 };
-                if json_value.get("type").and_then(JsonValue::as_str) != Some("thinking")
-                {
+                if json_value.get("type").and_then(JsonValue::as_str) != Some("thinking") {
                     continue;
                 }
-                let Some(thinking_text) =
-                    json_value.get("thinking").and_then(JsonValue::as_str)
+                let Some(thinking_text) = json_value.get("thinking").and_then(JsonValue::as_str)
                 else {
                     continue;
                 };
@@ -222,7 +218,9 @@ mod tests {
         let UserContentBlock::Other(j) = blocks.first()? else {
             return None;
         };
-        j.get("thinking").and_then(JsonValue::as_str).map(str::to_string)
+        j.get("thinking")
+            .and_then(JsonValue::as_str)
+            .map(str::to_string)
     }
 
     #[tokio::test]
@@ -300,7 +298,10 @@ mod tests {
         let UserContentBlock::Other(j) = &blocks[0] else {
             panic!();
         };
-        assert_eq!(j.get("signature").and_then(JsonValue::as_str), Some("sig_xyz"));
+        assert_eq!(
+            j.get("signature").and_then(JsonValue::as_str),
+            Some("sig_xyz")
+        );
         assert_eq!(j.get("type").and_then(JsonValue::as_str), Some("thinking"));
     }
 
@@ -328,17 +329,15 @@ mod tests {
         let layer = ContextCollapseLayer::new()
             .with_keep_last_n(0)
             .with_max_thinking_chars(50);
-        let mut messages = vec![
-            MessageParam {
-                role: MessageRole::User,
-                content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
-                    "type": "tool_use",
-                    "id": "toolu_x",
-                    "name": "fake",
-                    "input": {}
-                }))]),
-            },
-        ];
+        let mut messages = vec![MessageParam {
+            role: MessageRole::User,
+            content: UserContent::Blocks(vec![UserContentBlock::Other(json!({
+                "type": "tool_use",
+                "id": "toolu_x",
+                "name": "fake",
+                "input": {}
+            }))]),
+        }];
         let mut ctx = CompressContext {
             messages: &mut messages,
             last_usage: &usage(),

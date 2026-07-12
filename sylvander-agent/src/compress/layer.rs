@@ -180,9 +180,30 @@ mod tests {
     #[test]
     fn layer_report_helpers_aggregate() {
         let layers = vec![
-            LayerReport { name: "a".into(), removed_count: 2, condensed_count: 1, freed_tokens: 100, details: None, failure: None },
-            LayerReport { name: "b".into(), removed_count: 0, condensed_count: 3, freed_tokens: 50,  details: None, failure: None },
-            LayerReport { name: "c".into(), removed_count: 0, condensed_count: 0, freed_tokens: 0,   details: None, failure: Some("boom".into()) },
+            LayerReport {
+                name: "a".into(),
+                removed_count: 2,
+                condensed_count: 1,
+                freed_tokens: 100,
+                details: None,
+                failure: None,
+            },
+            LayerReport {
+                name: "b".into(),
+                removed_count: 0,
+                condensed_count: 3,
+                freed_tokens: 50,
+                details: None,
+                failure: None,
+            },
+            LayerReport {
+                name: "c".into(),
+                removed_count: 0,
+                condensed_count: 0,
+                freed_tokens: 0,
+                details: None,
+                failure: Some("boom".into()),
+            },
         ];
         assert_eq!(total_removed(&layers), 2);
         assert_eq!(total_condensed(&layers), 4);

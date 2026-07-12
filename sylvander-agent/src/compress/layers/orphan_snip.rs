@@ -26,12 +26,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 use serde_json::Value as JsonValue;
-use sylvander_llm_anthropic::api::types::{
-    MessageRole, UserContent, UserContentBlock,
-};
+use sylvander_llm_anthropic::api::types::{MessageRole, UserContent, UserContentBlock};
 
-use crate::compress::layer::{CompressionLayer, LayerReport};
 use crate::compress::CompressContext;
+use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// L1 layer: drop orphan `tool_result` blocks.
 #[derive(Debug, Default, Clone, Copy)]
@@ -143,9 +141,10 @@ mod tests {
     fn user_with_tool_result(tool_use_id: &str) -> MessageParam {
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new(tool_use_id, "result"),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                tool_use_id,
+                "result",
+            ))]),
         }
     }
 

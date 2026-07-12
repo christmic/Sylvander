@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -62,8 +62,7 @@ impl AgentHandle {
         if self.status == target {
             return true;
         }
-        let deadline =
-            tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -300,8 +299,11 @@ impl AgentRunEngine {
 
         // Notify each agent to join via the bus
         for agent_id in agent_ids {
-            let join_msg =
-                BusMessage::system_join_session(agent_id.clone(), session_id.clone(), metadata.clone());
+            let join_msg = BusMessage::system_join_session(
+                agent_id.clone(),
+                session_id.clone(),
+                metadata.clone(),
+            );
             self.bus
                 .publish(join_msg)
                 .await
@@ -315,10 +317,7 @@ impl AgentRunEngine {
             agents: agent_ids.to_vec(),
             created_at: crate::session::now_secs(),
         };
-        self.sessions
-            .write()
-            .await
-            .insert(session_id.clone(), meta);
+        self.sessions.write().await.insert(session_id.clone(), meta);
 
         info!(session_id = %session_id, "session created");
         Ok(session_id)
@@ -500,13 +499,10 @@ mod tests {
             .expect("create_session");
 
         // Agent should receive JoinSession
-        let msg = tokio::time::timeout(
-            tokio::time::Duration::from_secs(2),
-            observer.recv(),
-        )
-        .await
-        .expect("timeout")
-        .expect("should receive JoinSession");
+        let msg = tokio::time::timeout(tokio::time::Duration::from_secs(2), observer.recv())
+            .await
+            .expect("timeout")
+            .expect("should receive JoinSession");
 
         assert!(matches!(
             msg.kind,
@@ -526,11 +522,7 @@ mod tests {
         let engine = AgentRunEngine::new(bus);
 
         let err = engine
-            .send_message(
-                SessionId::new("nonexistent"),
-                Recipient::Broadcast,
-                "hello",
-            )
+            .send_message(SessionId::new("nonexistent"), Recipient::Broadcast, "hello")
             .await
             .unwrap_err();
 

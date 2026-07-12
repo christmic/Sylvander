@@ -87,8 +87,8 @@ pub mod plan_gate;
 pub mod run;
 pub mod session;
 pub mod session_store;
-pub mod task_gate;
 pub mod spec;
+pub mod task_gate;
 pub mod tool;
 pub mod tool_context;
 pub mod tools;
@@ -97,34 +97,36 @@ pub mod tools;
 /// Populated as each module lands in subsequent commits.
 pub mod prelude {
     pub use crate::bus::{
-        AgentStatus, BusError, BusMessage, InProcessMessageBus, MessageBus, MessageId,
-        MessageKind, Recipient, Sender, StreamEvent, SubscriptionFilter, SystemMessage,
+        AgentStatus, BusError, BusMessage, InProcessMessageBus, MessageBus, MessageId, MessageKind,
+        Recipient, Sender, StreamEvent, SubscriptionFilter, SystemMessage,
     };
     pub use crate::compress::{
-        layer::{first_failure, total_condensed, total_freed, total_removed, CompressionLayer, LayerReport},
+        AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext, DEFAULT_SUMMARY_PROMPT,
+        layer::{
+            CompressionLayer, LayerReport, first_failure, total_condensed, total_freed,
+            total_removed,
+        },
         pipeline::CompressionPipeline,
-        AgentLoopAutoCompactLlm, AutoCompactLlm, CompressContext,
-        DEFAULT_SUMMARY_PROMPT,
     };
     pub use crate::engine::{AgentHandle, AgentRunEngine, EngineError, SessionMeta};
     pub use crate::error::AgentLoopError;
     pub use crate::event::AgentEvent;
     pub use crate::loop_::{
-        run, run_stream, run_with_events, AgentLoop, AgentLoopBuilder, AgentLoopResult,
+        AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };
     pub use crate::run::{AgentRun, AgentRunBuilder, AgentRunError};
     pub use crate::session::{SessionContext, SessionMetadata};
     pub use crate::spec::{
-        AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig,
-        MemoryStoreConfig, ModelConfig, PersonaConfig, SessionId, ToolRef,
+        AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
+        ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolRegistry};
     pub use crate::tool_context::ToolContext;
-    pub use sylvander_protocol::types::UserId;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
         MemoryWriteTool, PresentPlanTool, ReadTool, StartBackgroundTaskTool, UpdatePlanTool,
         WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
+    pub use sylvander_protocol::types::UserId;
 }

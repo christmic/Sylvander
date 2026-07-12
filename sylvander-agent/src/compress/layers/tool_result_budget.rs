@@ -24,9 +24,9 @@ use sylvander_llm_anthropic::api::types::{
     MessageParam, ToolResultContent, UserContent, UserContentBlock,
 };
 
+use crate::compress::CompressContext;
 use crate::compress::disk::ToolResultDisk;
 use crate::compress::layer::{CompressionLayer, LayerReport};
-use crate::compress::CompressContext;
 
 /// Default max inline chars before a `tool_result` is offloaded to disk.
 /// ~5k chars ≈ 1.25k tokens — well below attention-noise territory
@@ -240,9 +240,10 @@ mod tests {
     fn user_msg_with_tool_result(tool_use_id: &str, body: &str) -> MessageParam {
         MessageParam {
             role: MessageRole::User,
-            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(
-                ToolResultBlock::new(tool_use_id, body),
-            )]),
+            content: UserContent::Blocks(vec![UserContentBlock::ToolResult(ToolResultBlock::new(
+                tool_use_id,
+                body,
+            ))]),
         }
     }
 
