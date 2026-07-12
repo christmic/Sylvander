@@ -13,6 +13,7 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
 | `SYLVANDER_TUI_RENDER_FPS` | `30` | 5–120 | Maximum coalesced service render rate |
 | `SYLVANDER_TUI_ANIMATION_MS` | `200` | 50–2000 | Low-frequency animation/status heartbeat |
+| `SYLVANDER_TUI_RECONNECT_MS` | `1500` | 250–30000 | Retry interval after the Agent service disconnects |
 | `SYLVANDER_TUI_MOUSE_SCROLL_LINES` | `4` | 1–40 | Transcript rows per mouse-wheel event |
 
 Invalid values fail at startup with a concrete configuration error.
