@@ -87,6 +87,7 @@ pub mod plan_gate;
 pub mod run;
 pub mod session;
 pub mod session_store;
+pub mod task_gate;
 pub mod spec;
 pub mod tool;
 pub mod tool_context;
@@ -122,7 +123,7 @@ pub mod prelude {
     pub use sylvander_protocol::types::UserId;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
-        MemoryWriteTool, PresentPlanTool, ReadTool, WriteTool,
+        MemoryWriteTool, PresentPlanTool, ReadTool, StartBackgroundTaskTool, WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
 }

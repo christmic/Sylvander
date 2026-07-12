@@ -146,6 +146,20 @@ impl ToolRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<dyn Tool>)> {
         self.tools.iter().map(|(k, v)| (k.as_str(), v))
     }
+
+    /// Clone a registry containing only explicitly allowed tool names.
+    /// Used to give background work a smaller capability set than its parent.
+    #[must_use]
+    pub fn retain_named(&self, allowed: &[&str]) -> Self {
+        Self {
+            tools: self
+                .tools
+                .iter()
+                .filter(|(name, _)| allowed.contains(&name.as_str()))
+                .map(|(name, tool)| (name.clone(), tool.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// Wire-format `Tool` definitions for the LLM request, with prompt

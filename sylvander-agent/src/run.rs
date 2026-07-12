@@ -39,6 +39,7 @@ use crate::bus::{
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
+use crate::task_gate::TaskGate;
 use crate::session::{now_secs, SessionContext, SessionMetadata};
 use crate::session_store::{MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession};
 use crate::spec::{AgentId, AgentSpec, SessionId};
@@ -78,6 +79,8 @@ pub(crate) struct AgentRunInner {
     pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
     /// Pending typed plan decisions (shared with BusPlanGate).
     pending_plans: Arc<Mutex<HashMap<String, PendingPlan>>>,
+    /// Independently cancellable read-only background runs.
+    background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
     /// Per-session concurrency locks (M12).
     session_locks: Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
     /// One cancellation sender per session that currently owns its execution
@@ -101,6 +104,11 @@ struct PendingAnswer {
 struct PendingPlan {
     session_id: SessionId,
     sender: oneshot::Sender<crate::bus::PlanDecision>,
+}
+
+struct ActiveBackgroundTask {
+    session_id: SessionId,
+    cancel: oneshot::Sender<()>,
 }
 
 struct ActiveTurn {
@@ -201,6 +209,10 @@ impl AgentRun {
                 MessageKind::System(sys_msg) => match sys_msg {
                     SystemMessage::Stop => {
                         info!(agent_id = %self.inner.id, "received stop");
+                        let mut tasks = self.inner.background_tasks.lock().await;
+                        for (_, task) in tasks.drain() {
+                            let _ = task.cancel.send(());
+                        }
                         break;
                     }
                     SystemMessage::JoinSession { session_id, metadata } => {
@@ -213,6 +225,17 @@ impl AgentRun {
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         self.inner.sessions.write().await.remove(session_id);
+                        let mut tasks = self.inner.background_tasks.lock().await;
+                        let task_ids = tasks
+                            .iter()
+                            .filter(|(_, task)| &task.session_id == session_id)
+                            .map(|(task_id, _)| task_id.clone())
+                            .collect::<Vec<_>>();
+                        for task_id in task_ids {
+                            if let Some(task) = tasks.remove(&task_id) {
+                                let _ = task.cancel.send(());
+                            }
+                        }
                         info!(agent_id = %self.inner.id, %session_id, "left session");
                     }
                     SystemMessage::StatusUpdate { .. } => {}
@@ -247,6 +270,14 @@ impl AgentRun {
                         let mut pending = self.inner.pending_plans.lock().await;
                         if let Some(request) = pending.remove(plan_id) {
                             let _ = request.sender.send(decision.clone());
+                        }
+                    }
+                    SystemMessage::CancelTask { session_id, task_id } => {
+                        let mut tasks = self.inner.background_tasks.lock().await;
+                        if tasks.get(task_id).is_some_and(|task| &task.session_id == session_id) {
+                            if let Some(task) = tasks.remove(task_id) {
+                                let _ = task.cancel.send(());
+                            }
                         }
                     }
                 },
@@ -502,6 +533,116 @@ impl PlanGate for BusPlanGate {
     }
 }
 
+// ===========================================================================
+// BusTaskGate — isolated, read-only background investigation
+// ===========================================================================
+
+struct BusTaskGate {
+    bus: Arc<dyn MessageBus>,
+    agent_id: AgentId,
+    session_id: SessionId,
+    loop_config: AgentLoop,
+    tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
+}
+
+#[async_trait::async_trait]
+impl TaskGate for BusTaskGate {
+    async fn start(&self, purpose: String, prompt: String) -> Result<String, String> {
+        if prompt.trim().is_empty() {
+            return Err("background task prompt cannot be empty".into());
+        }
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let (cancel, mut cancelled) = oneshot::channel();
+        self.tasks.lock().await.insert(
+            task_id.clone(),
+            ActiveBackgroundTask {
+                session_id: self.session_id.clone(),
+                cancel,
+            },
+        );
+        let _ = self.bus.publish(BusMessage::stream_event(
+            self.session_id.clone(),
+            self.agent_id.clone(),
+            StreamEvent::TaskStarted {
+                task_id: task_id.clone(),
+                owner: self.agent_id.0.clone(),
+                purpose,
+            },
+        )).await;
+
+        let bus = self.bus.clone();
+        let agent_id = self.agent_id.clone();
+        let session_id = self.session_id.clone();
+        let loop_config = self.loop_config.clone();
+        let tasks = self.tasks.clone();
+        let running_id = task_id.clone();
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+            let history = vec![
+                sylvander_llm_anthropic::api::types::MessageParam::user(prompt),
+            ];
+            let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = &mut cancelled => {
+                        let _ = bus.publish(BusMessage::stream_event(
+                            session_id.clone(),
+                            agent_id.clone(),
+                            StreamEvent::TaskCancelled {
+                                task_id: running_id.clone(),
+                                reason: "cancelled by user".into(),
+                            },
+                        )).await;
+                        break;
+                    }
+                    event = stream.next() => event,
+                };
+                let Some(event) = event else { break };
+                let public = match event {
+                    crate::event::AgentEvent::IterationStart { iteration } => {
+                        Some(StreamEvent::TaskProgress {
+                            task_id: running_id.clone(),
+                            message: format!("iteration {iteration}"),
+                        })
+                    }
+                    crate::event::AgentEvent::ToolCallStart { name, .. } => {
+                        Some(StreamEvent::TaskProgress {
+                            task_id: running_id.clone(),
+                            message: format!("running {name}"),
+                        })
+                    }
+                    crate::event::AgentEvent::Done(message) => {
+                        Some(StreamEvent::TaskCompleted {
+                            task_id: running_id.clone(),
+                            summary: message.text(),
+                        })
+                    }
+                    crate::event::AgentEvent::Error(error) => Some(StreamEvent::TaskFailed {
+                        task_id: running_id.clone(),
+                        error: error.to_string(),
+                    }),
+                    _ => None,
+                };
+                let terminal = matches!(
+                    public,
+                    Some(StreamEvent::TaskCompleted { .. } | StreamEvent::TaskFailed { .. })
+                );
+                if let Some(event) = public {
+                    let _ = bus.publish(BusMessage::stream_event(
+                        session_id.clone(),
+                        agent_id.clone(),
+                        event,
+                    )).await;
+                }
+                if terminal { break }
+            }
+            tasks.lock().await.remove(&running_id);
+        });
+        Ok(task_id)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AgentRunInner — the actual implementation
 // ---------------------------------------------------------------------------
@@ -718,6 +859,20 @@ impl AgentRunInner {
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
         }));
+        let mut background_loop = self.loop_config.clone();
+        background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
+        background_loop.tool_definitions = background_loop.tools.definitions();
+        background_loop.approval_gate = None;
+        background_loop.ask_user_gate = None;
+        background_loop.plan_gate = None;
+        background_loop.task_gate = None;
+        loop_config.task_gate = Some(Arc::new(BusTaskGate {
+            bus: self.bus.clone(),
+            agent_id: self.id.clone(),
+            session_id: session_id.clone(),
+            loop_config: background_loop,
+            tasks: self.background_tasks.clone(),
+        }));
 
         // 3. Run loop with streaming
         use futures_util::StreamExt;
@@ -751,7 +906,7 @@ impl AgentRunInner {
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ThinkingDelta { delta: text }).await;
                 }
                 crate::event::AgentEvent::ToolCallStart { id, name, input } => {
-                    if name == "present_plan" {
+                    if name == "present_plan" || name == "start_background_task" {
                         continue;
                     }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolCall {
@@ -759,7 +914,7 @@ impl AgentRunInner {
                     }).await;
                 }
                 crate::event::AgentEvent::ToolCallEnd { id, name, output, is_error } => {
-                    if name == "present_plan" {
+                    if name == "present_plan" || name == "start_background_task" {
                         continue;
                     }
                     self.publish_stream(&session_id, crate::bus::StreamEvent::ToolResult {
@@ -1002,6 +1157,7 @@ impl AgentRunBuilder {
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
                 pending_answers: Arc::new(Mutex::new(HashMap::new())),
                 pending_plans: Arc::new(Mutex::new(HashMap::new())),
+                background_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
                 tool_context: run_tool_context,
