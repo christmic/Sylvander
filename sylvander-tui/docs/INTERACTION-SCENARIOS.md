@@ -60,6 +60,7 @@ arguments. Invalid arguments remain in the command line with an inline error.
 | `/theme <name>` | Switches semantic palette without changing layout |
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
 | `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
+| `/permissions` | Edits workspace filesystem, network, and approval policy for the next turn |
 | `/status` | Appends model, branch, session, iteration, and token usage |
 | `/quit` | Saves input history and exits |
 
@@ -69,6 +70,13 @@ the selected model. `Enter` sends one typed selection request. The Agent validat
 the pair and the Unix service returns updated runtime truth; status and Welcome
 change only after that acknowledgement. A selection made during active work is
 applied to the next turn because every turn owns an immutable model snapshot.
+
+The permissions picker is likewise server-backed and turn-scoped. Filesystem
+access is `none`, `read only`, or `workspace write`; the root remains the active
+session workspace and cannot be replaced by the TUI. Network is denied or
+allowed through `ToolContext`. Approval is ask, allow, or deny; ask is omitted
+when the server operator did not enable approval prompts. The Agent constructs a
+fresh tool context from the acknowledged profile at the start of every turn.
 
 ## Approval
 
