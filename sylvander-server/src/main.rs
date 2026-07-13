@@ -1,364 +1,228 @@
-//! Sylvander server — boots the agent system with channels.
+//! Sylvander server composition root.
 
-use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
-use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
-use sylvander_agent::spec::{AgentSpec, BehaviorConfig, PersonaConfig, ToolRef};
-use sylvander_agent::tool::ToolRegistry;
-use sylvander_agent::tools::memory::InMemoryMemoryStore;
-use sylvander_agent::tools::{EditTool, MemoryReadTool, ReadTool, WriteTool};
+use sylvander_agent::bus::{
+    ApprovalPolicy, FileAccess, ModelDescriptor, ModelLifecycle, NetworkAccess, PermissionProfile,
+    PlatformSnapshot, ReasoningEffort,
+};
+use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
-use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_runtime::Runtime;
+use sylvander_runtime::config::{
+    ChannelTransportConfig, SecretResolver, ServerConfig, SystemSecretResolver,
+};
 use tracing::info;
 
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.into())
-}
-
-fn session_db_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("SYLVANDER_SESSION_DB") {
-        return path.into();
-    }
-    std::env::var("XDG_DATA_HOME")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|home| std::path::PathBuf::from(home).join(".local/share"))
-        })
-        .unwrap_or_else(|| std::path::PathBuf::from(".local/share"))
-        .join("sylvander")
-        .join("sessions.db")
-}
-
-fn workspace_journal_path() -> std::path::PathBuf {
-    std::env::var("SYLVANDER_WORKSPACE_JOURNAL")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            session_db_path()
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("workspace-journal")
-        })
-}
-
-fn require_env(key: &str) -> String {
-    let v = std::env::var(key).unwrap_or_else(|_| {
-        eprintln!(
-            "ERROR: {key} must be set. Export it or source sylvander.env before launching the server."
-        );
-        std::process::exit(1);
-    });
-    if v.trim().is_empty() {
-        eprintln!("ERROR: {key} is set but empty — refusing to start. Provide a non-empty value.");
-        std::process::exit(1);
-    }
-    v
-}
-
-fn comma_values(key: &str) -> Vec<String> {
-    std::env::var(key)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(String::from)
-        .collect()
-}
-
-fn model_lifecycles() -> HashMap<String, sylvander_agent::bus::ModelLifecycle> {
-    comma_values("SYLVANDER_DEPRECATED_MODELS")
-        .into_iter()
-        .map(|entry| {
-            let (model, replacement) =
-                entry
-                    .split_once('=')
-                    .map_or((entry.as_str(), None), |(model, replacement)| {
-                        let replacement = replacement.trim();
-                        (
-                            model,
-                            (!replacement.is_empty()).then(|| replacement.to_string()),
-                        )
-                    });
-            (
-                model.trim().to_string(),
-                sylvander_agent::bus::ModelLifecycle::Deprecated { replacement },
-            )
-        })
-        .filter(|(model, _)| !model.is_empty())
-        .collect()
-}
-
-fn usd_micros(value: &str) -> Result<u64, String> {
-    let value = value.trim();
-    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|byte| byte.is_ascii_digit())
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-        || fraction.len() > 6
-    {
-        return Err(format!("invalid USD price `{value}`"));
-    }
-    let whole = whole
-        .parse::<u64>()
-        .map_err(|_| format!("USD price `{value}` is too large"))?;
-    let fraction = format!("{fraction:0<6}")
-        .parse::<u64>()
-        .map_err(|_| format!("invalid USD price `{value}`"))?;
-    whole
-        .checked_mul(1_000_000)
-        .and_then(|amount| amount.checked_add(fraction))
-        .ok_or_else(|| format!("USD price `{value}` is too large"))
-}
-
-fn model_pricing() -> Result<HashMap<String, sylvander_agent::bus::ModelPricing>, String> {
-    comma_values("SYLVANDER_MODEL_PRICING")
-        .into_iter()
-        .map(|entry| {
-            let (model, rates) = entry
-                .split_once('=')
-                .ok_or_else(|| format!("pricing entry `{entry}` must be model=input:output"))?;
-            let rates = rates.split(':').collect::<Vec<_>>();
-            if model.trim().is_empty() || !(2..=4).contains(&rates.len()) {
-                return Err(format!(
-                    "pricing entry `{entry}` must be model=input:output[:cache_write:cache_read]"
-                ));
-            }
-            let optional = |index: usize| {
-                rates
-                    .get(index)
-                    .copied()
-                    .filter(|value| !value.trim().is_empty())
-                    .map(|value| usd_micros(value))
-                    .transpose()
-            };
-            Ok((
-                model.trim().to_string(),
-                sylvander_agent::bus::ModelPricing {
-                    input_usd_micros_per_million: usd_micros(rates[0])?,
-                    output_usd_micros_per_million: usd_micros(rates[1])?,
-                    cache_write_usd_micros_per_million: optional(2)?,
-                    cache_read_usd_micros_per_million: optional(3)?,
-                },
-            ))
-        })
-        .collect()
-}
-
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), ServerError> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
-    info!("sylvander server starting");
-
-    // API key + base URL + model are MANDATORY env vars — never hardcoded.
-    // Operators pick the upstream gateway AND the model id (different
-    // gateways expose different model name sets). Required at startup so a
-    // missing or wrong configuration fails fast instead of mid-flight.
-    let model_name = require_env("SYLVANDER_MODEL");
-    let api_key = require_env("ANTHROPIC_API_KEY");
-    let base_url = require_env("ANTHROPIC_BASE_URL");
-    let client = AnthropicClient::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .build()
-        .expect("client");
+    let config = load_config()?;
+    let runtime = Runtime::boot_config(config.clone()).await?;
+    let channels = build_channels(&config, &runtime)?;
+    let channel_count = channels.len();
+    runtime.start_channels(channels);
     info!(
-        model = %model_name,
-        base_url = %client.base_url(),
-        "anthropic client ready"
+        server = %config.server.name,
+        agents = config.agents.len(),
+        channels = channel_count,
+        "sylvander server running"
     );
 
-    let spec = AgentSpec::builder()
-        .id("assistant")
-        .name("Assistant")
-        .persona(PersonaConfig {
-            system_prompt: "You are a helpful assistant. You can read/write/edit files, search memory with read_memory, and ask the user clarifying questions with ask_user. Use ask_user when you need a decision, missing info, or confirmation before proceeding. Pass `options` to constrain to choices, or omit for free-text. Use `multi_select: true` to allow multiple choices.".into(),
-            description: "Default assistant".into(),
-        })
-        .model(sylvander_agent::spec::ModelConfig {
-            model_name: model_name.clone(),
-            ..Default::default()
-        })
-        .tools(vec![
-            ToolRef::Builtin { name: "read".into() },
-            ToolRef::Builtin { name: "write".into() },
-            ToolRef::Builtin { name: "edit".into() },
-        ])
-        .behavior(BehaviorConfig { max_iterations: 30, max_retries: 3 })
-        .build()
-        .expect("spec");
-
-    let reasoning_models = comma_values("SYLVANDER_REASONING_MODELS")
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let mut model_names = comma_values("SYLVANDER_MODELS");
-    if !model_names.iter().any(|model| model == &model_name) {
-        model_names.insert(0, model_name.clone());
-    }
-    let available_models = model_names
-        .into_iter()
-        .map(|id| {
-            let mut capabilities = ModelCapabilities::TOOL_USE | ModelCapabilities::VISION;
-            if reasoning_models.contains(&id) {
-                capabilities |= ModelCapabilities::EXTENDED_THINKING;
-            }
-            ModelInfo::builder()
-                .id(id)
-                .context_window(200_000)
-                .max_output_tokens(32_000)
-                .capabilities(capabilities)
-                .build()
-                .expect("model")
-        })
-        .collect::<Vec<_>>();
-    let model = available_models
-        .iter()
-        .find(|model| model.id == model_name)
-        .expect("primary model is in catalog")
-        .clone();
-
-    let memory = Arc::new(InMemoryMemoryStore::new());
-    let tools = ToolRegistry::new()
-        .register(ReadTool::new("/"))
-        .register(WriteTool::new("/"))
-        .register(EditTool::new("/"))
-        .register(MemoryReadTool::new(memory))
-        .register(sylvander_agent::tools::AskUserTool::new())
-        .register(sylvander_agent::tools::PresentPlanTool::new())
-        .register(sylvander_agent::tools::UpdatePlanTool::new())
-        .register(sylvander_agent::tools::StartBackgroundTaskTool::new());
-
-    let bus = Arc::new(InProcessMessageBus::new());
-
-    let session_db = session_db_path();
-    if let Some(parent) = session_db.parent() {
-        std::fs::create_dir_all(parent).expect("create session database directory");
-    }
-    let session_store: Arc<dyn sylvander_agent::session_store::SessionStore> = Arc::new(
-        sylvander_agent::session_store::SqliteSessionStore::open(&session_db)
-            .await
-            .expect("open persistent session store"),
-    );
-    info!(path = %session_db.display(), "persistent session store ready");
-
-    let mut run_builder = sylvander_agent::run::AgentRun::builder(spec.clone(), client.clone())
-        .bus(bus.clone())
-        .session_store(session_store.clone())
-        .override_tools(tools)
-        .available_models(available_models)
-        .workspace_journal(workspace_journal_path())
-        .model_lifecycles(model_lifecycles())
-        .model_pricing(model_pricing().unwrap_or_else(|error| {
-            eprintln!("ERROR: SYLVANDER_MODEL_PRICING: {error}");
-            std::process::exit(1);
-        }))
-        .model_capabilities(model.capabilities);
-
-    let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();
-    if approval_enabled {
-        run_builder = run_builder.enable_approval();
-        if let Ok(path) = std::env::var("SYLVANDER_APPROVAL_STORE") {
-            run_builder = run_builder.approval_store(path);
-        }
-    }
-
-    let run = run_builder.build().expect("agent build");
-    let runtime_control = run.clone();
-    let agent_id = run.id().clone();
-    let filter = run.subscription_filter();
-    let inbox = bus.subscribe(filter).await.expect("subscribe");
-    let _agent_task = tokio::spawn(async move { run.run(inbox).await });
-
-    info!(%agent_id, "agent spawned");
-
-    // DingTalk channel
-    let dt_key = std::env::var("DINGTALK_APP_KEY");
-    let dt_secret = std::env::var("DINGTALK_APP_SECRET");
-
-    if let (Ok(app_key), Ok(app_secret)) = (dt_key, dt_secret) {
-        let channel = Arc::new(sylvander_channel_dingtalk::DingTalkChannel::new(
-            &app_key,
-            &app_secret,
-        ));
-        let ctx = sylvander_channel::ChannelContext {
-            bus: bus.clone(),
-            sessions: session_store.clone(),
-        };
-        tokio::spawn(async move { channel.run(ctx).await });
-        info!("dingtalk channel started");
-    } else {
-        info!("dingtalk not configured (set DINGTALK_APP_KEY + DINGTALK_APP_SECRET)");
-    }
-
-    // HTTP debug channel
-    let http_addr: std::net::SocketAddr = env_or("HTTP_ADDR", "127.0.0.1:8080").parse().unwrap();
-    let http_channel = Arc::new(sylvander_channel_http::HttpChannel::new(
-        http_addr,
-        agent_id.clone(),
-    ));
-    let http_ctx = sylvander_channel::ChannelContext {
-        bus: bus.clone(),
-        sessions: session_store.clone(),
-    };
-    tokio::spawn(async move { http_channel.run(http_ctx).await });
-    info!(addr = %http_addr, "http channel started — curl http://{http_addr}/health");
-
-    // Unix socket channel (for sylvander-tui)
-    let socket_path =
-        std::env::var("SYLVANDER_SOCKET").unwrap_or_else(|_| "/tmp/sylvander.sock".to_string());
-    let unix_channel = Arc::new(
-        sylvander_channel_unix::UnixChannel::new(socket_path.clone(), agent_id.clone())
-            .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
-                model: model.id.clone(),
-                reasoning_effort: sylvander_agent::bus::ReasoningEffort::Off,
-                models: Vec::new(),
-                permissions: sylvander_agent::bus::PermissionProfile {
-                    file_access: sylvander_agent::bus::FileAccess::WorkspaceWrite,
-                    network_access: sylvander_agent::bus::NetworkAccess::Denied,
-                    approval_policy: if approval_enabled {
-                        sylvander_agent::bus::ApprovalPolicy::Ask
-                    } else {
-                        sylvander_agent::bus::ApprovalPolicy::Allow
-                    },
-                },
-                capabilities: model.capabilities.bits(),
-                approval_enabled,
-                max_attachment_bytes: 512 * 1024,
-                platform: sylvander_agent::bus::PlatformSnapshot::default(),
-            })
-            .with_runtime_control(runtime_control),
-    );
-    let unix_ctx = sylvander_channel::ChannelContext {
-        bus: bus.clone(),
-        sessions: session_store.clone(),
-    };
-    tokio::spawn(async move { unix_channel.run(unix_ctx).await });
-    info!(path = %socket_path, "unix channel started — sylvander-tui can connect here");
-
-    info!("sylvander server running — Ctrl+C to stop");
-    tokio::signal::ctrl_c().await.expect("ctrl_c");
-    info!("shutting down...");
-    _agent_task.abort();
-    info!("stopped");
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| ServerError::Signal(error.to_string()))?;
+    info!("shutdown signal received");
+    runtime.shutdown().await?;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn usd_price_parser_is_exact_and_rejects_excess_precision() {
-        assert_eq!(usd_micros("3"), Ok(3_000_000));
-        assert_eq!(usd_micros("0.125"), Ok(125_000));
-        assert!(usd_micros("0.1234567").is_err());
-        assert!(usd_micros("-1").is_err());
+fn load_config() -> Result<ServerConfig, ServerError> {
+    if let Some(path) = std::env::var_os("SYLVANDER_CONFIG") {
+        let path = Path::new(&path);
+        let config = ServerConfig::load(path)?;
+        info!(path = %path.display(), "server configuration loaded");
+        Ok(config)
+    } else {
+        info!("SYLVANDER_CONFIG is unset; migrating legacy environment");
+        ServerConfig::from_legacy_env().map_err(ServerError::from)
     }
+}
+
+fn build_channels(
+    config: &ServerConfig,
+    runtime: &Runtime,
+) -> Result<Vec<Arc<dyn Channel>>, ServerError> {
+    let secrets = SystemSecretResolver;
+    config
+        .channels
+        .iter()
+        .filter(|channel| channel.enabled)
+        .map(|channel| {
+            let agent_id = AgentId::new(&channel.default_agent);
+            let agent = runtime
+                .configured_agent(&agent_id)
+                .ok_or_else(|| ServerError::UnknownAgent(channel.default_agent.clone()))?;
+            let result: Arc<dyn Channel> = match &channel.transport {
+                ChannelTransportConfig::Unix { path } => {
+                    let primary = agent
+                        .models
+                        .iter()
+                        .find(|model| model.id == agent.spec.model.model_name)
+                        .ok_or_else(|| ServerError::UnknownModel(agent.spec.model.model_name.clone()))?;
+                    let models = agent
+                        .models
+                        .iter()
+                        .map(|model| ModelDescriptor {
+                            id: model.id.clone(),
+                            provider: agent.spec.model.provider.clone(),
+                            capabilities: model.capabilities.bits(),
+                            reasoning_efforts: if model
+                                .capabilities
+                                .contains(sylvander_llm_anthropic::api::model::ModelCapabilities::EXTENDED_THINKING)
+                            {
+                                vec![ReasoningEffort::Off, ReasoningEffort::Low, ReasoningEffort::Medium, ReasoningEffort::High]
+                            } else {
+                                vec![ReasoningEffort::Off]
+                            },
+                            lifecycle: ModelLifecycle::Active,
+                            pricing: None,
+                        })
+                        .collect();
+                    Arc::new(
+                        sylvander_channel_unix::UnixChannel::new(path, agent_id)
+                            .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
+                                model: primary.id.clone(),
+                                reasoning_effort: ReasoningEffort::Off,
+                                models,
+                                permissions: PermissionProfile {
+                                    file_access: FileAccess::WorkspaceWrite,
+                                    network_access: NetworkAccess::Denied,
+                                    approval_policy: if agent.approval_enabled {
+                                        ApprovalPolicy::Ask
+                                    } else {
+                                        ApprovalPolicy::Allow
+                                    },
+                                },
+                                capabilities: primary.capabilities.bits(),
+                                approval_enabled: agent.approval_enabled,
+                                max_attachment_bytes: 512 * 1024,
+                                platform: PlatformSnapshot::default(),
+                            })
+                            .with_runtime_control(agent.run.clone()),
+                    )
+                }
+                ChannelTransportConfig::Http { bind } => Arc::new(
+                    sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id),
+                ),
+                ChannelTransportConfig::Websocket { bind } => Arc::new(
+                    sylvander_channel_ws::WsChannel::new(parse_addr(bind)?, agent_id),
+                ),
+                ChannelTransportConfig::DingTalk {
+                    app_key,
+                    app_secret,
+                } => Arc::new(sylvander_channel_dingtalk::DingTalkChannel::new(
+                    resolve_text(&secrets, app_key, &channel.id)?,
+                    resolve_text(&secrets, app_secret, &channel.id)?,
+                )),
+                ChannelTransportConfig::Telegram {
+                    token,
+                    bind,
+                    webhook_secret,
+                } => Arc::new(
+                    sylvander_channel_telegram::TelegramChannel::new(
+                        resolve_text(&secrets, token, &channel.id)?,
+                        parse_addr(bind)?,
+                        agent_id,
+                    )
+                    .with_webhook_secret(resolve_text(
+                        &secrets,
+                        webhook_secret,
+                        &channel.id,
+                    )?),
+                ),
+                ChannelTransportConfig::Wechat {
+                    bind,
+                    corp_id,
+                    secret,
+                    token,
+                    encoding_aes_key,
+                    ..
+                } => {
+                    // Resolve the API credential now so startup fails before
+                    // accepting traffic; outbound WeChat API support consumes it later.
+                    let _api_secret = resolve_text(&secrets, secret, &channel.id)?;
+                    Arc::new(
+                        sylvander_channel_wechat::WechatChannel::new(
+                            resolve_text(&secrets, token, &channel.id)?,
+                            resolve_text(&secrets, encoding_aes_key, &channel.id)?,
+                            corp_id.clone(),
+                            parse_addr(bind)?,
+                            agent_id,
+                        )
+                        .map_err(|message| ServerError::Channel {
+                            id: channel.id.clone(),
+                            message,
+                        })?,
+                    )
+                }
+            };
+            info!(instance = %channel.id, kind = result.name(), "channel configured");
+            Ok(result)
+        })
+        .collect()
+}
+
+fn resolve_text(
+    resolver: &dyn SecretResolver,
+    reference: &sylvander_runtime::config::SecretRef,
+    channel_id: &str,
+) -> Result<String, ServerError> {
+    let secret = resolver
+        .resolve(reference)
+        .map_err(|error| ServerError::Channel {
+            id: channel_id.to_string(),
+            message: error.to_string(),
+        })?;
+    secret
+        .as_str()
+        .map(str::to_string)
+        .map_err(|error| ServerError::Channel {
+            id: channel_id.to_string(),
+            message: error.to_string(),
+        })
+}
+
+fn parse_addr(value: &str) -> Result<SocketAddr, ServerError> {
+    value
+        .parse()
+        .map_err(|error: std::net::AddrParseError| ServerError::Address {
+            value: value.to_string(),
+            message: error.to_string(),
+        })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ServerError {
+    #[error(transparent)]
+    Config(#[from] sylvander_runtime::config::ConfigError),
+    #[error(transparent)]
+    Runtime(#[from] sylvander_runtime::RuntimeError),
+    #[error("configured channel references unavailable Agent `{0}`")]
+    UnknownAgent(String),
+    #[error("configured Agent references unavailable model `{0}`")]
+    UnknownModel(String),
+    #[error("channel `{id}` failed: {message}")]
+    Channel { id: String, message: String },
+    #[error("invalid socket address `{value}`: {message}")]
+    Address { value: String, message: String },
+    #[error("failed to wait for shutdown signal: {0}")]
+    Signal(String),
 }
