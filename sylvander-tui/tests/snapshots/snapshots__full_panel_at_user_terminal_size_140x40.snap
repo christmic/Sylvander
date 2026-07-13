@@ -3,6 +3,18 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 782
 expression: "render_buf(s, 140, 40)"
 ---
+                     ⢀⣠⢠⡖                                                                                                                   
+                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                                                   
+                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀                   agent workspace                                                                             
+             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄                                                                                                            
+      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀              model     —                                                                                 
+  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿              workspace ~/workspace                                                                       
+   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆             branch    —                                                                                 
+   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀        session   new                                                                               
+ ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                                                                                   
+ ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                                                
+   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                                                   
+                                                                                                                                            
 ❯ Add JWT auth middleware                                                                                                                   
 ⏺ Run `ls`     00s                                                                                                                          
   ⎿  $ ls src/http  router.rs                                                                                                               
@@ -10,18 +22,6 @@ expression: "render_buf(s, 140, 40)"
                                                                                                                                             
 ⏺ Inspecting the existing router to understand the auth surface. I see we have a TokenGuard already — let me                                
   check it covers Bearer + API-key.                                                                                                         
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
