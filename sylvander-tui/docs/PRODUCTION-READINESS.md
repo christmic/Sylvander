@@ -107,8 +107,6 @@ completed backend feature.
       and state-derived availability rules.
 - [x] Workspace/user prompt commands use dynamic registration with typed
       effects and visible collision/trust validation.
-- [ ] Runtime extensions can register non-prompt slash effects through an
-      Agent-owned dispatcher.
 
 ## P2 — Platform and operations
 
@@ -118,7 +116,7 @@ completed backend feature.
 - [ ] Skills show source, trust, activation, and reload state.
 - [ ] Hooks show execution, output, failure, and blocking decisions.
 - [ ] Extensions can contribute tools, renderers, and slash commands safely.
-- [ ] Unknown protocol/tool additions degrade visibly, never silently disappear.
+- [x] Unknown protocol/tool additions degrade visibly, never silently disappear.
 
 ### Reliability and diagnostics
 

@@ -125,6 +125,12 @@ state during render. Semantic theme roles are used instead of concrete colors.
 `tool_presenter.rs` and `approval_presenter.rs` are pure semantic formatting
 helpers shared by transcript and decision surfaces.
 
+Tool rendering is forward-compatible by default. Unknown tool names retain
+their call identity, bounded generic input, streamed/final output, and terminal
+status. Sensitive JSON keys and terminal controls are removed before display.
+An output or delta arriving without a matching start synthesizes a visible
+generic step instead of disappearing.
+
 ### `runtime.rs` — orchestration
 
 Owns terminal lifecycle and Tokio scheduling. It connects input, service,

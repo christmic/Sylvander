@@ -118,6 +118,28 @@ fn tool_call_done_with_output() {
 }
 
 #[test]
+fn unknown_tool_degrades_to_a_visible_redacted_step() {
+    let mut state = AppState::new();
+    state.connected = true;
+    state.tool_details_expanded = true;
+    state.apply(DomainEvent::ToolStarted {
+        call_id: "future-call".into(),
+        tool_name: "future_extension_tool".into(),
+        input: serde_json::json!({
+            "operation": "future-mode",
+            "api_token": "must-not-render"
+        }),
+    });
+    state.apply(DomainEvent::ToolFinished {
+        call_id: "future-call".into(),
+        tool_name: "future_extension_tool".into(),
+        output: "structured fallback result".into(),
+        is_error: false,
+    });
+    insta::assert_snapshot!(render_buf(&state, 100, 24));
+}
+
+#[test]
 fn approval_modal_overlays_chat() {
     let mut state = AppState::new();
     state.messages.push(ChatMessage::User("rm -rf /".into()));
