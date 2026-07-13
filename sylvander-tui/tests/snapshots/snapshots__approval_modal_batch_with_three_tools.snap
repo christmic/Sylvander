@@ -3,9 +3,9 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 317
 expression: "render_buf(state, 90, 28)"
 ---
-  > run setup                                                                             
-  ◌ Run `ls`     00s                                                                      
-    ⎿ ◌ $ ls                                                                              
+❯ run setup                                                                               
+⏺ Run `ls`     00s                                                                        
+  ⎿  $ ls                                                                                 
                                                                                           
                                                                                           
                                                                                           
@@ -22,7 +22,7 @@ expression: "render_buf(state, 90, 28)"
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+❯                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ Deny this request                                                                     
   Add guidance for Sylvander (optional).                                                  

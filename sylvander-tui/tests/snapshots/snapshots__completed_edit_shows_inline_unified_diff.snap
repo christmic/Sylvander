@@ -3,16 +3,16 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 152
 expression: "render_buf(state, 90, 26)"
 ---
-  > rename the state                                                                      
-  ✓ Edit file     00s                                                                     
-    ⎿ ✓ Edit src/state.rs                                                                 
-       --- a/src/state.rs                                                                 
-       +++ b/src/state.rs                                                                 
-       @@ -1,2 +1,2 @@                                                                    
-       -let old_name = value;                                                             
-       -return old_name;                                                                  
-       +let state = value;                                                                
-       +return state;                                                                     
+❯ rename the state                                                                        
+⏺ Edit file     00s                                                                       
+  ⎿  Edit src/state.rs                                                                    
+     --- a/src/state.rs                                                                   
+     +++ b/src/state.rs                                                                   
+     @@ -1,2 +1,2 @@                                                                      
+     -let old_name = value;                                                               
+     -return old_name;                                                                    
+     +let state = value;                                                                  
+     +return state;                                                                       
                                                                                           
                                                                                           
                                                                                           
@@ -26,6 +26,6 @@ expression: "render_buf(state, 90, 26)"
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+❯                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
