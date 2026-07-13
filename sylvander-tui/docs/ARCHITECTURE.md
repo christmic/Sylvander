@@ -84,6 +84,12 @@ The wire reader converts malformed or unknown messages into bounded diagnostic
 domain events. Raw message bodies are never copied into diagnostics or logs, so
 future event types remain visible without exposing prompt or credential data.
 
+Optional platform facilities cross the same boundary as a redacted
+`PlatformSnapshot`. It contains semantic status, source/trust labels, auth state,
+and advertised capabilities only. MCP environment values, process arguments,
+and memory paths are never public UI data. A configured facility is not marked
+active until its owning runtime reports that state.
+
 The Unix service owns one session relay per active turn. Relays outlive an
 individual socket, broadcast to every attached client, and retain an ordered,
 4 MiB-bounded replay of the in-flight turn. Reattachment is atomic with relay

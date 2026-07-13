@@ -121,6 +121,74 @@ pub struct RuntimeModelInfo {
     pub models: Vec<ModelDescriptor>,
 }
 
+/// UI-oriented classification for optional Agent platform facilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformFeatureKind {
+    Mcp,
+    Skill,
+    Memory,
+    Hook,
+    Extension,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformFeatureStatus {
+    Active,
+    Configured,
+    Degraded,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformAuthStatus {
+    NotRequired,
+    Configured,
+    Missing,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformTrust {
+    BuiltIn,
+    Workspace,
+    User,
+    External,
+    Unverified,
+}
+
+/// Redacted platform truth intended for status and inspection surfaces. It
+/// deliberately excludes credentials, command arguments, and filesystem paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformFeature {
+    pub kind: PlatformFeatureKind,
+    pub name: String,
+    #[serde(default)]
+    pub status: PlatformFeatureStatus,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<PlatformTrust>,
+    #[serde(default)]
+    pub auth: PlatformAuthStatus,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub reloadable: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformSnapshot {
+    #[serde(default)]
+    pub features: Vec<PlatformFeature>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextSourceKind {
@@ -887,6 +955,26 @@ mod tests {
         .expect("legacy model descriptor");
         assert_eq!(descriptor.lifecycle, ModelLifecycle::Active);
         assert_eq!(descriptor.pricing, None);
+    }
+
+    #[test]
+    fn platform_snapshot_round_trip_keeps_status_semantic() {
+        let snapshot = PlatformSnapshot {
+            features: vec![PlatformFeature {
+                kind: PlatformFeatureKind::Mcp,
+                name: "code search".into(),
+                status: PlatformFeatureStatus::Configured,
+                summary: "configured".into(),
+                source: Some("search-mcp".into()),
+                trust: Some(PlatformTrust::External),
+                auth: PlatformAuthStatus::Configured,
+                capabilities: vec!["tools".into()],
+                reloadable: false,
+            }],
+        };
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let restored: PlatformSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, snapshot);
     }
 
     #[test]

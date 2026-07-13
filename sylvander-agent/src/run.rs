@@ -389,6 +389,89 @@ impl AgentRun {
         self.inner.runtime_permissions.read().await.clone()
     }
 
+    /// Return redacted, read-only platform truth for UI inspection. This does
+    /// not probe or start optional services and never exposes MCP environment
+    /// values or memory store paths.
+    #[must_use]
+    pub fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
+        use sylvander_protocol::{
+            PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus,
+            PlatformTrust,
+        };
+
+        let mut features = self
+            .inner
+            .spec
+            .mcp_servers
+            .iter()
+            .map(|server| PlatformFeature {
+                kind: PlatformFeatureKind::Mcp,
+                name: server.name.clone(),
+                status: PlatformFeatureStatus::Configured,
+                summary: "configured; MCP runtime health is not available".into(),
+                source: std::path::Path::new(&server.command)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string),
+                trust: Some(PlatformTrust::External),
+                auth: if server.envs.is_empty() {
+                    PlatformAuthStatus::NotRequired
+                } else {
+                    PlatformAuthStatus::Configured
+                },
+                capabilities: Vec::new(),
+                reloadable: false,
+            })
+            .collect::<Vec<_>>();
+
+        if self.inner.spec.memory_stores.is_empty() {
+            if self.inner.memory.is_some() {
+                features.push(PlatformFeature {
+                    kind: PlatformFeatureKind::Memory,
+                    name: "runtime memory".into(),
+                    status: PlatformFeatureStatus::Active,
+                    summary: "long-term memory is available".into(),
+                    source: Some("runtime injection".into()),
+                    trust: Some(PlatformTrust::BuiltIn),
+                    auth: PlatformAuthStatus::NotRequired,
+                    capabilities: vec!["search".into(), "system_write".into()],
+                    reloadable: false,
+                });
+            }
+        } else {
+            features.extend(self.inner.spec.memory_stores.iter().enumerate().map(
+                |(index, store)| {
+                    let active = index == 0 && self.inner.memory.is_some();
+                    PlatformFeature {
+                        kind: PlatformFeatureKind::Memory,
+                        name: store.store_type.clone(),
+                        status: if active {
+                            PlatformFeatureStatus::Active
+                        } else {
+                            PlatformFeatureStatus::Unavailable
+                        },
+                        summary: if active {
+                            "long-term memory is available".into()
+                        } else {
+                            "memory store could not be activated".into()
+                        },
+                        source: Some("agent configuration".into()),
+                        trust: Some(PlatformTrust::BuiltIn),
+                        auth: PlatformAuthStatus::NotRequired,
+                        capabilities: if active {
+                            vec!["search".into(), "system_write".into()]
+                        } else {
+                            Vec::new()
+                        },
+                        reloadable: false,
+                    }
+                },
+            ));
+        }
+
+        sylvander_protocol::PlatformSnapshot { features }
+    }
+
     pub async fn context_report(
         &self,
         session_id: Option<&SessionId>,
@@ -2463,6 +2546,49 @@ mod tests {
         assert_eq!(correlation.request_id, request_id);
         assert_eq!(correlation.turn_id, turn_id.to_string());
         assert_eq!(correlation.trace_id, correlation.turn_id);
+    }
+
+    #[test]
+    fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("test-model")
+            .mcp_server_def(crate::spec::McpServerConfig {
+                name: "search".into(),
+                command: "/opt/bin/search-mcp".into(),
+                args: vec!["--token".into(), "also-secret".into()],
+                envs: std::collections::HashMap::from([(
+                    "SEARCH_TOKEN".into(),
+                    "super-secret".into(),
+                )]),
+            })
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .unwrap();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()))
+            .build()
+            .unwrap();
+
+        let snapshot = run.platform_snapshot();
+        assert_eq!(snapshot.features.len(), 2);
+        assert_eq!(
+            snapshot.features[0].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+        assert_eq!(
+            snapshot.features[1].kind,
+            sylvander_protocol::PlatformFeatureKind::Memory
+        );
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(!json.contains("super-secret"));
+        assert!(!json.contains("also-secret"));
+        assert!(!json.contains("/opt/bin"));
     }
 
     #[tokio::test(start_paused = true)]
