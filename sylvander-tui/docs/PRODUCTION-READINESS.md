@@ -139,7 +139,7 @@ completed backend feature.
 
 ## Production gates
 
-- [ ] No visible shortcut or command points to a missing effect.
+- [x] No visible shortcut or command points to a missing effect.
 - [ ] No TUI-only event claims a backend feature is complete.
 - [ ] Public protocol changes remain UI-oriented and transport-neutral.
 - [ ] Agent-loop changes include cancellation, concurrency, and persistence audit.

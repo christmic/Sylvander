@@ -70,8 +70,7 @@ pub const INLINE_PASTE_LINE_LIMIT: usize = 8;
 pub enum AttachmentKind {
     /// Bulk text pasted from the clipboard (≥ `INLINE_PASTE_LINE_LIMIT` lines).
     Paste,
-    /// A file/buffer reference (M-T2.4 — currently only populated by tests;
-    /// production path arrives when file picker lands).
+    /// A UTF-8 workspace file attached by the file mention picker.
     File,
     /// A PNG or JPEG carried as a typed base64 payload.
     Image,

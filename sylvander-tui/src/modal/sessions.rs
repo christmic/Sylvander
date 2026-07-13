@@ -6,9 +6,8 @@
 //! the current view (the Agent switch happens server-side via Chat with
 //! session_id set).
 //!
-//! Data is populated locally as events flow in (each new SessionCreated
-//! pushes an entry). Server-side ListSessions is wired through but
-//! not yet returned by the server (channel-unix logs it as a no-op).
+//! Data is reconciled from the server's persisted session list and refreshed
+//! by lifecycle events received after connection.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{

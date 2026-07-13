@@ -1,16 +1,14 @@
 //! Panel components — render-only regions of the layout.
 //!
-//! Each panel is a unit struct implementing `Component`. Add a new panel
-//! by creating a new file here and registering it in `AppState::register_default_panels`.
+//! Each panel is a unit struct implementing `Component`. Presentation owns the
+//! component graph in `ui::dispatch`; application state never stores renderers.
 
 pub mod chat;
 pub mod header;
-pub mod help;
 pub mod input;
 pub mod status;
 
 pub use chat::ChatPanel;
 pub use header::HeaderPanel;
-pub use help::HelpPanel;
 pub use input::InputPanel;
 pub use status::StatusPanel;

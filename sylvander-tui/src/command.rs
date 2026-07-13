@@ -198,7 +198,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: CommandId::Mcp,
         name: "mcp",
         usage: "/mcp",
-        description: "Inspect MCP configuration, health, and auth state",
+        description: "Inspect Agent-advertised MCP configuration state",
         hint: "server truth",
     },
     CommandSpec {
@@ -557,7 +557,6 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
     }
     if command.usage.len() > 96
         || command.description.is_empty()
-        || command.description.len() > 160
         || command.hint.len() > 64
         || command.source.is_empty()
         || command.source.len() > 64
@@ -1458,6 +1457,42 @@ fn find_tool_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_visible_command_and_alias_resolves_to_one_typed_effect() {
+        for (index, spec) in COMMANDS.iter().enumerate() {
+            assert!(!spec.name.is_empty());
+            assert!(spec.usage.starts_with('/'));
+            assert!(!spec.description.is_empty());
+            assert_eq!(
+                resolve(spec.name).map(|resolved| resolved.id),
+                Some(spec.id)
+            );
+            assert_eq!(
+                COMMANDS.iter().filter(|other| other.id == spec.id).count(),
+                1,
+                "duplicate command effect for {} at {index}",
+                spec.name
+            );
+            assert_eq!(
+                COMMANDS
+                    .iter()
+                    .filter(|other| other.name.eq_ignore_ascii_case(spec.name))
+                    .count(),
+                1,
+                "duplicate visible command name {}",
+                spec.name
+            );
+        }
+        for (alias, expected) in ALIASES {
+            assert!(
+                COMMANDS
+                    .iter()
+                    .all(|spec| !spec.name.eq_ignore_ascii_case(alias))
+            );
+            assert_eq!(resolve(alias).map(|spec| spec.id), Some(*expected));
+        }
+    }
 
     #[test]
     fn parser_accepts_arguments_and_leading_slash() {
