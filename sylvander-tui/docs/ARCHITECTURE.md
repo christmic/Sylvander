@@ -125,6 +125,23 @@ state during render. Semantic theme roles are used instead of concrete colors.
 `tool_presenter.rs` and `approval_presenter.rs` are pure semantic formatting
 helpers shared by transcript and decision surfaces.
 
+`modal/surface.rs` is the geometry boundary for temporary interaction. Product
+surfaces use exactly three families:
+
+- Decision Dock replaces Composer rows for approval, Agent questions, plan
+  acceptance, and rollback confirmation.
+- Focus Picker grows upward from the Composer for commands, models,
+  permissions, workspace files, and persisted-session retrieval.
+- Review View temporarily owns the transcript viewport for plan editing, help,
+  and long tool output while preserving the status row.
+
+Feature modules provide semantic rows and key handling; they do not calculate
+independent popup rectangles. Centered bordered dialogs and per-feature surface
+geometry are prohibited. The standalone TUI loads one conversation at a time;
+`SessionsOverlay` is an internal historical name for the `/resume` Focus Picker,
+not a multi-session navigation component. Ghostty-hosted multi-session layout is
+outside this module and runs independent TUI processes.
+
 Tool rendering is forward-compatible by default. Unknown tool names retain
 their call identity, bounded generic input, streamed/final output, and terminal
 status. Sensitive JSON keys and terminal controls are removed before display.
@@ -179,6 +196,10 @@ typed lifecycle, so presentation never infers completion from token counts.
 4. Reduce state in `app.rs` or handle interaction in `application.rs`.
 5. Render the state in a Panel or Modal using semantic theme functions.
 6. Add reducer/input tests and a visual snapshot.
+
+Temporary UI must reuse `decision_dock`, `focus_picker`, or `review_view` from
+`modal/surface.rs`. Adding another free-form overlay requires updating the UX
+source of truth first.
 
 If a feature starts by importing the socket client into a Panel, or Ratatui into
 `model.rs`, the design is wrong.

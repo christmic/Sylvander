@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300">
+  <title>Sylvander TUI — Focus Picker</title>
+  <defs><style>
+    .page{fill:#0B0B0D}.screen{fill:#000;stroke:#343A40;stroke-width:1}.text{fill:#ECE7DE}.dim{fill:#989B9D}.muted{fill:#666C72}.warm{fill:#F0BE72}.violet{fill:#9B72FF}.active{fill:#75A7E8}.ok{fill:#72C7B1}.wait{fill:#D9AF62}.danger{fill:#E06C75}.rule{stroke:#343A40;stroke-width:1}
+    .title{font:700 28px Inter,system-ui,sans-serif}.subtitle{font:15px Inter,system-ui,sans-serif}.head{font:700 18px Inter,system-ui,sans-serif}.mono{font:16px 'SFMono-Regular',Menlo,monospace;white-space:pre}.monoBold{font:700 16px 'SFMono-Regular',Menlo,monospace;white-space:pre}.small{font:13px 'SFMono-Regular',Menlo,monospace;white-space:pre}.note{font:13px Inter,system-ui,sans-serif}
+  </style></defs>
+  <rect class="page" width="1800" height="1300"/>
+  <text class="title text" x="50" y="52">SYLVANDER TUI · FOCUS PICKER</text>
+  <text class="subtitle dim" x="50" y="80">Selectors rise from the Composer, preserve the transcript, and disappear after one focused choice.</text>
+
+  <g id="command-picker" transform="translate(50 112)">
+    <text class="head violet">01 · COMMANDS</text>
+    <rect class="screen" y="20" width="825" height="450" rx="8"/>
+    <g class="mono" transform="translate(22 62)">
+      <text class="dim">›</text><text class="text" x="30">show the current changes</text>
+      <text class="violet" y="34">◆</text><text class="text" x="30" y="34">The working tree has three modified files.</text>
+    </g>
+    <g id="command-results">
+      <line class="rule" x1="0" y1="170" x2="825" y2="170"/>
+      <text class="monoBold violet" x="22" y="202">Commands</text><text class="small muted" x="700" y="202">6 results</text>
+      <text class="monoBold violet" x="22" y="236">› /review</text><text class="small dim" x="178" y="236">review workspace changes</text>
+      <text class="mono text" x="22" y="268">  /diff</text><text class="small dim" x="178" y="268">inspect Git diff</text>
+      <text class="mono text" x="22" y="300">  /rollback</text><text class="small danger" x="178" y="300">unavailable · no Agent file turn</text>
+      <text class="mono text" x="22" y="332">  /resume</text><text class="small dim" x="178" y="332">load a persisted session</text>
+      <line class="rule" x1="0" y1="356" x2="825" y2="356"/>
+      <text class="mono text" x="0" y="390">/ rev</text>
+      <line class="rule" x1="0" y1="410" x2="825" y2="410"/>
+      <text class="small muted" x="0" y="438">· choosing command</text><text class="small muted" x="585" y="438">↑↓ select  tab complete  esc close</text>
+    </g>
+  </g>
+
+  <g id="model-picker" transform="translate(925 112)">
+    <text class="head violet">02 · MODEL AND EFFORT</text>
+    <rect class="screen" y="20" width="825" height="450" rx="8"/>
+    <g class="mono" transform="translate(22 62)">
+      <text class="dim">›</text><text class="text" x="30">use a stronger model for the review</text>
+      <text class="violet" y="34">◆</text><text class="text" x="30" y="34">Choose a model for the next turn.</text>
+    </g>
+    <g id="model-results">
+      <line class="rule" x1="0" y1="170" x2="825" y2="170"/>
+      <text class="monoBold violet" x="22" y="202">Model</text><text class="small muted" x="608" y="202">applies next turn</text>
+      <text class="mono text" x="22" y="238">  MiniMax-M3</text><text class="small ok" x="286" y="238">current</text>
+      <text class="monoBold violet" x="22" y="272">› Claude Sonnet 4.5</text><text class="small dim" x="286" y="272">200k context</text>
+      <text class="mono text" x="22" y="306">  Claude Opus 4.5</text><text class="small dim" x="286" y="306">200k context</text>
+      <text class="small muted" x="22" y="338">effort</text><text class="mono text" x="140" y="338">low   medium  [high]</text>
+      <line class="rule" x1="0" y1="356" x2="825" y2="356"/>
+      <text class="mono text" x="0" y="390">/model claude</text>
+      <line class="rule" x1="0" y1="410" x2="825" y2="410"/>
+      <text class="small muted" x="0" y="438">· choosing model</text><text class="small muted" x="580" y="438">↑↓ model  ←→ effort  esc close</text>
+    </g>
+  </g>
+
+  <g id="resume-picker" transform="translate(50 630)">
+    <text class="head violet">03 · RESUME · REPLACES THE ONE ACTIVE TUI SESSION</text>
+    <rect class="screen" y="20" width="1700" height="540" rx="8"/>
+    <g id="resume-transcript" class="mono" transform="translate(22 62)">
+      <text class="dim">›</text><text class="text" x="30">/resume auth</text>
+      <text class="small muted" y="38">The current transcript and draft remain untouched until a session is selected.</text>
+    </g>
+    <g id="resume-results">
+      <line class="rule" x1="0" y1="138" x2="1700" y2="138"/>
+      <text class="monoBold violet" x="22" y="172">Resume a session</text>
+      <text class="small muted" x="270" y="172">loading one session replaces the current loaded conversation</text>
+      <text class="small muted" x="1420" y="172">3 matches</text>
+      <g transform="translate(22 210)">
+        <text class="monoBold violet">› auth-refactor</text><text class="small text" x="310">~/Projects/Sylvander</text><text class="small muted" x="790">2m ago</text>
+        <text class="small dim" x="30" y="26">“redesign the permission experience”</text>
+        <text class="mono text" y="72">  auth-debug</text><text class="small text" x="310" y="72">~/Projects/Sylvander</text><text class="small muted" x="790" y="72">1h ago</text>
+        <text class="small dim" x="30" y="98">“trace the rejected approval response”</text>
+        <text class="mono text" y="144">  login-tests</text><text class="small text" x="310" y="144">~/Projects/web</text><text class="small muted" x="790" y="144">1d ago</text>
+        <text class="small dim" x="30" y="170">“add session restore coverage”</text>
+      </g>
+      <line class="rule" x1="0" y1="454" x2="1700" y2="454"/>
+      <text class="mono text" x="0" y="488">/resume auth</text>
+      <line class="rule" x1="0" y1="510" x2="1700" y2="510"/>
+      <text class="small muted" x="0" y="538">· choosing session · current session stays active</text>
+      <text class="small muted" x="1432" y="538">↑↓ select   ↵ load   esc close</text>
+    </g>
+    <g id="resume-notes" transform="translate(1160 214)">
+      <text class="note violet">SINGLE-SESSION CONTRACT</text>
+      <text class="note dim" y="30">This is a temporary retrieval surface.</text>
+      <text class="note dim" y="54">Rows are candidates, not live sessions.</text>
+      <text class="note dim" y="78">No sidebar, unread badges, or simultaneous state.</text>
+      <text class="note dim" y="102">Ghostty owns multi-session navigation outside the TUI.</text>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1180" viewBox="0 0 1800 1180">
+  <title>Sylvander TUI — Responsive Temporary Surfaces</title>
+  <defs><style>
+    .page{fill:#0B0B0D}.screen{fill:#000;stroke:#343A40;stroke-width:1}.text{fill:#ECE7DE}.dim{fill:#989B9D}.muted{fill:#666C72}.violet{fill:#9B72FF}.wait{fill:#D9AF62}.danger{fill:#E06C75}.rule{stroke:#343A40;stroke-width:1}.guide{stroke:#9B72FF;stroke-width:1;stroke-dasharray:5 5}
+    .title{font:700 28px Inter,system-ui,sans-serif}.subtitle{font:15px Inter,system-ui,sans-serif}.head{font:700 17px Inter,system-ui,sans-serif}.mono{font:14px 'SFMono-Regular',Menlo,monospace;white-space:pre}.monoBold{font:700 14px 'SFMono-Regular',Menlo,monospace;white-space:pre}.tiny{font:11px 'SFMono-Regular',Menlo,monospace;white-space:pre}.note{font:12px Inter,system-ui,sans-serif}
+  </style></defs>
+  <rect class="page" width="1800" height="1180"/>
+  <text class="title text" x="50" y="52">SYLVANDER TUI · INTERACTION RESPONSIVE CONTRACT</text>
+  <text class="subtitle dim" x="50" y="80">Temporary surfaces stay bottom-anchored at every width; the transcript never drifts or gains a sidebar.</text>
+
+  <g id="standard" transform="translate(50 116)">
+    <text class="head violet">01 · STANDARD · 120 COL</text>
+    <rect class="screen" y="20" width="800" height="430" rx="8"/>
+    <line class="guide" x1="18" y1="36" x2="18" y2="358"/>
+    <g class="mono" transform="translate(18 64)">
+      <text class="dim">›</text><text class="text" x="26">delete generated files</text>
+      <text class="violet" y="32">◆</text><text class="text" x="26" y="32">This action needs confirmation.</text>
+    </g>
+    <line class="rule" x1="0" y1="166" x2="800" y2="166"/>
+    <g transform="translate(18 198)">
+      <text class="monoBold wait">◆ Permission needed</text>
+      <text class="mono text" y="34">$ rm -rf ./target/cache</text>
+      <text class="tiny danger" y="58">Critical · recursively deletes files</text>
+      <text class="monoBold danger" y="92">› 1. Deny</text>
+      <text class="mono text" y="120">  2. Allow once</text>
+      <text class="mono text" y="148">  3. Allow for this session</text>
+    </g>
+    <line class="rule" x1="0" y1="386" x2="800" y2="386"/>
+    <text class="tiny muted" x="0" y="414">● approval · model MiniMax-M3 · branch master</text><text class="tiny muted" x="620" y="414">↑↓  ↵ confirm  esc deny</text>
+    <text class="tiny muted" x="0" y="446">content origin fixed · full-width rules · no visible Composer beneath</text>
+  </g>
+
+  <g id="fullscreen" transform="translate(900 116)">
+    <text class="head violet">02 · FULLSCREEN · 240 COL</text>
+    <rect class="screen" y="20" width="850" height="430" rx="8"/>
+    <line class="guide" x1="18" y1="36" x2="18" y2="358"/>
+    <rect x="18" y="166" width="520" height="190" fill="none" stroke="#343A40" stroke-dasharray="5 5"/>
+    <text class="mono dim" x="18" y="70">› delete generated files</text>
+    <text class="mono text" x="18" y="106">◆ This action needs confirmation.</text>
+    <line class="rule" x1="0" y1="146" x2="850" y2="146"/>
+    <text class="monoBold wait" x="18" y="186">◆ Permission needed</text>
+    <text class="mono text" x="18" y="220">$ rm -rf ./target/cache</text>
+    <text class="monoBold danger" x="18" y="260">› 1. Deny</text><text class="mono text" x="18" y="292">  2. Allow once</text>
+    <text class="mono text" x="18" y="324">  3. Allow for this session</text>
+    <text class="note muted" x="580" y="196">Extra width remains quiet.</text>
+    <text class="note muted" x="580" y="220">Decision content stays left anchored</text>
+    <text class="note muted" x="580" y="244">and capped at the reading width.</text>
+    <line class="rule" x1="0" y1="386" x2="850" y2="386"/>
+    <text class="tiny muted" x="0" y="414">● approval</text><text class="tiny muted" x="670" y="414">↑↓  ↵ confirm  esc deny</text>
+  </g>
+
+  <g id="narrow" transform="translate(50 640)">
+    <text class="head violet">03 · NARROW · 70 COL</text>
+    <rect class="screen" y="20" width="500" height="450" rx="8"/>
+    <text class="mono dim" x="14" y="64">› delete generated files</text>
+    <text class="mono text" x="14" y="96">◆ This action needs confirmation.</text>
+    <line class="rule" x1="0" y1="126" x2="500" y2="126"/>
+    <text class="monoBold wait" x="14" y="158">◆ Permission needed</text>
+    <text class="mono text" x="14" y="190">$ rm -rf ./target/cache</text>
+    <text class="tiny danger" x="14" y="214">Critical · recursively deletes files</text>
+    <text class="monoBold danger" x="14" y="250">› 1. Deny</text>
+    <text class="mono text" x="14" y="282">  2. Allow once</text>
+    <text class="mono text" x="14" y="314">  3. Allow this exact command</text>
+    <text class="mono text" x="34" y="338">for this session</text>
+    <line class="rule" x1="0" y1="390" x2="500" y2="390"/>
+    <text class="tiny muted" x="0" y="418">● approval · master</text><text class="tiny muted" x="370" y="418">↑↓  ↵  esc</text>
+    <text class="tiny muted" x="0" y="446">Secondary metadata disappears before choices truncate.</text>
+  </g>
+
+  <g id="picker-restoration" transform="translate(600 640)">
+    <text class="head violet">04 · FOCUS PICKER · DRAFT RESTORATION</text>
+    <rect class="screen" y="20" width="1150" height="450" rx="8"/>
+    <g class="mono" transform="translate(18 58)">
+      <text class="dim">›</text><text class="text" x="26">draft remains preserved while the picker owns focus</text>
+      <text class="violet" y="34">◆</text><text class="text" x="26" y="34">Choose one persisted session to load.</text>
+    </g>
+    <line class="rule" x1="0" y1="150" x2="1150" y2="150"/>
+    <text class="monoBold violet" x="18" y="182">Resume a session</text><text class="tiny muted" x="856" y="182">one active session</text>
+    <text class="monoBold violet" x="18" y="220">› auth-refactor</text><text class="tiny dim" x="260" y="220">~/Projects/Sylvander · 2m ago</text>
+    <text class="mono text" x="18" y="256">  auth-debug</text><text class="tiny dim" x="260" y="256">~/Projects/Sylvander · 1h ago</text>
+    <text class="mono text" x="18" y="292">  login-tests</text><text class="tiny dim" x="260" y="292">~/Projects/web · 1d ago</text>
+    <line class="rule" x1="0" y1="330" x2="1150" y2="330"/>
+    <text class="mono text" x="0" y="364">/resume auth</text>
+    <line class="rule" x1="0" y1="390" x2="1150" y2="390"/>
+    <text class="tiny muted" x="0" y="418">· current session unchanged until ↵ load</text><text class="tiny muted" x="890" y="418">↑↓ select  ↵ load  esc close</text>
+    <text class="tiny muted" x="0" y="446">Esc restores the exact saved draft, scroll position, and transcript.</text>
+  </g>
+</svg>

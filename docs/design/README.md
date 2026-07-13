@@ -25,6 +25,14 @@ is deliberately revised.
   response, list typography, and Composer.
 - [`tui-03-responsive.svg`](tui-03-responsive.svg) — standard, fullscreen, narrow,
   and multiline Composer behavior.
+- [`tui-04-decision-dock.svg`](tui-04-decision-dock.svg) — approval and Agent
+  question states that temporarily replace the Composer.
+- [`tui-05-focus-picker.svg`](tui-05-focus-picker.svg) — command, model, permission,
+  file, and single-session resume selection.
+- [`tui-06-review-view.svg`](tui-06-review-view.svg) — plan acceptance, explicit
+  plan editing, diff inspection, and rollback confirmation.
+- [`tui-07-interaction-responsive.svg`](tui-07-interaction-responsive.svg) — wide,
+  standard, and narrow temporary-surface behavior.
 
 The SVGs use editable text and vector layers and can be imported into Figma.
 
@@ -55,6 +63,10 @@ compact Agent-turn marker is a presence mark, not a fallback logo.
 - Composer rules span the terminal width. The `>` prompt touches the same left
   edge as those rules and grows upward from one row.
 - Session/model/branch/tool state lives in the bottom status row.
+- The standalone TUI owns one active session. `/resume` is a temporary picker;
+  only a Ghostty host may provide persistent multi-session navigation.
+- Decisions use a bottom Decision Dock, selectors use a bottom Focus Picker, and
+  long content uses a Review View. Generic centered dialogs are prohibited.
 
 ## Removed material
 

@@ -4,7 +4,7 @@
 >
 > Scope: `sylvander-tui` visual layout and direct terminal interaction
 >
-> Updated: 2026-07-12
+> Updated: 2026-07-13
 
 This document defines what Sylvander looks and feels like in a terminal. It does
 not define Agent control flow, public protocol events, Token9, or Ghostty native
@@ -24,6 +24,22 @@ The design borrows useful principles rather than visual forms:
   conversion.
 - Kimi Code: a small recurring presence can carry identity without becoming
   decoration.
+
+### 1.1 Competitive synthesis
+
+Sylvander does not reproduce another Agent's chrome. It combines the strongest
+interaction principles with the product identity already approved here.
+
+| Reference | Keep | Improve for Sylvander |
+|---|---|---|
+| Claude Code | Quiet prose, natural-language decisions, uninterrupted terminal rhythm | Stronger authored identity and clearer semantic state |
+| Codex | Legible live work, concise approval choices, settled decision history | Remove gray/card-like Composer chrome and keep the canvas immersive |
+| Kimi Code | Tool-specific previews, inline feedback, structured multi-question flow | Reduce persistent density and keep ordinary work visually quiet |
+| Sylvander existing TUI | Seed-Crab Welcome, pure-black canvas, left-anchored transcript, full-width Composer | Replace generic centered popups with native terminal surfaces |
+
+The result must feel calmer than Kimi, warmer than Codex, more visibly authored
+than Claude, and internally consistent with Sylvander's own Welcome and
+conversation rhythm.
 
 ## 2. Visual foundation
 
@@ -58,6 +74,20 @@ From top to bottom:
 
 There is no permanent top Header. Model, branch, session, tool count, mode, and
 contextual shortcuts belong in the bottom status line.
+
+### 3.1 Single-session boundary
+
+The standalone TUI displays exactly one active session. It never owns a
+persistent session sidebar, split conversation view, or simultaneous session
+presence model.
+
+- `/resume` and `/sessions` open a temporary picker and replace the currently
+  loaded session only after the user selects one and the service acknowledges it.
+- Leaving that picker restores the same transcript, Composer draft, and scroll
+  position.
+- A Ghostty-based host may run several independent TUI processes and provide its
+  own session sidebar. That host navigation is outside this document and must
+  not leak into the standalone TUI.
 
 ## 4. Horizontal layout
 
@@ -212,20 +242,99 @@ At narrow widths, low-priority metadata disappears before primary state.
 - Resize preserves conversation order, Composer draft, and scroll intent.
 - Fullscreen width never changes the transcript's left anchor.
 
-## 10. Overlays
+## 10. Temporary interaction surfaces
 
-Approval, AskUser, session switching, commands, and plan review may overlay the
-transcript. Overlays can use borders because they are temporary decision surfaces.
-Closing an overlay restores the exact transcript and Composer underneath.
+Temporary interaction must feel like a continuation of the terminal session,
+not a desktop dialog placed over it. Generic centered rectangles are prohibited.
+Every temporary surface belongs to one of three families.
+
+### 10.1 Decision Dock
+
+The Decision Dock handles approvals, Agent questions, plan acceptance, rollback
+confirmation, and other short decisions.
+
+- It replaces the Composer rows while active; the saved draft is hidden and
+  restored afterward.
+- It is bounded only by the same full-width horizontal rules as the Composer.
+- Decision content is left-aligned with the transcript and capped at 110 cells.
+- The original Composer `>` is not visible, so there is never a second apparent
+  input focus.
+- One question or approval is shown at a time. A batch uses quiet progress such
+  as `2 of 3`, not redundant queue terminology.
+- Choice labels use natural language. Protocol types such as `single-select`,
+  `multi-select`, `call_id`, and `batch` are not product copy.
+- The safest action is visibly identified for critical operations and may own
+  the initial selection. Other risk levels default according to policy without
+  disguising the consequence.
+- The status row keeps no more than three contextual hints.
+
+Approval information order is fixed:
+
+1. What Sylvander wants to do.
+2. The exact target or command.
+3. Why attention is required and what can change.
+4. Available scopes expressed in plain language.
+5. Optional rejection guidance inline with the selected reject action.
+
+An accepted or rejected decision settles into one compact transcript row. The
+Dock itself never becomes transcript history.
+
+Agent questions use the same Dock. A single question shows options and an
+`Other…` choice. Selecting `Other…` turns that row into an inline editor. Multiple
+questions appear one at a time with `Question 1 of 3`; only multi-question flows
+receive a final answer review.
+
+### 10.2 Focus Picker
+
+The Focus Picker handles commands, model selection, permission profiles,
+workspace-file mentions, and persisted-session selection.
+
+- It grows upward from the Composer instead of floating in the center.
+- The search or filter query occupies the Composer row; results appear directly
+  above it between full-width rules.
+- At standard width it shows 6–10 results. At narrow width it uses fewer rows and
+  removes secondary descriptions before truncating primary labels.
+- Selection, current value, availability, and consequences have distinct visual
+  roles. Disabled entries remain visible with one concise reason.
+- `/resume` is a picker for replacing the one active TUI session. It does not
+  represent simultaneous sessions and never becomes a sidebar.
+- Escape closes the picker and restores the exact draft and transcript position.
+
+### 10.3 Review View
+
+The Review View handles content that must be read before deciding: a long plan,
+diff, file preview, or rollback scope.
+
+- It temporarily uses the transcript viewport rather than covering it with a
+  centered box.
+- Its top line names the review object and shows compact progress or file scope.
+- Review content may use more horizontal width than prose when code or diffs need
+  it, but it remains left anchored.
+- Search, jump, expand, and scroll hints appear only while the view owns focus.
+- The final accept/revise/cancel decision appears in a Decision Dock.
+- A plan already rendered in the transcript is not duplicated. Initial plan
+  acceptance uses a Decision Dock; Review View opens only for explicit editing.
+- Closing the view restores the transcript, Composer draft, and scroll intent.
+
+### 10.4 Focus and restoration
+
+Only the top temporary surface receives keyboard input. Mouse wheel and page keys
+scroll that surface while it owns focus. Global quit, history navigation, and
+Composer editing cannot leak through. Timeouts or server cancellation close the
+matching surface immediately and leave a concise explanation in the transcript.
+
+Every surface must render cleanly without translucency, shadows, filled gray
+cards, or terminal-background assumptions. Color adds semantic hierarchy but is
+never the sole carrier of risk, selection, or state.
 
 ## 11. Responsive matrix
 
-| Available width | Welcome | Transcript | Status |
-|---|---|---|---|
-| 110+ | Character left, information right | 110-cell max, left anchored | Full |
-| 88–109 | Character left, information right | Available width | Full/compact |
-| 50–87 | Same character, information below | Available width | Compact |
-| <50 | Resize state | Not rendered | Not rendered |
+| Available width | Welcome | Transcript | Temporary surface | Status |
+|---|---|---|---|---|
+| 110+ | Character left, information right | 110-cell max, left anchored | Full detail, left anchored | Full |
+| 88–109 | Character left, information right | Available width | Full detail | Full/compact |
+| 50–87 | Same character, information below | Available width | Wrapped choices, reduced metadata | Compact |
+| <50 | Resize state | Not rendered | Not rendered | Not rendered |
 
 ## 12. Prohibited UI
 
@@ -235,6 +344,11 @@ Closing an overlay restores the exact transcript and Composer underneath.
 - Raw `**bold**` or backtick markers in ordinary output.
 - Character-level prose wrapping that splits normal words.
 - Gray transcript cards or a permanent bordered Composer.
+- Generic centered modal rectangles for decisions or pickers.
+- A visible Composer prompt underneath another text-entry surface.
+- Implementation labels such as `single-select`, `batch`, or `call_id` in UI copy.
+- Duplicating an inline plan inside a second review popup.
+- A permanent or temporary session sidebar inside the standalone TUI.
 - Top tabs for Ghostty sessions.
 - A model/session/header strip above the transcript.
 - A different or simplified mascot at narrow widths.
@@ -252,9 +366,17 @@ A change is acceptable only when all are true:
 6. Streaming and settled output keep the same geometry.
 7. 70-column layout uses the same Welcome character above metadata.
 8. Pure black remains visible in unused space.
+9. Approval replaces the Composer, leaves the transcript readable, and exposes
+   exactly one apparent focus.
+10. AskUser, plan acceptance, and rollback confirmation share Decision Dock
+    geometry without sharing inappropriate copy.
+11. Command, model, permission, and resume pickers rise from the bottom and never
+    appear as centered desktop dialogs.
+12. `/resume` never suggests that more than one session is active in the TUI.
+13. Closing any temporary surface restores the exact draft and scroll position.
 
 ## 14. Editable references
 
-The current editable boards are indexed by `docs/design/README.md`. Old numbered
-boards and rejected brand explorations are intentionally removed and have no
-normative authority.
+The current editable boards are indexed by `docs/design/README.md`. Boards 04–07
+define the temporary interaction surfaces in this section. Old rejected brand
+explorations have no normative authority.
