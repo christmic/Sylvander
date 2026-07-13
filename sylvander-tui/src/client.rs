@@ -14,6 +14,8 @@ use tokio::sync::mpsc;
 use crate::app::ToolInfo;
 use crate::event::DomainEvent;
 
+const CLIENT_EVENT_CAPACITY: usize = 1_024;
+
 // ===========================================================================
 // Wire protocol (mirror of sylvander-channel-unix ServerMsg)
 // ===========================================================================
@@ -389,12 +391,12 @@ pub struct UnixClient {
     writer: Option<OwnedWriteHalf>,
     /// Notified by the reader task when the connection ends so the main
     /// loop can flip the UI to Disconnected without polling.
-    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    event_tx: mpsc::Sender<ClientEvent>,
 }
 
 impl UnixClient {
-    pub fn new(path: impl Into<PathBuf>) -> (Self, mpsc::UnboundedReceiver<ClientEvent>) {
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
+    pub fn new(path: impl Into<PathBuf>) -> (Self, mpsc::Receiver<ClientEvent>) {
+        let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_CAPACITY);
         (
             Self {
                 path: path.into(),
@@ -489,12 +491,12 @@ impl UnixClient {
                         }
                         match parse_server_line(line) {
                             Ok(msg) => {
-                                if tx.send(ClientEvent::Message(msg)).is_err() {
+                                if tx.send(ClientEvent::Message(msg)).await.is_err() {
                                     break;
                                 }
                             }
                             Err(diagnostic) => {
-                                if tx.send(ClientEvent::Diagnostic(diagnostic)).is_err() {
+                                if tx.send(ClientEvent::Diagnostic(diagnostic)).await.is_err() {
                                     break;
                                 }
                             }
@@ -504,7 +506,7 @@ impl UnixClient {
                     Err(_) => break,
                 }
             }
-            let _ = tx.send(ClientEvent::Disconnected);
+            let _ = tx.send(ClientEvent::Disconnected).await;
         });
     }
 
@@ -845,6 +847,23 @@ fn default_approval_scopes() -> Vec<sylvander_protocol::ApprovalScope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_event_queue_applies_backpressure_at_its_capacity() {
+        let (client, _events) = UnixClient::new("/tmp/sylvander-test.sock");
+        for index in 0..CLIENT_EVENT_CAPACITY {
+            client
+                .event_tx
+                .try_send(ClientEvent::Diagnostic(index.to_string()))
+                .expect("queue slot");
+        }
+        assert!(matches!(
+            client
+                .event_tx
+                .try_send(ClientEvent::Diagnostic("overflow".into())),
+            Err(mpsc::error::TrySendError::Full(_))
+        ));
+    }
 
     #[test]
     fn unknown_server_messages_produce_bounded_diagnostics() {
