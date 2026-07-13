@@ -42,6 +42,20 @@ pub struct ModelDescriptor {
     pub reasoning_efforts: Vec<ReasoningEffort>,
     #[serde(default)]
     pub lifecycle: ModelLifecycle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricing>,
+}
+
+/// Operator-supplied API prices in micro-US-dollars per million tokens.
+/// `1_000_000` therefore means `$1.00 / 1M tokens`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelPricing {
+    pub input_usd_micros_per_million: u64,
+    pub output_usd_micros_per_million: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_usd_micros_per_million: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd_micros_per_million: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +371,8 @@ pub enum StreamEvent {
         iteration: u32,
         input_tokens: u32,
         output_tokens: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_nano_usd: Option<u64>,
     },
     Done {
         text: String,
@@ -789,5 +805,6 @@ mod tests {
         }))
         .expect("legacy model descriptor");
         assert_eq!(descriptor.lifecycle, ModelLifecycle::Active);
+        assert_eq!(descriptor.pricing, None);
     }
 }

@@ -168,6 +168,7 @@ enum ServerMsg {
         iteration: u32,
         input_tokens: u32,
         output_tokens: u32,
+        cost_nano_usd: Option<u64>,
     },
     Done {
         session_id: String,
@@ -241,6 +242,7 @@ enum ServerMsg {
         iterations: u32,
         input_tokens: u64,
         output_tokens: u64,
+        cost_nano_usd: Option<u64>,
     },
     SessionUpdated {
         session_id: String,
@@ -621,11 +623,13 @@ async fn handle_client_msg(
                                 iteration,
                                 input_tokens,
                                 output_tokens,
+                                cost_nano_usd,
                             } => Some(ServerMsg::IterationEnd {
                                 session_id: s.0.clone(),
                                 iteration,
                                 input_tokens,
                                 output_tokens,
+                                cost_nano_usd,
                             }),
                             StreamEvent::ToolApprovalRequired {
                                 batch_id,
@@ -891,6 +895,7 @@ async fn handle_client_msg(
                             iterations: usage.iterations,
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
+                            cost_nano_usd: usage.cost_nano_usd,
                         });
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
@@ -1031,6 +1036,7 @@ async fn handle_client_msg(
                         iterations: 0,
                         input_tokens: 0,
                         output_tokens: 0,
+                        cost_nano_usd: Some(0),
                     });
                 }
                 Ok(None) => warn!(%source_id, "unix: fork source not found"),
@@ -1261,6 +1267,7 @@ mod tests {
                 capabilities: 0b101,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
             }],
             permissions: sylvander_protocol::PermissionProfile::default(),
             capabilities: 0b101,
@@ -1479,7 +1486,7 @@ mod tests {
             .await
             .expect("append");
         store
-            .record_usage(&session_id, 120, 30)
+            .record_usage(&session_id, 120, 30, Some(45_000))
             .await
             .expect("usage");
 
