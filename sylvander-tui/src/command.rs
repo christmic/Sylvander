@@ -28,6 +28,7 @@ pub enum CommandId {
     Diff,
     Review,
     Config,
+    Doctor,
     Inspect,
     Copy,
     Editor,
@@ -182,6 +183,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/config",
         description: "Inspect resolved TUI configuration",
         hint: "read-only",
+    },
+    CommandSpec {
+        id: CommandId::Doctor,
+        name: "doctor",
+        usage: "/doctor [copy|export <path>]",
+        description: "Inspect or export redacted diagnostics",
+        hint: "no secrets",
     },
     CommandSpec {
         id: CommandId::Status,
@@ -679,6 +687,20 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .push(crate::event::Action::InspectConfig);
             state.status = "Loading resolved configuration…".into();
         }
+        CommandId::Doctor => {
+            let destination = match invocation.args.as_slice() {
+                [] => crate::event::DoctorDestination::Inspect,
+                ["copy"] => crate::event::DoctorDestination::Copy,
+                ["export", path @ ..] if !path.is_empty() => {
+                    crate::event::DoctorDestination::Export(path.join(" ").into())
+                }
+                _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+            };
+            state
+                .pending_actions
+                .push(crate::event::Action::RunDoctor { destination });
+            state.status = "Preparing redacted diagnostics…".into();
+        }
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -1115,6 +1137,22 @@ mod tests {
         assert!(matches!(
             state.pending_actions.as_slice(),
             [crate::event::Action::InspectConfig]
+        ));
+    }
+
+    #[test]
+    fn doctor_export_keeps_the_explicit_destination_typed() {
+        let mut state = AppState::new();
+        execute(
+            parse("/doctor export reports/tui.txt").expect("parse"),
+            &mut state,
+        )
+        .expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::RunDoctor {
+                destination: crate::event::DoctorDestination::Export(path),
+            }] if path == std::path::Path::new("reports/tui.txt")
         ));
     }
 

@@ -71,6 +71,13 @@ pub enum DomainEvent {
     ConfigInspected {
         report: String,
     },
+    DoctorCompleted {
+        report: Option<String>,
+        message: String,
+    },
+    DoctorFailed {
+        reason: String,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -317,6 +324,9 @@ pub enum Action {
         workspace: std::path::PathBuf,
     },
     InspectConfig,
+    RunDoctor {
+        destination: DoctorDestination,
+    },
     ForkSession {
         session_id: String,
         completed_turns: Option<usize>,
@@ -339,6 +349,13 @@ pub enum WorkspaceDiffScope {
     All,
     Staged,
     Unstaged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoctorDestination {
+    Inspect,
+    Copy,
+    Export(std::path::PathBuf),
 }
 
 impl WorkspaceDiffScope {

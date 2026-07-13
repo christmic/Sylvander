@@ -634,6 +634,20 @@ impl AppState {
                     report,
                 )));
             }
+            DomainEvent::DoctorCompleted { report, message } => {
+                self.status = message;
+                if let Some(report) = report {
+                    self.modals.push(Box::new(ToolInspector::new(
+                        "tui-doctor".into(),
+                        "Sylvander doctor · redacted".into(),
+                        report,
+                    )));
+                }
+            }
+            DomainEvent::DoctorFailed { reason } => {
+                self.status = format!("Doctor failed: {}", compact_runtime_reason(&reason));
+                self.messages.push(ChatMessage::Info(self.status.clone()));
+            }
             DomainEvent::ToolStarted {
                 call_id,
                 tool_name,
