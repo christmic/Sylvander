@@ -15,11 +15,16 @@ sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-channel-dingtalk = { path = "../sylvander-channel-dingtalk" }
 sylvander-channel-http = { path = "../sylvander-channel-http" }
+sylvander-channel-telegram = { path = "../sylvander-channel-telegram" }
 sylvander-channel-unix = { path = "../sylvander-channel-unix" }
+sylvander-channel-wechat = { path = "../sylvander-channel-wechat" }
+sylvander-channel-ws = { path = "../sylvander-channel-ws" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-runtime = { path = "../sylvander-runtime" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true
