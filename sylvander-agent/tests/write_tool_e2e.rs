@@ -32,6 +32,13 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+fn write_context(root: &std::path::Path) -> ToolContext {
+    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
+        .with_capability(sylvander_agent::tool_context::Cap::Read)
+        .with_capability(sylvander_agent::tool_context::Cap::Write)
+}
+
 #[tokio::test]
 async fn write_tool_e2e() {
     let server = MockServer::start().await;
@@ -108,6 +115,7 @@ async fn write_tool_e2e() {
         .model(test_model())
         .tool(ReadTool::new(tmp.path()))
         .tool(WriteTool::new(tmp.path()))
+        .tool_context(write_context(tmp.path()))
         .max_iterations(5)
         .build()
         .expect("build");
@@ -202,6 +210,7 @@ async fn write_creates_nested_dirs() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(WriteTool::new(tmp.path()))
+        .tool_context(write_context(tmp.path()))
         .max_iterations(3)
         .build()
         .expect("build");

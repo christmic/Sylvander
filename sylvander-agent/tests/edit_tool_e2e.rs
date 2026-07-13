@@ -30,6 +30,13 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+fn edit_context(root: &std::path::Path) -> ToolContext {
+    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
+        .with_capability(sylvander_agent::tool_context::Cap::Read)
+        .with_capability(sylvander_agent::tool_context::Cap::Write)
+}
+
 #[tokio::test]
 async fn edit_tool_e2e() {
     let server = MockServer::start().await;
@@ -88,6 +95,7 @@ async fn edit_tool_e2e() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(EditTool::new(tmp.path()))
+        .tool_context(edit_context(tmp.path()))
         .max_iterations(3)
         .build()
         .expect("build");
@@ -182,6 +190,7 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(EditTool::new(tmp.path()))
+        .tool_context(edit_context(tmp.path()))
         .max_iterations(3)
         .build()
         .expect("build");

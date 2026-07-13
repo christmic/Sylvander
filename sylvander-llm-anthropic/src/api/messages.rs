@@ -119,14 +119,16 @@ impl<'a> MessagesApi<'a> {
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
+            .unwrap_or("")
+            .to_owned();
         if content_type.starts_with("text/event-stream") {
             Ok(MessageStream::new(response))
         } else {
             let bytes = response.bytes().await?;
             let message: Message = serde_json::from_slice(&bytes).map_err(|e| {
                 AnthropicError::Validation(format!(
-                    "non-SSE response failed to parse as Message: {e}"
+                    "expected text/event-stream or a valid Message JSON fallback, received \
+                     content-type {content_type:?}: {e}"
                 ))
             })?;
             Ok(MessageStream::from_message(message))

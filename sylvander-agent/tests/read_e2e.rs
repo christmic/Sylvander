@@ -40,6 +40,12 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+fn read_context(root: &std::path::Path) -> ToolContext {
+    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
+        .with_capability(sylvander_agent::tool_context::Cap::Read)
+}
+
 #[tokio::test]
 async fn read_e2e_wiremock() {
     // Set up a real file in a temp directory
@@ -104,6 +110,7 @@ async fn read_e2e_wiremock() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
+        .tool_context(read_context(dir.path()))
         .max_iterations(5)
         .build()
         .expect("build");
@@ -190,6 +197,7 @@ async fn read_e2e_wiremock_missing_file() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
+        .tool_context(read_context(dir.path()))
         .max_iterations(5)
         .build()
         .expect("build");
@@ -266,6 +274,7 @@ async fn read_e2e_real_api_single_iteration() {
         .client(client)
         .model(model)
         .tool(read_tool)
+        .tool_context(read_context(std::path::Path::new("/tmp")))
         .max_iterations(3) // proxy breaks on iter 2 — use 3 to be safe
         .build()
         .expect("build");
