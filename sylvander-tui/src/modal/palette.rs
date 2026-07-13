@@ -231,14 +231,21 @@ impl Modal for CommandPalette {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Backspace => {
-                if !self.filter.is_empty() {
-                    self.filter.pop();
-                    self.error = None;
-                    self.recompute(state);
-                    state.dirty.mark();
+                if self.filter.is_empty() {
+                    state.mode = AppMode::Normal;
+                    return Consumed::Yes { dismiss: true };
                 }
+                self.filter.pop();
+                self.error = None;
+                self.recompute(state);
+                state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
+            KeyCode::Delete if self.filter.is_empty() => {
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
+            KeyCode::Delete => Consumed::Yes { dismiss: false },
             KeyCode::Tab => {
                 self.complete_selection(state);
                 Consumed::Yes { dismiss: false }
@@ -366,6 +373,23 @@ mod tests {
         assert_eq!(
             state.recent_commands.front(),
             Some(&crate::command::CommandId::Quit)
+        );
+    }
+
+    #[test]
+    fn deleting_the_empty_trigger_dismisses_the_palette() {
+        let mut state = AppState::new();
+        let mut palette = CommandPalette::new(&state);
+
+        assert_eq!(
+            palette.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE), &mut state),
+            Consumed::Yes { dismiss: true }
+        );
+
+        let mut palette = CommandPalette::new(&state);
+        assert_eq!(
+            palette.handle_key(&key(KeyCode::Delete, KeyModifiers::NONE), &mut state),
+            Consumed::Yes { dismiss: true }
         );
     }
 }

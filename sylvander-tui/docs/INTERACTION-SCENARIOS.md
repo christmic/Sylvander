@@ -65,6 +65,14 @@ selected canonical name;
 successful commands move to the front when the next empty palette opens.
 Unavailable commands stay visible with the exact prerequisite instead of
 disappearing. Invalid arguments remain in the command line with an inline error.
+When the query is empty, `Backspace` or forward `Delete` removes the conceptual
+`/` trigger and returns focus to the unchanged Composer, matching ordinary text
+editing instead of requiring `Esc`.
+
+No terminal width disables the primary interaction. Below 50 columns the same
+transcript, Composer, choice surface, and status remain active; content reflows,
+the mascot may be naturally clipped by terminal cells, and secondary metadata
+is omitted before any primary control.
 
 Set `SYLVANDER_TUI_REDUCED_MOTION=1` to disable animation ticks and replace
 blinking edit cursors with a static reversed cursor. Set
