@@ -11,6 +11,8 @@ presentation. It does not own the Agent loop, Token9, or Ghostty window UI.
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — runtime settings and themes.
 - [`docs/INPUT-RENDERING.md`](docs/INPUT-RENDERING.md) — keyboard/mouse ownership,
   event loop, frame pacing, scrolling, and rendering performance.
+- [`docs/SECURITY.md`](docs/SECURITY.md) — trust boundaries, verified controls,
+  redaction coverage, and open release blockers.
 - [`docs/INTERACTION-SCENARIOS.md`](docs/INTERACTION-SCENARIOS.md) — scenario-by-scenario
   command, tool, approval, question, session, and recovery behavior.
 - [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md) — prioritized
