@@ -14,7 +14,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
@@ -170,7 +170,7 @@ impl Modal for SessionsOverlay {
             Line::from(vec![
                 Span::styled("Search sessions… ", theme::text_muted()),
                 Span::styled(&self.filter, Style::default()),
-                Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+                Span::styled("_", theme::cursor()),
             ])
         } else {
             Line::from(Span::styled(
@@ -192,7 +192,7 @@ impl Modal for SessionsOverlay {
         if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no sessions match)",
-                theme::text_muted().italic(),
+                theme::subtle_emphasis(theme::text_muted()),
             )));
         } else {
             let mut workspace = None::<&str>;

@@ -341,9 +341,10 @@ impl ApprovalModal {
         let inner = Block::default().borders(Borders::ALL).inner(popup_area);
 
         let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(
-            "Tell Sylvander what to do instead (or press Enter to send empty):".italic(),
-        ));
+        lines.push(Line::from(Span::styled(
+            "Tell Sylvander what to do instead (or press Enter to send empty):",
+            theme::subtle_emphasis(theme::text_muted()),
+        )));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled("> ", theme::warning()),

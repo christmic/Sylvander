@@ -47,6 +47,7 @@ impl Drop for TerminalModeGuard {
 }
 
 pub async fn run(config: TuiConfig) -> std::io::Result<()> {
+    let reduced_motion = config.reduced_motion;
     let mut terminal = ratatui::init();
     let _terminal_mode = TerminalModeGuard;
     terminal.clear()?;
@@ -74,7 +75,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
             intent = input.recv(), if input_open => Wake::Input(intent),
             event = service.recv(), if service_open => Wake::Service(event),
             _ = frame_clock.tick() => Wake::Frame,
-            _ = animation_clock.tick() => Wake::Animation,
+            _ = animation_clock.tick(), if !reduced_motion => Wake::Animation,
             _ = reconnect_clock.tick() => Wake::Reconnect,
         };
 

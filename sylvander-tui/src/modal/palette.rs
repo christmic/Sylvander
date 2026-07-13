@@ -9,7 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
@@ -130,7 +130,7 @@ impl Modal for CommandPalette {
         let prompt = Line::from(vec![
             Span::styled("/", theme::modal_title_coral()),
             Span::styled(&self.filter, Style::default()),
-            Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled("_", theme::cursor()),
         ]);
         frame.render_widget(Paragraph::new(prompt), layout[0]);
         let cursor_x = inner.x + 1 + self.filter.chars().count() as u16;
@@ -155,7 +155,7 @@ impl Modal for CommandPalette {
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  (no commands match)",
-                theme::text_muted().italic(),
+                theme::subtle_emphasis(theme::text_muted()),
             )));
         } else {
             let visible_rows = layout[2].height.max(1) as usize;
@@ -300,7 +300,6 @@ fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
 }
 
 use crate::theme;
-use ratatui::style::Modifier;
 
 // ===========================================================================
 // Tests

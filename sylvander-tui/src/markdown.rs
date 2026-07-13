@@ -219,7 +219,7 @@ fn inline_style(heading: bool, strong: usize, emphasis: usize, strike: usize, li
         style = style.add_modifier(Modifier::BOLD);
     }
     if emphasis > 0 {
-        style = style.add_modifier(Modifier::ITALIC);
+        style = theme::emphasis(style);
     }
     if strike > 0 {
         style = style.add_modifier(Modifier::CROSSED_OUT);

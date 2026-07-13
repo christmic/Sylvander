@@ -52,6 +52,13 @@ successful commands move to the front when the next empty palette opens.
 Unavailable commands stay visible with the exact prerequisite instead of
 disappearing. Invalid arguments remain in the command line with an inline error.
 
+Set `SYLVANDER_TUI_REDUCED_MOTION=1` to disable animation ticks and replace
+blinking edit cursors with a static reversed cursor. Set
+`SYLVANDER_TUI_NO_ITALIC=1` when the terminal or font renders italics poorly;
+Markdown emphasis uses underline while helper, thinking, and brand hierarchy
+remain distinct through semantic color and dim intensity. `/config` reports the
+resolved values.
+
 | Command | Effect |
 |---|---|
 | `/new` | Clears current session state locally; next prompt creates a session |

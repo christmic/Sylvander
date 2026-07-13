@@ -144,7 +144,7 @@ impl Modal for PlanReviewModal {
             let prompt = Line::from(vec![
                 Span::styled("> ", theme::verified()),
                 Span::styled(&self.edit_buffer, Style::default()),
-                Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
+                Span::styled("_", theme::cursor()),
             ]);
             frame.render_widget(Paragraph::new(prompt), layout[2]);
             // Hardware cursor at end of edit buffer.
@@ -181,7 +181,6 @@ impl Modal for PlanReviewModal {
 }
 
 use crate::theme;
-use ratatui::style::Modifier;
 
 impl PlanReviewModal {
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
