@@ -212,6 +212,7 @@ impl Runtime {
                     store,
                     config.server.name.clone(),
                     config.server.evidence.content,
+                    config.server.evidence.retention_days,
                 )
                 .await
                 .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
