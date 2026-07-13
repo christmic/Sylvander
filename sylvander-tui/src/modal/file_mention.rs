@@ -12,7 +12,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
 use crate::theme;
 
 pub struct FileMentionModal {
@@ -56,6 +56,13 @@ impl Modal for FileMentionModal {
     }
     fn title(&self) -> &str {
         "Mention file"
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let result_rows = self.matches().len().clamp(1, 8) as u16 + 1;
+        ModalPlacement::BelowComposer {
+            rows: result_rows.saturating_add(3),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {

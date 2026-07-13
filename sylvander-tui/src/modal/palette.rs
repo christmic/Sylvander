@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 pub use crate::command::{COMMANDS, CommandMatch, CommandSpec as Command};
-use crate::modal::{Consumed, Modal, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
 
 pub struct CommandPalette {
     pub filter: String,
@@ -100,29 +100,26 @@ impl Modal for CommandPalette {
         "Commands"
     }
 
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let results = self.filtered.len().clamp(1, 8) as u16 + u16::from(self.error.is_some());
+        ModalPlacement::BelowComposer {
+            rows: results.saturating_add(3),
+        }
+    }
+
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
         let visible_commands = self.filtered.len().clamp(1, 8) as u16;
-        let areas = focus_picker(frame, parent, visible_commands.saturating_add(1));
-        let count = if self.filtered.len() == 1 {
-            "1 result".to_string()
-        } else {
-            format!("{} results", self.filtered.len())
+        let result_rows = visible_commands + u16::from(self.error.is_some());
+        let areas = focus_picker(frame, parent, result_rows);
+        let results_area = Rect {
+            x: parent.x,
+            width: parent.width,
+            ..areas.results
         };
-        let heading = self.error.as_deref().unwrap_or("Commands");
-        let gap = (areas.results.width as usize)
-            .saturating_sub(UnicodeWidthStr::width(heading) + UnicodeWidthStr::width(&*count));
-        let mut lines = vec![Line::from(vec![
-            Span::styled(
-                heading,
-                if self.error.is_some() {
-                    theme::warning()
-                } else {
-                    theme::brand_violet()
-                },
-            ),
-            Span::raw(" ".repeat(gap)),
-            Span::styled(count, theme::text_muted()),
-        ])];
+        let mut lines = Vec::new();
+        if let Some(error) = self.error.as_deref() {
+            lines.push(Line::from(Span::styled(error, theme::warning())));
+        }
 
         let prompt = Line::from(vec![
             Span::styled("/", theme::brand_violet()),
@@ -135,11 +132,14 @@ impl Modal for CommandPalette {
         }
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  No commands match",
+                "No commands match",
                 theme::subtle_emphasis(theme::text_muted()),
             )));
         } else {
-            let visible_rows = areas.results.height.saturating_sub(1).max(1) as usize;
+            let visible_rows = results_area
+                .height
+                .saturating_sub(u16::from(self.error.is_some()))
+                .max(1) as usize;
             let start = self.cursor.saturating_add(1).saturating_sub(visible_rows);
             let needs_more_row = self.filtered.len() > start + visible_rows;
             let command_rows = visible_rows.saturating_sub(usize::from(needs_more_row));
@@ -162,7 +162,7 @@ impl Modal for CommandPalette {
             {
                 let name = crate::command::match_name(command_match, _state);
                 let is_cursor = row_i == self.cursor;
-                let prefix = if is_cursor { "  › " } else { "    " };
+                let prefix = if is_cursor { "› " } else { "  " };
                 let color = if is_cursor {
                     theme::palette().active
                 } else {
@@ -198,12 +198,12 @@ impl Modal for CommandPalette {
             }
             if hidden_below > 0 {
                 lines.push(Line::from(Span::styled(
-                    format!("    ↓ {hidden_below} more"),
+                    format!("  ↓ {hidden_below} more"),
                     theme::text_muted(),
                 )));
             }
         }
-        frame.render_widget(Paragraph::new(lines), areas.results);
+        frame.render_widget(Paragraph::new(lines), results_area);
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {

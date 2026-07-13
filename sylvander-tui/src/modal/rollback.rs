@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal, surface::decision_dock};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::decision_dock};
 use crate::theme;
 
 pub struct WorkspaceRollbackModal {
@@ -45,6 +45,12 @@ impl Modal for WorkspaceRollbackModal {
 
     fn title(&self) -> &str {
         "Rollback files"
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        ModalPlacement::BelowComposer {
+            rows: 7u16.saturating_add(self.preview.files.len() as u16),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {

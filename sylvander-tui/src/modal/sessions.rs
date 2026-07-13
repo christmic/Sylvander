@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
-use crate::modal::{Consumed, Modal, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
 use crate::theme;
 
 /// Status badge for a session row.
@@ -119,6 +119,13 @@ impl Modal for SessionsOverlay {
 
     fn title(&self) -> &str {
         "Sessions"
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let results = self.filtered().len().clamp(1, 7) as u16 + 2;
+        ModalPlacement::BelowComposer {
+            rows: results.saturating_add(3),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {

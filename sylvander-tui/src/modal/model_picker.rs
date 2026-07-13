@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{AppState, reasoning_label};
-use crate::modal::{Consumed, Modal, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
 use crate::theme;
 
 pub struct ModelPicker {
@@ -67,6 +67,13 @@ impl Modal for ModelPicker {
 
     fn title(&self) -> &str {
         "Model"
+    }
+
+    fn placement(&self, state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let results = state.metadata.models.len().clamp(1, 8) as u16 + 2;
+        ModalPlacement::BelowComposer {
+            rows: results.saturating_add(3),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {

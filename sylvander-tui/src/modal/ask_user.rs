@@ -24,7 +24,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
-use crate::modal::{Consumed, Modal, surface::decision_dock};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::decision_dock};
 use crate::theme;
 
 /// Selection state — `None` means single-select with no choice yet, OR
@@ -138,6 +138,14 @@ impl Modal for AskUserModal {
 
     fn title(&self) -> &str {
         "Agent asks"
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let choice_rows = self.options.len().saturating_add(1) as u16;
+        let error_rows = u16::from(self.validation_error.is_some());
+        ModalPlacement::BelowComposer {
+            rows: 5u16.saturating_add(choice_rows).saturating_add(error_rows),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {

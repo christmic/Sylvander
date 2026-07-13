@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
 use crate::modal::{
-    Consumed, Modal,
+    Consumed, Modal, ModalPlacement,
     surface::{decision_dock, review_view},
 };
 use crate::theme;
@@ -312,6 +312,13 @@ impl Modal for PlanReviewModal {
             PlanMode::Decision => "Plan review",
             PlanMode::Review => "Plan editor",
             PlanMode::EditStep => "Plan · Edit step",
+        }
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        match self.mode {
+            PlanMode::Decision => ModalPlacement::BelowComposer { rows: 6 },
+            PlanMode::Review | PlanMode::EditStep => ModalPlacement::Overlay,
         }
     }
 
