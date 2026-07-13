@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 470
+assertion_line: 494
 expression: "render_buf(state, 100, 24)"
 ---
                                                                                                     
@@ -17,7 +17,7 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                   
+❯                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 › /review          Ask Sylvander to review workspace changes                                        
   /security-review Review a workspace scope · agent configuration                                   
