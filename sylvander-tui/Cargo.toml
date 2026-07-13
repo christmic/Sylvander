@@ -22,6 +22,7 @@ shell-words = "1.1"
 
 [dev-dependencies]
 insta = { version = "1.40", features = ["yaml"] }
+portable-pty = "0.9"
 tempfile = "3"
 
 [lints]
