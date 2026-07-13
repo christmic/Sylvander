@@ -626,6 +626,14 @@ impl AppState {
                 );
                 self.messages.push(ChatMessage::Info(self.status.clone()));
             }
+            DomainEvent::ConfigInspected { report } => {
+                self.status = "Resolved configuration loaded".into();
+                self.modals.push(Box::new(ToolInspector::new(
+                    "tui-config".into(),
+                    "TUI configuration".into(),
+                    report,
+                )));
+            }
             DomainEvent::ToolStarted {
                 call_id,
                 tool_name,

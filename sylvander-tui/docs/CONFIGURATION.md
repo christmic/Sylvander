@@ -18,6 +18,11 @@ and Panels receive resolved values and must not query environment variables.
 
 Invalid values fail at startup with a concrete configuration error.
 
+`/config` opens the resolved configuration in the searchable, copyable
+inspector. It reports the values captured at startup plus current server model,
+workspace, and attachment limits; it does not reread the environment or mutate
+configuration.
+
 ## Built-in themes
 
 ### `sylvander`

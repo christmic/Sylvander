@@ -114,6 +114,12 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         for effect in application.take_effects() {
+            if matches!(effect, crate::event::Action::InspectConfig) {
+                application.apply(DomainEvent::ConfigInspected {
+                    report: config.report(&application.state.metadata),
+                });
+                continue;
+            }
             if let crate::event::Action::InspectWorkspaceDiff { scope, workspace } = effect {
                 let event = match crate::workspace_service::load_diff(&workspace, scope) {
                     Ok(diff) => DomainEvent::WorkspaceDiffLoaded { scope, diff },
