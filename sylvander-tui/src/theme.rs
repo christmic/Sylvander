@@ -121,6 +121,67 @@ pub const HIGH_CONTRAST: Palette = Palette {
 
 static ACTIVE: RwLock<Palette> = RwLock::new(SYLVANDER);
 static ACTIVE_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::Sylvander);
+static ACCESSIBILITY: RwLock<Accessibility> = RwLock::new(Accessibility {
+    reduced_motion: false,
+    no_italic: false,
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Accessibility {
+    reduced_motion: bool,
+    no_italic: bool,
+}
+
+pub fn configure_accessibility(reduced_motion: bool, no_italic: bool) {
+    *ACCESSIBILITY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Accessibility {
+        reduced_motion,
+        no_italic,
+    };
+}
+
+fn accessibility() -> Accessibility {
+    *ACCESSIBILITY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub fn emphasis(style: Style) -> Style {
+    emphasis_for(style, accessibility().no_italic)
+}
+
+fn emphasis_for(style: Style, no_italic: bool) -> Style {
+    if no_italic {
+        style.add_modifier(Modifier::UNDERLINED)
+    } else {
+        style.add_modifier(Modifier::ITALIC)
+    }
+}
+
+pub fn subtle_emphasis(style: Style) -> Style {
+    subtle_emphasis_for(style, accessibility().no_italic)
+}
+
+fn subtle_emphasis_for(style: Style, no_italic: bool) -> Style {
+    if no_italic {
+        style.add_modifier(Modifier::DIM)
+    } else {
+        style.add_modifier(Modifier::ITALIC)
+    }
+}
+
+pub fn cursor() -> Style {
+    cursor_for(accessibility().reduced_motion)
+}
+
+fn cursor_for(reduced_motion: bool) -> Style {
+    if reduced_motion {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().add_modifier(Modifier::SLOW_BLINK)
+    }
+}
 
 pub fn palette_for(name: ThemeName) -> Palette {
     match name {
@@ -186,9 +247,7 @@ pub fn brand_wordmark() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 pub fn brand_tagline() -> Style {
-    Style::default()
-        .fg(palette().brand_violet)
-        .add_modifier(Modifier::ITALIC)
+    subtle_emphasis(Style::default().fg(palette().brand_violet))
 }
 pub fn active() -> Style {
     Style::default().fg(palette().active)
@@ -223,14 +282,10 @@ pub fn composer_placeholder() -> Style {
     Style::default().fg(palette().text_dim)
 }
 pub fn composer_helper() -> Style {
-    Style::default()
-        .fg(palette().text_muted)
-        .add_modifier(Modifier::ITALIC)
+    subtle_emphasis(Style::default().fg(palette().text_muted))
 }
 pub fn thinking_text() -> Style {
-    Style::default()
-        .fg(palette().text_muted)
-        .add_modifier(Modifier::ITALIC)
+    subtle_emphasis(Style::default().fg(palette().text_muted))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +479,32 @@ mod tests {
             palette_for(ThemeName::HighContrast)
         );
         assert_eq!(palette_for(ThemeName::Sylvander).canvas, BG);
+    }
+
+    #[test]
+    fn accessibility_fallbacks_preserve_static_hierarchy() {
+        let base = Style::default();
+        assert!(
+            emphasis_for(base, false)
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
+        assert!(
+            emphasis_for(base, true)
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert!(
+            subtle_emphasis_for(base, true)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert!(cursor_for(true).add_modifier.contains(Modifier::REVERSED));
+        assert!(
+            cursor_for(false)
+                .add_modifier
+                .contains(Modifier::SLOW_BLINK)
+        );
     }
 
     #[test]

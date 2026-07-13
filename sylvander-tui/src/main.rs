@@ -12,6 +12,7 @@ async fn main() {
         std::process::exit(2);
     });
     sylvander_tui::theme::configure(config.theme);
+    sylvander_tui::theme::configure_accessibility(config.reduced_motion, config.no_italic);
     if let Err(error) = sylvander_tui::runtime::run(config).await {
         ratatui::restore();
         eprintln!("sylvander-tui runtime error: {error}");

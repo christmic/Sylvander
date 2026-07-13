@@ -21,6 +21,8 @@ pub struct TuiConfig {
     pub animation_interval: Duration,
     pub reconnect_interval: Duration,
     pub mouse_scroll_lines: usize,
+    pub reduced_motion: bool,
+    pub no_italic: bool,
     pub keymap: KeyMap,
     pub metadata: RuntimeMetadata,
 }
@@ -39,6 +41,8 @@ impl TuiConfig {
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
         let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
         let mouse_scroll_lines = env_number("SYLVANDER_TUI_MOUSE_SCROLL_LINES", 4, 1, 40)?;
+        let reduced_motion = env_bool("SYLVANDER_TUI_REDUCED_MOTION", false)?;
+        let no_italic = env_bool("SYLVANDER_TUI_NO_ITALIC", false)?;
         let keymap = KeyMap::from_environment()?;
 
         Ok(Self {
@@ -49,6 +53,8 @@ impl TuiConfig {
             animation_interval: Duration::from_millis(animation_ms as u64),
             reconnect_interval: Duration::from_millis(reconnect_ms as u64),
             mouse_scroll_lines,
+            reduced_motion,
+            no_italic,
             keymap,
             metadata: RuntimeMetadata {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
@@ -66,7 +72,7 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {} ms\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
             self.socket_path.display(),
             self.history_path
@@ -75,12 +81,36 @@ impl TuiConfig {
             metadata.workspace.display(),
             metadata.model_label(),
             self.render_interval.as_millis(),
-            self.animation_interval.as_millis(),
+            if self.reduced_motion {
+                "reduced".into()
+            } else {
+                format!("{} ms", self.animation_interval.as_millis())
+            },
+            if self.no_italic {
+                "disabled"
+            } else {
+                "enabled"
+            },
             self.reconnect_interval.as_millis(),
             self.mouse_scroll_lines,
             self.keymap.summary(),
             metadata.max_attachment_bytes,
         )
+    }
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool, String> {
+    parse_bool(name, std::env::var(name).ok().as_deref(), default)
+}
+
+fn parse_bool(name: &str, raw: Option<&str>, default: bool) -> Result<bool, String> {
+    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None => Ok(default),
+        Some("1" | "true" | "yes" | "on") => Ok(true),
+        Some("0" | "false" | "no" | "off") => Ok(false),
+        Some(value) => Err(format!(
+            "{name} must be true/false, yes/no, on/off, or 1/0; got {value:?}"
+        )),
     }
 }
 
@@ -151,6 +181,13 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_flags_parse_strictly() {
+        assert!(parse_bool("MOTION", Some("yes"), false).unwrap());
+        assert!(!parse_bool("ITALIC", Some("0"), true).unwrap());
+        assert!(parse_bool("MOTION", Some("sometimes"), false).is_err());
+    }
+
+    #[test]
     fn default_theme_name_is_parseable() {
         assert_eq!(
             "sylvander".parse::<ThemeName>().unwrap(),
@@ -168,6 +205,8 @@ mod tests {
             animation_interval: Duration::from_millis(200),
             reconnect_interval: Duration::from_millis(1_500),
             mouse_scroll_lines: 4,
+            reduced_motion: true,
+            no_italic: true,
             keymap: KeyMap::default(),
             metadata: RuntimeMetadata::default(),
         };
@@ -176,5 +215,7 @@ mod tests {
         assert!(report.contains("history     disabled"));
         assert!(report.contains("socket      /tmp/test.sock"));
         assert!(report.contains("sessions=Ctrl+P"));
+        assert!(report.contains("animation   reduced"));
+        assert!(report.contains("italics     disabled"));
     }
 }
