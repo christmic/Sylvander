@@ -210,9 +210,13 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
                 });
                 match result {
                     Ok(text) => {
-                        application.state.composer.replace_text(&text);
+                        let truncated = application.state.composer.replace_text(&text);
                         application.state.save_draft();
-                        application.state.status = "Draft updated from external editor".into();
+                        application.state.status = if truncated {
+                            "Draft updated from editor · content truncated to local limit".into()
+                        } else {
+                            "Draft updated from external editor".into()
+                        };
                     }
                     Err(error) => {
                         application.state.status = format!("Editor failed: {error}");

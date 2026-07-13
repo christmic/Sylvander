@@ -64,6 +64,12 @@ bounded to 2000 entries and 16 MiB, with UTF-8-safe per-message and tool-payload
 limits. Pruning leaves an explicit transcript notice; persisted session history
 remains Agent-owned and can be loaded again with `/resume`.
 
+Composer retention is bounded separately: 256 KiB/1024 rows for draft text,
+32 attachments, and 2 MiB per local attachment before the active model's
+usually smaller advertised limit is applied. Oversized paste is rejected with a
+visible status; external-editor text is UTF-8-safely truncated with an explicit
+notice. Draft restore validates the same limits before retaining content.
+
 ## Dirty rendering
 
 Rendering occurs only when state is dirty. Idle animation ticks do not dirty a
