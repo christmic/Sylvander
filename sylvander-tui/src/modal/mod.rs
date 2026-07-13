@@ -47,13 +47,19 @@ pub struct ModalStack {
     stack: Vec<Box<dyn Modal>>,
 }
 
+const MAX_MODAL_STACK: usize = 64;
+
 impl ModalStack {
     pub fn new() -> Self {
         Self { stack: Vec::new() }
     }
 
-    pub fn push(&mut self, modal: Box<dyn Modal>) {
+    pub fn push(&mut self, modal: Box<dyn Modal>) -> bool {
+        if self.stack.len() >= MAX_MODAL_STACK {
+            return false;
+        }
         self.stack.push(modal);
+        true
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn Modal>> {
@@ -74,6 +80,10 @@ impl ModalStack {
 
     pub fn len(&self) -> usize {
         self.stack.len()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.stack.len() >= MAX_MODAL_STACK
     }
 
     /// Iterate all modals (used by dispatcher to render Toasts that can
@@ -121,3 +131,21 @@ pub use plan::PlanReviewModal;
 pub use rollback::WorkspaceRollbackModal;
 pub use sessions::{SessionEntry, SessionStatus, SessionsOverlay};
 pub use tool_inspector::ToolInspector;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modal_stack_refuses_growth_beyond_its_hard_limit() {
+        let mut stack = ModalStack::new();
+        for index in 0..MAX_MODAL_STACK {
+            assert!(stack.push(Box::new(ApprovalModal::new(
+                format!("batch-{index}"),
+                Vec::new(),
+            ))));
+        }
+        assert!(!stack.push(Box::new(ApprovalModal::new("overflow".into(), Vec::new(),))));
+        assert_eq!(stack.len(), MAX_MODAL_STACK);
+    }
+}
