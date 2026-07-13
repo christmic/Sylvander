@@ -85,6 +85,8 @@ pub struct AppState {
     pub composer: Composer,
     /// Chat vertical scroll offset (0 = pinned to bottom).
     pub chat_scroll: usize,
+    /// Maximum visual-row offset reported by the latest terminal layout.
+    pub chat_scroll_limit: usize,
     /// Events received while the viewport is detached from live output.
     pub unread_events: usize,
     /// Quit signal — set by handle_key on Ctrl+C / Esc.
@@ -161,6 +163,7 @@ impl AppState {
             modals: ModalStack::new(),
             composer,
             chat_scroll: 0,
+            chat_scroll_limit: 0,
             unread_events: 0,
             should_quit: false,
             pending_actions: Vec::new(),
@@ -194,15 +197,35 @@ impl AppState {
     /// Move the transcript viewport without touching composer history.
     /// Positive values review older content; negative values move toward live.
     pub fn scroll_transcript(&mut self, lines: isize) {
+        let previous = self.chat_scroll;
         if lines >= 0 {
-            self.chat_scroll = self.chat_scroll.saturating_add(lines as usize);
+            self.chat_scroll = self
+                .chat_scroll
+                .saturating_add(lines as usize)
+                .min(self.chat_scroll_limit);
         } else {
             self.chat_scroll = self.chat_scroll.saturating_sub(lines.unsigned_abs());
         }
         if self.chat_scroll == 0 {
             self.unread_events = 0;
         }
-        self.dirty.mark();
+        if self.chat_scroll != previous {
+            self.dirty.mark();
+        }
+    }
+
+    /// Apply presentation-owned scroll bounds without letting repeated input at
+    /// the top accumulate an invisible offset. If the viewport was pinned to
+    /// the oldest row, keep it pinned when wrapping or incoming content changes
+    /// the measured line count.
+    pub fn set_chat_scroll_limit(&mut self, limit: usize) {
+        let was_at_top = self.chat_scroll_limit > 0 && self.chat_scroll == self.chat_scroll_limit;
+        self.chat_scroll_limit = limit;
+        self.chat_scroll = if was_at_top {
+            limit
+        } else {
+            self.chat_scroll.min(limit)
+        };
     }
 }
 
@@ -2582,6 +2605,7 @@ mod tests {
     #[test]
     fn transcript_navigation_detaches_and_returns_to_live() {
         let mut s = AppState::new();
+        s.set_chat_scroll_limit(80);
         s.handle_key(&KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
         assert_eq!(s.chat_scroll, 8);
 

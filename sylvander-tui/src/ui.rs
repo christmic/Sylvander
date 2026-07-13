@@ -12,7 +12,7 @@
 
 use ratatui::{
     Frame,
-    layout::Layout,
+    layout::{Layout, Rect},
     style::{Modifier, Stylize},
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -25,6 +25,15 @@ use crate::modal::ModalPlacement;
 use crate::panel::{ChatPanel, InputPanel, StatusPanel};
 
 pub fn dispatch(frame: &mut Frame, state: &AppState) {
+    dispatch_with_metrics(frame, state);
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FrameMetrics {
+    pub transcript_scroll_limit: usize,
+}
+
+pub fn dispatch_with_metrics(frame: &mut Frame, state: &AppState) -> FrameMetrics {
     let area = frame.area();
     let breakpoint = Breakpoint::from_width(area.width);
 
@@ -51,7 +60,7 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
         let inner = Block::default().borders(Borders::ALL).inner(area);
         let p = Paragraph::new(msg).wrap(Wrap { trim: false });
         frame.render_widget(p, inner);
-        return;
+        return FrameMetrics::default();
     }
 
     // 1. Panel layer.
@@ -64,34 +73,8 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
     let chat = ChatPanel;
     let input = InputPanel;
     let status = StatusPanel;
-    let chat_height = chat.height(state, area.width);
-    let input_height = input.height(state, area.width);
-    let status_height = status.height(state, area.width);
-    let requested_dock_rows = state
-        .modals
-        .iter()
-        .filter(|modal| modal.active())
-        .last()
-        .and_then(|modal| match modal.placement(state, area.width) {
-            ModalPlacement::BelowComposer { rows } => Some(rows),
-            ModalPlacement::Overlay => None,
-        })
-        .unwrap_or(0);
-    let fixed_rows = constraint_rows(input_height)
-        .saturating_add(constraint_rows(status_height))
-        .saturating_add(1);
-    let dock_rows = requested_dock_rows.min(area.height.saturating_sub(fixed_rows));
-    let chunks = Layout::default()
-        .direction(ratatui::layout::Direction::Vertical)
-        .constraints([
-            chat_height,
-            input_height,
-            ratatui::layout::Constraint::Length(dock_rows),
-            status_height,
-        ])
-        .split(area);
-
-    chat.render(frame, chunks[0], state);
+    let chunks = panel_chunks(area, state);
+    let transcript_scroll_limit = chat.render_with_scroll_limit(frame, chunks[0], state);
     input.render(frame, chunks[1], state);
 
     // Temporary choices are structurally below the Composer. Long-form review
@@ -113,6 +96,45 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
             modal.render(frame, area, state);
         }
     }
+    FrameMetrics {
+        transcript_scroll_limit,
+    }
+}
+
+pub fn transcript_scroll_limit(area: Rect, state: &AppState) -> usize {
+    if Breakpoint::from_width(area.width) == Breakpoint::TooSmall {
+        return 0;
+    }
+    ChatPanel.scroll_limit(panel_chunks(area, state)[0], state)
+}
+
+fn panel_chunks(area: Rect, state: &AppState) -> std::rc::Rc<[Rect]> {
+    let chat_height = ChatPanel.height(state, area.width);
+    let input_height = InputPanel.height(state, area.width);
+    let status_height = StatusPanel.height(state, area.width);
+    let requested_dock_rows = state
+        .modals
+        .iter()
+        .filter(|modal| modal.active())
+        .last()
+        .and_then(|modal| match modal.placement(state, area.width) {
+            ModalPlacement::BelowComposer { rows } => Some(rows),
+            ModalPlacement::Overlay => None,
+        })
+        .unwrap_or(0);
+    let fixed_rows = constraint_rows(input_height)
+        .saturating_add(constraint_rows(status_height))
+        .saturating_add(1);
+    let dock_rows = requested_dock_rows.min(area.height.saturating_sub(fixed_rows));
+    Layout::default()
+        .direction(ratatui::layout::Direction::Vertical)
+        .constraints([
+            chat_height,
+            input_height,
+            ratatui::layout::Constraint::Length(dock_rows),
+            status_height,
+        ])
+        .split(area)
 }
 
 fn constraint_rows(constraint: ratatui::layout::Constraint) -> u16 {
@@ -155,5 +177,23 @@ mod tests {
             .draw(|frame| dispatch(frame, &state))
             .expect("draw");
         terminal.backend_mut().assert_cursor_position((6, 21));
+    }
+
+    #[test]
+    fn transcript_scroll_uses_the_rendered_top_as_a_hard_limit() {
+        let mut state = AppState::new();
+        state.welcomed = false;
+        for index in 0..40 {
+            state.messages.push(crate::app::ChatMessage::Info(format!(
+                "history row {index}"
+            )));
+        }
+        let limit = transcript_scroll_limit(ratatui::layout::Rect::new(0, 0, 80, 24), &state);
+        assert!(limit > 0);
+        state.set_chat_scroll_limit(limit);
+        state.scroll_transcript(isize::MAX);
+        assert_eq!(state.chat_scroll, limit);
+        state.scroll_transcript(-4);
+        assert_eq!(state.chat_scroll, limit - 4);
     }
 }
