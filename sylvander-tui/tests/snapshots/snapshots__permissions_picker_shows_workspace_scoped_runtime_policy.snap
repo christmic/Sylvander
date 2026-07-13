@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 564
 expression: "render_buf(state, 100, 28)"
 ---
                                                                                                     
@@ -17,8 +18,8 @@ expression: "render_buf(state, 100, 28)"
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
-                                                                                                    
+────────────────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   Permissions · workspace scoped · applies next turn                                                
   root  /workspace/sylvander                                                                        

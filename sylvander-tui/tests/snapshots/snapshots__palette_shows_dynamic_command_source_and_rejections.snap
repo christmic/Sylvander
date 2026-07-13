@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 470
 expression: "render_buf(state, 100, 24)"
 ---
                                                                                                     
@@ -15,13 +16,13 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  Commands                                                                               4 results  
-    › /review          Ask Sylvander to review workspace changes                                    
-      /security-review Review a workspace scope · agent configuration                               
-      /external-review external source is not trusted for commands                                  
-      /status          conflicts with a built-in command or alias                                   
+>                                                                                                   
+────────────────────────────────────────────────────────────────────────────────────────────────────
+› /review          Ask Sylvander to review workspace changes                                        
+  /security-review Review a workspace scope · agent configuration                                   
+  /external-review external source is not trusted for commands                                      
+  /status          conflicts with a built-in command or alias                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 /review                                                                                             
 ────────────────────────────────────────────────────────────────────────────────────────────────────

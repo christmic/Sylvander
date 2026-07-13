@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 433
 expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
@@ -9,17 +10,17 @@ expression: "render_buf(state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
-  Commands                                                                    33 results  
-    › /new           Start a clean local session                                          
-      /sessions      Browse and switch sessions                                           
-      /resume        Resume a persisted session                                           
-      /rename        Rename the current persisted session                                 
-      /fork          Fork the current persisted session                                   
-      /rewind        Branch from a completed conversation turn                            
-      /checkpoint    Create a conversation checkpoint branch                              
-      ↓ 26 more                                                                           
+>                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+› /new           Start a clean local session                                              
+  /sessions      Browse and switch sessions                                               
+  /resume        Resume a persisted session                                               
+  /rename        Rename the current persisted session                                     
+  /fork          Fork the current persisted session                                       
+  /rewind        Branch from a completed conversation turn                                
+  /checkpoint    Create a conversation checkpoint branch                                  
+  ↓ 26 more                                                                               
 ──────────────────────────────────────────────────────────────────────────────────────────
 /                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
