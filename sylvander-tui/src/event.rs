@@ -68,6 +68,9 @@ pub enum DomainEvent {
     WorkspaceReviewFailed {
         reason: String,
     },
+    ConfigInspected {
+        report: String,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -313,6 +316,7 @@ pub enum Action {
         scope: WorkspaceDiffScope,
         workspace: std::path::PathBuf,
     },
+    InspectConfig,
     ForkSession {
         session_id: String,
         completed_turns: Option<usize>,

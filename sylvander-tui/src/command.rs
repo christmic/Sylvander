@@ -27,6 +27,7 @@ pub enum CommandId {
     Mention,
     Diff,
     Review,
+    Config,
     Inspect,
     Copy,
     Editor,
@@ -174,6 +175,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/review [staged|unstaged]",
         description: "Ask Sylvander to review workspace changes",
         hint: "findings first",
+    },
+    CommandSpec {
+        id: CommandId::Config,
+        name: "config",
+        usage: "/config",
+        description: "Inspect resolved TUI configuration",
+        hint: "read-only",
     },
     CommandSpec {
         id: CommandId::Status,
@@ -664,6 +672,13 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 });
             state.status = format!("Preparing review of {}…", scope.label());
         }
+        CommandId::Config => {
+            require_no_args(&invocation)?;
+            state
+                .pending_actions
+                .push(crate::event::Action::InspectConfig);
+            state.status = "Loading resolved configuration…".into();
+        }
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -1091,6 +1106,16 @@ mod tests {
         state.pending_actions.clear();
         state.turn_active = true;
         assert!(execute(parse("/review").expect("parse"), &mut state).is_err());
+    }
+
+    #[test]
+    fn config_command_is_a_read_only_local_effect() {
+        let mut state = AppState::new();
+        execute(parse("/config").expect("parse"), &mut state).expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::InspectConfig]
+        ));
     }
 
     #[test]

@@ -59,6 +59,24 @@ impl TuiConfig {
             },
         })
     }
+
+    pub fn report(&self, metadata: &RuntimeMetadata) -> String {
+        format!(
+            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {} ms\nreconnect   {} ms\nmouse wheel {} lines\nattachment  {} bytes",
+            self.theme,
+            self.socket_path.display(),
+            self.history_path
+                .as_deref()
+                .map_or_else(|| "disabled".into(), |path| path.display().to_string()),
+            metadata.workspace.display(),
+            metadata.model_label(),
+            self.render_interval.as_millis(),
+            self.animation_interval.as_millis(),
+            self.reconnect_interval.as_millis(),
+            self.mouse_scroll_lines,
+            metadata.max_attachment_bytes,
+        )
+    }
 }
 
 fn git_branch() -> String {
@@ -133,5 +151,23 @@ mod tests {
             "sylvander".parse::<ThemeName>().unwrap(),
             ThemeName::Sylvander
         );
+    }
+
+    #[test]
+    fn report_uses_resolved_values_without_reading_environment_again() {
+        let config = TuiConfig {
+            socket_path: "/tmp/test.sock".into(),
+            history_path: None,
+            theme: ThemeName::Midnight,
+            render_interval: Duration::from_millis(33),
+            animation_interval: Duration::from_millis(200),
+            reconnect_interval: Duration::from_millis(1_500),
+            mouse_scroll_lines: 4,
+            metadata: RuntimeMetadata::default(),
+        };
+        let report = config.report(&config.metadata);
+        assert!(report.contains("theme       midnight"));
+        assert!(report.contains("history     disabled"));
+        assert!(report.contains("socket      /tmp/test.sock"));
     }
 }
