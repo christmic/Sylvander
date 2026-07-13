@@ -261,6 +261,7 @@ impl AppState {
                 approval_enabled,
                 max_attachment_bytes,
             } => {
+                let first_runtime_info = self.metadata.model == "—";
                 let changed = self.metadata.model != "—"
                     && (self.metadata.model != model
                         || self.metadata.reasoning_effort != reasoning_effort);
@@ -272,7 +273,17 @@ impl AppState {
                 self.metadata.capabilities = capabilities;
                 self.metadata.approval_enabled = approval_enabled;
                 self.metadata.max_attachment_bytes = max_attachment_bytes;
-                if changed {
+                let migration = self
+                    .metadata
+                    .models
+                    .iter()
+                    .find(|entry| entry.id == self.metadata.model)
+                    .and_then(model_migration_label);
+                if (first_runtime_info || changed) && migration.is_some() {
+                    let migration = migration.expect("checked above");
+                    self.status = migration.clone();
+                    self.messages.push(ChatMessage::Info(migration));
+                } else if changed {
                     self.status = format!(
                         "Model selected · {} · {} · next turn",
                         self.metadata.model,
@@ -1127,6 +1138,18 @@ pub(crate) fn reasoning_label(effort: sylvander_protocol::ReasoningEffort) -> &'
     }
 }
 
+fn model_migration_label(model: &sylvander_protocol::ModelDescriptor) -> Option<String> {
+    match &model.lifecycle {
+        sylvander_protocol::ModelLifecycle::Active => None,
+        sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
+            Some(replacement.as_ref().map_or_else(
+                || format!("Model deprecated · {} · choose a supported model", model.id),
+                |replacement| format!("Model deprecated · {} → {replacement}", model.id),
+            ))
+        }
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -1152,6 +1175,7 @@ mod tests {
                 provider: "test".into(),
                 capabilities: 0b10001,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
             }],
             permissions: sylvander_protocol::PermissionProfile {
                 file_access: sylvander_protocol::FileAccess::ReadOnly,
@@ -1175,6 +1199,33 @@ mod tests {
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    }
+
+    #[test]
+    fn current_deprecated_model_surfaces_migration_target() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::RuntimeInfo {
+            model: "old-model".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            models: vec![sylvander_protocol::ModelDescriptor {
+                id: "old-model".into(),
+                provider: "test".into(),
+                capabilities: 0,
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+                    replacement: Some("new-model".into()),
+                },
+            }],
+            permissions: sylvander_protocol::PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: false,
+            max_attachment_bytes: 4096,
+        });
+        assert_eq!(state.status, "Model deprecated · old-model → new-model");
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(message)) if message.contains("old-model → new-model")
+        ));
     }
 
     #[test]

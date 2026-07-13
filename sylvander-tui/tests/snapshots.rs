@@ -427,12 +427,16 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
                 sylvander_protocol::ReasoningEffort::Medium,
                 sylvander_protocol::ReasoningEffort::High,
             ],
+            lifecycle: sylvander_protocol::ModelLifecycle::Active,
         },
         sylvander_protocol::ModelDescriptor {
             id: "fast-code".into(),
             provider: "anthropic-compatible".into(),
             capabilities: 0,
             reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+            lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+                replacement: Some("claude-sonnet".into()),
+            },
         },
     ];
     sylvander_tui::command::execute(

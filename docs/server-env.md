@@ -25,6 +25,7 @@ instead of mid-flight.
 | `SYLVANDER_APPROVAL_STORE` | unset | JSON file used for durable exact-request approvals. Persistent scope is unavailable unless this is set; requires `SYLVANDER_APPROVAL`. |
 | `SYLVANDER_MODELS` | primary model only | Comma-separated model ids exposed to `/model`; `SYLVANDER_MODEL` is inserted if omitted. |
 | `SYLVANDER_REASONING_MODELS` | empty | Comma-separated subset of model ids that support low/medium/high reasoning. Other models advertise `off` only. |
+| `SYLVANDER_DEPRECATED_MODELS` | empty | Comma-separated `model` or `model=replacement` entries. The lifecycle is advertised to clients; deprecated models remain selectable for old sessions. |
 | `SYLVANDER_SESSION_DB` | `$XDG_DATA_HOME/sylvander/sessions.db`, or `$HOME/.local/share/sylvander/sessions.db` | Persistent SQLite session/history database. |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
 
@@ -59,6 +60,7 @@ export ANTHROPIC_BASE_URL=http://my-gateway.internal:9527
 export SYLVANDER_MODEL=fast-code
 export SYLVANDER_MODELS=fast-code,deep-code
 export SYLVANDER_REASONING_MODELS=deep-code
+export SYLVANDER_DEPRECATED_MODELS=fast-code=deep-code
 ./target/debug/sylvander
 ```
 

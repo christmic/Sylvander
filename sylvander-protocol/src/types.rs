@@ -40,6 +40,19 @@ pub struct ModelDescriptor {
     pub provider: String,
     pub capabilities: u8,
     pub reasoning_efforts: Vec<ReasoningEffort>,
+    #[serde(default)]
+    pub lifecycle: ModelLifecycle,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ModelLifecycle {
+    #[default]
+    Active,
+    Deprecated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replacement: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -764,5 +777,17 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn legacy_model_descriptors_default_to_active() {
+        let descriptor: ModelDescriptor = serde_json::from_value(serde_json::json!({
+            "id": "model-a",
+            "provider": "test",
+            "capabilities": 0,
+            "reasoning_efforts": ["off"]
+        }))
+        .expect("legacy model descriptor");
+        assert_eq!(descriptor.lifecycle, ModelLifecycle::Active);
     }
 }

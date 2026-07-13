@@ -1,6 +1,6 @@
 //! Sylvander server — boots the agent system with channels.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
@@ -55,6 +55,29 @@ fn comma_values(key: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(String::from)
+        .collect()
+}
+
+fn model_lifecycles() -> HashMap<String, sylvander_agent::bus::ModelLifecycle> {
+    comma_values("SYLVANDER_DEPRECATED_MODELS")
+        .into_iter()
+        .map(|entry| {
+            let (model, replacement) =
+                entry
+                    .split_once('=')
+                    .map_or((entry.as_str(), None), |(model, replacement)| {
+                        let replacement = replacement.trim();
+                        (
+                            model,
+                            (!replacement.is_empty()).then(|| replacement.to_string()),
+                        )
+                    });
+            (
+                model.trim().to_string(),
+                sylvander_agent::bus::ModelLifecycle::Deprecated { replacement },
+            )
+        })
+        .filter(|(model, _)| !model.is_empty())
         .collect()
 }
 
@@ -164,6 +187,7 @@ async fn main() {
         .session_store(session_store.clone())
         .override_tools(tools)
         .available_models(available_models)
+        .model_lifecycles(model_lifecycles())
         .model_capabilities(model.capabilities);
 
     let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();

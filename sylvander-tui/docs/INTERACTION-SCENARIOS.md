@@ -102,6 +102,11 @@ labels while retaining attempt count, maximum attempts, backoff duration, and a
 bounded diagnostic reason. Older servers without a cause field safely render a
 generic model retry.
 
+Model lifecycle is also server truth. `/model` marks deprecated catalog rows
+and shows an advertised replacement when one exists. If the active model is
+deprecated, the transcript and status surface `old → replacement`; selection
+remains available so persisted sessions are not broken silently.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts
