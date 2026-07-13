@@ -8,15 +8,16 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 pub use crate::command::{COMMANDS, CommandMatch, CommandSpec as Command};
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::focus_picker};
 
 pub struct CommandPalette {
     pub filter: String,
@@ -100,65 +101,45 @@ impl Modal for CommandPalette {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        // Keep the palette above the composer/status rows. Longer registries
-        // scroll around the cursor instead of covering the input surface.
-        let max_height = parent.height.saturating_sub(5).min(17).max(8);
-        let desired_height = (self.filtered.len() as u16)
-            .saturating_add(4)
-            .clamp(8, max_height);
-        let popup_area = centered_rect(64, desired_height, parent);
-        frame.render_widget(Clear, popup_area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Commands ")
-                .title_style(theme::modal_title_coral()),
-            popup_area,
-        );
+        let visible_commands = self.filtered.len().clamp(1, 8) as u16;
+        let areas = focus_picker(frame, parent, visible_commands.saturating_add(1));
+        let count = if self.filtered.len() == 1 {
+            "1 result".to_string()
+        } else {
+            format!("{} results", self.filtered.len())
+        };
+        let heading = self.error.as_deref().unwrap_or("Commands");
+        let gap = (areas.results.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(heading) + UnicodeWidthStr::width(&*count));
+        let mut lines = vec![Line::from(vec![
+            Span::styled(
+                heading,
+                if self.error.is_some() {
+                    theme::warning()
+                } else {
+                    theme::brand_violet()
+                },
+            ),
+            Span::raw(" ".repeat(gap)),
+            Span::styled(count, theme::text_muted()),
+        ])];
 
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // input
-                Constraint::Length(1), // error or divider
-                Constraint::Min(1),    // command list
-            ])
-            .split(inner);
-
-        // 1. Filter input
         let prompt = Line::from(vec![
-            Span::styled("/", theme::modal_title_coral()),
+            Span::styled("/", theme::brand_violet()),
             Span::styled(&self.filter, Style::default()),
-            Span::styled("_", theme::cursor()),
         ]);
-        frame.render_widget(Paragraph::new(prompt), layout[0]);
-        let cursor_x = inner.x + 1 + self.filter.chars().count() as u16;
-        let cursor_y = inner.y;
-        if cursor_x < inner.x + inner.width {
-            frame.set_cursor_position((cursor_x, cursor_y));
+        frame.render_widget(Paragraph::new(prompt), areas.query);
+        let cursor_x = areas.query.x + 1 + UnicodeWidthStr::width(self.filter.as_str()) as u16;
+        if cursor_x < areas.query.x + areas.query.width {
+            frame.set_cursor_position((cursor_x, areas.query.y));
         }
-
-        let feedback = self.error.as_deref().map_or_else(
-            || {
-                Line::from(Span::styled(
-                    "─".repeat(layout[1].width as usize),
-                    theme::rule(),
-                ))
-            },
-            |error| Line::from(Span::styled(format!("! {error}"), theme::warning())),
-        );
-        frame.render_widget(Paragraph::new(feedback), layout[1]);
-
-        // 3. List
-        let mut lines: Vec<Line> = Vec::new();
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  (no commands match)",
+                "  No commands match",
                 theme::subtle_emphasis(theme::text_muted()),
             )));
         } else {
-            let visible_rows = layout[2].height.max(1) as usize;
+            let visible_rows = areas.results.height.saturating_sub(1).max(1) as usize;
             let start = self.cursor.saturating_add(1).saturating_sub(visible_rows);
             let needs_more_row = self.filtered.len() > start + visible_rows;
             let command_rows = visible_rows.saturating_sub(usize::from(needs_more_row));
@@ -222,7 +203,7 @@ impl Modal for CommandPalette {
                 )));
             }
         }
-        frame.render_widget(Paragraph::new(lines), layout[2]);
+        frame.render_widget(Paragraph::new(lines), areas.results);
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
@@ -277,26 +258,6 @@ impl Modal for CommandPalette {
             _ => Consumed::Ignored,
         }
     }
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-        ])
-        .split(parent);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-            Constraint::Percentage(percent_x.min(95)),
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-        ])
-        .split(v[1]);
-    h[1]
 }
 
 use crate::theme;

@@ -450,14 +450,18 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     let second = run_tui(&socket_path, |writer, captured| {
         writer.write_all(b"\x10").expect("open persisted sessions");
         writer.flush().expect("flush sessions shortcut");
-        assert!(
-            wait_for_output(captured, "Sessions", Duration::from_secs(3)),
-            "persisted session overlay was not rendered"
-        );
+        if !wait_for_output(
+            captured,
+            "Loading one session replaces",
+            Duration::from_secs(3),
+        ) {
+            panic!(
+                "persisted session Focus Picker was not rendered; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect resume picker"))
+            );
+        }
         std::thread::sleep(Duration::from_millis(150));
-        writer
-            .write_all(b"\r\r")
-            .expect("focus and resume selected session");
+        writer.write_all(b"\r").expect("resume selected session");
         writer.flush().expect("flush session selection");
         if !wait_for_output(captured, "accepted.", Duration::from_secs(4)) {
             panic!(
@@ -507,14 +511,14 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
             .expect("submit approval turn");
         writer.flush().expect("flush approval turn");
         assert!(
-            wait_for_output(captured, "Tool Approval", Duration::from_secs(4)),
-            "real Agent approval was not rendered"
+            wait_for_output(captured, "Permission needed", Duration::from_secs(4)),
+            "real Agent approval Decision Dock was not rendered"
         );
         writer.write_all(b"n").expect("reject real Agent tool");
         writer.flush().expect("flush approval rejection");
         assert!(
-            wait_for_output(captured, "Optional reason", Duration::from_secs(3)),
-            "approval reason input was not rendered"
+            wait_for_output(captured, "Add guidance", Duration::from_secs(3)),
+            "approval guidance input was not rendered"
         );
         writer
             .write_all(b"outside safe scope\r")
@@ -660,13 +664,18 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
     });
     let replayed = run_tui(&socket_path, |writer, captured| {
         submit(writer, b"\x10");
-        assert!(wait_for_output(
+        if !wait_for_output(
             captured,
-            "Sessions",
-            Duration::from_secs(3)
-        ));
+            "Loading one session replaces",
+            Duration::from_secs(3),
+        ) {
+            panic!(
+                "resume Focus Picker was not rendered; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect replay picker"))
+            );
+        }
         std::thread::sleep(Duration::from_millis(150));
-        submit(writer, b"\r\r");
+        submit(writer, b"\r");
         if !wait_for_output(captured, "completed.", Duration::from_secs(4)) {
             panic!(
                 "reattached TUI did not receive buffered live events; output={}",

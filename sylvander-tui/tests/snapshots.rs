@@ -350,7 +350,6 @@ fn ask_user_multi_select_with_toggles() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let k = |c, m| KeyEvent::new(c, m);
     state.handle_key(&k(KeyCode::Char(' '), KeyModifiers::NONE));
-    state.handle_key(&k(KeyCode::Char(' '), KeyModifiers::NONE));
     for ch in "edge case".chars() {
         state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
     }
@@ -648,6 +647,39 @@ fn plan_block_renders_with_progress_markers() {
         current: 1,
     });
     insta::assert_snapshot!(render_buf(s, 90, 24));
+}
+
+#[test]
+fn explicit_plan_revision_uses_review_view() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = AppState::new();
+    state.connected = true;
+    state.apply(DomainEvent::PlanReceived {
+        plan_id: "p-review".into(),
+        steps: vec![
+            "Preserve the single-session shell".into(),
+            "Replace centered decisions with the Decision Dock".into(),
+            "Verify standard and narrow layouts".into(),
+        ],
+        current: 1,
+    });
+    state.handle_key(&KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+    insta::assert_snapshot!(render_buf(state, 100, 30));
+}
+
+#[test]
+fn tool_output_inspection_uses_review_view() {
+    let mut state = AppState::new();
+    state.connected = true;
+    state
+        .modals
+        .push(Box::new(sylvander_tui::modal::ToolInspector::new(
+            "call-123456789".into(),
+            "bash".into(),
+            "checking workspace\nwarning: one issue\nverification complete".into(),
+        )));
+    insta::assert_snapshot!(render_buf(state, 100, 24));
 }
 
 #[test]

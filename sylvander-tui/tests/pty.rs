@@ -195,14 +195,14 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
     }
 
     assert!(
-        wait_for_output(&captured, "Tool Approval", Duration::from_secs(3)),
-        "approval modal was not rendered"
+        wait_for_output(&captured, "Permission needed", Duration::from_secs(3)),
+        "approval Decision Dock was not rendered"
     );
     writer.write_all(b"n").expect("reject approval");
     writer.flush().expect("flush rejection");
     assert!(
-        wait_for_output(&captured, "Optional reason", Duration::from_secs(3)),
-        "approval reason input was not rendered"
+        wait_for_output(&captured, "Add guidance", Duration::from_secs(3)),
+        "approval guidance input was not rendered"
     );
     writer
         .write_all(b"unsafe location\r")
