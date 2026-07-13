@@ -69,7 +69,7 @@ resolved values.
 | `/clear` | Clears local transcript but keeps current session identity |
 | `/help [commands\|approval\|tools\|vim]` | Opens visible contextual help |
 | `/theme <name>` | Switches semantic palette without changing layout |
-| `/mcp` | Shows redacted server-reported MCP configuration, health, auth, and trust state |
+| `/mcp` | Shows redacted Agent-advertised MCP configuration, auth metadata, and trust state |
 | `/skills` | Shows advertised skill source, activation, trust, and reload state |
 | `/memory` | Shows server-reported long-term memory availability and capabilities |
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
