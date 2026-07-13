@@ -3,10 +3,10 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 824
 expression: "render_buf(s, 120, 36)"
 ---
-  > Review the auth middleware                                                                                          
-  ◌ Run `ls`     00s                                                                                                    
-    ⎿ ✓ $ ls src/http  router.rs                                                                                        
-    ⎿ ◌ Read src/http/middleware.rs                                                                                     
+❯ Review the auth middleware                                                                                            
+⏺ Run `ls`     00s                                                                                                      
+  ⎿  $ ls src/http  router.rs                                                                                           
+  ⎿  Read src/http/middleware.rs                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -36,6 +36,6 @@ expression: "render_buf(s, 120, 36)"
                                                                                                                         
                                                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                                       
+❯                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◌ working · model — · branch — · session — · 0 tok                                                esc interrupt   /draft

@@ -3,7 +3,7 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 356
 expression: "render_buf(state, 90, 24)"
 ---
-  > change it                                                                             
+❯ change it                                                                               
                                                                                           
                                                                                           
                                                                                           
@@ -15,7 +15,7 @@ expression: "render_buf(state, 90, 24)"
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+❯                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ One choice needed                                                                     
   Which style do you prefer?                                                              
