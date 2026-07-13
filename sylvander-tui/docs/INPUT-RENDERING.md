@@ -23,9 +23,12 @@ does not dismiss an overlay or synthesize selection keys.
 
 Set `SYLVANDER_TUI_EDITING=vim` for a modal Composer. It starts in Insert mode;
 `Esc` enters Normal mode while idle, but continues to interrupt active Agent work.
-Normal mode supports `h/j/k/l`, arrows, `w/b`, `0/$`, `i/a/I/A`, `o/O`, `x`,
-and `Enter` to submit. Approval, question, command-palette, and global safety
-bindings are unchanged. The active Vim mode is always visible in the status row.
+Normal mode supports `h/j/k/l`, arrows, `w/b`, `0/$`, `gg/G`, `i/a/I/A`,
+`o/O`, `x`, `D`, `dd/dw/d$`, `cc/cw/c$`, `yy/yw`, `p/P`, `u`, and `Enter`
+to submit. Deletes and yanks use a Composer-local register; insert/change
+sequences form one undo unit. `/help vim` lists the complete supported grammar.
+Approval, question, command-palette, and global safety bindings are unchanged.
+The active Vim mode is always visible in the status row.
 
 ## Live-follow behavior
 

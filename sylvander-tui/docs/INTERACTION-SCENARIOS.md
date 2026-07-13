@@ -67,7 +67,7 @@ resolved values.
 | `/rename <name>` | Persists a new label for the current session |
 | `/fork` | Copies the current session and its message history |
 | `/clear` | Clears local transcript but keeps current session identity |
-| `/help [commands\|approval\|tools]` | Opens visible contextual help |
+| `/help [commands\|approval\|tools\|vim]` | Opens visible contextual help |
 | `/theme <name>` | Switches semantic palette without changing layout |
 | `/mcp` | Shows redacted server-reported MCP configuration, health, auth, and trust state |
 | `/skills` | Shows advertised skill source, activation, trust, and reload state |

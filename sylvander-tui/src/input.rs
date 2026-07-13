@@ -54,6 +54,13 @@ enum VimMode {
     Normal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EditSnapshot {
+    rows: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
 /// Inline-vs-attachment threshold per design §12.4 — "Pasted content under
 /// eight lines stays inline." Larger pastes collapse to an attachment token.
 pub const INLINE_PASTE_LINE_LIMIT: usize = 8;
@@ -275,6 +282,11 @@ pub struct Composer {
     pub(crate) interacted: bool,
     editing_style: EditingStyle,
     vim_mode: VimMode,
+    vim_pending: Option<char>,
+    vim_register: String,
+    vim_register_linewise: bool,
+    undo: Vec<EditSnapshot>,
+    insert_undo_anchor: Option<EditSnapshot>,
 }
 
 impl Default for Composer {
@@ -291,6 +303,11 @@ impl Default for Composer {
             interacted: false,
             editing_style: EditingStyle::Standard,
             vim_mode: VimMode::Insert,
+            vim_pending: None,
+            vim_register: String::new(),
+            vim_register_linewise: false,
+            undo: Vec::new(),
+            insert_undo_anchor: None,
         }
     }
 }
@@ -299,6 +316,9 @@ impl Composer {
     pub fn set_editing_style(&mut self, style: EditingStyle) {
         self.editing_style = style;
         self.vim_mode = VimMode::Insert;
+        self.vim_pending = None;
+        self.undo.clear();
+        self.insert_undo_anchor = (style == EditingStyle::Vim).then(|| self.snapshot());
     }
 
     pub fn editing_style(&self) -> EditingStyle {
@@ -319,6 +339,7 @@ impl Composer {
 
     pub fn handle_escape(&mut self) -> bool {
         if self.editing_style == EditingStyle::Vim && self.vim_mode == VimMode::Insert {
+            self.finish_insert_change();
             self.vim_mode = VimMode::Normal;
             self.anchor = None;
             if self.cursor_col > 0 {
@@ -425,6 +446,9 @@ impl Composer {
         self.anchor = None;
         self.history_idx = None;
         self.attachments.clear();
+        self.vim_pending = None;
+        self.undo.clear();
+        self.insert_undo_anchor = None;
         composed
     }
 
@@ -666,6 +690,16 @@ impl Composer {
         // History navigation is independent of selection/shift; do it first.
         if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
             match key.code {
+                KeyCode::Up if self.rows.len() > 1 => {
+                    self.move_cursor_vertical(-1);
+                    self.mark_focused();
+                    return None;
+                }
+                KeyCode::Down if self.rows.len() > 1 => {
+                    self.move_cursor_vertical(1);
+                    self.mark_focused();
+                    return None;
+                }
                 KeyCode::Up => return self.history_move(-1),
                 KeyCode::Down => return self.history_move(1),
                 _ => {}
@@ -768,27 +802,33 @@ impl Composer {
             return None;
         }
         self.mark_focused();
+        if let Some(operator) = self.vim_pending.take() {
+            self.handle_vim_operator(operator, key.code);
+            return None;
+        }
         match key.code {
-            KeyCode::Char('i') => self.vim_mode = VimMode::Insert,
+            KeyCode::Char('i') => self.begin_insert_change(),
             KeyCode::Char('a') => {
-                self.move_cursor_right();
-                self.vim_mode = VimMode::Insert;
+                self.move_cursor_right_in_row();
+                self.begin_insert_change();
             }
             KeyCode::Char('I') => {
                 self.cursor_col = 0;
-                self.vim_mode = VimMode::Insert;
+                self.begin_insert_change();
             }
             KeyCode::Char('A') => {
                 self.cursor_col = self.rows[self.cursor_row].len();
-                self.vim_mode = VimMode::Insert;
+                self.begin_insert_change();
             }
             KeyCode::Char('o') => {
+                self.start_insert_change();
                 self.cursor_row += 1;
                 self.rows.insert(self.cursor_row, String::new());
                 self.cursor_col = 0;
                 self.vim_mode = VimMode::Insert;
             }
             KeyCode::Char('O') => {
+                self.start_insert_change();
                 self.rows.insert(self.cursor_row, String::new());
                 self.cursor_col = 0;
                 self.vim_mode = VimMode::Insert;
@@ -803,7 +843,21 @@ impl Composer {
             }
             KeyCode::Char('w') => self.move_word_forward(),
             KeyCode::Char('b') => self.move_word_backward(),
-            KeyCode::Char('x') | KeyCode::Delete => self.delete_forward(),
+            KeyCode::Char('x') | KeyCode::Delete => self.delete_character_to_register(),
+            KeyCode::Char('D') => self.delete_to_line_end(false),
+            KeyCode::Char('C') => self.delete_to_line_end(true),
+            KeyCode::Char('d' | 'c' | 'y' | 'g') => {
+                if let KeyCode::Char(operator) = key.code {
+                    self.vim_pending = Some(operator);
+                }
+            }
+            KeyCode::Char('G') => {
+                self.cursor_row = self.rows.len() - 1;
+                self.cursor_col = self.cursor_col.min(self.rows[self.cursor_row].len());
+            }
+            KeyCode::Char('p') => self.paste_register(true),
+            KeyCode::Char('P') => self.paste_register(false),
+            KeyCode::Char('u') => self.undo_change(),
             KeyCode::Enter => {
                 if self.is_empty() && self.attachments.is_empty() {
                     return None;
@@ -813,6 +867,175 @@ impl Composer {
             _ => {}
         }
         None
+    }
+
+    fn handle_vim_operator(&mut self, operator: char, motion: KeyCode) {
+        match (operator, motion) {
+            ('g', KeyCode::Char('g')) => {
+                self.cursor_row = 0;
+                self.cursor_col = self.cursor_col.min(self.rows[0].len());
+            }
+            ('d', KeyCode::Char('d')) => self.delete_line(false),
+            ('c', KeyCode::Char('c')) => self.delete_line(true),
+            ('y', KeyCode::Char('y')) => self.yank_line(),
+            ('d', KeyCode::Char('w')) => self.delete_word(false),
+            ('c', KeyCode::Char('w')) => self.delete_word(true),
+            ('y', KeyCode::Char('w')) => self.yank_word(),
+            ('d', KeyCode::Char('$')) => self.delete_to_line_end(false),
+            ('c', KeyCode::Char('$')) => self.delete_to_line_end(true),
+            _ => {}
+        }
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            rows: self.rows.clone(),
+            cursor_row: self.cursor_row,
+            cursor_col: self.cursor_col,
+        }
+    }
+
+    fn push_undo(&mut self, before: EditSnapshot) {
+        if before.rows != self.rows {
+            if self.undo.len() == HISTORY_CAP {
+                self.undo.remove(0);
+            }
+            self.undo.push(before);
+        }
+    }
+
+    fn start_insert_change(&mut self) {
+        self.insert_undo_anchor = Some(self.snapshot());
+    }
+
+    fn begin_insert_change(&mut self) {
+        self.start_insert_change();
+        self.vim_mode = VimMode::Insert;
+    }
+
+    fn finish_insert_change(&mut self) {
+        if let Some(before) = self.insert_undo_anchor.take() {
+            self.push_undo(before);
+        }
+    }
+
+    fn undo_change(&mut self) {
+        let Some(before) = self.undo.pop() else {
+            return;
+        };
+        self.rows = before.rows;
+        self.cursor_row = before.cursor_row;
+        self.cursor_col = before.cursor_col;
+        self.anchor = None;
+    }
+
+    fn delete_character_to_register(&mut self) {
+        let before = self.snapshot();
+        let start = self.cursor_col;
+        let Some(character) = self.rows[self.cursor_row][start..].chars().next() else {
+            return;
+        };
+        let end = start + character.len_utf8();
+        self.vim_register = self.rows[self.cursor_row][start..end].into();
+        self.rows[self.cursor_row].drain(start..end);
+        self.vim_register_linewise = false;
+        self.push_undo(before);
+    }
+
+    fn delete_word(&mut self, enter_insert: bool) {
+        let before = self.snapshot();
+        let end = self.next_word_start();
+        self.vim_register = self.rows[self.cursor_row][self.cursor_col..end].into();
+        self.vim_register_linewise = false;
+        self.rows[self.cursor_row].drain(self.cursor_col..end);
+        if enter_insert {
+            self.insert_undo_anchor = Some(before);
+            self.vim_mode = VimMode::Insert;
+        } else {
+            self.push_undo(before);
+        }
+    }
+
+    fn delete_to_line_end(&mut self, enter_insert: bool) {
+        let before = self.snapshot();
+        self.vim_register = self.rows[self.cursor_row][self.cursor_col..].into();
+        self.vim_register_linewise = false;
+        self.rows[self.cursor_row].truncate(self.cursor_col);
+        if enter_insert {
+            self.insert_undo_anchor = Some(before);
+            self.vim_mode = VimMode::Insert;
+        } else {
+            self.push_undo(before);
+        }
+    }
+
+    fn delete_line(&mut self, enter_insert: bool) {
+        let before = self.snapshot();
+        self.vim_register = self.rows[self.cursor_row].clone();
+        self.vim_register_linewise = true;
+        if self.rows.len() == 1 {
+            self.rows[0].clear();
+            self.cursor_col = 0;
+        } else {
+            self.rows.remove(self.cursor_row);
+            self.cursor_row = self.cursor_row.min(self.rows.len() - 1);
+            self.cursor_col = self.cursor_col.min(self.rows[self.cursor_row].len());
+        }
+        if enter_insert {
+            self.insert_undo_anchor = Some(before);
+            self.vim_mode = VimMode::Insert;
+        } else {
+            self.push_undo(before);
+        }
+    }
+
+    fn yank_line(&mut self) {
+        self.vim_register = self.rows[self.cursor_row].clone();
+        self.vim_register_linewise = true;
+    }
+
+    fn yank_word(&mut self) {
+        let end = self.next_word_start();
+        self.vim_register = self.rows[self.cursor_row][self.cursor_col..end].into();
+        self.vim_register_linewise = false;
+    }
+
+    fn paste_register(&mut self, after: bool) {
+        if self.vim_register.is_empty() {
+            return;
+        }
+        let before = self.snapshot();
+        if self.vim_register_linewise {
+            let index = self.cursor_row + usize::from(after);
+            self.rows.insert(index, self.vim_register.clone());
+            self.cursor_row = index;
+            self.cursor_col = 0;
+        } else {
+            if after {
+                self.move_cursor_right_in_row();
+            }
+            self.rows[self.cursor_row].insert_str(self.cursor_col, &self.vim_register);
+            self.cursor_col += self.vim_register.len();
+        }
+        self.push_undo(before);
+    }
+
+    fn next_word_start(&self) -> usize {
+        let row = &self.rows[self.cursor_row];
+        let tail = &row[self.cursor_col..];
+        let search_from = if tail.chars().next().is_some_and(is_word_char) {
+            tail.char_indices()
+                .find(|(_, character)| !is_word_char(*character))
+                .map_or(tail.len(), |(offset, _)| offset)
+        } else {
+            0
+        };
+        tail[search_from..]
+            .char_indices()
+            .find(|(_, character)| is_word_char(*character))
+            .map_or(row.len(), |(offset, _)| {
+                self.cursor_col + search_from + offset
+            })
     }
 
     // ---- internal helpers ---------------------------------------------------
@@ -939,6 +1162,18 @@ impl Composer {
         } else if self.cursor_row + 1 < self.rows.len() {
             self.cursor_row += 1;
             self.cursor_col = 0;
+        }
+        self.clear_selection_if_empty();
+    }
+
+    fn move_cursor_right_in_row(&mut self) {
+        let row_len = self.rows[self.cursor_row].len();
+        if self.cursor_col < row_len {
+            let mut position = self.cursor_col + 1;
+            while position < row_len && !self.rows[self.cursor_row].is_char_boundary(position) {
+                position += 1;
+            }
+            self.cursor_col = position;
         }
         self.clear_selection_if_empty();
     }
@@ -1271,6 +1506,53 @@ mod tests {
     }
 
     #[test]
+    fn vim_undo_groups_one_insert_or_change_as_one_edit() {
+        let mut composer = Composer::default();
+        composer.set_editing_style(EditingStyle::Vim);
+        for character in "alpha".chars() {
+            composer.handle_key(&key(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert!(composer.handle_escape());
+        composer.handle_key(&key(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert!(composer.is_empty());
+
+        composer.handle_key(&key(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.replace_text("one two");
+        assert!(composer.handle_escape());
+        composer.handle_key(&key(KeyCode::Char('0'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('c'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('w'), KeyModifiers::NONE));
+        for character in "new ".chars() {
+            composer.handle_key(&key(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert!(composer.handle_escape());
+        assert_eq!(composer.text(), "new two");
+        composer.handle_key(&key(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "one two");
+    }
+
+    #[test]
+    fn vim_delete_yank_and_paste_use_internal_register() {
+        let mut composer = Composer::default();
+        composer.set_editing_style(EditingStyle::Vim);
+        composer.replace_text("one\ntwo");
+        assert!(composer.handle_escape());
+        composer.handle_key(&key(KeyCode::Char('g'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('g'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('y'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('G'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "one\ntwo\none");
+
+        composer.handle_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "one\ntwo");
+        composer.handle_key(&key(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "one\ntwo\none");
+    }
+
+    #[test]
     fn shift_enter_inserts_newline_not_submit() {
         let mut c = Composer::default();
         c.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
@@ -1362,6 +1644,19 @@ mod tests {
         // Down once → back to "w".
         c.handle_key(&key(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(c.text(), "w");
+    }
+
+    #[test]
+    fn arrows_move_inside_multiline_draft_before_history() {
+        let mut composer = Composer::default();
+        composer.history.push_back("older prompt".into());
+        composer.replace_text("first\nxy");
+
+        composer.handle_key(&key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(composer.text(), "first\nxy");
+        assert_eq!(composer.cursor_row(), 0);
+        assert_eq!(composer.cursor_col_chars(), 2);
+        assert!(composer.history_idx.is_none());
     }
 
     #[test]
