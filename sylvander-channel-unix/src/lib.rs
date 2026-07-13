@@ -101,6 +101,8 @@ enum ClientMsg {
         session_id: String,
         #[serde(default)]
         completed_turns: Option<usize>,
+        #[serde(default)]
+        checkpoint: bool,
     },
     GetRuntimeInfo,
     GetContext {
@@ -246,6 +248,7 @@ enum ServerMsg {
         output_tokens: u64,
         cost_nano_usd: Option<u64>,
         notice: Option<String>,
+        source_session_id: Option<String>,
     },
     SessionUpdated {
         session_id: String,
@@ -900,6 +903,7 @@ async fn handle_client_msg(
                             output_tokens: usage.output_tokens,
                             cost_nano_usd: usage.cost_nano_usd,
                             notice: None,
+                            source_session_id: None,
                         });
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
@@ -975,7 +979,16 @@ async fn handle_client_msg(
         ClientMsg::ForkSession {
             session_id,
             completed_turns,
+            checkpoint,
         } => {
+            if checkpoint && completed_turns.is_some() {
+                operation_error(
+                    tx,
+                    "fork_session",
+                    "checkpoint and completed_turns are mutually exclusive",
+                );
+                return;
+            }
             let source_id = SessionId::new(session_id);
             let caller = unix_session_context(agent_id, source_id.clone());
             match ctx.sessions.get(&source_id).await {
@@ -984,7 +997,13 @@ async fn handle_client_msg(
                     let mut fork = source.clone();
                     fork.id = fork_id.clone();
                     fork.name = completed_turns.map_or_else(
-                        || format!("{} (fork)", source.name),
+                        || {
+                            if checkpoint {
+                                format!("{} (checkpoint)", source.name)
+                            } else {
+                                format!("{} (fork)", source.name)
+                            }
+                        },
                         |turn| format!("{} (rewind {turn})", source.name),
                     );
                     fork.metadata.name = fork.name.clone();
@@ -1073,7 +1092,10 @@ async fn handle_client_msg(
                             format!(
                                 "Conversation rewound through completed turn {turn} · source session and workspace files unchanged"
                             )
-                        }),
+                        }).or_else(|| checkpoint.then(|| {
+                            "Conversation checkpoint branch created · source session and workspace files unchanged".into()
+                        })),
+                        source_session_id: Some(source_id.0.clone()),
                     });
                 }
                 Ok(None) => warn!(%source_id, "unix: fork source not found"),
@@ -1588,6 +1610,30 @@ mod tests {
         assert_eq!(forked["type"], "session_history");
         assert_ne!(forked["session"]["id"], "session-1");
         assert_eq!(forked["messages"][0]["text"], "hello");
+        assert_eq!(forked["source_session_id"], "session-1");
+
+        let checkpoint = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type":"fork_session",
+                "session_id":"session-1",
+                "checkpoint":true
+            }),
+        )
+        .await;
+        assert!(
+            checkpoint["session"]["label"]
+                .as_str()
+                .unwrap()
+                .contains("checkpoint")
+        );
+        assert!(
+            checkpoint["notice"]
+                .as_str()
+                .unwrap()
+                .contains("workspace files unchanged")
+        );
 
         let rewound = send_and_read(
             &mut write,

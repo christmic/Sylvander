@@ -37,6 +37,8 @@ pub struct AppState {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_nano_usd: Option<u64>,
+    /// Source session for one safe conversation-only branch undo.
+    pub last_branch_source_session_id: Option<String>,
     /// True from local submit until a terminal Done/Error/Interrupted event.
     pub turn_active: bool,
     /// Handles the small window before a new session receives its server id.
@@ -122,6 +124,7 @@ impl AppState {
             input_tokens: 0,
             output_tokens: 0,
             cost_nano_usd: None,
+            last_branch_source_session_id: None,
             turn_active: false,
             interrupt_requested: false,
             queued_prompts: VecDeque::new(),
@@ -434,6 +437,7 @@ impl AppState {
                 output_tokens,
                 cost_nano_usd,
                 notice,
+                source_session_id,
             } => {
                 self.session_id = Some(session.id.clone());
                 self.metadata.workspace = session.workspace.clone().into();
@@ -457,6 +461,7 @@ impl AppState {
                 self.input_tokens = input_tokens;
                 self.output_tokens = output_tokens;
                 self.cost_nano_usd = cost_nano_usd;
+                self.last_branch_source_session_id = source_session_id;
                 if let Some(notice) = notice {
                     self.messages.push(ChatMessage::Info(notice));
                 }
@@ -1686,6 +1691,7 @@ mod tests {
             output_tokens: 120,
             cost_nano_usd: Some(7_500_000),
             notice: None,
+            source_session_id: None,
         });
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
@@ -1719,11 +1725,16 @@ mod tests {
             output_tokens: 0,
             cost_nano_usd: Some(0),
             notice: Some("Conversation rewound · workspace files unchanged".into()),
+            source_session_id: Some("source-1".into()),
         });
         assert!(matches!(
             state.messages.last(),
             Some(ChatMessage::Info(text)) if text.contains("workspace files unchanged")
         ));
+        assert_eq!(
+            state.last_branch_source_session_id.as_deref(),
+            Some("source-1")
+        );
     }
 
     #[test]
