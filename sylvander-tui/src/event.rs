@@ -138,6 +138,12 @@ pub enum DomainEvent {
         reason: String,
         cause: sylvander_protocol::RetryCause,
     },
+    InteractionTimedOut {
+        kind: sylvander_protocol::InteractionTimeoutKind,
+        subject_id: String,
+        timeout_secs: u64,
+        recovery: sylvander_protocol::TimeoutRecovery,
+    },
     /// A tool call started (status: pending).
     ToolStarted {
         call_id: String,

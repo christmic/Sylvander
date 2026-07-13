@@ -155,6 +155,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::TextDelta { .. } => "TextDelta",
                 StreamEvent::ThinkingDelta { .. } => "ThinkingDelta",
                 StreamEvent::ModelRetry { .. } => "ModelRetry",
+                StreamEvent::InteractionTimedOut { .. } => "InteractionTimedOut",
                 StreamEvent::CompactionStarted { .. } => "CompactionStarted",
                 StreamEvent::CompactionCompleted { .. } => "CompactionCompleted",
                 StreamEvent::CompactionFailed { .. } => "CompactionFailed",

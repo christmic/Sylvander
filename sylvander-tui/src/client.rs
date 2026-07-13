@@ -133,6 +133,13 @@ pub enum ServerMsg {
         #[serde(default)]
         cause: sylvander_protocol::RetryCause,
     },
+    InteractionTimeout {
+        session_id: String,
+        kind: sylvander_protocol::InteractionTimeoutKind,
+        subject_id: String,
+        timeout_secs: u64,
+        recovery: sylvander_protocol::TimeoutRecovery,
+    },
     ToolCall {
         session_id: String,
         #[serde(default)]
@@ -634,6 +641,18 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             reason,
             cause,
         },
+        ServerMsg::InteractionTimeout {
+            kind,
+            subject_id,
+            timeout_secs,
+            recovery,
+            ..
+        } => DomainEvent::InteractionTimedOut {
+            kind,
+            subject_id,
+            timeout_secs,
+            recovery,
+        },
         ServerMsg::ToolCall {
             call_id,
             tool_name,
@@ -827,6 +846,26 @@ mod tests {
         let diagnostic = parse_server_line(&line).expect_err("unknown event must be visible");
         assert!(diagnostic.starts_with("Rejected server message"));
         assert!(diagnostic.chars().count() < 300);
+    }
+
+    #[test]
+    fn timeout_wire_event_preserves_recovery_contract() {
+        let event = parse_server_msg(ServerMsg::InteractionTimeout {
+            session_id: "session-1".into(),
+            kind: sylvander_protocol::InteractionTimeoutKind::Tool,
+            subject_id: "call-1".into(),
+            timeout_secs: 120,
+            recovery: sylvander_protocol::TimeoutRecovery::NarrowScope,
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::InteractionTimedOut {
+                kind: sylvander_protocol::InteractionTimeoutKind::Tool,
+                subject_id,
+                timeout_secs: 120,
+                recovery: sylvander_protocol::TimeoutRecovery::NarrowScope,
+            }) if subject_id == "call-1"
+        ));
     }
 
     #[test]
