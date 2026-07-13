@@ -150,8 +150,16 @@ completed backend feature.
   - [ ] Interrupt, approval, and AskUser complete against the real Agent service.
   - [ ] Disconnect/reconnect and persisted session resume complete in a PTY.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
-- [ ] Security review covers path scope, shell cancellation, secret masking, and
-      multi-client/session isolation.
+- [ ] Security review:
+  - [x] Workspace path scope rejects absolute paths, parent traversal, and
+        symlink escape for Agent read/write/edit operations.
+  - [x] Tool and diagnostic presentation removes controls and masks structured
+        secrets, auth/Cookie headers, provider tokens, credential URLs, JWTs,
+        and private-key blocks.
+  - [x] Agent interrupt and decision routing preserves session identity.
+  - [ ] Adversarial multi-client socket/PTY isolation is verified.
+  - [ ] Shell process-group cancellation is verified when the Agent exposes a
+        real shell/exec tool; the current renderer alone does not satisfy this.
 
 Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
 including 264 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.

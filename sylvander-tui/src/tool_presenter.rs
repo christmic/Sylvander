@@ -498,32 +498,84 @@ fn safe_output(output: &str) -> String {
 }
 
 fn redact_secrets(output: &str) -> String {
+    let mut private_key = false;
     output
         .lines()
         .map(|line| {
+            let lower_line = line.trim().to_ascii_lowercase();
+            if lower_line.starts_with("-----begin ") && lower_line.contains("private key-----") {
+                private_key = true;
+                return "[REDACTED PRIVATE KEY]".into();
+            }
+            if private_key {
+                if lower_line.starts_with("-----end ") && lower_line.contains("private key-----") {
+                    private_key = false;
+                }
+                return "[REDACTED PRIVATE KEY]".into();
+            }
+            if line
+                .split_once(':')
+                .is_some_and(|(key, _)| sensitive_header(key))
+            {
+                return "[REDACTED]".into();
+            }
             line.split_whitespace()
-                .map(|token| {
-                    let bare = token.trim_matches(|ch: char| {
-                        !ch.is_ascii_alphanumeric() && ch != '_' && ch != '-'
-                    });
-                    let sensitive_prefix = ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
-                        .iter()
-                        .any(|prefix| bare.starts_with(prefix));
-                    let lower = bare.to_ascii_lowercase();
-                    let assignment = ["api_key=", "apikey=", "token=", "password="]
-                        .iter()
-                        .any(|key| lower.contains(key));
-                    if sensitive_prefix || assignment {
-                        "[REDACTED]"
-                    } else {
-                        token
-                    }
-                })
+                .map(redact_token)
                 .collect::<Vec<_>>()
                 .join(" ")
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn redact_token(token: &str) -> &str {
+    let bare = token.trim_matches(|ch: char| {
+        !ch.is_ascii_alphanumeric() && !matches!(ch, '_' | '-' | '=' | ':' | '/' | '.' | '@')
+    });
+    let sensitive_prefix = ["sk-", "ghp_", "github_pat_", "xoxb-", "xoxp-"]
+        .iter()
+        .any(|prefix| bare.starts_with(prefix));
+    let assignment = bare
+        .split_once('=')
+        .is_some_and(|(key, _)| sensitive_key(key));
+    let credential_url = bare.split_once("://").is_some_and(|(_, authority)| {
+        authority
+            .split_once('@')
+            .is_some_and(|(credentials, _)| credentials.contains(':'))
+    });
+    let jwt = bare.starts_with("eyJ") && bare.matches('.').count() == 2;
+    if sensitive_prefix || assignment || credential_url || jwt {
+        "[REDACTED]"
+    } else {
+        token
+    }
+}
+
+fn sensitive_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase().replace(['-', '.'], "_");
+    [
+        "token",
+        "password",
+        "passwd",
+        "secret",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "cookie",
+        "credential",
+        "private_key",
+        "access_key",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn sensitive_header(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+        "authorization" | "proxy_authorization" | "cookie" | "set_cookie" | "x_api_key"
+    )
 }
 
 fn file_rows(label: &str, input: &Value, width: usize) -> Vec<DetailRow> {
@@ -833,6 +885,35 @@ mod tests {
             compact_target("future_extension_tool", &input),
             "future extension tool"
         );
+    }
+
+    #[test]
+    fn secret_redaction_covers_headers_urls_jwts_and_private_keys() {
+        let output = concat!(
+            "Authorization: Bearer header-secret\n",
+            "AWS_SECRET_ACCESS_KEY=aws-secret\n",
+            "postgres://user:db-password@localhost/app\n",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature\n",
+            "-----BEGIN PRIVATE KEY-----\n",
+            "private-material\n",
+            "-----END PRIVATE KEY-----\n",
+            "src/auth.rs:10:authenticate request\n",
+            "safe output"
+        );
+        let redacted = safe_output(output);
+        for secret in [
+            "header-secret",
+            "aws-secret",
+            "db-password",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "private-material",
+        ] {
+            assert!(!redacted.contains(secret), "leaked {secret}");
+        }
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(redacted.contains("[REDACTED PRIVATE KEY]"));
+        assert!(redacted.contains("src/auth.rs:10:authenticate request"));
+        assert!(redacted.contains("safe output"));
     }
 
     #[test]
