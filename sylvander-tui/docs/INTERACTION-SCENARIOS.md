@@ -21,6 +21,8 @@ primary activity rows start with `⏺`, child tools start with `⎿`, and only t
 live bottom Composer is enclosed by full-width rules and owns a hardware cursor.
 Opening a picker or Decision Dock changes available transcript height only; it
 never removes the Welcome prelude or existing conversation rows.
+Connection diagnostics and cached session state append after the Welcome and
+never participate in deciding whether that prelude is rendered.
 
 While a turn is active, `Enter` adds the prompt to a local FIFO instead of
 opening a concurrent subscription for the same session. `/queue` lists pending
