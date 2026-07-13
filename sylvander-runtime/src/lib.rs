@@ -24,6 +24,7 @@
 
 pub mod composition;
 pub mod config;
+pub mod evidence;
 
 use std::collections::HashMap;
 use std::sync::Arc;
