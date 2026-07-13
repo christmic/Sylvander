@@ -146,7 +146,8 @@ completed backend feature.
 - [x] All existing unit, E2E, and snapshot tests pass.
 - [ ] Real Unix-service + PTY flows:
   - [x] The compiled TUI completes Unix handshake, keyboard chat submission,
-        streamed response rendering, resize, and idle exit in a pseudo-terminal.
+        streamed response rendering, typed approval rejection, AskUser answer,
+        scoped interrupt, resize, and idle exit in a pseudo-terminal.
   - [ ] Interrupt, approval, and AskUser complete against the real Agent service.
   - [ ] Disconnect/reconnect and persisted session resume complete in a PTY.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
