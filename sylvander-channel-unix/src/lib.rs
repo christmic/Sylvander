@@ -28,6 +28,7 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -438,6 +439,14 @@ impl Channel for UnixChannel {
 
         let listener = match tokio::net::UnixListener::bind(&self.socket_path) {
             Ok(l) => {
+                if let Err(error) = std::fs::set_permissions(
+                    &self.socket_path,
+                    std::fs::Permissions::from_mode(0o600),
+                ) {
+                    warn!(%error, path = ?self.socket_path, "unix: failed to secure socket");
+                    let _ = std::fs::remove_file(&self.socket_path);
+                    return;
+                }
                 info!(path = ?self.socket_path, "unix channel listening");
                 l
             }
@@ -2260,6 +2269,106 @@ mod tests {
         .join(" ");
         assert!(replayed.contains("before"));
         assert!(replayed.contains("after"));
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn socket_permissions_and_live_events_are_isolated_between_clients() {
+        let path = socket_path();
+        let agent_id = AgentId::new("agent-1");
+        let bus = Arc::new(InProcessMessageBus::new());
+        let store: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
+        let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
+        let task = tokio::spawn(channel.run(ChannelContext {
+            bus: bus.clone(),
+            sessions: store,
+        }));
+
+        let stream_a = connect(&path).await;
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("socket metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "the local Agent socket must not be accessible to other OS users"
+        );
+        let (read_a, mut write_a) = stream_a.into_split();
+        let mut lines_a = BufReader::new(read_a).lines();
+        negotiate(&mut write_a, &mut lines_a).await;
+
+        let stream_b = connect(&path).await;
+        let (read_b, mut write_b) = stream_b.into_split();
+        let mut lines_b = BufReader::new(read_b).lines();
+        negotiate(&mut write_b, &mut lines_b).await;
+
+        let created_a = send_and_read(
+            &mut write_a,
+            &mut lines_a,
+            serde_json::json!({"type":"chat","text":"a","session_id":"session-a"}),
+        )
+        .await;
+        let created_b = send_and_read(
+            &mut write_b,
+            &mut lines_b,
+            serde_json::json!({"type":"chat","text":"b","session_id":"session-b"}),
+        )
+        .await;
+        assert_eq!(created_a["session_id"], "session-a");
+        assert_eq!(created_b["session_id"], "session-b");
+
+        for (session, delta) in [("session-a", "only-a"), ("session-b", "only-b")] {
+            bus.publish(BusMessage::stream_event(
+                SessionId::new(session),
+                agent_id.clone(),
+                StreamEvent::TextDelta {
+                    delta: delta.into(),
+                },
+            ))
+            .await
+            .expect("publish isolated event");
+        }
+
+        let event_a: serde_json::Value = serde_json::from_str(
+            &tokio::time::timeout(std::time::Duration::from_secs(1), lines_a.next_line())
+                .await
+                .expect("client A timeout")
+                .expect("client A read")
+                .expect("client A event"),
+        )
+        .expect("client A json");
+        let event_b: serde_json::Value = serde_json::from_str(
+            &tokio::time::timeout(std::time::Duration::from_secs(1), lines_b.next_line())
+                .await
+                .expect("client B timeout")
+                .expect("client B read")
+                .expect("client B event"),
+        )
+        .expect("client B json");
+        assert_eq!(event_a["session_id"], "session-a");
+        assert_eq!(event_a["delta"], "only-a");
+        assert_eq!(event_b["session_id"], "session-b");
+        assert_eq!(event_b["delta"], "only-b");
+
+        bus.publish(BusMessage::stream_event(
+            SessionId::new("session-a"),
+            agent_id,
+            StreamEvent::TextDelta {
+                delta: "still-only-a".into(),
+            },
+        ))
+        .await
+        .expect("publish follow-up");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), lines_b.next_line())
+                .await
+                .is_err(),
+            "client B received an event from client A's session"
+        );
 
         task.abort();
         let _ = std::fs::remove_file(path);

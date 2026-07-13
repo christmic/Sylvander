@@ -157,7 +157,10 @@ completed backend feature.
         secrets, auth/Cookie headers, provider tokens, credential URLs, JWTs,
         and private-key blocks.
   - [x] Agent interrupt and decision routing preserves session identity.
-  - [ ] Adversarial multi-client socket/PTY isolation is verified.
+  - [x] The Unix socket is owner-only and simultaneous clients receive live
+        events only for their attached session.
+  - [ ] Adversarial multi-client PTY decisions, interrupt, replay, and history
+        isolation are verified together.
   - [ ] Shell process-group cancellation is verified when the Agent exposes a
         real shell/exec tool; the current renderer alone does not satisfy this.
 
