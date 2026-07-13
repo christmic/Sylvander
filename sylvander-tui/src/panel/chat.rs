@@ -98,14 +98,10 @@ fn transcript_lines<'a>(state: &'a AppState, width: usize) -> Vec<Line<'a>> {
     // separate page. Once the user submits, turns append below it and the
     // lockup leaves the viewport only through ordinary transcript scroll.
     // Temporary UI state must never decide whether transcript content exists.
-    // A fresh/cleared session owns the Welcome prelude even when session
-    // summaries are cached or a picker/decision dock is open.
-    let show_welcome = state.welcomed || state.messages.is_empty();
-    let mut lines = if show_welcome {
-        build_welcome_lockup(width, state).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // Every session owns the Welcome prelude. Connection diagnostics, cached
+    // session state, and temporary surfaces may append to or cover the
+    // transcript, but must never remove its first block.
+    let mut lines = build_welcome_lockup(width, state).unwrap_or_default();
     for message in &state.messages {
         push_message_lines(message, &mut lines, width, state.tool_details_expanded);
     }
@@ -821,10 +817,13 @@ mod tests {
     }
 
     #[test]
-    fn temporary_surfaces_never_remove_a_fresh_welcome_prelude() {
+    fn diagnostics_and_temporary_surfaces_never_remove_welcome_prelude() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let mut state = AppState::new();
+        state.messages.push(ChatMessage::Info(
+            "Connected to the local Sylvander service".into(),
+        ));
         state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         assert!(!state.modals.is_empty(), "command picker must be open");
 

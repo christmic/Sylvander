@@ -142,6 +142,9 @@ What should we work through?
 - On submit, the user turn is appended below Welcome.
 - Agent output is appended below the user turn.
 - Welcome is never immediately cleared or replaced.
+- Welcome inclusion is unconditional for a session. Connection diagnostics,
+  cached session metadata, and existing message rows append after it; they are
+  never used as predicates for whether it exists.
 - Opening a command picker, approval, question, or any other temporary surface
   never changes whether Welcome belongs to the transcript. These surfaces may
   reduce its visible viewport temporarily, but closing them restores the same
