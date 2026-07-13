@@ -147,6 +147,7 @@ impl ServerConfig {
                     enabled: values.contains_key("SYLVANDER_APPROVAL"),
                     persistent_store: values.get("SYLVANDER_APPROVAL_STORE").map(PathBuf::from),
                 },
+                evidence: super::EvidenceSettings::default(),
             },
             model_providers: vec![ModelProviderConfig {
                 id: "primary".into(),

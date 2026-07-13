@@ -73,6 +73,13 @@ If `server.data_dir` is omitted, it resolves to
 workspace journal live below that directory. Explicit paths remain useful for
 containers, backups, and migration drills.
 
+`server.evidence` controls the structured run ledger. It is enabled by default
+with a 30-day retention declaration and `metadata_only` content policy. The
+other policies are `redacted` and `full`; `full` is an explicit operator choice
+and must be paired with appropriate access, deletion, and backup controls.
+The ledger is evidence for review and evaluation, never permission for the
+Agent to change or deploy itself without the gated workflow in P5.
+
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
 the future run ledger; replacing it during restore is a correctness defect.

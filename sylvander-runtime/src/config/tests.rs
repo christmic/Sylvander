@@ -148,3 +148,20 @@ fn maintained_example_configuration_stays_valid() {
     let input = include_str!("../../../config/sylvander.example.toml");
     ServerConfig::from_toml(input).expect("maintained example must parse and validate");
 }
+
+#[test]
+fn evidence_capture_is_bounded_and_metadata_only_by_default() {
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    assert_eq!(
+        config.server.evidence.content,
+        EvidenceContentPolicy::MetadataOnly
+    );
+    config.server.evidence.retention_days = 0;
+    let error = config.validate().unwrap_err();
+    assert!(
+        error
+            .errors
+            .iter()
+            .any(|message| message.contains("retention_days"))
+    );
+}

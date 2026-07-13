@@ -12,6 +12,13 @@ name = "sylvander"
 enabled = true
 # persistent_store = "/var/lib/sylvander/approvals.json"
 
+[server.evidence]
+enabled = true
+# path = "/var/lib/sylvander/evidence.db"
+retention_days = 30
+# metadata_only avoids persisting raw prompts, tool payloads, and responses.
+content = "metadata_only"
+
 [[model_providers]]
 id = "primary"
 kind = "anthropic_compatible"
