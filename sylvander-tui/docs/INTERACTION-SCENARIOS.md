@@ -62,6 +62,9 @@ disappearing. Invalid arguments remain in the command line with an inline error.
 | `/clear` | Clears local transcript but keeps current session identity |
 | `/help [commands\|approval\|tools]` | Opens visible contextual help |
 | `/theme <name>` | Switches semantic palette without changing layout |
+| `/mcp` | Shows redacted server-reported MCP configuration, health, auth, and trust state |
+| `/skills` | Shows advertised skill source, activation, trust, and reload state |
+| `/memory` | Shows server-reported long-term memory availability and capabilities |
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
 | `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
 | `/permissions` | Edits workspace filesystem, network, and approval policy for the next turn |

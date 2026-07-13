@@ -29,6 +29,9 @@ pub enum CommandId {
     Review,
     Config,
     Doctor,
+    Mcp,
+    Skills,
+    Memory,
     Inspect,
     Copy,
     Editor,
@@ -192,6 +195,27 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "no secrets",
     },
     CommandSpec {
+        id: CommandId::Mcp,
+        name: "mcp",
+        usage: "/mcp",
+        description: "Inspect MCP configuration, health, and auth state",
+        hint: "server truth",
+    },
+    CommandSpec {
+        id: CommandId::Skills,
+        name: "skills",
+        usage: "/skills",
+        description: "Inspect advertised skills and activation state",
+        hint: "server truth",
+    },
+    CommandSpec {
+        id: CommandId::Memory,
+        name: "memory",
+        usage: "/memory",
+        description: "Inspect long-term memory availability",
+        hint: "server truth",
+    },
+    CommandSpec {
         id: CommandId::Status,
         name: "status",
         usage: "/status",
@@ -338,6 +362,9 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Rollback
             | CommandId::Model
             | CommandId::Permissions
+            | CommandId::Mcp
+            | CommandId::Skills
+            | CommandId::Memory
     );
     if needs_connection && !state.connected {
         return Unavailable("connect to the Agent first".into());
@@ -893,6 +920,30 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .push(crate::event::Action::RunDoctor { destination });
             state.status = "Preparing redacted diagnostics…".into();
         }
+        CommandId::Mcp => {
+            require_no_args(&invocation)?;
+            state.messages.push(ChatMessage::Info(platform_report(
+                "MCP servers",
+                sylvander_protocol::PlatformFeatureKind::Mcp,
+                &state.platform,
+            )));
+        }
+        CommandId::Skills => {
+            require_no_args(&invocation)?;
+            state.messages.push(ChatMessage::Info(platform_report(
+                "Skills",
+                sylvander_protocol::PlatformFeatureKind::Skill,
+                &state.platform,
+            )));
+        }
+        CommandId::Memory => {
+            require_no_args(&invocation)?;
+            state.messages.push(ChatMessage::Info(platform_report(
+                "Memory",
+                sylvander_protocol::PlatformFeatureKind::Memory,
+                &state.platform,
+            )));
+        }
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -1039,6 +1090,78 @@ fn permission_summary(profile: &sylvander_protocol::PermissionProfile) -> String
         sylvander_protocol::ApprovalPolicy::Deny => "deny",
     };
     format!("{files}/{network}/{approval}")
+}
+
+fn platform_report(
+    title: &str,
+    kind: sylvander_protocol::PlatformFeatureKind,
+    snapshot: &sylvander_protocol::PlatformSnapshot,
+) -> String {
+    let features = snapshot
+        .features
+        .iter()
+        .filter(|feature| feature.kind == kind)
+        .collect::<Vec<_>>();
+    if features.is_empty() {
+        return format!("{title}\nNo {title} advertised by the Agent.");
+    }
+    let rows = features
+        .iter()
+        .map(|feature| {
+            let status = platform_status_label(feature.status);
+            let auth = platform_auth_label(feature.auth);
+            let trust = feature
+                .trust
+                .map(platform_trust_label)
+                .unwrap_or_else(|| "unspecified".into());
+            let source = feature
+                .source
+                .as_deref()
+                .map_or(String::new(), |source| format!("\n  source {source}"));
+            let capabilities = if feature.capabilities.is_empty() {
+                String::new()
+            } else {
+                format!("\n  capabilities {}", feature.capabilities.join(", "))
+            };
+            format!(
+                "{} · {status} · auth {auth} · trust {trust} · reload {}\n  {}{source}{capabilities}",
+                feature.name,
+                if feature.reloadable { "available" } else { "no" },
+                feature.summary
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{title}\n{rows}")
+}
+
+fn platform_status_label(status: sylvander_protocol::PlatformFeatureStatus) -> &'static str {
+    match status {
+        sylvander_protocol::PlatformFeatureStatus::Active => "active",
+        sylvander_protocol::PlatformFeatureStatus::Configured => "configured",
+        sylvander_protocol::PlatformFeatureStatus::Degraded => "degraded",
+        sylvander_protocol::PlatformFeatureStatus::Unavailable => "unavailable",
+    }
+}
+
+fn platform_auth_label(auth: sylvander_protocol::PlatformAuthStatus) -> &'static str {
+    match auth {
+        sylvander_protocol::PlatformAuthStatus::NotRequired => "not-required",
+        sylvander_protocol::PlatformAuthStatus::Configured => "configured",
+        sylvander_protocol::PlatformAuthStatus::Missing => "missing",
+        sylvander_protocol::PlatformAuthStatus::Unknown => "unknown",
+    }
+}
+
+fn platform_trust_label(trust: sylvander_protocol::PlatformTrust) -> String {
+    match trust {
+        sylvander_protocol::PlatformTrust::BuiltIn => "built-in",
+        sylvander_protocol::PlatformTrust::Workspace => "workspace",
+        sylvander_protocol::PlatformTrust::User => "user",
+        sylvander_protocol::PlatformTrust::External => "external",
+        sylvander_protocol::PlatformTrust::Unverified => "unverified",
+    }
+    .into()
 }
 
 fn parse_reasoning_effort(value: &str) -> Result<sylvander_protocol::ReasoningEffort, String> {
@@ -1382,6 +1505,56 @@ mod tests {
             [crate::event::Action::RunDoctor {
                 destination: crate::event::DoctorDestination::Export(path),
             }] if path == std::path::Path::new("reports/tui.txt")
+        ));
+    }
+
+    #[test]
+    fn platform_commands_render_only_server_reported_truth() {
+        let mut state = AppState::new();
+        state.connected = true;
+        state.platform.features = vec![
+            sylvander_protocol::PlatformFeature {
+                kind: sylvander_protocol::PlatformFeatureKind::Mcp,
+                name: "search".into(),
+                status: sylvander_protocol::PlatformFeatureStatus::Configured,
+                summary: "configured; runtime health unavailable".into(),
+                source: Some("search-mcp".into()),
+                trust: Some(sylvander_protocol::PlatformTrust::External),
+                auth: sylvander_protocol::PlatformAuthStatus::Configured,
+                capabilities: Vec::new(),
+                reloadable: false,
+            },
+            sylvander_protocol::PlatformFeature {
+                kind: sylvander_protocol::PlatformFeatureKind::Memory,
+                name: "runtime memory".into(),
+                status: sylvander_protocol::PlatformFeatureStatus::Active,
+                summary: "long-term memory is available".into(),
+                source: Some("runtime injection".into()),
+                trust: Some(sylvander_protocol::PlatformTrust::BuiltIn),
+                auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+                capabilities: vec!["search".into()],
+                reloadable: false,
+            },
+        ];
+
+        execute(parse("/mcp").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(report))
+                if report.contains("configured · auth configured · trust external · reload no")
+                    && report.contains("source search-mcp")
+        ));
+        execute(parse("/memory").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(report))
+                if report.contains("active · auth not-required · trust built-in · reload no")
+                    && report.contains("capabilities search")
+        ));
+        execute(parse("/skills").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(report)) if report.contains("No Skills advertised")
         ));
     }
 

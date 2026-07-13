@@ -101,7 +101,8 @@ completed backend feature.
 - [x] Session: `/resume`, `/rename`, `/fork`.
 - [x] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
 - [x] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
-- [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.
+- [x] Platform inspection commands: `/mcp`, `/skills`, `/memory`, `/doctor`,
+      and `/config` render server or local service truth.
 - [x] Commands support fuzzy matching, completion, aliases, recent ordering,
       and state-derived availability rules.
 - [ ] Extension slash commands use dynamic registration with typed effects and
