@@ -49,4 +49,7 @@ second runs the real `AgentRun`, `UnixChannel`, and file-backed SQLite stack
 against a locally controlled model endpoint. Its scenarios answer an
 Agent-owned AskUser prompt, interrupt a delayed turn, reject a write and verify
 it never executes, then start a fresh TUI process and restore the persisted
-transcript through `Ctrl+P`.
+transcript through `Ctrl+P`. The real-runtime gate also runs two compiled TUI
+clients concurrently with a deliberately colliding AskUser ID, verifies scoped
+answers and interrupts, reconnects to a live buffered turn, and checks the
+file-backed transcripts for cross-client contamination.
