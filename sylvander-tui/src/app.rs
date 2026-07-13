@@ -23,6 +23,8 @@ const MAX_TRANSCRIPT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 const MAX_TOOL_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_GROUP_ITEMS: usize = 64;
+const MAX_QUEUED_PROMPTS: usize = 100;
+const MAX_SESSION_CACHE: usize = 5_000;
 const TRANSCRIPT_PRUNED_NOTICE: &str =
     "transcript · older entries omitted from the local view; /resume reloads persisted history";
 pub use crate::model::{
@@ -323,6 +325,13 @@ impl AppState {
     ) -> Option<Action> {
         self.welcomed = true;
         if self.turn_active {
+            if self.queued_prompts.len() >= MAX_QUEUED_PROMPTS {
+                self.status =
+                    "Prompt queue full · remove an item with /queue remove before adding more"
+                        .into();
+                self.dirty.mark();
+                return None;
+            }
             self.messages.push(ChatMessage::QueuedUser(text.clone()));
             self.queued_prompts.push_back(text);
             self.queued_prompt_attachments.push_back(attachments);
@@ -519,6 +528,7 @@ impl AppState {
                             last_seen_secs: 0,
                         },
                     );
+                    self.sessions.truncate(MAX_SESSION_CACHE);
                 } else {
                     // Mark existing as working + refresh its seen-time.
                     if let Some(e) = self.sessions.iter_mut().find(|e| e.id == session_id) {
@@ -552,6 +562,7 @@ impl AppState {
                     }
                 }
                 self.sessions.sort_by_key(|entry| entry.last_seen_secs);
+                self.sessions.truncate(MAX_SESSION_CACHE);
                 if self
                     .modals
                     .top()
@@ -1331,6 +1342,12 @@ impl AppState {
         // 4. Otherwise, the focused panel owns the key.
         // Currently we only have InputPanel as a focusable panel.
         let is_submit = key.code == crossterm::event::KeyCode::Enter && key.modifiers.is_empty();
+        if is_submit && self.turn_active && self.queued_prompts.len() >= MAX_QUEUED_PROMPTS {
+            self.status =
+                "Prompt queue full · current draft preserved; use /queue remove first".into();
+            self.dirty.mark();
+            return None;
+        }
         if is_submit {
             if let Err(error) = self.composer.validate_attachments(
                 self.metadata.max_attachment_bytes,
@@ -2332,6 +2349,24 @@ mod tests {
             state.messages.last(),
             Some(ChatMessage::QueuedUser(text)) if text == "next request"
         ));
+    }
+
+    #[test]
+    fn full_prompt_queue_preserves_the_unsent_composer_draft() {
+        let mut state = AppState::new();
+        state.turn_active = true;
+        for index in 0..MAX_QUEUED_PROMPTS {
+            state.queued_prompts.push_back(format!("queued {index}"));
+            state.queued_prompt_attachments.push_back(Vec::new());
+        }
+        state.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+
+        let action = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(action.is_none());
+        assert_eq!(state.queued_prompts.len(), MAX_QUEUED_PROMPTS);
+        assert_eq!(state.composer.text(), "x");
+        assert!(state.status.contains("current draft preserved"));
     }
 
     #[test]
