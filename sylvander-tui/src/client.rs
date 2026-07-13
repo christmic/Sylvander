@@ -69,6 +69,8 @@ pub enum ClientMsg {
     },
     ForkSession {
         session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completed_turns: Option<usize>,
     },
     GetRuntimeInfo,
     GetContext {
@@ -231,6 +233,8 @@ pub enum ServerMsg {
         output_tokens: u64,
         #[serde(default)]
         cost_nano_usd: Option<u64>,
+        #[serde(default)]
+        notice: Option<String>,
     },
     SessionUpdated {
         session_id: String,
@@ -595,6 +599,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             input_tokens,
             output_tokens,
             cost_nano_usd,
+            notice,
         } => DomainEvent::SessionHistoryLoaded {
             session: crate::model::SessionSummary {
                 id: session.id,
@@ -617,6 +622,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             input_tokens,
             output_tokens,
             cost_nano_usd,
+            notice,
         },
         ServerMsg::SessionUpdated {
             session_id,
@@ -989,6 +995,7 @@ mod tests {
             input_tokens: 120,
             output_tokens: 30,
             cost_nano_usd: Some(45_000),
+            notice: None,
         });
         assert!(matches!(
             event,
@@ -999,6 +1006,7 @@ mod tests {
                 input_tokens: 120,
                 output_tokens: 30,
                 cost_nano_usd: Some(45_000),
+                notice: None,
             })
                 if session.id == "s1"
                     && messages[0].role == crate::model::HistoryRole::User

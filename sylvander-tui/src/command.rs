@@ -12,6 +12,7 @@ pub enum CommandId {
     Resume,
     Rename,
     Fork,
+    Rewind,
     Clear,
     Help,
     Theme,
@@ -74,6 +75,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/fork",
         description: "Fork the current persisted session",
         hint: "copies history",
+    },
+    CommandSpec {
+        id: CommandId::Rewind,
+        name: "rewind",
+        usage: "/rewind <completed-turn>",
+        description: "Branch from a completed conversation turn",
+        hint: "workspace unchanged",
     },
     CommandSpec {
         id: CommandId::Clear,
@@ -273,8 +281,35 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .ok_or_else(|| "There is no persisted session to fork".to_string())?;
             state
                 .pending_actions
-                .push(crate::event::Action::ForkSession { session_id });
+                .push(crate::event::Action::ForkSession {
+                    session_id,
+                    completed_turns: None,
+                });
             state.status = "Forking session…".into();
+        }
+        CommandId::Rewind => {
+            if state.turn_active {
+                return Err("Interrupt active work before rewinding".into());
+            }
+            let [turn] = invocation.args.as_slice() else {
+                return Err(format!("Usage: {}", invocation.spec.usage));
+            };
+            let completed_turns = turn
+                .parse::<usize>()
+                .ok()
+                .filter(|turn| *turn > 0)
+                .ok_or_else(|| "Completed turn must be a positive integer".to_string())?;
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no persisted session to rewind".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::ForkSession {
+                    session_id,
+                    completed_turns: Some(completed_turns),
+                });
+            state.status = "Rewinding into a new conversation branch · workspace unchanged…".into();
         }
         CommandId::Clear => {
             require_no_args(&invocation)?;
@@ -814,6 +849,22 @@ mod tests {
             state.messages.last(),
             Some(ChatMessage::Info(text)) if text.contains("cost unavailable")
         ));
+    }
+
+    #[test]
+    fn rewind_is_a_non_destructive_server_branch_action() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        execute(parse("rewind 2").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::ForkSession {
+                session_id,
+                completed_turns: Some(2)
+            }] if session_id == "session-1"
+        ));
+        assert!(state.status.contains("workspace unchanged"));
+        assert!(execute(parse("rewind 0").unwrap(), &mut state).is_err());
     }
 
     #[test]

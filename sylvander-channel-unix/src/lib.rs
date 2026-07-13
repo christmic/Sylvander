@@ -99,6 +99,8 @@ enum ClientMsg {
     },
     ForkSession {
         session_id: String,
+        #[serde(default)]
+        completed_turns: Option<usize>,
     },
     GetRuntimeInfo,
     GetContext {
@@ -243,6 +245,7 @@ enum ServerMsg {
         input_tokens: u64,
         output_tokens: u64,
         cost_nano_usd: Option<u64>,
+        notice: Option<String>,
     },
     SessionUpdated {
         session_id: String,
@@ -896,6 +899,7 @@ async fn handle_client_msg(
                             input_tokens: usage.input_tokens,
                             output_tokens: usage.output_tokens,
                             cost_nano_usd: usage.cost_nano_usd,
+                            notice: None,
                         });
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
@@ -968,7 +972,10 @@ async fn handle_client_msg(
                 }
             }
         }
-        ClientMsg::ForkSession { session_id } => {
+        ClientMsg::ForkSession {
+            session_id,
+            completed_turns,
+        } => {
             let source_id = SessionId::new(session_id);
             let caller = unix_session_context(agent_id, source_id.clone());
             match ctx.sessions.get(&source_id).await {
@@ -976,15 +983,14 @@ async fn handle_client_msg(
                     let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
                     let mut fork = source.clone();
                     fork.id = fork_id.clone();
-                    fork.name = format!("{} (fork)", source.name);
+                    fork.name = completed_turns.map_or_else(
+                        || format!("{} (fork)", source.name),
+                        |turn| format!("{} (rewind {turn})", source.name),
+                    );
                     fork.metadata.name = fork.name.clone();
                     fork.created_at = sylvander_agent::session::now_secs();
                     fork.updated_at = fork.created_at;
-                    if let Err(error) = ctx.sessions.save(&fork).await {
-                        warn!(%error, "unix: failed to save forked session");
-                        return;
-                    }
-                    let history = match ctx
+                    let mut history = match ctx
                         .sessions
                         .read_history(&caller, &source_id, true, None)
                         .await
@@ -995,6 +1001,30 @@ async fn handle_client_msg(
                             return;
                         }
                     };
+                    if let Some(turns) = completed_turns {
+                        let boundary = history
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, message)| {
+                                message.role
+                                    == sylvander_agent::session_store::MessageRole::Assistant
+                            })
+                            .nth(turns.saturating_sub(1))
+                            .map(|(index, _)| index + 1);
+                        let Some(boundary) = boundary else {
+                            operation_error(
+                                tx,
+                                "rewind_session",
+                                format!("completed turn {turns} does not exist"),
+                            );
+                            return;
+                        };
+                        history.truncate(boundary);
+                    }
+                    if let Err(error) = ctx.sessions.save(&fork).await {
+                        warn!(%error, "unix: failed to save forked session");
+                        return;
+                    }
                     let fork_caller = unix_session_context(agent_id, fork_id.clone());
                     for message in &history {
                         if let Err(error) = ctx
@@ -1011,6 +1041,8 @@ async fn handle_client_msg(
                             .await
                         {
                             warn!(%error, "unix: failed to copy fork history");
+                            let _ = ctx.sessions.delete(&fork_id).await;
+                            operation_error(tx, "fork_session", error.to_string());
                             return;
                         }
                     }
@@ -1037,6 +1069,11 @@ async fn handle_client_msg(
                         input_tokens: 0,
                         output_tokens: 0,
                         cost_nano_usd: Some(0),
+                        notice: completed_turns.map(|turn| {
+                            format!(
+                                "Conversation rewound through completed turn {turn} · source session and workspace files unchanged"
+                            )
+                        }),
                     });
                 }
                 Ok(None) => warn!(%source_id, "unix: fork source not found"),
@@ -1485,6 +1522,24 @@ mod tests {
             )
             .await
             .expect("append");
+        for (role, content) in [
+            (MessageRole::Assistant, "answer one"),
+            (MessageRole::User, "question two"),
+            (MessageRole::Assistant, "answer two"),
+        ] {
+            store
+                .append_message(
+                    &caller,
+                    &session_id,
+                    role,
+                    serde_json::json!({"role": match role { MessageRole::User => "user", _ => "assistant" }, "content": content}),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .expect("append turn");
+        }
         store
             .record_usage(&session_id, 120, 30, Some(45_000))
             .await
@@ -1533,6 +1588,43 @@ mod tests {
         assert_eq!(forked["type"], "session_history");
         assert_ne!(forked["session"]["id"], "session-1");
         assert_eq!(forked["messages"][0]["text"], "hello");
+
+        let rewound = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type":"fork_session",
+                "session_id":"session-1",
+                "completed_turns":1
+            }),
+        )
+        .await;
+        assert_eq!(rewound["type"], "session_history");
+        assert_eq!(rewound["messages"].as_array().unwrap().len(), 2);
+        assert!(
+            rewound["session"]["label"]
+                .as_str()
+                .unwrap()
+                .contains("rewind 1")
+        );
+        assert!(
+            rewound["notice"]
+                .as_str()
+                .unwrap()
+                .contains("workspace files unchanged")
+        );
+        let invalid_rewind = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type":"fork_session",
+                "session_id":"session-1",
+                "completed_turns":99
+            }),
+        )
+        .await;
+        assert_eq!(invalid_rewind["type"], "operation_error");
+        assert_eq!(invalid_rewind["operation"], "rewind_session");
 
         let archived = send_and_read(
             &mut write,

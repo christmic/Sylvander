@@ -114,6 +114,13 @@ When pricing is absent, historical usage predates pricing, or non-zero cache
 usage lacks a cache rate, the UI says `cost unavailable` instead of displaying
 a misleading zero or partial estimate.
 
+`/rewind <completed-turn>` is conversation-only and non-destructive. The
+service validates an assistant-completed boundary, creates a new persisted
+session containing history through that boundary, and leaves both the source
+session and workspace files unchanged. Invalid or unfinished boundaries create
+no branch. Filesystem rollback is intentionally a separate future operation;
+the TUI never implies that conversation rewind reverted code.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts
