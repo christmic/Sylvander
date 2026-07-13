@@ -2,15 +2,17 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(state, 90, 22)"
 ---
-      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                                   
-⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                                         
- ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                                       
-⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                             
- ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                                         
-                        What should we work through?                                      
+              ⢀⣤⣴⡆               Sylvander                                                
+            ⢀⣚⣿⣿⣿⣿⢓⣀             agent workspace                                          
+         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦           model     —                                              
+  ⢀ ⣴⠆  ⣰⣿⣿⣵⠟⠉    ⠙⠻⣿⠿⣾⣦         workspace ~/workspace                                    
+ ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄        branch    — · session new                                
+ ⢀⣤⣶⣿⡣⣤⢀⢽⠿⣮⢷⣄⣉⠁  ⠉⣁⣤⡎⣵⠟⣭⣁⡔⢿⣄⡀                                                             
+ ⣾⣿⠛⢹⡇⠈⢨⣶⡶⠎⢛⡿⣿⣳⡆⣶⣿⡿⣟⣋⢷⣶⣮⡅⢸⡜⢿⣿⡄   What should we work through?                             
+ ⠈⠻⠁   ⠘⠞⠁ ⠒⠁ ⠉⠁⠉⠉ ⠉⠑ ⠈⣿⠇ ⠁⠈⠿⠁                                                            
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
-❯                                                                                         
+❯ /                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────
 › /new           Start a clean local session                                              
   /sessions      Browse and switch sessions                                               
@@ -20,7 +22,5 @@ expression: "render_buf(state, 90, 22)"
   /rewind        Branch from a completed conversation turn                                
   /checkpoint    Create a conversation checkpoint branch                                  
   ↓ 26 more                                                                               
-──────────────────────────────────────────────────────────────────────────────────────────
-/                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
