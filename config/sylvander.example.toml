@@ -1,0 +1,105 @@
+# Sylvander server configuration, schema v1.
+schema_version = 1
+
+[server]
+name = "sylvander"
+# Defaults to $XDG_DATA_HOME/sylvander or ~/.local/share/sylvander.
+# data_dir = "/var/lib/sylvander"
+# session_db = "/var/lib/sylvander/sessions.db"
+# workspace_journal = "/var/lib/sylvander/workspace-journal"
+
+[server.approval]
+enabled = true
+# persistent_store = "/var/lib/sylvander/approvals.json"
+
+[[model_providers]]
+id = "primary"
+kind = "anthropic_compatible"
+base_url = "https://api.anthropic.com"
+
+[model_providers.api_key]
+source = "env"
+name = "ANTHROPIC_API_KEY"
+
+[[model_providers.models]]
+id = "claude-sonnet"
+context_window = 200000
+max_output_tokens = 32000
+capabilities = ["tool_use", "vision", "prompt_caching"]
+
+[[execution_targets]]
+id = "local"
+
+[execution_targets.transport]
+kind = "local"
+root = "/"
+
+[[agents]]
+revision = 1
+default_prompt_profile = "claude"
+allow_session_prompt = false
+
+[agents.spec]
+id = "sylvander"
+name = "Sylvander"
+
+[agents.spec.persona]
+system_prompt = "You are Sylvander, a careful and capable coding Agent."
+description = "Primary coding Agent"
+
+[agents.spec.model]
+provider = "primary"
+model_name = "claude-sonnet"
+max_tokens = 32000
+
+[agents.spec.behavior]
+max_iterations = 50
+max_retries = 3
+
+[agents.agent_workspace]
+execution_target = "local"
+path = "/var/lib/sylvander/agents/sylvander"
+read_only = false
+
+[[agents.prompt_profiles]]
+id = "claude"
+providers = ["primary"]
+models = ["claude-sonnet"]
+system_prompt = "You are Sylvander, a careful and capable coding Agent."
+
+[[channels]]
+id = "terminal"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "unix"
+path = "/tmp/sylvander.sock"
+
+[[channels]]
+id = "http-debug"
+enabled = false
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "http"
+bind = "127.0.0.1:8080"
+
+# Each bot is a separate channel instance. Duplicate this block with a unique
+# id, bind address, and secret references to configure another Telegram bot.
+[[channels]]
+id = "telegram-primary"
+enabled = false
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "telegram"
+bind = "127.0.0.1:8090"
+
+[channels.transport.token]
+source = "env"
+name = "TELEGRAM_PRIMARY_TOKEN"
+
+[channels.transport.webhook_secret]
+source = "env"
+name = "TELEGRAM_PRIMARY_WEBHOOK_SECRET"

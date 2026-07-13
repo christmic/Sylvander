@@ -142,3 +142,9 @@ fn oversized_configuration_is_rejected_before_parsing() {
     let error = ServerConfig::from_toml(&"x".repeat(1024 * 1024 + 1)).unwrap_err();
     assert!(error.errors[0].contains("configuration exceeds"));
 }
+
+#[test]
+fn maintained_example_configuration_stays_valid() {
+    let input = include_str!("../../../config/sylvander.example.toml");
+    ServerConfig::from_toml(input).expect("maintained example must parse and validate");
+}
