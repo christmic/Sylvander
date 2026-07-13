@@ -30,7 +30,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use tracing::info;
+use tokio::task::JoinHandle;
+use tracing::{info, warn};
 
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::engine::AgentRunEngine;
@@ -80,6 +81,12 @@ pub struct Runtime {
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
     evidence: Option<EvidenceRecorder>,
+    channels: tokio::sync::Mutex<Vec<ChannelTask>>,
+}
+
+struct ChannelTask {
+    name: String,
+    task: JoinHandle<()>,
 }
 
 impl Runtime {
@@ -160,6 +167,7 @@ impl Runtime {
             bus,
             configured_agents: HashMap::new(),
             evidence: None,
+            channels: tokio::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -265,6 +273,7 @@ impl Runtime {
             bus,
             configured_agents,
             evidence,
+            channels: tokio::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -289,18 +298,30 @@ impl Runtime {
     // -- channels --
 
     /// Start protocol channels. Each runs in its own tokio task.
-    pub fn start_channels(&self, channels: Vec<Arc<dyn Channel>>) {
+    pub async fn start_channels(
+        &self,
+        channels: Vec<Arc<dyn Channel>>,
+    ) -> Result<(), RuntimeError> {
+        let mut tasks = self.channels.lock().await;
+        if !tasks.is_empty() {
+            return Err(RuntimeError::Channel(
+                "channels have already been started".into(),
+            ));
+        }
         for ch in channels {
             let ctx = ChannelContext {
                 bus: self.bus.clone(),
                 sessions: self.session_store.clone(),
             };
             let name = ch.name().to_string();
-            tokio::spawn(async move {
+            let task_name = name.clone();
+            let task = tokio::spawn(async move {
                 ch.run(ctx).await;
-                info!(channel = %name, "channel stopped");
+                warn!(channel = %task_name, "channel task exited");
             });
+            tasks.push(ChannelTask { name, task });
         }
+        Ok(())
     }
 
     // -- ephemeral sessions --
@@ -356,6 +377,28 @@ impl Runtime {
 
     /// Graceful shutdown — despawn all agents.
     pub async fn shutdown(&self) -> Result<(), RuntimeError> {
+        // Stop accepting external work before stopping the Agents that serve it.
+        let channel_tasks = {
+            let mut tasks = self.channels.lock().await;
+            tasks.drain(..).collect::<Vec<_>>()
+        };
+        for channel in &channel_tasks {
+            channel.task.abort();
+        }
+        for channel in channel_tasks {
+            match channel.task.await {
+                Ok(()) => info!(channel = %channel.name, "channel stopped"),
+                Err(error) if error.is_cancelled() => {
+                    info!(channel = %channel.name, "channel cancelled during shutdown");
+                }
+                Err(error) => {
+                    return Err(RuntimeError::Channel(format!(
+                        "channel {} task failed: {error}",
+                        channel.name
+                    )));
+                }
+            }
+        }
         let agents = self.engine.list_agents().await;
         for handle in agents {
             self.engine
@@ -390,6 +433,8 @@ pub enum RuntimeError {
     Composition(String),
     #[error("evidence error: {0}")]
     Evidence(String),
+    #[error("channel error: {0}")]
+    Channel(String),
     #[error("{operation} at {path}: {message}")]
     Io {
         operation: &'static str,
@@ -441,6 +486,34 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    struct BlockingChannel {
+        started: Arc<Notify>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Channel for BlockingChannel {
+        fn name(&self) -> &'static str {
+            "blocking-test"
+        }
+
+        async fn run(self: Arc<Self>, _ctx: ChannelContext) {
+            let _drop_signal = DropSignal(self.dropped.clone());
+            self.started.notify_one();
+            std::future::pending::<()>().await;
+        }
+    }
 
     fn test_spec(id: &str) -> AgentSpec {
         AgentSpec::builder()
@@ -477,6 +550,33 @@ mod tests {
         let rt = Runtime::boot(config, test_client()).await.expect("boot");
         assert_eq!(rt.engine.list_agents().await.len(), 2);
         rt.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_owned_channel_tasks_before_returning() {
+        let runtime = Runtime::boot(
+            SystemConfig {
+                name: "test-runtime".into(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+            },
+            test_client(),
+        )
+        .await
+        .unwrap();
+        let started = Arc::new(Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        runtime
+            .start_channels(vec![Arc::new(BlockingChannel {
+                started: started.clone(),
+                dropped: dropped.clone(),
+            })])
+            .await
+            .unwrap();
+        started.notified().await;
+
+        runtime.shutdown().await.unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

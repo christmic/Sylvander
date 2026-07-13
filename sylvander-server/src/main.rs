@@ -28,7 +28,7 @@ async fn main() -> Result<(), ServerError> {
     let runtime = Runtime::boot_config(config.clone()).await?;
     let channels = build_channels(&config, &runtime)?;
     let channel_count = channels.len();
-    runtime.start_channels(channels);
+    runtime.start_channels(channels).await?;
     info!(
         server = %config.server.name,
         agents = config.agents.len(),
