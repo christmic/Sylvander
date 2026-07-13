@@ -105,6 +105,9 @@ enum ClientMsg {
         #[serde(default)]
         session_id: Option<String>,
     },
+    Compact {
+        session_id: String,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -257,6 +260,19 @@ enum ServerMsg {
     },
     ContextReport {
         report: sylvander_protocol::ContextReport,
+    },
+    CompactionStarted {
+        session_id: String,
+        automatic: bool,
+    },
+    CompactionCompleted {
+        session_id: String,
+        report: sylvander_protocol::CompactionReport,
+    },
+    CompactionFailed {
+        session_id: String,
+        automatic: bool,
+        reason: String,
     },
     OperationError {
         operation: String,
@@ -540,6 +556,25 @@ async fn handle_client_msg(
                                 delay_ms,
                                 reason,
                             }),
+                            StreamEvent::CompactionStarted { automatic } => {
+                                Some(ServerMsg::CompactionStarted {
+                                    session_id: s.0.clone(),
+                                    automatic,
+                                })
+                            }
+                            StreamEvent::CompactionCompleted { report } => {
+                                Some(ServerMsg::CompactionCompleted {
+                                    session_id: s.0.clone(),
+                                    report,
+                                })
+                            }
+                            StreamEvent::CompactionFailed { automatic, reason } => {
+                                Some(ServerMsg::CompactionFailed {
+                                    session_id: s.0.clone(),
+                                    automatic,
+                                    reason,
+                                })
+                            }
                             StreamEvent::ToolCall {
                                 call_id,
                                 tool_name,
@@ -1041,6 +1076,34 @@ async fn handle_client_msg(
             let report = control.context_report(session_id.as_ref()).await;
             let _ = tx.send(ServerMsg::ContextReport { report });
         }
+        ClientMsg::Compact { session_id } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::OperationError {
+                    operation: "compact".into(),
+                    message: "runtime compaction control is unavailable".into(),
+                });
+                return;
+            };
+            let _ = tx.send(ServerMsg::CompactionStarted {
+                session_id: session_id.clone(),
+                automatic: false,
+            });
+            match control
+                .compact_session(&SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::CompactionCompleted { session_id, report });
+                }
+                Err(reason) => {
+                    let _ = tx.send(ServerMsg::CompactionFailed {
+                        session_id,
+                        automatic: false,
+                        reason,
+                    });
+                }
+            }
+        }
         ClientMsg::SelectModel {
             model,
             reasoning_effort,
@@ -1346,6 +1409,33 @@ mod tests {
                 },
                 ..
             })
+        ));
+
+        handle_client_msg(
+            ClientMsg::Compact {
+                session_id: "missing-session".into(),
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            Some(&run),
+        )
+        .await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::CompactionStarted {
+                automatic: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::CompactionFailed {
+                automatic: false,
+                reason,
+                ..
+            }) if reason.contains("unknown session")
         ));
     }
 

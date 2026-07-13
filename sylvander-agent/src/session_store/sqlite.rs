@@ -28,8 +28,8 @@ use crate::session::SessionMetadata;
 use crate::spec::{AgentId, SessionId};
 
 use super::{
-    MessageRole, SessionFilter, SessionLifetime, SessionStore, SessionStoreError, SessionUsage,
-    StoredMessage, StoredSession,
+    MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionStore,
+    SessionStoreError, SessionUsage, StoredMessage, StoredSession,
 };
 
 /// SQLite-backed session store.
@@ -630,6 +630,93 @@ impl SessionStore for SqliteSessionStore {
                 params![session_id.0, seq_range.start, seq_range.end],
             )?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn replace_active_history(
+        &self,
+        ctx: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+        messages: Vec<ReplacementMessage>,
+    ) -> Result<(), SessionStoreError> {
+        if messages.is_empty() {
+            return Err(SessionStoreError::Invalid(
+                "replacement history cannot be empty".into(),
+            ));
+        }
+        let session_id = session_id.clone();
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = priority_str(&ctx.request.priority).to_string();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let exists: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM sessions WHERE id = ?1 AND is_archived = 0",
+                    params![session_id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            if exists.is_none() {
+                return Err(SessionStoreError::NotFound(session_id));
+            }
+            transaction
+                .execute(
+                    "UPDATE session_messages SET is_summarized = 1 \
+                     WHERE session_id = ?1 AND is_summarized = 0",
+                    params![session_id.0],
+                )
+                .map_err(sqlite_err)?;
+            let mut next_seq: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
+                     WHERE session_id = ?1",
+                    params![session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            let now = crate::session::now_secs();
+            for message in messages {
+                let role = match message.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::Tool => "tool",
+                };
+                let content = serde_json::to_string(&message.content).map_err(|error| {
+                    SessionStoreError::Store(format!("serialize replacement content: {error}"))
+                })?;
+                transaction
+                    .execute(
+                        "INSERT INTO session_messages \
+                         (session_id, seq, role, content_json, user_id, agent_id, \
+                          trace_id, priority, tool_name, is_summarized, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
+                        params![
+                            session_id.0,
+                            next_seq,
+                            role,
+                            content,
+                            user_id,
+                            agent_id,
+                            trace_id,
+                            priority,
+                            message.tool_name,
+                            now,
+                        ],
+                    )
+                    .map_err(sqlite_err)?;
+                next_seq += 1;
+            }
+            transaction
+                .execute(
+                    "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                    params![now, session_id.0],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)
         })
         .await
     }

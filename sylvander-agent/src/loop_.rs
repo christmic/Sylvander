@@ -392,6 +392,12 @@ pub fn run_stream(
 
             // 1. Compression (pipeline: layers run in order, async)
             {
+                let auto_threshold = (config.model.context_window as f32
+                    * super::compress::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
+                    as u32;
+                if total_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
+                    yield AgentEvent::CompressionStarted;
+                }
                 let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
                     config.client.clone(),
                 );
@@ -419,7 +425,13 @@ pub fn run_stream(
                     })
                     .collect();
                 if !meaningful.is_empty() {
-                    yield AgentEvent::Compressed { layers: meaningful };
+                    yield AgentEvent::Compressed {
+                        layers: meaningful.clone(),
+                    };
+                    yield AgentEvent::HistoryCompacted {
+                        history: messages.clone(),
+                        layers: meaningful,
+                    };
                 }
             }
 

@@ -171,6 +171,14 @@ pub struct StoredMessage {
     pub created_at: i64,
 }
 
+/// One message in an atomic active-history replacement.
+#[derive(Debug, Clone)]
+pub struct ReplacementMessage {
+    pub role: MessageRole,
+    pub content: JsonValue,
+    pub tool_name: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
@@ -300,6 +308,16 @@ pub trait SessionStore: Send + Sync {
         &self,
         session_id: &SessionId,
         seq_range: Range<u32>,
+    ) -> Result<(), SessionStoreError>;
+
+    /// Atomically retire every currently active message and append the exact
+    /// replacement sequence. Used by semantic compaction so a crash can never
+    /// expose a half-replaced history.
+    async fn replace_active_history(
+        &self,
+        ctx: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+        messages: Vec<ReplacementMessage>,
     ) -> Result<(), SessionStoreError>;
 
     /// Count non-summarized messages visible to the calling identity.
