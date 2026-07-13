@@ -44,6 +44,7 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 use crate::composition::{ConfiguredAgent, build_agents};
 use crate::config::{ServerConfig, SystemSecretResolver};
+use crate::evidence::{EvidenceRecorder, EvidenceStore};
 
 // ---------------------------------------------------------------------------
 // SystemConfig
@@ -78,6 +79,7 @@ pub struct Runtime {
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
+    evidence: Option<EvidenceRecorder>,
 }
 
 impl Runtime {
@@ -157,6 +159,7 @@ impl Runtime {
             ephemeral: RwLock::new(HashMap::new()),
             bus,
             configured_agents: HashMap::new(),
+            evidence: None,
         })
     }
 
@@ -186,6 +189,36 @@ impl Runtime {
         );
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+        let evidence = if config.server.evidence.enabled {
+            let path = config
+                .server
+                .evidence
+                .path
+                .as_ref()
+                .expect("resolved evidence path");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+                    operation: "create evidence directory",
+                    path: parent.display().to_string(),
+                    message: error.to_string(),
+                })?;
+            }
+            let store = EvidenceStore::open(path)
+                .await
+                .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+            Some(
+                EvidenceRecorder::start(
+                    bus.clone(),
+                    store,
+                    config.server.name.clone(),
+                    config.server.evidence.content,
+                )
+                .await
+                .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
+            )
+        } else {
+            None
+        };
         let agents = build_agents(
             &config,
             bus.clone(),
@@ -230,6 +263,7 @@ impl Runtime {
             ephemeral: RwLock::new(HashMap::new()),
             bus,
             configured_agents,
+            evidence,
         })
     }
 
@@ -243,6 +277,12 @@ impl Runtime {
     #[must_use]
     pub fn bus(&self) -> Arc<dyn MessageBus> {
         self.bus.clone()
+    }
+
+    /// Return the durable evidence store when collection is enabled.
+    #[must_use]
+    pub fn evidence_store(&self) -> Option<EvidenceStore> {
+        self.evidence.as_ref().map(EvidenceRecorder::store)
     }
 
     // -- channels --
@@ -322,6 +362,12 @@ impl Runtime {
                 .await
                 .map_err(|e| RuntimeError::Engine(format!("despawn {} failed: {e}", handle.id)))?;
         }
+        if let Some(evidence) = &self.evidence {
+            evidence
+                .shutdown()
+                .await
+                .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        }
         info!("runtime shut down");
         Ok(())
     }
@@ -341,6 +387,8 @@ pub enum RuntimeError {
     Config(String),
     #[error("composition error: {0}")]
     Composition(String),
+    #[error("evidence error: {0}")]
+    Evidence(String),
     #[error("{operation} at {path}: {message}")]
     Io {
         operation: &'static str,
@@ -374,6 +422,13 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .workspace_journal
         .get_or_insert_with(|| data_dir.join("workspace-journal"));
+    if config.server.evidence.enabled {
+        config
+            .server
+            .evidence
+            .path
+            .get_or_insert_with(|| data_dir.join("evidence.db"));
+    }
     Ok(config)
 }
 
@@ -517,7 +572,13 @@ model_name = "model-a"
                 .configured_agent(&AgentId::new("assistant"))
                 .is_some()
         );
+        let evidence = runtime
+            .evidence_store()
+            .expect("evidence enabled by default");
         runtime.shutdown().await.unwrap();
+        let counts = evidence.counts().await.unwrap();
+        assert_eq!(counts.runs, 1);
+        assert!(counts.events >= 1, "Agent lifecycle must reach evidence");
     }
 
     #[tokio::test]
