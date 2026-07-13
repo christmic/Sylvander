@@ -817,6 +817,7 @@ impl AppState {
                 delta,
             } => {
                 self.turn_active = true;
+                let mut found = false;
                 for message in self.messages.iter_mut().rev() {
                     let ChatMessage::ToolStep { children, .. } = message else {
                         continue;
@@ -826,8 +827,23 @@ impl AppState {
                             || (call_id.is_empty() && child.name == tool_name)
                     }) {
                         child.output.get_or_insert_with(String::new).push_str(&delta);
+                        found = true;
                         break;
                     }
+                }
+                if !found {
+                    self.messages.push(ChatMessage::ToolStep {
+                        name: step_name_for(&tool_name, &serde_json::Value::Null),
+                        started_at_secs: now_secs(),
+                        children: vec![ToolStepChild {
+                            call_id,
+                            name: tool_name,
+                            status: ToolStatus::Pending,
+                            input: serde_json::Value::Null,
+                            output: Some(delta),
+                            is_error: None,
+                        }],
+                    });
                 }
             }
             DomainEvent::ToolFinished {
@@ -836,7 +852,12 @@ impl AppState {
                 output,
                 is_error,
             } => {
-                if let Some(ChatMessage::ToolStep { children, .. }) = self.messages.last_mut() {
+                let mut result = Some(output);
+                let mut found = false;
+                for message in self.messages.iter_mut().rev() {
+                    let ChatMessage::ToolStep { children, .. } = message else {
+                        continue;
+                    };
                     if let Some(child) = children.iter_mut().rev().find(|child| {
                         (!call_id.is_empty() && child.call_id == call_id)
                             || (call_id.is_empty() && child.name == tool_name)
@@ -846,25 +867,29 @@ impl AppState {
                         } else {
                             ToolStatus::Done
                         };
-                        child.output = Some(output);
+                        child.output = result.take();
                         child.is_error = Some(is_error);
-                    } else {
-                        // Tool finished without a Started (rare). Synthesize.
-                        let mut step = self
-                            .messages
-                            .pop()
-                            .unwrap_or(ChatMessage::Info(String::new()));
-                        if matches!(step, ChatMessage::ToolStep { .. }) {
-                            // ok
-                        } else {
-                            // Push the orphaned result as Info.
-                            step = ChatMessage::Info(format!(
-                                "{tool_name} → {}",
-                                output.replace('\n', " ")
-                            ));
-                        }
-                        self.messages.push(step);
+                        found = true;
+                        break;
                     }
+                }
+                if !found {
+                    self.messages.push(ChatMessage::ToolStep {
+                        name: step_name_for(&tool_name, &serde_json::Value::Null),
+                        started_at_secs: now_secs(),
+                        children: vec![ToolStepChild {
+                            call_id,
+                            name: tool_name,
+                            status: if is_error {
+                                ToolStatus::Error
+                            } else {
+                                ToolStatus::Done
+                            },
+                            input: serde_json::Value::Null,
+                            output: result,
+                            is_error: Some(is_error),
+                        }],
+                    });
                 }
             }
             DomainEvent::UsageUpdated {
@@ -1849,6 +1874,51 @@ mod tests {
     }
 
     #[test]
+    fn orphan_unknown_tool_events_synthesize_one_visible_step() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ToolOutputDelta {
+            call_id: "future-call".into(),
+            tool_name: "future_extension_tool".into(),
+            delta: "partial ".into(),
+        });
+        state.apply(DomainEvent::ToolFinished {
+            call_id: "future-call".into(),
+            tool_name: "future_extension_tool".into(),
+            output: "complete result".into(),
+            is_error: false,
+        });
+
+        let Some(ChatMessage::ToolStep { name, children, .. }) = state.messages.last() else {
+            panic!("unknown tool must remain visible");
+        };
+        assert_eq!(name, "future_extension_tool");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].status, ToolStatus::Done);
+        assert_eq!(children[0].output.as_deref(), Some("complete result"));
+    }
+
+    #[test]
+    fn orphan_unknown_tool_result_is_not_silently_dropped() {
+        let mut state = AppState::new();
+        state
+            .messages
+            .push(ChatMessage::Agent("Earlier output".into()));
+        state.apply(DomainEvent::ToolFinished {
+            call_id: "future-call".into(),
+            tool_name: "future_extension_tool".into(),
+            output: "result without start".into(),
+            is_error: true,
+        });
+
+        let Some(ChatMessage::ToolStep { children, .. }) = state.messages.last() else {
+            panic!("orphan result must synthesize a tool step");
+        };
+        assert_eq!(children[0].status, ToolStatus::Error);
+        assert_eq!(children[0].input, serde_json::Value::Null);
+        assert_eq!(children[0].output.as_deref(), Some("result without start"));
+    }
+
+    #[test]
     fn apply_approval_request_pushes_modal() {
         let mut s = AppState::new();
         s.apply(DomainEvent::ApprovalRequested {
@@ -2309,6 +2379,6 @@ fn step_name_for(tool: &str, input: &serde_json::Value) -> String {
             }
         }
         "search" | "grep" => "Search code".into(),
-        _ => tool.to_string(),
+        _ => crate::markdown::sanitize_terminal_text(tool),
     }
 }

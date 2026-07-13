@@ -559,7 +559,8 @@ fn file_rows(label: &str, input: &Value, width: usize) -> Vec<DetailRow> {
 }
 
 fn generic_input_rows(input: &Value, width: usize) -> Vec<DetailRow> {
-    match input {
+    let input = redact_json(input);
+    match &input {
         Value::Object(map) => map
             .iter()
             .filter(|(_, value)| !value.is_null())
@@ -584,10 +585,37 @@ fn generic_input_rows(input: &Value, width: usize) -> Vec<DetailRow> {
 
 fn generic_target(tool_name: &str, input: &Value) -> String {
     let candidate = string_field(input, &["path", "query", "command", "key"]);
+    let label = one_line(&crate::markdown::sanitize_terminal_text(tool_name)).replace('_', " ");
     candidate.map_or_else(
-        || tool_name.replace('_', " "),
-        |value| format!("{} {}", tool_name.replace('_', " "), one_line(value)),
+        || label.clone(),
+        |value| format!("{label} {}", one_line(&safe_output(value))),
     )
+}
+
+fn redact_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let lower = key.to_ascii_lowercase();
+                    let sensitive = ["token", "password", "secret", "api_key", "apikey", "auth"]
+                        .iter()
+                        .any(|marker| lower.contains(marker));
+                    (
+                        key.clone(),
+                        if sensitive {
+                            Value::String("[REDACTED]".into())
+                        } else {
+                            redact_json(value)
+                        },
+                    )
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_json).collect()),
+        Value::String(value) => Value::String(safe_output(value)),
+        value => value.clone(),
+    }
 }
 
 fn path_with_range(input: &Value, verb: &str) -> String {
@@ -787,6 +815,24 @@ mod tests {
         assert!(rows.iter().any(|row| row.text == "src/a.rs · 2 matches"));
         assert!(rows.iter().all(|row| !row.text.contains("\u{1b}")));
         assert!(rows.iter().all(|row| !row.text.contains("secret")));
+    }
+
+    #[test]
+    fn unknown_tool_input_is_generic_bounded_and_redacted() {
+        let input = serde_json::json!({
+            "operation": "future-mode",
+            "api_token": "do-not-render",
+            "nested": {"password": "also-hidden"}
+        });
+        let rows = detail_rows("future_extension_tool", &input, Some("ok"), false, 48);
+        assert!(rows.iter().any(|row| row.text.contains("operation")));
+        assert!(rows.iter().any(|row| row.text.contains("[REDACTED]")));
+        assert!(rows.iter().all(|row| !row.text.contains("do-not-render")));
+        assert!(rows.iter().all(|row| !row.text.contains("also-hidden")));
+        assert_eq!(
+            compact_target("future_extension_tool", &input),
+            "future extension tool"
+        );
     }
 
     #[test]
