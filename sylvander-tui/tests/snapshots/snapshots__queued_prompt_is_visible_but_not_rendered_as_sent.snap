@@ -1,13 +1,14 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 931
 expression: "render_buf(state, 110, 30)"
 ---
-  › finish the current implementation                                                                         
+  > finish the current implementation                                                                         
                                                                                                               
   ↳  then run the full test suite                                                                             
      queued                                                                                                   
                                                                                                               
-  ◆  I am still working on the first request.                                                                 
+  ● I am still working on the first request.                                                                  
                                                                                                               
                                                                                                               
                                                                                                               

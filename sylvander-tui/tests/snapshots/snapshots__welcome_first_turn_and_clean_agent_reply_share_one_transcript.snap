@@ -1,6 +1,7 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 120, 36)"
+assertion_line: 87
+expression: "render_buf(state, 120, 36)"
 ---
                        ⢀⣠⢠⡖                                                                                             
                     ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                             
@@ -14,12 +15,12 @@ expression: "render_buf(&state, 120, 36)"
    ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                          
      ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                             
                                                                                                                         
-  › what tools do you have?                                                                                             
+  > what tools do you have?                                                                                             
                                                                                                                         
-  ◆  I have tools:                                                                                                      
+  ● I have tools:                                                                                                       
                                                                                                                         
-     1. ask_user — Ask for missing information.                                                                         
-     2. Read — Read a workspace file.                                                                                   
+    1. ask_user — Ask for missing information.                                                                          
+    2. Read — Read a workspace file.                                                                                    
                                                                                                                         
                                                                                                                         
                                                                                                                         

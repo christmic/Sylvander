@@ -1,10 +1,11 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 80, 24)"
+assertion_line: 128
+expression: "render_buf(state, 80, 24)"
 ---
-  › list src                                                                    
+  > list src                                                                    
   ✓ Run `ls`     00s                                                            
-  │ ✓ $ ls src  main.rs                                                         
+    ⎿ ✓ $ ls src  main.rs                                                       
                                                                                 
                                                                                 
                                                                                 
