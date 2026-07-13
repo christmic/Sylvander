@@ -1,19 +1,15 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 87
 expression: "render_buf(state, 120, 36)"
 ---
-                     ⢀⣠⢠⡖                                                                                               
-                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                               
-                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀                   agent workspace                                                         
-             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄                                                                                        
-      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀              model     —                                                             
-  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿              workspace ~/workspace                                                   
-   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆             branch    —                                                             
-   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀        session   new                                                           
- ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                                                               
- ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                            
-   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                               
+        ⢀⣠⣶⣾⣀           Sylvander                                                                                       
+      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                                                                 
+⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                                                                       
+ ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                                                                     
+⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                                                           
+ ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                                                                       
+                        What should we work through?                                                                    
+                                                                                                                        
                                                                                                                         
 ❯ what tools do you have?                                                                                               
                                                                                                                         
@@ -21,6 +17,9 @@ expression: "render_buf(state, 120, 36)"
                                                                                                                         
   1. ask_user — Ask for missing information.                                                                            
   2. Read — Read a workspace file.                                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         

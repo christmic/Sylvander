@@ -1,19 +1,15 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 174
 expression: "render_buf(state, 100, 24)"
 ---
-                     ⢀⣠⢠⡖                                                                           
-                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                           
-                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀                   agent workspace                                     
-             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄                                                                    
-      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀              model     —                                         
-  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿              workspace ~/workspace                               
-   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆             branch    —                                         
-   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀        session   new                                       
- ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                                           
- ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                        
-   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                           
+        ⢀⣠⣶⣾⣀           Sylvander                                                                   
+      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                                             
+⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                                                   
+ ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                                                 
+⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                                       
+ ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                                                   
+                        What should we work through?                                                
+                                                                                                    
 ⏺ future_extension_tool     00s                                                                     
   ⎿  future extension tool                                                                          
      api_token  [REDACTED]                                                                          
@@ -21,6 +17,9 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
      result                                                                                         
        structured fallback result                                                                   
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
