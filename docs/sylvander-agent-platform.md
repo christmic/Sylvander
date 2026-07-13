@@ -250,9 +250,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 ### P0 — Correctness, safety, and durable contracts
 
-- [ ] **P0.1 Configuration schema and loader:** versioned server config,
+- [x] **P0.1 Configuration schema and loader:** versioned server config,
   Agent definitions, model providers, execution targets, channel instances,
   secret references, validation, redacted inspection, and environment migration.
+  Evidence: `sylvander-runtime/src/config`, `config/sylvander.example.toml`, and
+  `docs/server-configuration.md`; runtime tests cover validation, secrets,
+  migration, the maintained example, composition, and durable restart.
 - [ ] **P0.2 Production composition root:** make `sylvander-runtime` the only
   boot path; use the configured durable store; supervise Agents and channels;
   graceful drain and explicit startup failures.

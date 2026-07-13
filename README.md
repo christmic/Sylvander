@@ -10,6 +10,8 @@ production backlog live in
 [`docs/sylvander-agent-platform.md`](docs/sylvander-agent-platform.md). Crate
 presence does not by itself mean that an adapter is wired into the production
 server; the audit records that distinction explicitly.
+Deployment configuration is documented in
+[`docs/server-configuration.md`](docs/server-configuration.md).
 
 ```
 sylvander-server                  binary — boots the system
