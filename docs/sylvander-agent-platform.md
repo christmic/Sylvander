@@ -269,9 +269,11 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P0.5 Boundary authorization:** authenticated principals, Agent/session
   ownership, channel-instance identity, policy checks, safe defaults, rate and
   payload limits, and auditable denials.
-- [ ] **P0.6 Run ledger foundation:** durable run/turn/step/outcome records,
+- [x] **P0.6 Run ledger foundation:** durable run/turn/step/outcome records,
   correlation, crash recovery, redaction, retention, and query APIs before new
   execution backends multiply evidence sources.
+  Evidence: `sylvander-runtime/src/evidence.rs`, its bus recorder, persistence,
+  recovery/retention/query tests, and `docs/runtime-evidence.md`.
 
 ### P1 — Persistent Agent organism
 

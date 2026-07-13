@@ -12,6 +12,8 @@ presence does not by itself mean that an adapter is wired into the production
 server; the audit records that distinction explicitly.
 Deployment configuration is documented in
 [`docs/server-configuration.md`](docs/server-configuration.md).
+Runtime evidence and the self-improvement safety boundary are documented in
+[`docs/runtime-evidence.md`](docs/runtime-evidence.md).
 
 ```
 sylvander-server                  binary — boots the system

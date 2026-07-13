@@ -79,6 +79,8 @@ other policies are `redacted` and `full`; `full` is an explicit operator choice
 and must be paired with appropriate access, deletion, and backup controls.
 The ledger is evidence for review and evaluation, never permission for the
 Agent to change or deploy itself without the gated workflow in P5.
+See [`runtime-evidence.md`](runtime-evidence.md) for the data model, recovery,
+retention, query, and self-improvement boundary.
 
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and

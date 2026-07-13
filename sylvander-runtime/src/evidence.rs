@@ -63,6 +63,30 @@ pub struct EvidenceCounts {
     pub events: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TurnQuery {
+    pub session_id: Option<String>,
+    pub status: Option<String>,
+    pub started_after: Option<i64>,
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSummary {
+    pub id: String,
+    pub run_id: String,
+    pub session_id: String,
+    pub agent_id: Option<String>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub status: String,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub step_count: u64,
+    pub failed_step_count: u64,
+    pub successful_outcome: Option<bool>,
+}
+
 impl EvidenceStore {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, EvidenceError> {
         let path = path.as_ref().to_path_buf();
@@ -282,6 +306,76 @@ impl EvidenceStore {
         })
         .await
     }
+
+    /// Query bounded turn summaries for recovery dashboards and reproducible
+    /// evaluation cohorts. Raw content is deliberately excluded.
+    pub async fn query_turns(&self, query: TurnQuery) -> Result<Vec<TurnSummary>, EvidenceError> {
+        let limit = i64::from(if query.limit == 0 {
+            100
+        } else {
+            query.limit.min(1000)
+        });
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT t.id, t.run_id, t.session_id, t.agent_id, t.started_at,
+                            t.ended_at, t.status, t.input_bytes, t.output_bytes,
+                            COUNT(DISTINCT s.id),
+                            COUNT(DISTINCT CASE WHEN s.status='failed' THEN s.id END),
+                            MAX(o.success)
+                     FROM evidence_turns t
+                     LEFT JOIN evidence_steps s ON s.turn_id=t.id
+                     LEFT JOIN evidence_outcomes o ON o.turn_id=t.id
+                     WHERE (?1 IS NULL OR t.session_id=?1)
+                       AND (?2 IS NULL OR t.status=?2)
+                       AND (?3 IS NULL OR t.started_at>=?3)
+                     GROUP BY t.id
+                     ORDER BY t.started_at DESC
+                     LIMIT ?4",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map(
+                    params![query.session_id, query.status, query.started_after, limit],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, i64>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, i64>(7)?,
+                            row.get::<_, i64>(8)?,
+                            row.get::<_, i64>(9)?,
+                            row.get::<_, i64>(10)?,
+                            row.get::<_, Option<bool>>(11)?,
+                        ))
+                    },
+                )
+                .map_err(EvidenceError::sqlite)?;
+            rows.map(|row| {
+                let row = row.map_err(EvidenceError::sqlite)?;
+                Ok(TurnSummary {
+                    id: row.0,
+                    run_id: row.1,
+                    session_id: row.2,
+                    agent_id: row.3,
+                    started_at: row.4,
+                    ended_at: row.5,
+                    status: row.6,
+                    input_bytes: nonnegative(row.7)?,
+                    output_bytes: nonnegative(row.8)?,
+                    step_count: nonnegative(row.9)?,
+                    failed_step_count: nonnegative(row.10)?,
+                    successful_outcome: row.11,
+                })
+            })
+            .collect()
+        })
+        .await
+    }
 }
 
 fn recover_interrupted(connection: &Connection) -> Result<(), EvidenceError> {
@@ -296,6 +390,10 @@ fn recover_interrupted(connection: &Connection) -> Result<(), EvidenceError> {
 
 fn as_i64(value: u64) -> Result<i64, EvidenceError> {
     i64::try_from(value).map_err(|_| EvidenceError::ValueTooLarge(value))
+}
+
+fn nonnegative(value: i64) -> Result<u64, EvidenceError> {
+    u64::try_from(value).map_err(|_| EvidenceError::InvalidCount(value))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -438,6 +536,19 @@ mod tests {
                 events: 1
             }
         );
+        let turns = store
+            .query_turns(TurnQuery {
+                session_id: Some("session-1".into()),
+                status: Some("succeeded".into()),
+                started_after: Some(1),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].step_count, 1);
+        assert_eq!(turns[0].failed_step_count, 0);
+        assert_eq!(turns[0].successful_outcome, Some(true));
     }
 
     #[tokio::test]
