@@ -97,8 +97,10 @@ fn transcript_lines<'a>(state: &'a AppState, width: usize) -> Vec<Line<'a>> {
     // Welcome is the first block in a newly started conversation, not a
     // separate page. Once the user submits, turns append below it and the
     // lockup leaves the viewport only through ordinary transcript scroll.
-    let show_welcome = state.welcomed
-        || (state.messages.is_empty() && state.sessions.is_empty() && state.modals.is_empty());
+    // Temporary UI state must never decide whether transcript content exists.
+    // A fresh/cleared session owns the Welcome prelude even when session
+    // summaries are cached or a picker/decision dock is open.
+    let show_welcome = state.welcomed || state.messages.is_empty();
     let mut lines = if show_welcome {
         build_welcome_lockup(width, state).unwrap_or_default()
     } else {
@@ -816,6 +818,23 @@ mod tests {
         }
         assert!(found_brand, "Welcome must remain as the transcript prelude");
         assert!(found_turn, "submitted turn must append below Welcome");
+    }
+
+    #[test]
+    fn temporary_surfaces_never_remove_a_fresh_welcome_prelude() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut state = AppState::new();
+        state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert!(!state.modals.is_empty(), "command picker must be open");
+
+        let rendered = transcript_lines(&state, 110)
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Sylvander"));
+        assert!(rendered.contains("What should we work through?"));
     }
 
     #[test]
