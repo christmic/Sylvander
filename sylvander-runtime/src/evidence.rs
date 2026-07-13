@@ -249,6 +249,25 @@ impl EvidenceStore {
         .await
     }
 
+    /// Delete completed runs older than `cutoff` and all normalized evidence
+    /// that belongs to them. Active and interrupted recovery records remain.
+    pub async fn prune_before(&self, cutoff: i64) -> Result<u64, EvidenceError> {
+        self.run(move |connection| {
+            let delete = |sql: &str| {
+                connection
+                    .execute(sql, [cutoff])
+                    .map_err(EvidenceError::sqlite)
+            };
+            delete("DELETE FROM evidence_events WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)")?;
+            delete("DELETE FROM evidence_outcomes WHERE turn_id IN (SELECT id FROM evidence_turns WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1))")?;
+            delete("DELETE FROM evidence_steps WHERE turn_id IN (SELECT id FROM evidence_turns WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1))")?;
+            delete("DELETE FROM evidence_turns WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)")?;
+            let removed = delete("DELETE FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1")?;
+            u64::try_from(removed).map_err(|_| EvidenceError::CountTooLarge)
+        })
+        .await
+    }
+
     /// Inspect one turn's terminal or recovery status.
     pub async fn turn_status(&self, id: String) -> Result<Option<String>, EvidenceError> {
         self.run(move |connection| {
@@ -289,6 +308,8 @@ pub enum EvidenceError {
     ValueTooLarge(u64),
     #[error("evidence count is invalid: {0}")]
     InvalidCount(i64),
+    #[error("evidence count exceeds supported range")]
+    CountTooLarge,
     #[error("failed to subscribe evidence recorder: {0}")]
     Subscribe(String),
     #[error("failed to serialize evidence event: {0}")]
@@ -447,5 +468,25 @@ mod tests {
             reopened.turn_status("turn-1".into()).await.unwrap(),
             Some("interrupted".into())
         );
+    }
+
+    #[tokio::test]
+    async fn retention_removes_only_completed_old_runs() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        store
+            .start_run("old".into(), "test".into(), 1)
+            .await
+            .unwrap();
+        store
+            .finish_run("old".into(), 2, "completed")
+            .await
+            .unwrap();
+        store
+            .start_run("active".into(), "test".into(), 1)
+            .await
+            .unwrap();
+
+        assert_eq!(store.prune_before(3).await.unwrap(), 1);
+        assert_eq!(store.counts().await.unwrap().runs, 1);
     }
 }

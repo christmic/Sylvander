@@ -27,7 +27,12 @@ impl EvidenceRecorder {
         store: EvidenceStore,
         server_name: String,
         content: EvidenceContentPolicy,
+        retention_days: u32,
     ) -> Result<Self, EvidenceError> {
+        let retention_seconds = i64::from(retention_days).saturating_mul(86_400);
+        store
+            .prune_before(now_secs().saturating_sub(retention_seconds))
+            .await?;
         let run_id = uuid::Uuid::new_v4().to_string();
         store
             .start_run(run_id.clone(), server_name, now_secs())
@@ -312,6 +317,7 @@ mod tests {
             store.clone(),
             "test".into(),
             EvidenceContentPolicy::MetadataOnly,
+            30,
         )
         .await
         .unwrap();
@@ -339,6 +345,7 @@ mod tests {
             store.clone(),
             "test".into(),
             EvidenceContentPolicy::MetadataOnly,
+            30,
         )
         .await
         .unwrap();
