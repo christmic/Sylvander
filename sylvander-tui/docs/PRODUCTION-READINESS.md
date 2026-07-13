@@ -147,9 +147,11 @@ completed backend feature.
 - [ ] Real Unix-service + PTY flows:
   - [x] The compiled TUI completes Unix handshake, keyboard chat submission,
         streamed response rendering, typed approval rejection, AskUser answer,
-        scoped interrupt, resize, and idle exit in a pseudo-terminal.
+        scoped interrupt, resize, and idle exit in a pseudo-terminal; forced
+        disconnect also renegotiates and reapplies typed session history.
   - [ ] Interrupt, approval, and AskUser complete against the real Agent service.
-  - [ ] Disconnect/reconnect and persisted session resume complete in a PTY.
+  - [ ] Persisted SQLite session resume completes against the real Agent service
+        in a PTY; canned recovery history does not satisfy this item.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
 - [ ] Security review:
   - [x] Workspace path scope rejects absolute paths, parent traversal, and

@@ -35,54 +35,67 @@ fn spawn_server(
     let listener = UnixListener::bind(path).expect("bind PTY test socket");
     let (message_tx, message_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("accept TUI connection");
-        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone socket"));
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read protocol hello");
-        let hello: serde_json::Value = serde_json::from_str(&line).expect("parse protocol hello");
-        assert_eq!(hello["type"], "hello");
-        writeln!(
-            stream,
-            r#"{{"type":"welcome","protocol":{{"server_name":"pty-test","version":1,"capabilities":[]}}}}"#
-        )
-        .expect("send welcome");
-        stream.flush().expect("flush welcome");
+        for connection_index in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept TUI connection");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone socket"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read protocol hello");
+            let hello: serde_json::Value =
+                serde_json::from_str(&line).expect("parse protocol hello");
+            assert_eq!(hello["type"], "hello");
+            writeln!(
+                stream,
+                r#"{{"type":"welcome","protocol":{{"server_name":"pty-test","version":1,"capabilities":[]}}}}"#
+            )
+            .expect("send welcome");
+            stream.flush().expect("flush welcome");
 
-        loop {
-            line.clear();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            let message: serde_json::Value = serde_json::from_str(&line).expect("parse client msg");
-            message_tx
-                .send(message.clone())
-                .expect("report client message");
-            let responses: &[&str] = match message["type"].as_str() {
-                Some("chat") if message["text"] == "hello from PTY" => &[
-                    r#"{"type":"session_created","session_id":"pty-session"}"#,
-                    r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
-                    r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
-                    r#"{"type":"approval_request","session_id":"pty-session","batch_id":"pty-approval","tools":[{"call_id":"pty-tool","tool_name":"bash","input":{"command":"rm -rf build"}}],"allowed_scopes":["once"]}"#,
-                ],
-                Some("approve") => &[
-                    r#"{"type":"ask_user","session_id":"pty-session","call_id":"pty-question","question":"Which safe direction?","options":[],"multi_select":false}"#,
-                ],
-                Some("chat") if message["text"] == "interrupt me" => {
-                    &[r#"{"type":"text_delta","session_id":"pty-session","delta":"still working"}"#]
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
                 }
-                Some("interrupt") => &[
-                    r#"{"type":"turn_interrupted","session_id":"pty-session","reason":"PTY interrupt complete"}"#,
-                ],
-                _ => &[],
-            };
-            for response in responses {
-                writeln!(stream, "{response}").expect("send server event");
-                if response.contains(r#""type":"done""#) {
-                    stream.flush().expect("flush completed turn");
-                    std::thread::sleep(Duration::from_millis(100));
+                let message: serde_json::Value =
+                    serde_json::from_str(&line).expect("parse client msg");
+                message_tx
+                    .send(message.clone())
+                    .expect("report client message");
+                let responses: &[&str] = match message["type"].as_str() {
+                    Some("chat") if message["text"] == "hello from PTY" => &[
+                        r#"{"type":"session_created","session_id":"pty-session"}"#,
+                        r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
+                        r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
+                        r#"{"type":"approval_request","session_id":"pty-session","batch_id":"pty-approval","tools":[{"call_id":"pty-tool","tool_name":"bash","input":{"command":"rm -rf build"}}],"allowed_scopes":["once"]}"#,
+                    ],
+                    Some("approve") => &[
+                        r#"{"type":"ask_user","session_id":"pty-session","call_id":"pty-question","question":"Which safe direction?","options":[],"multi_select":false}"#,
+                    ],
+                    Some("reattach_session") => &[
+                        r#"{"type":"session_history","session":{"id":"pty-session","label":"PTY recovered","workspace":"/workspace/pty","last_seen_secs":0},"messages":[{"role":"user","text":"hello from PTY"},{"role":"assistant","text":"PTY response rendered"}],"iterations":1,"input_tokens":3,"output_tokens":3,"recovery":true,"replay_truncated":false,"notice":"PTY session recovered"}"#,
+                    ],
+                    Some("chat") if message["text"] == "interrupt me" => &[
+                        r#"{"type":"text_delta","session_id":"pty-session","delta":"still working"}"#,
+                    ],
+                    Some("interrupt") => &[
+                        r#"{"type":"turn_interrupted","session_id":"pty-session","reason":"PTY interrupt complete"}"#,
+                    ],
+                    _ => &[],
+                };
+                for response in responses {
+                    writeln!(stream, "{response}").expect("send server event");
+                    if response.contains(r#""type":"done""#) {
+                        stream.flush().expect("flush completed turn");
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                stream.flush().expect("flush server events");
+                if connection_index == 0 && message["type"] == "answer" {
+                    stream
+                        .shutdown(std::net::Shutdown::Both)
+                        .expect("disconnect first PTY service connection");
+                    break;
                 }
             }
-            stream.flush().expect("flush server events");
         }
     });
     (server, message_rx)
@@ -134,6 +147,7 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
     command.env("COLORTERM", "truecolor");
     command.env("SYLVANDER_TUI_REDUCED_MOTION", "true");
     command.env("SYLVANDER_TUI_RENDER_FPS", "120");
+    command.env("SYLVANDER_TUI_RECONNECT_MS", "250");
     command.env("SYLVANDER_HISTORY_PATH", "");
     let mut child = pair
         .slave
@@ -208,6 +222,17 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
     let answer = recv_message(&messages, "answer");
     assert_eq!(answer["call_id"], "pty-question");
     assert_eq!(answer["answer"], "use tests");
+
+    let reattach = recv_message(&messages, "reattach_session");
+    assert_eq!(reattach["session_id"], "pty-session");
+    if !wait_for_output(&captured, "session recover", Duration::from_secs(3)) {
+        let rendered = captured.lock().expect("lock failure output").clone();
+        child.kill().expect("kill unresponsive TUI child");
+        panic!(
+            "reattached session history was not rendered; output={}",
+            String::from_utf8_lossy(&rendered)
+        );
+    }
 
     writer
         .write_all(b"interrupt me\r")
