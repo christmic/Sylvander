@@ -180,6 +180,24 @@ pub enum RetryCause {
     Other,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionTimeoutKind {
+    Approval,
+    Question,
+    Plan,
+    Tool,
+    Task,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeoutRecovery {
+    RetryRequest,
+    NarrowScope,
+    ContinueWithout,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileAccess {
@@ -394,6 +412,12 @@ pub enum StreamEvent {
         reason: String,
         #[serde(default)]
         cause: RetryCause,
+    },
+    InteractionTimedOut {
+        kind: InteractionTimeoutKind,
+        subject_id: String,
+        timeout_secs: u64,
+        recovery: TimeoutRecovery,
     },
     CompactionStarted {
         automatic: bool,

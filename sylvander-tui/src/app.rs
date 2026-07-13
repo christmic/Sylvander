@@ -603,6 +603,32 @@ impl AppState {
                     compact_runtime_reason(&reason)
                 )));
             }
+            DomainEvent::InteractionTimedOut {
+                kind,
+                subject_id,
+                timeout_secs,
+                recovery,
+            } => {
+                let modal_title = match kind {
+                    sylvander_protocol::InteractionTimeoutKind::Approval => Some("Tool Approval"),
+                    sylvander_protocol::InteractionTimeoutKind::Question => Some("Agent asks"),
+                    sylvander_protocol::InteractionTimeoutKind::Plan => Some("Plan review"),
+                    _ => None,
+                };
+                if modal_title.is_some_and(|title| {
+                    self.modals.top().is_some_and(|modal| modal.title() == title)
+                }) {
+                    self.modals.pop();
+                    self.mode = AppMode::Normal;
+                }
+                let short_id = subject_id.chars().take(8).collect::<String>();
+                let label = timeout_kind_label(kind);
+                let recovery = timeout_recovery_label(recovery);
+                self.status = format!("{label} timed out · {recovery}");
+                self.messages.push(ChatMessage::Info(format!(
+                    "timeout · {label} · {short_id} · {timeout_secs}s\nrecovery · {recovery}"
+                )));
+            }
             DomainEvent::WorkspaceRollbackPreviewed {
                 session_id,
                 preview,
@@ -1271,6 +1297,7 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
         DomainEvent::TextChunk { .. }
             | DomainEvent::ThinkingChunk { .. }
             | DomainEvent::ModelRetry { .. }
+            | DomainEvent::InteractionTimedOut { .. }
             | DomainEvent::AgentDone { .. }
             | DomainEvent::TurnInterrupted { .. }
             | DomainEvent::ToolStarted { .. }
@@ -1330,6 +1357,24 @@ fn model_migration_label(model: &sylvander_protocol::ModelDescriptor) -> Option<
                 |replacement| format!("Model deprecated · {} → {replacement}", model.id),
             ))
         }
+    }
+}
+
+fn timeout_kind_label(kind: sylvander_protocol::InteractionTimeoutKind) -> &'static str {
+    match kind {
+        sylvander_protocol::InteractionTimeoutKind::Approval => "approval",
+        sylvander_protocol::InteractionTimeoutKind::Question => "question",
+        sylvander_protocol::InteractionTimeoutKind::Plan => "plan review",
+        sylvander_protocol::InteractionTimeoutKind::Tool => "tool",
+        sylvander_protocol::InteractionTimeoutKind::Task => "background task",
+    }
+}
+
+fn timeout_recovery_label(recovery: sylvander_protocol::TimeoutRecovery) -> &'static str {
+    match recovery {
+        sylvander_protocol::TimeoutRecovery::RetryRequest => "ask the Agent to retry the request",
+        sylvander_protocol::TimeoutRecovery::NarrowScope => "retry with a narrower scope",
+        sylvander_protocol::TimeoutRecovery::ContinueWithout => "continue without this result",
     }
 }
 
@@ -1814,6 +1859,33 @@ mod tests {
         });
         assert_eq!(s.modals.len(), 1);
         assert_eq!(s.mode, AppMode::ApprovalPending);
+    }
+
+    #[test]
+    fn decision_timeout_closes_stale_modal_and_explains_recovery() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ApprovalRequested {
+            batch_id: "batch-1".into(),
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+            tools: vec![ToolInfo {
+                call_id: "call-123456".into(),
+                tool_name: "bash".into(),
+                input: serde_json::json!({"command":"cargo test"}),
+            }],
+        });
+        state.apply(DomainEvent::InteractionTimedOut {
+            kind: sylvander_protocol::InteractionTimeoutKind::Approval,
+            subject_id: "call-123456".into(),
+            timeout_secs: 120,
+            recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+        });
+        assert!(state.modals.is_empty());
+        assert_eq!(state.mode, AppMode::Normal);
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(message))
+                if message.contains("approval") && message.contains("120s") && message.contains("retry")
+        ));
     }
 
     #[test]

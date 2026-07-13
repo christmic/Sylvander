@@ -727,7 +727,19 @@ pub fn run_stream(
                     let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
                     for (id, name, outcome) in outcomes {
                         match outcome {
-                            ParallelToolOutcome::Executed((output, is_error)) => {
+                            ParallelToolOutcome::Executed(execution) => {
+                                let ToolExecutionOutcome {
+                                    output,
+                                    is_error,
+                                    timed_out,
+                                } = execution;
+                                if timed_out {
+                                    yield AgentEvent::ToolTimedOut {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        timeout_secs: TOOL_TIMEOUT.as_secs(),
+                                    };
+                                }
                                 yield AgentEvent::ToolCallEnd {
                                     id: id.clone(),
                                     name,
@@ -966,7 +978,7 @@ pub fn run_stream(
                                 progress,
                             );
                             tokio::pin!(execution);
-                            let (output, is_error) = loop {
+                            let execution = loop {
                                 tokio::select! {
                                     biased;
                                     Some(delta) = progress_rx.recv() => {
@@ -984,6 +996,19 @@ pub fn run_stream(
                                     id: progress_id.clone(),
                                     name: progress_name.clone(),
                                     delta,
+                                };
+                            }
+
+                            let ToolExecutionOutcome {
+                                output,
+                                is_error,
+                                timed_out,
+                            } = execution;
+                            if timed_out {
+                                yield AgentEvent::ToolTimedOut {
+                                    id: tool_use.id.clone(),
+                                    name: name.clone(),
+                                    timeout_secs: TOOL_TIMEOUT.as_secs(),
                                 };
                             }
 
@@ -1143,8 +1168,14 @@ where
 }
 
 enum ParallelToolOutcome {
-    Executed((String, bool)),
+    Executed(ToolExecutionOutcome),
     Rejected(String),
+}
+
+struct ToolExecutionOutcome {
+    output: String,
+    is_error: bool,
+    timed_out: bool,
 }
 
 async fn execute_registered_tool(
@@ -1154,23 +1185,36 @@ async fn execute_registered_tool(
     name: &str,
     timeout: std::time::Duration,
     progress: crate::tool::ToolProgressSink,
-) -> (String, bool) {
+) -> ToolExecutionOutcome {
     let Some(tool) = tool else {
         warn!(tool = %name, "tool not found in registry");
-        return (format!("tool `{name}` not found in registry"), true);
+        return ToolExecutionOutcome {
+            output: format!("tool `{name}` not found in registry"),
+            is_error: true,
+            timed_out: false,
+        };
     };
     match tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await {
-        Ok(Ok(output)) => (output.content, output.is_error),
+        Ok(Ok(output)) => ToolExecutionOutcome {
+            output: output.content,
+            is_error: output.is_error,
+            timed_out: false,
+        },
         Ok(Err(error)) => {
             warn!(tool = %name, %error, "tool execution failed");
-            (format!("tool execution failed: {error}"), true)
+            ToolExecutionOutcome {
+                output: format!("tool execution failed: {error}"),
+                is_error: true,
+                timed_out: false,
+            }
         }
         Err(_) => {
             warn!(tool = %name, "tool execution timed out");
-            (
-                format!("tool `{name}` timed out after {}s", timeout.as_secs()),
-                true,
-            )
+            ToolExecutionOutcome {
+                output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
+                is_error: true,
+                timed_out: true,
+            }
         }
     }
 }
@@ -1436,6 +1480,47 @@ mod tests {
     use serde_json::json;
     use sylvander_llm_anthropic::api::client::AnthropicClient;
     use sylvander_llm_anthropic::api::model::ModelCapabilities;
+
+    struct SlowTool;
+
+    #[async_trait::async_trait]
+    impl crate::tool::Tool for SlowTool {
+        fn name(&self) -> &str {
+            "slow"
+        }
+
+        fn description(&self) -> &str {
+            "waits beyond its deadline"
+        }
+
+        fn input_schema(&self) -> sylvander_llm_anthropic::api::types::InputSchema {
+            sylvander_llm_anthropic::api::types::InputSchema::empty()
+        }
+
+        async fn execute(
+            &self,
+            _ctx: &crate::tool_context::ToolContext,
+            _input: serde_json::Value,
+        ) -> Result<crate::tool::ToolOutput, crate::tool::ToolError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_deadline_is_a_typed_outcome() {
+        let outcome = execute_registered_tool(
+            Some(Arc::new(SlowTool)),
+            &crate::tool_context::defaults::system_tool_context(),
+            serde_json::json!({}),
+            "slow",
+            std::time::Duration::from_millis(1),
+            crate::tool::ToolProgressSink::new(|_| {}),
+        )
+        .await;
+        assert!(outcome.timed_out);
+        assert!(outcome.is_error);
+        assert!(outcome.output.contains("timed out"));
+    }
 
     fn test_client() -> AnthropicClient {
         AnthropicClient::builder()

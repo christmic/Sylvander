@@ -970,9 +970,21 @@ impl ApprovalGate for BusApprovalGate {
             let decision = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await
             {
                 Ok(Ok(decision)) => decision,
-                _ => ApprovalDecision::Rejected {
-                    reason: "approval timeout".into(),
-                },
+                _ => {
+                    publish_interaction_timeout(
+                        &self.bus,
+                        &self.session_id,
+                        &self.agent_id,
+                        sylvander_protocol::InteractionTimeoutKind::Approval,
+                        &call_id,
+                        120,
+                        sylvander_protocol::TimeoutRecovery::RetryRequest,
+                    )
+                    .await;
+                    ApprovalDecision::Rejected {
+                        reason: "approval timeout".into(),
+                    }
+                }
             };
             decisions[index] = Some(decision);
             self.pending_approvals.lock().await.remove(&call_id);
@@ -984,6 +996,29 @@ impl ApprovalGate for BusApprovalGate {
                 .collect(),
         }
     }
+}
+
+async fn publish_interaction_timeout(
+    bus: &Arc<dyn MessageBus>,
+    session_id: &SessionId,
+    agent_id: &AgentId,
+    kind: sylvander_protocol::InteractionTimeoutKind,
+    subject_id: &str,
+    timeout_secs: u64,
+    recovery: sylvander_protocol::TimeoutRecovery,
+) {
+    let _ = bus
+        .publish(BusMessage::stream_event(
+            session_id.clone(),
+            agent_id.clone(),
+            StreamEvent::InteractionTimedOut {
+                kind,
+                subject_id: subject_id.into(),
+                timeout_secs,
+                recovery,
+            },
+        ))
+        .await;
 }
 
 fn approval_fingerprint(tool: &ToolUseRequest) -> String {
@@ -1083,7 +1118,19 @@ impl AskUserGate for BusAskUserGate {
         // Wait up to 5 minutes for user reply
         let answer = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
             Ok(Ok(answer)) => answer,
-            _ => Vec::new(),
+            _ => {
+                publish_interaction_timeout(
+                    &self.bus,
+                    &self.session_id,
+                    &self.agent_id,
+                    sylvander_protocol::InteractionTimeoutKind::Question,
+                    call_id,
+                    300,
+                    sylvander_protocol::TimeoutRecovery::RetryRequest,
+                )
+                .await;
+                Vec::new()
+            }
         };
         self.pending_answers.lock().await.remove(call_id);
         answer
@@ -1127,9 +1174,21 @@ impl PlanGate for BusPlanGate {
 
         let decision = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
             Ok(Ok(decision)) => decision,
-            _ => crate::bus::PlanDecision::Rejected {
-                reason: "plan review timed out".into(),
-            },
+            _ => {
+                publish_interaction_timeout(
+                    &self.bus,
+                    &self.session_id,
+                    &self.agent_id,
+                    sylvander_protocol::InteractionTimeoutKind::Plan,
+                    plan_id,
+                    300,
+                    sylvander_protocol::TimeoutRecovery::RetryRequest,
+                )
+                .await;
+                crate::bus::PlanDecision::Rejected {
+                    reason: "plan review timed out".into(),
+                }
+            }
         };
         self.pending_plans.lock().await.remove(plan_id);
         decision
@@ -1203,6 +1262,8 @@ impl TaskGate for BusTaskGate {
                 prompt,
             )];
             let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
+            let deadline = tokio::time::sleep(std::time::Duration::from_secs(600));
+            tokio::pin!(deadline);
             loop {
                 let event = tokio::select! {
                     biased;
@@ -1213,6 +1274,26 @@ impl TaskGate for BusTaskGate {
                             StreamEvent::TaskCancelled {
                                 task_id: running_id.clone(),
                                 reason: "cancelled by user".into(),
+                            },
+                        )).await;
+                        break;
+                    }
+                    _ = &mut deadline => {
+                        publish_interaction_timeout(
+                            &bus,
+                            &session_id,
+                            &agent_id,
+                            sylvander_protocol::InteractionTimeoutKind::Task,
+                            &running_id,
+                            600,
+                            sylvander_protocol::TimeoutRecovery::NarrowScope,
+                        ).await;
+                        let _ = bus.publish(BusMessage::stream_event(
+                            session_id.clone(),
+                            agent_id.clone(),
+                            StreamEvent::TaskFailed {
+                                task_id: running_id.clone(),
+                                error: "background task timed out after 600s".into(),
                             },
                         )).await;
                         break;
@@ -1681,6 +1762,22 @@ impl AgentRunInner {
                             tool_name: name,
                             delta,
                         },
+                    )
+                    .await;
+                }
+                crate::event::AgentEvent::ToolTimedOut {
+                    id,
+                    name: _,
+                    timeout_secs,
+                } => {
+                    publish_interaction_timeout(
+                        &self.bus,
+                        &session_id,
+                        &self.id,
+                        sylvander_protocol::InteractionTimeoutKind::Tool,
+                        &id,
+                        timeout_secs,
+                        sylvander_protocol::TimeoutRecovery::NarrowScope,
                     )
                     .await;
                 }

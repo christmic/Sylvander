@@ -163,6 +163,13 @@ enum ServerMsg {
         reason: String,
         cause: sylvander_protocol::RetryCause,
     },
+    InteractionTimeout {
+        session_id: String,
+        kind: sylvander_protocol::InteractionTimeoutKind,
+        subject_id: String,
+        timeout_secs: u64,
+        recovery: sylvander_protocol::TimeoutRecovery,
+    },
     ToolCall {
         session_id: String,
         call_id: String,
@@ -783,6 +790,18 @@ async fn handle_client_msg_for_client(
                                     delay_ms,
                                     reason,
                                     cause,
+                                }),
+                                StreamEvent::InteractionTimedOut {
+                                    kind,
+                                    subject_id,
+                                    timeout_secs,
+                                    recovery,
+                                } => Some(ServerMsg::InteractionTimeout {
+                                    session_id: s.0.clone(),
+                                    kind,
+                                    subject_id,
+                                    timeout_secs,
+                                    recovery,
                                 }),
                                 StreamEvent::CompactionStarted { automatic } => {
                                     Some(ServerMsg::CompactionStarted {

@@ -65,6 +65,12 @@ pub enum AgentEvent {
         delta: String,
     },
 
+    ToolTimedOut {
+        id: String,
+        name: String,
+        timeout_secs: u64,
+    },
+
     /// Tool execution finished.
     ToolCallEnd {
         /// Tool call ID.
