@@ -180,6 +180,35 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_keeps_one_live_composer_chrome_and_cursor() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = AppState::new();
+        state.messages.push(crate::app::ChatMessage::User(
+            "inspect the workspace".into(),
+        ));
+        state.apply(crate::event::DomainEvent::ToolStarted {
+            call_id: "tool-1".into(),
+            tool_name: "bash".into(),
+            input: serde_json::json!({"command": "pwd"}),
+        });
+
+        terminal
+            .draw(|frame| dispatch(frame, &state))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let rule_rows = (0..buffer.area.height)
+            .filter(|&y| {
+                (0..buffer.area.width)
+                    .all(|x| buffer.cell((x, y)).is_some_and(|cell| cell.symbol() == "─"))
+            })
+            .count();
+
+        assert_eq!(rule_rows, 2, "only the live Composer owns chrome");
+        terminal.backend_mut().assert_cursor_position((2, 21));
+    }
+
+    #[test]
     fn transcript_scroll_uses_the_rendered_top_as_a_hard_limit() {
         let mut state = AppState::new();
         state.welcomed = false;

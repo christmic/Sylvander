@@ -4,6 +4,11 @@ Terminal-native client for the Sylvander Agent. This crate owns terminal input,
 application interaction state, the Unix Agent service adapter, and Ratatui
 presentation. It does not own the Agent loop, Token9, or Ghostty window UI.
 
+The transcript follows Claude Code's familiar visual grammar: unframed `❯`
+user turns, `⏺` Agent/activity leads, `⎿` child tools, and one ruled live
+Composer. Sylvander's Seed-Crab, semantic palette, status model, protocol, and
+runtime remain product-owned.
+
 ## Module documentation
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — layers, dependency rules,

@@ -140,7 +140,7 @@ fn push_message_lines<'a>(
                 .enumerate()
             {
                 lines.push(Line::from(vec![
-                    Span::styled(if index == 0 { "> " } else { "  " }, theme::user_speaker()),
+                    Span::styled(if index == 0 { "❯ " } else { "  " }, theme::user_speaker()),
                     Span::styled(chunk.to_string(), theme::text()),
                 ]));
             }
@@ -172,9 +172,9 @@ fn push_message_lines<'a>(
             status,
             input,
         } => {
-            let (icon, st) = theme::tool_status_glyph_and_style(*status);
+            let st = theme::tool_status_style(*status);
             lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), st),
+                Span::styled("⏺ ", st),
                 Span::styled(name, st),
             ]));
             for line in input_kv_lines(input, width) {
@@ -202,30 +202,21 @@ fn push_message_lines<'a>(
         } => {
             let any_error = children.iter().any(|c| c.status == ToolStatus::Error);
             let all_done = children.iter().all(|c| c.status != ToolStatus::Pending);
-            let (step_glyph, step_style) = if any_error {
-                (
-                    theme::tool_status_glyph(ToolStatus::Error),
-                    theme::warning(),
-                )
+            let step_style = if any_error {
+                theme::warning()
             } else if all_done {
-                (
-                    theme::tool_status_glyph(ToolStatus::Done),
-                    theme::verified(),
-                )
+                theme::verified()
             } else {
-                (
-                    theme::tool_status_glyph(ToolStatus::Pending),
-                    theme::active_bold(),
-                )
+                theme::active_bold()
             };
             let elapsed = format_elapsed(*started_at_secs);
             lines.push(Line::from(vec![
-                Span::styled(format!("{step_glyph} "), step_style),
+                Span::styled("⏺ ", step_style),
                 Span::styled(name.clone(), step_style),
                 Span::styled(format!("{elapsed:>8}"), theme::text_muted()),
             ]));
             for child in children {
-                let (g, gstyle) = theme::tool_status_glyph_and_style(child.status);
+                let child_style = theme::tool_status_style(child.status);
                 let target = crate::tool_presenter::compact_target(&child.name, &child.input);
                 let inline_diff = if tool_details_expanded || child.status == ToolStatus::Pending {
                     Vec::new()
@@ -247,9 +238,8 @@ fn push_message_lines<'a>(
                         .unwrap_or_default()
                 };
                 lines.push(Line::from(vec![
-                    Span::styled("  ⎿ ", theme::guide()),
-                    Span::styled(format!("{g} "), gstyle),
-                    Span::styled(target, theme::text_dim()),
+                    Span::styled("  ⎿  ", theme::guide()),
+                    Span::styled(target, child_style),
                     Span::styled(
                         if meta.is_empty() {
                             String::new()
@@ -383,7 +373,7 @@ fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
             lines.push(Line::from(""));
             continue;
         }
-        let marker = if marked { "  " } else { "● " };
+        let marker = if marked { "  " } else { "⏺ " };
         marked = true;
         row.spans
             .insert(0, Span::styled(marker, theme::agent_speaker()));
@@ -420,7 +410,7 @@ fn readable_area(area: Rect) -> Rect {
     // Anchor the transcript and welcome lockup to a stable left gutter.
     // Centering a capped reading column makes the whole interface drift
     // toward the middle as a terminal is widened or taken fullscreen.
-    const LEFT_GUTTER: u16 = 2;
+    const LEFT_GUTTER: u16 = 0;
     const RIGHT_GUTTER: u16 = 2;
     const MAX_READING_WIDTH: u16 = 110;
 
@@ -698,7 +688,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .find(|cell| cell.symbol() == ">")
+            .find(|cell| cell.symbol() == "❯")
             .expect("user speaker cell");
         assert_eq!(cell.fg, crate::theme::TEXT_DIM);
     }
@@ -795,7 +785,7 @@ mod tests {
         let normal = readable_area(Rect::new(0, 0, 120, 36));
         let fullscreen = readable_area(Rect::new(0, 0, 240, 60));
 
-        assert_eq!(normal.x, 2);
+        assert_eq!(normal.x, 0);
         assert_eq!(fullscreen.x, normal.x);
         assert_eq!(normal.width, 110);
         assert_eq!(fullscreen.width, normal.width);
@@ -818,7 +808,7 @@ mod tests {
                     if c.fg == crate::theme::BRAND_WARM && c.symbol() != " " {
                         found_brand = true;
                     }
-                    if c.symbol() == ">" {
+                    if c.symbol() == "❯" {
                         found_turn = true;
                     }
                 }
@@ -839,7 +829,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(rendered.matches('>').count(), 1);
+        assert_eq!(rendered.matches('❯').count(), 1);
         assert!(rendered.lines().skip(1).all(|line| line.starts_with("  ")));
     }
 
@@ -857,7 +847,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(rendered.matches('●').count(), 1);
+        assert_eq!(rendered.matches('⏺').count(), 1);
         assert!(!rendered.contains("/\\"));
         assert!(!rendered.contains("(••)"));
         assert!(!rendered.contains("<__>"));
@@ -882,7 +872,7 @@ mod tests {
                 .expect("render chat");
             let buffer = terminal.backend().buffer();
             (0..36)
-                .find(|&y| (0..120).any(|x| buffer.cell((x, y)).is_some_and(|c| c.symbol() == "●")))
+                .find(|&y| (0..120).any(|x| buffer.cell((x, y)).is_some_and(|c| c.symbol() == "⏺")))
                 .expect("agent presence mark")
         };
 
@@ -969,14 +959,14 @@ mod tests {
             .unwrap();
         let buf = t.backend().buffer().clone();
         // Find the first row of each message kind. User turns use the
-        // quiet `>` marker rather than a repeated "You:" heading.
+        // quiet `❯` marker rather than a repeated "You:" heading.
         // The agent body is the row above any tool
-        // step (which renders `● Run ...` or `✓ Run ...`).
+        // step (which renders `⏺ Run ...`).
         let mut you_y = None;
         for y in 0..20 {
             for x in 0..60 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == ">" {
+                    if c.symbol() == "❯" {
                         you_y = Some(y);
                         break;
                     }
@@ -987,13 +977,13 @@ mod tests {
             }
         }
         let you_y = you_y.expect("expected to find the user-turn marker");
-        // Tool step row has `●` or `✓` glyph in the step header.
+        // Tool step row uses the Claude-familiar `⏺` activity lead.
         let mut toolstep_y = None;
         for y in 0..20 {
             for x in 0..60 {
                 if let Some(c) = buf.cell((x, y)) {
                     let sym = c.symbol();
-                    if sym == "\u{25cf}" || sym == "\u{2713}" {
+                    if sym == "⏺" {
                         // Step glyphs are tool-step step-header characters.
                         toolstep_y = Some(y);
                         break;

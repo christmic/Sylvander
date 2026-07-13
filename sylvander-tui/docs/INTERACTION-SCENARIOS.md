@@ -15,6 +15,11 @@ and recovery behavior are all defined and tested.
 | Return live | `Ctrl+End` | Clears unread count and follows streaming output |
 | Paste | bracketed paste | Short text is inline; large text becomes an attachment token |
 
+Conversation rendering follows the Claude-familiar hierarchy verified against
+Claude Code 2.1.197: submitted user turns start with unframed `❯`, Agent and
+primary activity rows start with `⏺`, child tools start with `⎿`, and only the
+live bottom Composer is enclosed by full-width rules and owns a hardware cursor.
+
 While a turn is active, `Enter` adds the prompt to a local FIFO instead of
 opening a concurrent subscription for the same session. `/queue` lists pending
 prompts; `/queue edit <n> <text>`, `/queue drop <n>`, and `/queue clear` mutate
@@ -34,8 +39,8 @@ the Agent starts multiple calls to the same tool.
 Compact mode shows one semantic row per call:
 
 ```text
-✓ Run cargo test                         03s
-│ ✓ $ cargo test -p sylvander-tui       130 passed
+⏺ Run cargo test                         03s
+  ⎿  $ cargo test -p sylvander-tui      130 passed
 ```
 
 Edit and Write show a bounded unified diff immediately after completion, with

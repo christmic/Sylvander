@@ -6,7 +6,7 @@
 //! - Hairline rule **above** (alongside the transcript's closing edge).
 //! - 3-pixel coral left-edge bar when the composer owns focus
 //!   (`focus_box()` border style). No bar when idle.
-//! - A plain `>` prompt; no conversational placeholder copy.
+//! - A plain `❯` prompt; no conversational placeholder copy.
 //! - The composer rows themselves (multiline, hardware cursor).
 //! - For large pastes (§12.4): side-by-side token chips with a
 //!   removable `×` glyph. Each chip is a single-celled Box with a
@@ -142,7 +142,7 @@ fn render_attachment_tokens(frame: &mut Frame, state: &AppState, area: Rect) {
 fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: Rect) {
     let composer = &state.composer;
     let is_empty = composer.is_empty();
-    let prompt = "> ";
+    let prompt = "❯ ";
 
     if is_empty {
         let placeholder = Line::from(Span::styled(prompt, theme::composer_placeholder()));
@@ -298,8 +298,8 @@ mod tests {
         assert_eq!(state.composer.cursor_col_chars(), 5);
         assert_eq!(state.composer.cursor_col_cells(), 10);
         assert_eq!(
-            wrap_composer_row("你好世界中", "> ", 8),
-            ["> 你好世界", "  中"]
+            wrap_composer_row("你好世界中", "❯ ", 8),
+            ["❯ 你好世界", "  中"]
         );
         assert_eq!(cursor_position("你好世界中", 10, 8), (1, 2));
         assert_eq!(visual_row_count(&state, 10), 2);

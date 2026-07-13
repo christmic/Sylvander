@@ -67,7 +67,10 @@ sequences move and delete as one visible unit, and an eight-row draft window
 keeps the logical cursor visible. The terminal owns IME pre-edit and candidate
 UI; committed text and the hardware cursor remain aligned inside the TUI. When
 the Composer owns focus, even an empty draft exposes the hardware cursor after
-the `> ` prompt. A temporary interaction surface takes that cursor while open.
+the `❯ ` prompt. A temporary interaction surface takes that cursor while open.
+Submitted `❯` turns are transcript rows without rules or a cursor. During tool
+activity the ruled bottom Composer remains the only surface that appears
+editable.
 
 The queues themselves are bounded independently of those per-cycle drain limits:
 service events apply socket backpressure at 1024 items; terminal input retains at
@@ -113,6 +116,7 @@ At minimum, preserve tests for:
 - mouse wheel down returns to live and clears unread;
 - idle ticks do not schedule repaint;
 - streaming and settled replies keep the same vertical origin;
+- tool activity retains exactly one ruled Composer and one hardware cursor;
 - wide/fullscreen resize keeps the transcript left anchored;
 - Composer wrapping grows upward without moving the status row;
 - CJK, combining sequences, and exact-width wrapping preserve the hardware
