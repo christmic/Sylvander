@@ -141,14 +141,24 @@ completed backend feature.
 
 - [x] No visible shortcut or command points to a missing effect.
 - [x] No TUI-only event claims a backend feature is complete.
-- [ ] Public protocol changes remain UI-oriented and transport-neutral.
-- [ ] Agent-loop changes include cancellation, concurrency, and persistence audit.
-- [ ] All existing unit, E2E, and snapshot tests pass.
+- [x] Public protocol changes remain UI-oriented and transport-neutral.
+- [x] Agent-loop changes include cancellation, concurrency, and persistence audit.
+- [x] All existing unit, E2E, and snapshot tests pass.
 - [ ] Real Unix-service + PTY flows cover chat, interrupt, approval, AskUser,
       reconnect, session resume, and resize.
-- [ ] Long-running and burst-stream tests show bounded memory and responsive input.
+- [x] Long-running and burst-stream tests show bounded memory and responsive input.
 - [ ] Security review covers path scope, shell cancellation, secret masking, and
       multi-client/session isolation.
+
+Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
+including 264 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.
+Approval intent is backward compatible and transport-neutral across Unix and
+WebSocket adapters. Agent tests cover scoped interrupt, concurrent tool batches,
+approval cleanup, durable sessions, and runtime restore. Capacity tests cover
+socket frames/events, terminal input floods, transcript retention, composer
+payloads, queued prompts, session cache, and decision overlays. Credentialed
+live-provider tests remain intentionally ignored and are not counted as PTY or
+real-terminal verification.
 
 ## Delivery order
 

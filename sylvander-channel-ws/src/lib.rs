@@ -64,6 +64,8 @@ enum ClientMsg {
         approved: bool,
         #[serde(default)]
         scope: sylvander_agent::bus::ApprovalScope,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// User answered an AskUser question.
     Answer {
@@ -419,6 +421,7 @@ async fn handle_client_msg(
             call_id,
             approved,
             scope,
+            reason,
         } => {
             let _ = ctx
                 .bus
@@ -430,6 +433,7 @@ async fn handle_client_msg(
                         call_id,
                         approved,
                         scope,
+                        reason,
                     }),
                     payload: String::new(),
                     attachments: Vec::new(),
@@ -459,6 +463,35 @@ async fn handle_client_msg(
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_reason_is_optional_and_transport_neutral() {
+        let legacy: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "approve",
+            "call_id": "call-1",
+            "approved": true
+        }))
+        .expect("legacy approval");
+        assert!(matches!(legacy, ClientMsg::Approve { reason: None, .. }));
+
+        let typed: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "approve",
+            "call_id": "call-2",
+            "approved": false,
+            "reason": "unsafe outside workspace"
+        }))
+        .expect("typed approval");
+        assert!(matches!(
+            typed,
+            ClientMsg::Approve { reason: Some(reason), .. }
+                if reason == "unsafe outside workspace"
+        ));
     }
 }
 
