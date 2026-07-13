@@ -33,6 +33,12 @@ pub trait Modal {
         ModalPlacement::Overlay
     }
 
+    /// Whether this surface edits through the persistent Composer instead of
+    /// owning a second query field.
+    fn uses_composer_input(&self) -> bool {
+        false
+    }
+
     /// Draw into the full-screen `area`. The surface chooses its semantic
     /// placement: Decision Docks and Focus Pickers anchor to the bottom;
     /// Review Views temporarily own the transcript viewport.

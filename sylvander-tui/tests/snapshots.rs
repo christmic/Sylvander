@@ -899,17 +899,12 @@ fn expanded_tool_details_show_structured_input_and_output() {
 #[test]
 fn command_line_accepts_arguments() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use sylvander_tui::modal::{CommandPalette, Modal};
 
     let mut state = AppState::new();
-    let mut commands = CommandPalette::new(&state);
+    state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
     for character in "theme midnight".chars() {
-        commands.handle_key(
-            &KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
-            &mut state,
-        );
+        state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
     }
-    state.modals.push(Box::new(commands));
     insta::assert_snapshot!(render_buf(state, 110, 30));
 }
 
