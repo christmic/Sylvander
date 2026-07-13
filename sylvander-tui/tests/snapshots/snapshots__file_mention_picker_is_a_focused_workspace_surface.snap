@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 574
+assertion_line: 598
 expression: "render_buf(state, 90, 24)"
 ---
                                                                                           
@@ -19,7 +19,7 @@ expression: "render_buf(state, 90, 24)"
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+❯                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   Add a workspace file                                                                    
   No matching workspace files                                                             

@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 531
+assertion_line: 555
 expression: "render_buf(state, 100, 28)"
 ---
                                                                                                     
@@ -21,7 +21,7 @@ expression: "render_buf(state, 100, 28)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                   
+❯                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   Model · applies next turn  current  claude-sonnet  reasoning low  · in $3 / out $15 · 1M          
                                                                                                     

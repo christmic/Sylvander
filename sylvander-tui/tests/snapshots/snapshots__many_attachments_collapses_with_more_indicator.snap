@@ -1,28 +1,29 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 80, 24)"
+assertion_line: 272
+expression: "render_buf(state, 80, 24)"
 ---
-        ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀                                            
-    ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿                                            
-     ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆                                           
-     ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀                                      
-   ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                     
-   ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇                                    
-     ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                     
+      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀                                              
+  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿                                              
+   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆                                             
+   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀                                        
+ ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                       
+ ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇                                      
+   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                       
                                                                                 
                                                                                 
-  Sylvander                                                                     
-  agent workspace                                                               
+Sylvander                                                                       
+agent workspace                                                                 
                                                                                 
-  model     —                                                                   
-  workspace ~/workspace                                                         
-  branch    —                                                                   
-  session   new                                                                 
+model     —                                                                     
+workspace ~/workspace                                                           
+branch    —                                                                     
+session   new                                                                   
                                                                                 
-  What should we work through?                                                  
+What should we work through?                                                    
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
 ▣ L1_L2_L3_L4_L5_L6_L7_…  ▣ L1_L2_L3_L4_L5_L6_L7_…  ▣ L1_L2_L3_L4_L5_L6_L7_…  ▣ 
->                                                                               
+❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

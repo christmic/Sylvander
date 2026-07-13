@@ -3,7 +3,7 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 67
 expression: "render_buf(state, 80, 24)"
 ---
-  ● hi there                                                                    
+⏺ hi there                                                                      
                                                                                 
                                                                                 
                                                                                 
@@ -24,6 +24,6 @@ expression: "render_buf(state, 80, 24)"
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
->                                                                               
+❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
