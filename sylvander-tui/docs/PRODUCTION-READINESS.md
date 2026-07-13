@@ -117,8 +117,8 @@ completed backend feature.
 
 ### Reliability and diagnostics
 
-- [ ] Protocol versions and capabilities negotiate on connection.
-- [ ] Malformed/unknown messages produce bounded diagnostic events.
+- [x] Protocol versions and capabilities negotiate on connection.
+- [x] Malformed/unknown messages produce bounded diagnostic events.
 - [ ] Reconnect reattaches to the active session and reconciles missed events.
 - [ ] Approval, question, tool, and task timeouts have explicit recovery UI.
 - [x] `/doctor` can export a redacted diagnostic report.

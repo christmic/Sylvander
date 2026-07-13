@@ -205,6 +205,13 @@ required.
 
 ## Connectivity
 
+Before any runtime or session request, the TUI and Agent service negotiate an
+overlapping UI protocol version and exchange named capabilities. A timeout,
+incompatible range, malformed welcome, or business message before the handshake
+keeps the client disconnected with a visible reason. Unknown post-handshake
+messages become bounded transcript diagnostics instead of disappearing; their
+raw payload is not displayed.
+
 The runtime reconnects to the Unix Agent service on a configurable interval.
 Draft and input history survive disconnection. Service events are coalesced;
 keyboard feedback remains immediate.

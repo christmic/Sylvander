@@ -69,6 +69,17 @@ effects. Command palette rendering does not implement command behavior itself.
 runtime and exposes only `DomainEvent` and `Action`. A future WebSocket or replay
 service must implement the same boundary without changing Panels or AppState.
 
+Every connection starts with a transport-neutral UI protocol handshake. The
+client advertises a supported version range and named capabilities; the server
+selects one overlapping version and returns its capabilities before accepting
+business messages. Incompatible peers fail closed with a bounded protocol
+error. Negotiated truth is stored in `AppState` for status and diagnostics, not
+used by Panels to infer backend behavior.
+
+The wire reader converts malformed or unknown messages into bounded diagnostic
+domain events. Raw message bodies are never copied into diagnostics or logs, so
+future event types remain visible without exposing prompt or credential data.
+
 `workspace_service.rs` is the corresponding boundary for bounded, read-only
 local workspace queries such as `/diff`. It never mutates Git state and returns
 plain domain data; Panels and Modals do not invoke it directly.
