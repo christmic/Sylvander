@@ -56,6 +56,14 @@ reconnect clock (1500ms) retry a disconnected Agent service
 clocks. Service bursts are capped at 256 events per cycle and input bursts at 64
 events so neither source can starve the other.
 
+The queues themselves are bounded independently of those per-cycle drain limits:
+service events apply socket backpressure at 1024 items; terminal input retains at
+most 256 intents, dropping only redundant scroll/resize events when saturated.
+Keyboard and paste input are never silently dropped. The local transcript view is
+bounded to 2000 entries and 16 MiB, with UTF-8-safe per-message and tool-payload
+limits. Pruning leaves an explicit transcript notice; persisted session history
+remains Agent-owned and can be loaded again with `/resume`.
+
 ## Dirty rendering
 
 Rendering occurs only when state is dirty. Idle animation ticks do not dirty a
@@ -80,3 +88,5 @@ At minimum, preserve tests for:
 - streaming and settled replies keep the same vertical origin;
 - wide/fullscreen resize keeps the transcript left anchored;
 - Composer wrapping grows upward without moving the status row.
+- redraw floods remain bounded and do not drop a subsequent keyboard event;
+- transcript count/byte budgets and streaming/tool payload limits remain bounded.
