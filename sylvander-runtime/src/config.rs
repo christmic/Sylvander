@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sylvander_agent::spec::AgentSpec;
 
+mod legacy;
 mod secret;
 
 pub use secret::{SecretResolver, SecretValue, SystemSecretResolver};
@@ -38,6 +39,10 @@ pub struct ServerSettings {
     #[serde(default = "default_server_name")]
     pub name: String,
     pub data_dir: Option<PathBuf>,
+    pub session_db: Option<PathBuf>,
+    pub workspace_journal: Option<PathBuf>,
+    #[serde(default)]
+    pub approval: ApprovalSettings,
 }
 
 impl Default for ServerSettings {
@@ -45,8 +50,19 @@ impl Default for ServerSettings {
         Self {
             name: default_server_name(),
             data_dir: None,
+            session_db: None,
+            workspace_journal: None,
+            approval: ApprovalSettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    pub persistent_store: Option<PathBuf>,
 }
 
 fn default_server_name() -> String {
