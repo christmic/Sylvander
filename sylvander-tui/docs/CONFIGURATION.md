@@ -15,8 +15,21 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_TUI_ANIMATION_MS` | `200` | 50–2000 | Low-frequency animation/status heartbeat |
 | `SYLVANDER_TUI_RECONNECT_MS` | `1500` | 250–30000 | Retry interval after the Agent service disconnects |
 | `SYLVANDER_TUI_MOUSE_SCROLL_LINES` | `4` | 1–40 | Transcript rows per mouse-wheel event |
+| `SYLVANDER_TUI_KEY_SESSIONS` | `ctrl+p` | modified key chord | Open sessions |
+| `SYLVANDER_TUI_KEY_TOOL_DETAILS` | `ctrl+o` | modified key chord | Toggle tool detail |
+| `SYLVANDER_TUI_KEY_COMMANDS` | `ctrl+k` | modified key chord | Open command palette (`/` remains available) |
+| `SYLVANDER_TUI_KEY_TRANSCRIPT_PAGE_UP` | `pageup` | key chord | Review older transcript rows |
+| `SYLVANDER_TUI_KEY_TRANSCRIPT_PAGE_DOWN` | `pagedown` | key chord | Review newer transcript rows |
+| `SYLVANDER_TUI_KEY_RETURN_LIVE` | `ctrl+end` | key chord | Return to live output |
 
 Invalid values fail at startup with a concrete configuration error.
+Key names are case-insensitive and use `ctrl+`, `alt+`, or `shift+` modifiers.
+Two actions cannot use the same chord. Unmodified printable global keys are
+rejected, and printable chords require Ctrl or Alt, so custom bindings cannot
+steal Composer input. Enter and Ctrl+C/Ctrl+X/Ctrl+Z are reserved. Text editing,
+approval/question decisions, and `Esc`/`Ctrl+C` interruption remain fixed safety
+contracts. `/help` and `/config` show the resolved bindings, not hard-coded
+defaults.
 
 `/config` opens the resolved configuration in the searchable, copyable
 inspector. It reports the values captured at startup plus current server model,

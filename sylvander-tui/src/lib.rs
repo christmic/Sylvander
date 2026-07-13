@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod dirty;
 pub mod event;
 pub mod input;
+pub mod keymap;
 pub mod markdown;
 pub mod modal;
 pub mod model;

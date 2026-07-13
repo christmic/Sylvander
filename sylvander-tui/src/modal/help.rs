@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::AppState;
+use crate::keymap::KeyAction;
 use crate::modal::{Consumed, Modal};
 use crate::theme;
 
@@ -36,42 +37,88 @@ impl HelpModal {
         Ok(Self { topic })
     }
 
-    fn lines(&self) -> Vec<Line<'static>> {
-        let rows: &[(&str, &str)] = match self.topic {
-            HelpTopic::Overview => &[
-                ("Enter", "send prompt"),
-                ("Shift+Enter", "insert newline"),
-                ("↑ / ↓", "draft cursor or submitted prompt history"),
-                ("mouse wheel", "review transcript only"),
-                ("PageUp / PageDown", "review transcript by page"),
-                ("Ctrl+End", "return to live output"),
-                ("Ctrl+O", "expand or collapse tool details"),
-                ("Ctrl+P", "sessions"),
-                ("/ or Ctrl+K", "command line"),
+    fn lines(&self, state: &AppState) -> Vec<Line<'static>> {
+        let rows: Vec<(String, String)> = match self.topic {
+            HelpTopic::Overview => vec![
+                ("Enter".into(), "send prompt".into()),
+                ("Shift+Enter".into(), "insert newline".into()),
+                (
+                    "↑ / ↓".into(),
+                    "draft cursor or submitted prompt history".into(),
+                ),
+                ("mouse wheel".into(), "review transcript only".into()),
+                (
+                    format!(
+                        "{} / {}",
+                        state.keymap.label(KeyAction::TranscriptPageUp),
+                        state.keymap.label(KeyAction::TranscriptPageDown)
+                    ),
+                    "review transcript by page".into(),
+                ),
+                (
+                    state.keymap.label(KeyAction::ReturnLive).into(),
+                    "return to live output".into(),
+                ),
+                (
+                    state.keymap.label(KeyAction::ToolDetails).into(),
+                    "expand or collapse tool details".into(),
+                ),
+                (
+                    state.keymap.label(KeyAction::Sessions).into(),
+                    "sessions".into(),
+                ),
+                (
+                    format!("/ or {}", state.keymap.label(KeyAction::Commands)),
+                    "command line".into(),
+                ),
             ],
-            HelpTopic::Commands => &[
-                ("/new", "prepare a clean session"),
-                ("/sessions", "browse known sessions"),
-                ("/clear", "clear local transcript"),
-                ("/theme <name>", "switch semantic color palette"),
-                ("/tools expand", "show full tool inputs and results"),
-                ("/status", "append runtime and token details"),
-                ("/help <topic>", "overview, commands, approval, tools"),
+            HelpTopic::Commands => vec![
+                ("/new".into(), "prepare a clean session".into()),
+                ("/sessions".into(), "browse known sessions".into()),
+                ("/clear".into(), "clear local transcript".into()),
+                (
+                    "/theme <name>".into(),
+                    "switch semantic color palette".into(),
+                ),
+                (
+                    "/tools expand".into(),
+                    "show full tool inputs and results".into(),
+                ),
+                ("/status".into(), "append runtime and token details".into()),
+                (
+                    "/help <topic>".into(),
+                    "overview, commands, approval, tools".into(),
+                ),
             ],
-            HelpTopic::Approval => &[
-                ("↑ / ↓", "select tool request"),
-                ("y or Enter", "approve selected request"),
-                ("n", "reject and optionally explain why"),
-                ("Y", "approve all remaining requests"),
-                ("N", "reject all remaining requests"),
-                ("Esc", "reject pending requests and unblock Agent"),
+            HelpTopic::Approval => vec![
+                ("↑ / ↓".into(), "select tool request".into()),
+                ("y or Enter".into(), "approve selected request".into()),
+                ("n".into(), "reject and optionally explain why".into()),
+                ("Y".into(), "approve all remaining requests".into()),
+                ("N".into(), "reject all remaining requests".into()),
+                (
+                    "Esc".into(),
+                    "reject pending requests and unblock Agent".into(),
+                ),
             ],
-            HelpTopic::Tools => &[
-                ("compact", "one semantic target and result summary"),
-                ("expanded", "structured input plus up to 12 result rows"),
-                ("Ctrl+O", "toggle compact and expanded modes"),
-                ("call ID", "pairs concurrent results with the correct call"),
-                ("amber result", "tool returned an error"),
+            HelpTopic::Tools => vec![
+                (
+                    "compact".into(),
+                    "one semantic target and result summary".into(),
+                ),
+                (
+                    "expanded".into(),
+                    "structured input plus up to 12 result rows".into(),
+                ),
+                (
+                    state.keymap.label(KeyAction::ToolDetails).into(),
+                    "toggle compact and expanded modes".into(),
+                ),
+                (
+                    "call ID".into(),
+                    "pairs concurrent results with the correct call".into(),
+                ),
+                ("amber result".into(), "tool returned an error".into()),
             ],
         };
         let mut lines = vec![
@@ -86,10 +133,10 @@ impl HelpModal {
             )),
             Line::from(""),
         ];
-        lines.extend(rows.iter().map(|(key, description)| {
+        lines.extend(rows.into_iter().map(|(key, description)| {
             Line::from(vec![
                 Span::styled(format!("{key:<20}"), theme::brand_violet()),
-                Span::styled(*description, theme::text()),
+                Span::styled(description, theme::text()),
             ])
         }));
         lines.push(Line::from(""));
@@ -107,7 +154,7 @@ impl Modal for HelpModal {
         "Help"
     }
 
-    fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
         let area = centered_rect(68, 16, parent);
         frame.render_widget(Clear, area);
         frame.render_widget(
@@ -119,7 +166,7 @@ impl Modal for HelpModal {
         );
         let inner = Block::default().borders(Borders::ALL).inner(area);
         frame.render_widget(
-            Paragraph::new(self.lines()).wrap(Wrap { trim: false }),
+            Paragraph::new(self.lines(state)).wrap(Wrap { trim: false }),
             inner,
         );
     }
