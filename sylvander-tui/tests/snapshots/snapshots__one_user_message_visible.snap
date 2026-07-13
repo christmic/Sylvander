@@ -1,8 +1,9 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 80, 24)"
+assertion_line: 67
+expression: "render_buf(state, 80, 24)"
 ---
-  ◆  hi there                                                                   
+  ● hi there                                                                    
                                                                                 
                                                                                 
                                                                                 
