@@ -2,13 +2,14 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(state, 110, 30)"
 ---
-        ⢀⣠⣶⣾⣀           Sylvander                                                                             
-      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                                                       
-⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                                                             
- ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                                                           
-⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                                                 
- ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                                                             
-                        What should we work through?                                                          
+              ⢀⣤⣴⡆               Sylvander                                                                    
+            ⢀⣚⣿⣿⣿⣿⢓⣀             agent workspace                                                              
+         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦           model     —                                                                  
+  ⢀ ⣴⠆  ⣰⣿⣿⣵⠟⠉    ⠙⠻⣿⠿⣾⣦         workspace ~/workspace                                                        
+ ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄        branch    — · session new                                                    
+ ⢀⣤⣶⣿⡣⣤⢀⢽⠿⣮⢷⣄⣉⠁  ⠉⣁⣤⡎⣵⠟⣭⣁⡔⢿⣄⡀                                                                                 
+ ⣾⣿⠛⢹⡇⠈⢨⣶⡶⠎⢛⡿⣿⣳⡆⣶⣿⡿⣟⣋⢷⣶⣮⡅⢸⡜⢿⣿⡄   What should we work through?                                                 
+ ⠈⠻⠁   ⠘⠞⠁ ⠒⠁ ⠉⠁⠉⠉ ⠉⠑ ⠈⣿⠇ ⠁⠈⠿⠁                                                                                
                                                                                                               
                                                                                                               
 ❯ run the tests                                                                                               
@@ -21,7 +22,6 @@ expression: "render_buf(state, 110, 30)"
        running 130 tests                                                                                      
        test result: ok. 130 passed                                                                            
        finished in 0.12s                                                                                      
-                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               
