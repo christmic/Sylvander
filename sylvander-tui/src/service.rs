@@ -87,20 +87,16 @@ impl AgentService {
                 session_id,
                 workspace: Some(workspace),
             },
-            Action::SendFeedback { text, session_id } => ClientMsg::Chat {
-                text,
-                attachments: Vec::new(),
-                session_id,
-                workspace: None,
-            },
             Action::SendApprove {
                 call_id,
                 approved,
                 scope,
+                reason,
             } => ClientMsg::Approve {
                 call_id,
                 approved,
                 scope,
+                reason,
             },
             Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
             Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },

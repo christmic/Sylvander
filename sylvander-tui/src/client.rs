@@ -37,6 +37,8 @@ pub enum ClientMsg {
         call_id: String,
         approved: bool,
         scope: sylvander_protocol::ApprovalScope,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Answer {
         call_id: String,
@@ -1079,6 +1081,20 @@ mod tests {
         .unwrap();
         assert_eq!(json["type"], "answer");
         assert_eq!(json["call_id"], "c1");
+    }
+
+    #[test]
+    fn approval_rejection_reason_uses_the_typed_wire_shape() {
+        let json = serde_json::to_value(ClientMsg::Approve {
+            call_id: "c1".into(),
+            approved: false,
+            scope: sylvander_protocol::ApprovalScope::Once,
+            reason: Some("unsafe outside workspace".into()),
+        })
+        .unwrap();
+        assert_eq!(json["type"], "approve");
+        assert_eq!(json["call_id"], "c1");
+        assert_eq!(json["reason"], "unsafe outside workspace");
     }
 
     #[test]

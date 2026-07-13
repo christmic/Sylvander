@@ -13,11 +13,11 @@ expression: "render_buf(&state, 90, 28)"
                                                                                           
                                                                                           
                   ┌ Rejection Feedback ────────────────────────────────┐                  
-                  │Tell Sylvander what to do instead (or press Enter to│                  
+                  │Optional reason for rejecting this request:         │                  
                   │                                                    │                  
                   │> use docker                                        │                  
                   │                                                    │                  
-                  │enter=send feedback   esc=back to approval          │                  
+                  │enter reject · esc back · 500 character max         │                  
                   └────────────────────────────────────────────────────┘                  
                                                                                           
                                                                                           

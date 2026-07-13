@@ -193,7 +193,9 @@ or the Composer.
 - `s` approves the exact tool-and-arguments request for the current session.
 - `p` persists that exact request across sessions only when the server advertises
   persistent approval. It is hidden when the operator has not configured a store.
-- `n`, `r`, or `2` rejects it and opens optional feedback input.
+- `n`, `r`, or `2` rejects it and opens an optional, bounded reason input. The
+  reason is attached to the typed approval decision; it never becomes a second
+  chat turn.
 - `a`/`Y` approves all remaining requests once; `N` rejects all remaining requests.
 - `Esc` and `Ctrl+C` reject every pending request before closing. The Agent is
   never left waiting on an abandoned approval modal.
