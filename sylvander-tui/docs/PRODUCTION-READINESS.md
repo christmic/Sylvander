@@ -149,7 +149,8 @@ completed backend feature.
         streamed response rendering, typed approval rejection, AskUser answer,
         scoped interrupt, resize, and idle exit in a pseudo-terminal; forced
         disconnect also renegotiates and reapplies typed session history.
-  - [ ] Interrupt, approval, and AskUser complete against the real Agent service.
+  - [x] Interrupt and AskUser complete against the real Agent service.
+  - [ ] Approval completes against the real Agent service.
   - [x] Persisted SQLite session resume completes against the real Agent service
         in a PTY; canned recovery history does not satisfy this item.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
@@ -171,8 +172,9 @@ Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
 including 265 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.
 Two compiled-binary PTY gates now cover the protocol fixture and the real
 `AgentRun + UnixChannel + file-backed SQLite` stack. The latter submits a real
-turn through a locally controlled model endpoint, exits the TUI, starts a new
-TUI process, and restores the persisted transcript through `Ctrl+P`.
+turn through a locally controlled model endpoint, answers one Agent-owned
+AskUser prompt, interrupts a delayed turn, exits the TUI, starts a new TUI
+process, and restores the persisted transcript through `Ctrl+P`.
 Approval intent is backward compatible and transport-neutral across Unix and
 WebSocket adapters. Agent tests cover scoped interrupt, concurrent tool batches,
 approval cleanup, durable sessions, and runtime restore. Capacity tests cover

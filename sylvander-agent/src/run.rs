@@ -2053,23 +2053,10 @@ impl AgentRunInner {
                         .await;
                     }
                 }
-                crate::event::AgentEvent::AskUser {
-                    call_id,
-                    question,
-                    options,
-                    multi_select,
-                } => {
-                    self.publish_stream(
-                        &session_id,
-                        crate::bus::StreamEvent::AskUser {
-                            call_id,
-                            question,
-                            options,
-                            multi_select,
-                        },
-                    )
-                    .await;
-                }
+                // `BusAskUserGate` publishes the request when it installs the
+                // pending answer. Forwarding the loop event too would stack
+                // two identical TUI modals for one question.
+                crate::event::AgentEvent::AskUser { .. } => {}
                 crate::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,

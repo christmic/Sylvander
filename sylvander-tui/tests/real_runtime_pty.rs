@@ -4,20 +4,69 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::{
-    AgentRun, AgentSpec, InProcessMessageBus, MessageBus, ModelCapabilities,
+    AgentRun, AgentSpec, InProcessMessageBus, MessageBus, MessageKind, ModelCapabilities,
+    StreamEvent, SubscriptionFilter, ToolRegistry,
 };
 use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
+use sylvander_agent::tools::AskUserTool;
 use sylvander_channel::{Channel, ChannelContext};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+#[derive(Clone, Default)]
+struct RealAgentScenario {
+    request_index: Arc<AtomicUsize>,
+}
+
+impl Respond for RealAgentScenario {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        match self.request_index.fetch_add(1, Ordering::SeqCst) {
+            0 => ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_real_runtime", "type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "Persisted through real AgentRun."}],
+                "model": "sylvander-test-model", "stop_reason": "end_turn",
+                "usage": {"input_tokens": 11, "output_tokens": 5}
+            })),
+            1 => ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_real_question", "type": "message", "role": "assistant",
+                "content": [{
+                    "type": "tool_use", "id": "question_real_1", "name": "ask_user",
+                    "input": {
+                        "question": "Which safe direction?", "options": [],
+                        "multi_select": false
+                    }
+                }],
+                "model": "sylvander-test-model", "stop_reason": "tool_use",
+                "usage": {"input_tokens": 13, "output_tokens": 7}
+            })),
+            2 => ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_real_answer", "type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "Real AskUser answer accepted."}],
+                "model": "sylvander-test-model", "stop_reason": "end_turn",
+                "usage": {"input_tokens": 19, "output_tokens": 5}
+            })),
+            3 => ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_json(json!({
+                    "id": "msg_real_slow", "type": "message", "role": "assistant",
+                    "content": [{"type": "text", "text": "This must not render."}],
+                    "model": "sylvander-test-model", "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 9, "output_tokens": 4}
+                })),
+            index => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected real Agent scenario request {index}")),
+        }
+    }
+}
 
 fn wait_for_output(captured: &Mutex<Vec<u8>>, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -100,15 +149,7 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     let upstream = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": "msg_real_runtime",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Persisted through real AgentRun."}],
-            "model": "sylvander-test-model",
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 11, "output_tokens": 5}
-        })))
+        .respond_with(RealAgentScenario::default())
         .mount(&upstream)
         .await;
 
@@ -120,6 +161,19 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .expect("open SQLite session store"),
     );
     let bus = Arc::new(InProcessMessageBus::new());
+    let mut observed = bus
+        .subscribe(SubscriptionFilter::all())
+        .await
+        .expect("subscribe runtime observer");
+    let completed_turns = Arc::new(AtomicUsize::new(0));
+    let observed_turns = Arc::clone(&completed_turns);
+    let observer_task = tokio::spawn(async move {
+        while let Some(message) = observed.recv().await {
+            if matches!(message.kind, MessageKind::Stream(StreamEvent::Done { .. })) {
+                observed_turns.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
     let client = AnthropicClient::builder()
         .api_key("test-key")
         .base_url(upstream.uri())
@@ -134,7 +188,8 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     let run = AgentRun::builder(spec, client)
         .bus(bus.clone())
         .session_store(store.clone())
-        .model_capabilities(ModelCapabilities::empty())
+        .override_tools(ToolRegistry::new().register(AskUserTool::new()))
+        .model_capabilities(ModelCapabilities::TOOL_USE)
         .build()
         .expect("build AgentRun");
     let runtime_control = run.clone();
@@ -171,6 +226,7 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
+    let completed_for_tui = Arc::clone(&completed_turns);
     let first = run_tui(&socket_path, |writer, captured| {
         writer
             .write_all(b"persist this turn\r")
@@ -182,8 +238,55 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
                 String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
             );
         }
+        writer.write_all(b"ask me\r").expect("submit AskUser turn");
+        writer.flush().expect("flush AskUser turn");
+        assert!(
+            wait_for_output(captured, "Type your answer", Duration::from_secs(4)),
+            "real Agent AskUser input was not rendered"
+        );
+        captured.lock().expect("clear AskUser output").clear();
+        writer
+            .write_all(b"use the safe path\r")
+            .expect("answer real Agent AskUser");
+        writer.flush().expect("flush real Agent answer");
+        if !wait_for_output(captured, "Real", Duration::from_secs(4)) {
+            panic!(
+                "real Agent did not continue after AskUser answer; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while completed_for_tui.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            completed_for_tui.load(Ordering::SeqCst),
+            2,
+            "real Agent AskUser turn did not publish Done"
+        );
+        std::thread::sleep(Duration::from_millis(150));
+
+        captured.lock().expect("clear PTY output").clear();
+        writer
+            .write_all(b"interrupt the real turn\r")
+            .expect("submit interruptible real Agent turn");
+        writer.flush().expect("flush interruptible turn");
+        if !wait_for_output(captured, "esc interrupt", Duration::from_secs(3)) {
+            panic!(
+                "real Agent turn did not enter interruptible state; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+            );
+        }
+        writer
+            .write_all(b"\x1b")
+            .expect("interrupt real Agent turn");
+        writer.flush().expect("flush real Agent interrupt");
+        assert!(
+            wait_for_output(captured, "interrupted", Duration::from_secs(3)),
+            "real Agent interrupt terminal event was not rendered"
+        );
     });
-    assert!(first.contains("persist") && first.contains("turn"));
+    assert!(first.contains("interrupted"));
 
     let second = run_tui(&socket_path, |writer, captured| {
         writer.write_all(b"\x10").expect("open persisted sessions");
@@ -197,7 +300,7 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .write_all(b"\r\r")
             .expect("focus and resume selected session");
         writer.flush().expect("flush session selection");
-        if !wait_for_output(captured, "AgentRun.", Duration::from_secs(4)) {
+        if !wait_for_output(captured, "accepted.", Duration::from_secs(4)) {
             panic!(
                 "persisted SQLite transcript was not restored; output={}",
                 String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
@@ -208,4 +311,5 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
 
     channel_task.abort();
     agent_task.abort();
+    observer_task.abort();
 }
