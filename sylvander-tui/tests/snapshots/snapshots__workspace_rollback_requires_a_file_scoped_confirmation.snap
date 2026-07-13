@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 544
+assertion_line: 568
 expression: "render_buf(state, 100, 28)"
 ---
                                                                                                     
@@ -19,7 +19,7 @@ expression: "render_buf(state, 100, 28)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                   
+❯                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
   ◆ Restore Agent file changes?                                                                     
   Conversation history stays unchanged. External file changes can conflict.                         
