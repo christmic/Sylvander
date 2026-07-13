@@ -2,20 +2,20 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(s, 80, 22)"
 ---
-        ⢀⣠⣶⣾⣀           Sylvander                                               
-      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                         
-⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                               
- ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                             
-⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                   
- ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                               
-                        What should we work through?                            
+              ⢀⣤⣴⡆               Sylvander                                      
+            ⢀⣚⣿⣿⣿⣿⢓⣀             agent workspace                                
+         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦           model     —                                    
+  ⢀ ⣴⠆  ⣰⣿⣿⣵⠟⠉    ⠙⠻⣿⠿⣾⣦         workspace ~/workspace                          
+ ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄        branch    — · session new                      
+ ⢀⣤⣶⣿⡣⣤⢀⢽⠿⣮⢷⣄⣉⠁  ⠉⣁⣤⡎⣵⠟⣭⣁⡔⢿⣄⡀                                                   
+ ⣾⣿⠛⢹⡇⠈⢨⣶⡶⠎⢛⡿⣿⣳⡆⣶⣿⡿⣟⣋⢷⣶⣮⡅⢸⡜⢿⣿⡄   What should we work through?                   
+ ⠈⠻⠁   ⠘⠞⠁ ⠒⠁ ⠉⠁⠉⠉ ⠉⠑ ⠈⣿⠇ ⠁⠈⠿⠁                                                  
                                                                                 
                                                                                 
 ❯ try `rm -rf /`                                                                
 ⏺ Run `rm`     00s                                                              
   ⎿  $ rm -rf /                                                                 
   tool bash rejected: destructive commands blocked by policy                    
-                                                                                
                                                                                 
                                                                                 
                                                                                 
