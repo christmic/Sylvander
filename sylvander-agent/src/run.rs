@@ -253,6 +253,7 @@ struct ActiveTurn {
 
 struct RuntimeModels {
     available: HashMap<String, ModelInfo>,
+    lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     current_model: String,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
 }
@@ -288,6 +289,7 @@ impl RuntimeModels {
                     provider: "anthropic-compatible".into(),
                     capabilities: model.capabilities.bits(),
                     reasoning_efforts,
+                    lifecycle: self.lifecycles.get(&model.id).cloned().unwrap_or_default(),
                 }
             })
             .collect::<Vec<_>>();
@@ -1921,6 +1923,7 @@ pub struct AgentRunBuilder {
     session_store: Option<Arc<dyn SessionStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     available_models: Vec<ModelInfo>,
+    model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -1938,6 +1941,7 @@ impl AgentRunBuilder {
             session_store: None,
             model_capabilities: None,
             available_models: Vec::new(),
+            model_lifecycles: HashMap::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -1982,6 +1986,16 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn available_models(mut self, models: Vec<ModelInfo>) -> Self {
         self.available_models = models;
+        self
+    }
+
+    /// Attach operator-supplied lifecycle truth to advertised models.
+    #[must_use]
+    pub fn model_lifecycles(
+        mut self,
+        lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
+    ) -> Self {
+        self.model_lifecycles = lifecycles;
         self
     }
 
@@ -2049,6 +2063,7 @@ impl AgentRunBuilder {
             .or_insert_with(|| model_info.clone());
         let runtime_models = RuntimeModels {
             available: available_models,
+            lifecycles: self.model_lifecycles,
             current_model: model_info.id.clone(),
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         };
@@ -2186,12 +2201,28 @@ mod tests {
         let run = AgentRun::builder(spec, client)
             .bus(bus)
             .available_models(vec![thinking])
+            .model_lifecycles(HashMap::from([(
+                "thinking-model".into(),
+                sylvander_protocol::ModelLifecycle::Deprecated {
+                    replacement: Some("claude-sonnet-5-20260601".into()),
+                },
+            )]))
             .build()
             .expect("build");
 
         let initial = run.runtime_model_info().await;
         assert_eq!(initial.current_model, "claude-sonnet-5-20260601");
         assert_eq!(initial.models.len(), 2);
+        assert!(matches!(
+            initial
+                .models
+                .iter()
+                .find(|model| model.id == "thinking-model")
+                .map(|model| &model.lifecycle),
+            Some(sylvander_protocol::ModelLifecycle::Deprecated {
+                replacement: Some(replacement)
+            }) if replacement == "claude-sonnet-5-20260601"
+        ));
         let selected = run
             .select_model("thinking-model", sylvander_protocol::ReasoningEffort::High)
             .await

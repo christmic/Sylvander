@@ -1260,6 +1260,7 @@ mod tests {
                 provider: "test".into(),
                 capabilities: 0b101,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
             }],
             permissions: sylvander_protocol::PermissionProfile::default(),
             capabilities: 0b101,

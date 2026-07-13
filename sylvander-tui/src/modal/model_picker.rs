@@ -133,20 +133,37 @@ impl Modal for ModelPicker {
                     model.reasoning_efforts.first().copied()
                 }
                 .unwrap_or_default();
-                Line::from(vec![
+                let mut spans = vec![
                     Span::styled(if selected { "› " } else { "  " }, theme::active_bold()),
                     Span::styled(if active { "● " } else { "○ " }, theme::verified()),
                     Span::styled(
-                        format!("{:<28}", model.id),
+                        table_cell(&model.id, 24),
                         if selected {
                             theme::active_bold()
                         } else {
                             theme::text_dim()
                         },
                     ),
-                    Span::styled(format!("{:<21}", model.provider), theme::text_muted()),
-                    Span::styled(reasoning_label(effort), theme::thinking_text()),
-                ])
+                ];
+                match &model.lifecycle {
+                    sylvander_protocol::ModelLifecycle::Active => {
+                        spans.push(Span::styled(
+                            table_cell(&model.provider, 22),
+                            theme::text_muted(),
+                        ));
+                        spans.push(Span::styled(
+                            reasoning_label(effort),
+                            theme::thinking_text(),
+                        ));
+                    }
+                    sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
+                        let label = replacement
+                            .as_ref()
+                            .map_or_else(|| "deprecated".into(), |id| format!("deprecated → {id}"));
+                        spans.push(Span::styled(label, theme::danger()));
+                    }
+                }
+                Line::from(spans)
             })
             .collect::<Vec<_>>();
         frame.render_widget(Paragraph::new(lines), rows[2]);
@@ -222,6 +239,19 @@ fn centered(width: u16, height: u16, parent: Rect) -> Rect {
     }
 }
 
+fn table_cell(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        return format!("{value:<width$}");
+    }
+    let mut clipped = value
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>();
+    clipped.push('…');
+    clipped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +265,7 @@ mod tests {
                 provider: "test".into(),
                 capabilities: 0,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
             },
             sylvander_protocol::ModelDescriptor {
                 id: "thinking".into(),
@@ -244,6 +275,9 @@ mod tests {
                     sylvander_protocol::ReasoningEffort::Off,
                     sylvander_protocol::ReasoningEffort::Low,
                 ],
+                lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
+                    replacement: Some("plain".into()),
+                },
             },
         ];
         state
