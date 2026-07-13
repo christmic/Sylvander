@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sylvander_agent::spec::AgentSpec;
 
+mod secret;
+
+pub use secret::{SecretResolver, SecretValue, SystemSecretResolver};
+
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

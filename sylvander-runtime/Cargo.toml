@@ -20,6 +20,8 @@ toml = "1.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
 
 [lints]
 workspace = true

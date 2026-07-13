@@ -2993,10 +2993,12 @@ dependencies = [
  "sylvander-agent",
  "sylvander-channel",
  "sylvander-llm-anthropic",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
