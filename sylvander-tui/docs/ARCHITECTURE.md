@@ -146,6 +146,11 @@ terminal event → UserIntent → Application → AppState
 Unix wire → AgentService → DomainEvent → Application → AppState → UI
 ```
 
+Every `DomainEvent` has an exhaustive authority classification: transport,
+Agent, bounded local service, or runtime clock. Agent completion states such as
+tool, task, plan, compaction, rollback, and session lifecycle may only enter
+through the Agent service adapter; renderers cannot synthesize them.
+
 No Panel sends service messages. No service holds a Panel. No wire message is
 stored directly in presentation state.
 
