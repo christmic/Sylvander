@@ -253,6 +253,71 @@ pub enum DomainEvent {
     Tick,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainEventSource {
+    Transport,
+    Agent,
+    LocalService,
+    RuntimeClock,
+}
+
+impl DomainEvent {
+    /// Classify the authority behind every state transition. This match is
+    /// deliberately exhaustive: a new event cannot compile until its source
+    /// is explicit, preventing presentation-only simulations of Agent truth.
+    pub fn source(&self) -> DomainEventSource {
+        match self {
+            Self::Connected
+            | Self::ProtocolNegotiated { .. }
+            | Self::ProtocolDiagnostic { .. }
+            | Self::Disconnected { .. } => DomainEventSource::Transport,
+            Self::WorkspaceDiffLoaded { .. }
+            | Self::WorkspaceDiffFailed { .. }
+            | Self::WorkspaceReviewLoaded { .. }
+            | Self::WorkspaceReviewFailed { .. }
+            | Self::ConfigInspected { .. }
+            | Self::DoctorCompleted { .. }
+            | Self::DoctorFailed { .. } => DomainEventSource::LocalService,
+            Self::RuntimeInfo { .. }
+            | Self::ContextReported { .. }
+            | Self::CompactionStarted { .. }
+            | Self::CompactionCompleted { .. }
+            | Self::CompactionFailed { .. }
+            | Self::WorkspaceRollbackPreviewed { .. }
+            | Self::WorkspaceRollbackCompleted { .. }
+            | Self::WorkspaceRollbackFailed { .. }
+            | Self::SessionCreated { .. }
+            | Self::SessionsLoaded { .. }
+            | Self::SessionHistoryLoaded { .. }
+            | Self::SessionUpdated { .. }
+            | Self::SessionDeleted { .. }
+            | Self::OperationFailed { .. }
+            | Self::TextChunk { .. }
+            | Self::ThinkingChunk { .. }
+            | Self::ModelRetry { .. }
+            | Self::InteractionTimedOut { .. }
+            | Self::ToolStarted { .. }
+            | Self::ToolOutputDelta { .. }
+            | Self::ToolFinished { .. }
+            | Self::UsageUpdated { .. }
+            | Self::AgentDone { .. }
+            | Self::AgentError { .. }
+            | Self::TurnInterrupted { .. }
+            | Self::ApprovalRequested { .. }
+            | Self::AskUserRequested { .. }
+            | Self::ToolRejected { .. }
+            | Self::PlanReceived { .. }
+            | Self::PlanUpdated { .. }
+            | Self::TaskStarted { .. }
+            | Self::TaskProgress { .. }
+            | Self::TaskCompleted { .. }
+            | Self::TaskFailed { .. }
+            | Self::TaskCancelled { .. } => DomainEventSource::Agent,
+            Self::Tick => DomainEventSource::RuntimeClock,
+        }
+    }
+}
+
 // ===========================================================================
 // Outbound: Action
 // ===========================================================================
@@ -376,6 +441,37 @@ pub enum DoctorDestination {
     Inspect,
     Copy,
     Export(std::path::PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_completion_events_are_agent_authoritative() {
+        assert_eq!(
+            DomainEvent::CompactionCompleted {
+                report: sylvander_protocol::CompactionReport {
+                    automatic: false,
+                    removed_messages: 2,
+                    condensed_blocks: 1,
+                    freed_tokens: 5,
+                    summary: None,
+                },
+            }
+            .source(),
+            DomainEventSource::Agent
+        );
+        assert_eq!(
+            DomainEvent::TaskCompleted {
+                task_id: "task-1".into(),
+                summary: "done".into(),
+            }
+            .source(),
+            DomainEventSource::Agent
+        );
+        assert_eq!(DomainEvent::Tick.source(), DomainEventSource::RuntimeClock);
+    }
 }
 
 impl WorkspaceDiffScope {
