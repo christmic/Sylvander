@@ -1,23 +1,22 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 621
 expression: "render_buf(s, 132, 30)"
 ---
-                     ⢀⣠⢠⡖                                                                                                           
-                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                                           
-                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀                   agent workspace                                                                     
-             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄                                                                                                    
-      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀              model     —                                                                         
-  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿              workspace ~/workspace                                                               
-   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆             branch    —                                                                         
-   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀        session   new                                                                       
- ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                                                                           
- ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                                        
-   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                                           
+        ⢀⣠⣶⣾⣀           Sylvander                                                                                                   
+      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                                                                             
+⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                                                                                   
+ ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                                                                                 
+⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                                                                       
+ ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                                                                                   
+                        What should we work through?                                                                                
+                                                                                                                                    
                                                                                                                                     
 ❯ Add JWT auth.                                                                                                                     
                                                                                                                                     
 ⏺ Inspecting router.                                                                                                                
+                                                                                                                                    
+                                                                                                                                    
+                                                                                                                                    
                                                                                                                                     
                                                                                                                                     
                                                                                                                                     
