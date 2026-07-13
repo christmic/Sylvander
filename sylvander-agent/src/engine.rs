@@ -136,7 +136,7 @@ impl AgentRunEngine {
 
     /// Spawn a new agent.
     ///
-    /// 1. Builds the AgentRun
+    /// 1. Builds the `AgentRun`
     /// 2. Subscribes to the bus for the agent's messages
     /// 3. Subscribes to the bus for status updates
     /// 4. Spawns the tokio task
@@ -148,21 +148,37 @@ impl AgentRunEngine {
         spec: AgentSpec,
         client: AnthropicClient,
     ) -> Result<AgentHandle, EngineError> {
-        let agent_id = spec.id.clone();
+        let run = AgentRun::builder(spec.clone(), client)
+            .bus(self.bus.clone())
+            .build()
+            .map_err(EngineError::Build)?;
 
-        // Check for duplicates
+        self.spawn_run(spec, run).await
+    }
+
+    /// Spawn a fully configured Agent run.
+    ///
+    /// This is the composition-root entry point for runtimes that provide
+    /// durable stores, tools, model catalogs, and approval policy.
+    pub async fn spawn_run(
+        &self,
+        spec: AgentSpec,
+        run: AgentRun,
+    ) -> Result<AgentHandle, EngineError> {
+        let agent_id = spec.id.clone();
+        if run.id() != &agent_id {
+            return Err(EngineError::AgentRunMismatch {
+                spec: agent_id,
+                run: run.id().clone(),
+            });
+        }
+
         {
             let agents = self.agents.read().await;
             if agents.contains_key(&agent_id) {
                 return Err(EngineError::AlreadySpawned(agent_id));
             }
         }
-
-        // Build AgentRun
-        let run = AgentRun::builder(spec.clone(), client)
-            .bus(self.bus.clone())
-            .build()
-            .map_err(EngineError::Build)?;
 
         // Subscribe to all messages for this agent (chat + system)
         let filter = run.subscription_filter();
@@ -295,6 +311,25 @@ impl AgentRunEngine {
         agent_ids: &[AgentId],
     ) -> Result<SessionId, EngineError> {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        self.attach_session(session_id.clone(), name, metadata, agent_ids)
+            .await?;
+        Ok(session_id)
+    }
+
+    /// Attach a session using its durable identity and notify its Agents.
+    ///
+    /// Persistent stores and external channels must retain the same ID across
+    /// restarts; generating a replacement would orphan their history.
+    pub async fn attach_session(
+        &self,
+        session_id: SessionId,
+        name: impl Into<String>,
+        metadata: SessionMetadata,
+        agent_ids: &[AgentId],
+    ) -> Result<(), EngineError> {
+        if self.sessions.read().await.contains_key(&session_id) {
+            return Err(EngineError::SessionAlreadyAttached(session_id));
+        }
         let name = name.into();
 
         // Notify each agent to join via the bus
@@ -320,7 +355,7 @@ impl AgentRunEngine {
         self.sessions.write().await.insert(session_id.clone(), meta);
 
         info!(session_id = %session_id, "session created");
-        Ok(session_id)
+        Ok(())
     }
 
     /// Send a user message to an agent in a session.
@@ -379,6 +414,10 @@ pub enum EngineError {
     #[error("agent already spawned: {0}")]
     AlreadySpawned(AgentId),
 
+    /// The configured specification and run belong to different Agents.
+    #[error("Agent run id {run} does not match specification id {spec}")]
+    AgentRunMismatch { spec: AgentId, run: AgentId },
+
     /// Agent not found.
     #[error("agent not found: {0}")]
     NotFound(AgentId),
@@ -387,7 +426,11 @@ pub enum EngineError {
     #[error("unknown session: {0}")]
     UnknownSession(SessionId),
 
-    /// AgentRun build failed.
+    /// A durable session was restored more than once.
+    #[error("session already attached: {0}")]
+    SessionAlreadyAttached(SessionId),
+
+    /// `AgentRun` build failed.
     #[error("build error: {0}")]
     Build(#[from] crate::run::AgentRunError),
 
@@ -513,6 +556,54 @@ mod tests {
         assert_eq!(meta.name, "test-session");
 
         // Clean up
+        engine.despawn(&AgentId::new("agent-1")).await.ok();
+    }
+
+    #[tokio::test]
+    async fn attach_session_preserves_durable_identity() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let engine = AgentRunEngine::new(bus);
+        engine
+            .spawn(test_spec("agent-1"), test_client())
+            .await
+            .expect("spawn");
+
+        let durable_id = SessionId::new("durable-session-42");
+        engine
+            .attach_session(
+                durable_id.clone(),
+                "restored",
+                SessionMetadata {
+                    workspace: "/tmp/project".into(),
+                    name: "restored".into(),
+                    user_id: "user-1".into(),
+                },
+                &[AgentId::new("agent-1")],
+            )
+            .await
+            .expect("attach session");
+
+        let restored = engine.get_session(&durable_id).await.expect("session");
+        assert_eq!(restored.id, durable_id);
+        assert_eq!(restored.name, "restored");
+
+        let duplicate = engine
+            .attach_session(
+                durable_id.clone(),
+                "duplicate",
+                SessionMetadata {
+                    workspace: "/tmp/project".into(),
+                    name: "duplicate".into(),
+                    user_id: "user-1".into(),
+                },
+                &[AgentId::new("agent-1")],
+            )
+            .await;
+        assert!(matches!(
+            duplicate,
+            Err(EngineError::SessionAlreadyAttached(id)) if id == durable_id
+        ));
+
         engine.despawn(&AgentId::new("agent-1")).await.ok();
     }
 
