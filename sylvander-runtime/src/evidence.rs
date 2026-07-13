@@ -8,6 +8,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::Mutex;
 use tokio::task;
 
+mod recorder;
+
+pub use recorder::EvidenceRecorder;
+
 #[derive(Clone)]
 pub struct EvidenceStore {
     connection: Arc<Mutex<Connection>>,
@@ -285,6 +289,10 @@ pub enum EvidenceError {
     ValueTooLarge(u64),
     #[error("evidence count is invalid: {0}")]
     InvalidCount(i64),
+    #[error("failed to subscribe evidence recorder: {0}")]
+    Subscribe(String),
+    #[error("failed to serialize evidence event: {0}")]
+    Serialize(String),
 }
 
 impl EvidenceError {

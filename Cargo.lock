@@ -2991,6 +2991,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "sylvander-agent",
  "sylvander-channel",
  "sylvander-llm-anthropic",
