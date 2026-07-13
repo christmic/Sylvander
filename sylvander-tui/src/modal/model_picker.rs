@@ -93,18 +93,32 @@ impl Modal for ModelPicker {
                 Constraint::Length(1),
             ])
             .split(inner);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("active  ", theme::text_muted()),
-                Span::styled(&state.metadata.model, theme::header()),
-                Span::styled("  reasoning ", theme::text_muted()),
-                Span::styled(
-                    reasoning_label(state.metadata.reasoning_effort),
-                    theme::active_bold(),
+        let mut active_line = vec![
+            Span::styled("active  ", theme::text_muted()),
+            Span::styled(&state.metadata.model, theme::header()),
+            Span::styled("  reasoning ", theme::text_muted()),
+            Span::styled(
+                reasoning_label(state.metadata.reasoning_effort),
+                theme::active_bold(),
+            ),
+        ];
+        if let Some(pricing) = state
+            .metadata
+            .models
+            .iter()
+            .find(|model| model.id == state.metadata.model)
+            .and_then(|model| model.pricing)
+        {
+            active_line.push(Span::styled(
+                format!(
+                    "  · in {} / out {} · 1M",
+                    format_rate(pricing.input_usd_micros_per_million),
+                    format_rate(pricing.output_usd_micros_per_million)
                 ),
-            ])),
-            rows[0],
-        );
+                theme::text_muted(),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(active_line)), rows[0]);
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "─".repeat(rows[1].width as usize),
@@ -250,6 +264,16 @@ fn table_cell(value: &str, width: usize) -> String {
         .collect::<String>();
     clipped.push('…');
     clipped
+}
+
+fn format_rate(micro_usd: u64) -> String {
+    let fraction = format!("{:06}", micro_usd % 1_000_000);
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.is_empty() {
+        format!("${}", micro_usd / 1_000_000)
+    } else {
+        format!("${}.{fraction}", micro_usd / 1_000_000)
+    }
 }
 
 #[cfg(test)]

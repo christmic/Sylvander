@@ -93,7 +93,7 @@ completed backend feature.
 - [x] Approval supports once/session/persistent exact-request decisions where policy permits.
 - [x] `/context` reports provider-confirmed window use, cache use, and structural contributing sources.
 - [x] `/compact` and automatic compaction expose progress, failure, and resulting summary.
-- [ ] Cost, rate limit, retry, and model migration states are visible.
+- [x] Cost, rate limit, retry, and model migration states are visible.
 - [ ] Checkpoint, rewind, rollback, and undo have explicit safety boundaries.
 
 ### Core commands

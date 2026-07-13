@@ -128,12 +128,20 @@ impl Component for StatusPanel {
         } else {
             String::new()
         };
+        let cost_summary = if area.width >= 140 {
+            state.cost_nano_usd.map_or_else(
+                || " · cost —".into(),
+                |cost| format!(" · {}", crate::app::format_cost(cost)),
+            )
+        } else {
+            String::new()
+        };
         let left = Line::from(vec![
             Span::styled(format!("{} ", mode.glyph()), mode.style()),
             Span::styled(mode.label(), mode.style()),
             Span::styled(
                 format!(
-                    " · model {model} · branch {branch} · session {session} · {} tok{tool_summary}",
+                    " · model {model} · branch {branch} · session {session} · {} tok{cost_summary}{tool_summary}",
                     state.input_tokens.saturating_add(state.output_tokens),
                 ),
                 theme::text_dim(),

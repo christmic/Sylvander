@@ -428,7 +428,12 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
                 sylvander_protocol::ReasoningEffort::High,
             ],
             lifecycle: sylvander_protocol::ModelLifecycle::Active,
-            pricing: None,
+            pricing: Some(sylvander_protocol::ModelPricing {
+                input_usd_micros_per_million: 3_000_000,
+                output_usd_micros_per_million: 15_000_000,
+                cache_write_usd_micros_per_million: None,
+                cache_read_usd_micros_per_million: None,
+            }),
         },
         sylvander_protocol::ModelDescriptor {
             id: "fast-code".into(),

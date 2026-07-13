@@ -36,6 +36,7 @@ pub struct AppState {
     pub iteration: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cost_nano_usd: Option<u64>,
     /// True from local submit until a terminal Done/Error/Interrupted event.
     pub turn_active: bool,
     /// Handles the small window before a new session receives its server id.
@@ -120,6 +121,7 @@ impl AppState {
             iteration: 0,
             input_tokens: 0,
             output_tokens: 0,
+            cost_nano_usd: None,
             turn_active: false,
             interrupt_requested: false,
             queued_prompts: VecDeque::new(),
@@ -430,6 +432,7 @@ impl AppState {
                 iterations,
                 input_tokens,
                 output_tokens,
+                cost_nano_usd,
             } => {
                 self.session_id = Some(session.id.clone());
                 self.metadata.workspace = session.workspace.clone().into();
@@ -452,6 +455,7 @@ impl AppState {
                 self.iteration = iterations;
                 self.input_tokens = input_tokens;
                 self.output_tokens = output_tokens;
+                self.cost_nano_usd = cost_nano_usd;
                 self.welcomed = !self.messages.is_empty();
                 self.status = format!("Resumed {}", session.label);
                 if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == session.id)
@@ -624,10 +628,12 @@ impl AppState {
                 iteration,
                 input_tokens,
                 output_tokens,
+                cost_nano_usd,
             } => {
                 self.iteration = iteration;
                 self.input_tokens = input_tokens;
                 self.output_tokens = output_tokens;
+                self.cost_nano_usd = cost_nano_usd;
             }
             DomainEvent::AgentDone { final_text } => {
                 self.turn_active = false;
@@ -1119,6 +1125,11 @@ fn compact_runtime_reason(reason: &str) -> String {
     compact
 }
 
+pub(crate) fn format_cost(nano_usd: u64) -> String {
+    let micro_usd = nano_usd.saturating_add(500) / 1_000;
+    format!("${}.{:06}", micro_usd / 1_000_000, micro_usd % 1_000_000)
+}
+
 fn retry_cause_label(cause: sylvander_protocol::RetryCause) -> &'static str {
     match cause {
         sylvander_protocol::RetryCause::RateLimit => "Rate limited",
@@ -1335,6 +1346,19 @@ mod tests {
                 if text.starts_with("Rate limited · retry 1/3 in 100ms")
                     && text.chars().count() < 170
         ));
+    }
+
+    #[test]
+    fn usage_updates_cost_and_formats_sub_cent_amounts() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::UsageUpdated {
+            iteration: 2,
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cost_nano_usd: Some(7_500_000),
+        });
+        assert_eq!(state.cost_nano_usd, Some(7_500_000));
+        assert_eq!(format_cost(7_500_000), "$0.007500");
     }
 
     #[test]
@@ -1656,6 +1680,7 @@ mod tests {
             iterations: 4,
             input_tokens: 800,
             output_tokens: 120,
+            cost_nano_usd: Some(7_500_000),
         });
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
@@ -1670,6 +1695,7 @@ mod tests {
             (state.iteration, state.input_tokens, state.output_tokens),
             (4, 800, 120)
         );
+        assert_eq!(state.cost_nano_usd, Some(7_500_000));
     }
 
     #[test]

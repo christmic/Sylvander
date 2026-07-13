@@ -143,6 +143,8 @@ pub enum ServerMsg {
         iteration: u32,
         input_tokens: u32,
         output_tokens: u32,
+        #[serde(default)]
+        cost_nano_usd: Option<u64>,
     },
     Done {
         session_id: String,
@@ -227,6 +229,8 @@ pub enum ServerMsg {
         iterations: u32,
         input_tokens: u64,
         output_tokens: u64,
+        #[serde(default)]
+        cost_nano_usd: Option<u64>,
     },
     SessionUpdated {
         session_id: String,
@@ -590,6 +594,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             iterations,
             input_tokens,
             output_tokens,
+            cost_nano_usd,
         } => DomainEvent::SessionHistoryLoaded {
             session: crate::model::SessionSummary {
                 id: session.id,
@@ -611,6 +616,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             iterations,
             input_tokens,
             output_tokens,
+            cost_nano_usd,
         },
         ServerMsg::SessionUpdated {
             session_id,
@@ -629,11 +635,13 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             iteration,
             input_tokens,
             output_tokens,
+            cost_nano_usd,
             ..
         } => DomainEvent::UsageUpdated {
             iteration,
             input_tokens: input_tokens.into(),
             output_tokens: output_tokens.into(),
+            cost_nano_usd,
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
@@ -677,6 +685,25 @@ mod tests {
                 max_attachment_bytes: 4096,
                 ..
             }) if model == "claude-test" && models.len() == 1
+        ));
+    }
+
+    #[test]
+    fn legacy_usage_event_defaults_to_unknown_cost() {
+        let message: ServerMsg = serde_json::from_value(serde_json::json!({
+            "type": "iteration_end",
+            "session_id": "s1",
+            "iteration": 1,
+            "input_tokens": 10,
+            "output_tokens": 2
+        }))
+        .expect("legacy iteration event");
+        assert!(matches!(
+            parse_server_msg(message),
+            Some(DomainEvent::UsageUpdated {
+                cost_nano_usd: None,
+                ..
+            })
         ));
     }
 
@@ -961,6 +988,7 @@ mod tests {
             iterations: 2,
             input_tokens: 120,
             output_tokens: 30,
+            cost_nano_usd: Some(45_000),
         });
         assert!(matches!(
             event,
@@ -970,6 +998,7 @@ mod tests {
                 iterations: 2,
                 input_tokens: 120,
                 output_tokens: 30,
+                cost_nano_usd: Some(45_000),
             })
                 if session.id == "s1"
                     && messages[0].role == crate::model::HistoryRole::User
