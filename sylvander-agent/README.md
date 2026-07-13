@@ -258,6 +258,16 @@ stream-first refactor — events are now delivered through
 `is_retryable()` on the error delegates to the inner `AnthropicError`
 for the `Llm` variant; other variants are deterministic caller bugs.
 
+## Workspace rollback journal
+
+When `AgentRunBuilder::workspace_journal` is configured, successful built-in
+`Write` and `Edit` calls record durable pre/post snapshots grouped by Agent
+turn. `preview_workspace_rollback` performs conflict checks without mutation;
+`rollback_workspace_latest` requires that previewed turn id and restores the
+whole group in reverse order. The journal rejects path escapes, symlink hops,
+oversized files, active turns, stale confirmations, and external changes. It
+does not claim to capture shell commands or user edits.
+
 ## Tests
 
 ```bash

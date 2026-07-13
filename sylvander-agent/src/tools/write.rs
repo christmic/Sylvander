@@ -87,7 +87,28 @@ impl Tool for WriteTool {
             .fs_root
             .clone()
             .unwrap_or_else(|| self.workdir.clone());
-        let path = root.join(path_str);
+        let path = match crate::workspace_journal::WorkspaceJournal::resolve(&root, path_str) {
+            Ok(path) => path,
+            Err(error) => return Ok(ToolOutput::err(error)),
+        };
+        let prepared = if let Some(journal) = &ctx.workspace_journal {
+            let turn_id = ctx.session.request.trace_id.as_deref().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a turn trace id".into())
+            })?;
+            Some(
+                journal
+                    .prepare(
+                        &ctx.session_id().0,
+                        turn_id,
+                        &root,
+                        path_str,
+                        content.as_bytes(),
+                    )
+                    .map_err(ToolError::Other)?,
+            )
+        } else {
+            None
+        };
 
         // Create parent dirs if missing.
         if let Some(parent) = path.parent()
@@ -101,10 +122,15 @@ impl Tool for WriteTool {
         }
 
         match std::fs::write(&path, content) {
-            Ok(()) => Ok(ToolOutput::ok(format!(
-                "wrote {} bytes to `{path_str}`",
-                content.len()
-            ))),
+            Ok(()) => {
+                if let (Some(journal), Some(prepared)) = (&ctx.workspace_journal, &prepared) {
+                    journal.commit(prepared).map_err(ToolError::Other)?;
+                }
+                Ok(ToolOutput::ok(format!(
+                    "wrote {} bytes to `{path_str}`",
+                    content.len()
+                )))
+            }
             Err(e) => Ok(ToolOutput::err(format!("cannot write `{path_str}`: {e}"))),
         }
     }

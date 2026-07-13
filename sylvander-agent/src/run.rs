@@ -74,6 +74,7 @@ pub(crate) struct AgentRunInner {
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
+    workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -523,6 +524,50 @@ impl AgentRun {
             .apply_compacted_history(session_id, &history, &layers)
             .await?;
         Ok(public_compaction_report(false, &layers))
+    }
+
+    pub async fn preview_workspace_rollback(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<crate::workspace_journal::RollbackPreview, String> {
+        if self
+            .inner
+            .active_turns
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err("interrupt active work before rolling back files".into());
+        }
+        if !self.inner.sessions.read().await.contains_key(session_id) {
+            return Err(format!("unknown session: {session_id}"));
+        }
+        self.inner
+            .workspace_journal
+            .as_ref()
+            .ok_or_else(|| "workspace rollback is not configured".to_string())?
+            .preview_latest_turn(&session_id.0)
+    }
+
+    pub async fn rollback_workspace_latest(
+        &self,
+        session_id: &SessionId,
+        expected_turn_id: &str,
+    ) -> Result<crate::workspace_journal::RollbackReport, String> {
+        if self
+            .inner
+            .active_turns
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err("interrupt active work before rolling back files".into());
+        }
+        self.inner
+            .workspace_journal
+            .as_ref()
+            .ok_or_else(|| "workspace rollback is not configured".to_string())?
+            .rollback_latest_turn(&session_id.0, expected_turn_id)
     }
 
     pub async fn select_permissions(
@@ -1512,12 +1557,15 @@ impl AgentRunInner {
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
+        let turn_id = uuid::Uuid::new_v4().to_string();
         let tool_context = tool_context_for_permissions(
             &session_metadata,
             &self.id,
             &session_id,
             &permissions,
             self.memory.is_some(),
+            self.workspace_journal.clone(),
+            Some(&turn_id),
         );
         loop_config.tool_context = tool_context.clone();
         loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
@@ -1916,13 +1964,21 @@ fn tool_context_for_permissions(
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
     memory_enabled: bool,
+    workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+    turn_id: Option<&str>,
 ) -> ToolContext {
-    let mut context = ToolContext::new(sylvander_protocol::SessionContext::new(
+    let mut session = sylvander_protocol::SessionContext::new(
         metadata.user_id.clone(),
         agent_id.clone(),
         session_id.clone(),
-    ))
-    .with_fs_root(metadata.workspace.clone());
+    );
+    if let Some(turn_id) = turn_id {
+        session = session.with_trace_id(turn_id);
+    }
+    let mut context = ToolContext::new(session).with_fs_root(metadata.workspace.clone());
+    if let Some(journal) = workspace_journal {
+        context = context.with_workspace_journal(journal);
+    }
     match permissions.file_access {
         sylvander_protocol::FileAccess::None => {}
         sylvander_protocol::FileAccess::ReadOnly => {
@@ -1966,6 +2022,7 @@ pub struct AgentRunBuilder {
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
+    workspace_journal_path: Option<PathBuf>,
 }
 
 impl AgentRunBuilder {
@@ -1985,6 +2042,7 @@ impl AgentRunBuilder {
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
+            workspace_journal_path: None,
         }
     }
 
@@ -2074,6 +2132,12 @@ impl AgentRunBuilder {
         self
     }
 
+    #[must_use]
+    pub fn workspace_journal(mut self, path: impl Into<PathBuf>) -> Self {
+        self.workspace_journal_path = Some(path.into());
+        self
+    }
+
     pub fn override_compression(
         mut self,
         pipeline: crate::compress::pipeline::CompressionPipeline,
@@ -2152,6 +2216,9 @@ impl AgentRunBuilder {
         // moving `loop_config` into `AgentRunInner`.
         let run_tool_context = ToolContext::new(loop_config.tool_context.session.as_ref().clone());
 
+        let workspace_journal = self
+            .workspace_journal_path
+            .map(|path| Arc::new(crate::workspace_journal::WorkspaceJournal::new(path)));
         Ok(AgentRun {
             inner: Arc::new(AgentRunInner {
                 id,
@@ -2160,6 +2227,7 @@ impl AgentRunBuilder {
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
                 context_usage: RwLock::new(HashMap::new()),
+                workspace_journal,
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 session_store: self.session_store,
@@ -2255,6 +2323,49 @@ mod tests {
             .expect("build");
         let run2 = run.clone();
         assert_eq!(run.id(), run2.id());
+    }
+
+    #[tokio::test]
+    async fn agent_run_previews_and_rolls_back_journaled_write() {
+        use crate::tool::Tool;
+        let workspace = tempfile::TempDir::new().unwrap();
+        let journal = tempfile::TempDir::new().unwrap();
+        let file = workspace.path().join("file.txt");
+        std::fs::write(&file, "before").unwrap();
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .workspace_journal(journal.path())
+            .build()
+            .unwrap();
+        let session_id = run
+            .join_session(SessionMetadata {
+                workspace: workspace.path().into(),
+                ..test_metadata()
+            })
+            .await;
+        let context = ToolContext::new(
+            sylvander_protocol::SessionContext::new("user-1", "test-agent", session_id.clone())
+                .with_trace_id("turn-1"),
+        )
+        .with_fs_root(workspace.path())
+        .with_capability(Cap::Write)
+        .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
+        crate::tools::WriteTool::new(workspace.path())
+            .execute(
+                &context,
+                serde_json::json!({"file_path":"file.txt","content":"after"}),
+            )
+            .await
+            .unwrap();
+
+        let preview = run.preview_workspace_rollback(&session_id).await.unwrap();
+        assert_eq!(preview.files, vec!["file.txt"]);
+        run.rollback_workspace_latest(&session_id, &preview.turn_id)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "before");
     }
 
     #[tokio::test]
@@ -2400,6 +2511,8 @@ mod tests {
                 approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
             },
             true,
+            None,
+            None,
         );
         assert_eq!(
             context.surface.fs_root.as_deref(),

@@ -112,6 +112,18 @@ pub struct CompactionReport {
     pub summary: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRollbackPreview {
+    pub turn_id: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRollbackReport {
+    pub turn_id: String,
+    pub restored: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryCause {
