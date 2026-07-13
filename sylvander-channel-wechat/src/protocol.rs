@@ -1,4 +1,4 @@
-//! WeChat enterprise messaging — encryption + XML parsing.
+//! `WeChat` enterprise messaging — encryption + XML parsing.
 
 use aes::Aes256;
 use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
@@ -63,7 +63,7 @@ impl WechatCrypto {
         encrypted: &str,
     ) -> bool {
         let mut parts = [self.token.as_str(), timestamp, nonce, encrypted];
-        parts.sort();
+        parts.sort_unstable();
         let joined = parts.join("");
         let mut hasher = Sha1::new();
         hasher.update(joined.as_bytes());
@@ -112,7 +112,7 @@ impl WechatCrypto {
         // PKCS7 pad
         let block_size = 16;
         let pad_len = block_size - (plaintext.len() % block_size);
-        plaintext.extend(std::iter::repeat(pad_len as u8).take(pad_len));
+        plaintext.extend(std::iter::repeat_n(pad_len as u8, pad_len));
 
         let ciphertext = encrypt_cbc(&self.aes_key, &plaintext)?;
         let encrypted_b64 = B64.encode(&ciphertext);
@@ -123,14 +123,14 @@ impl WechatCrypto {
             nonce,
             encrypted_b64.as_str(),
         ];
-        parts.sort();
+        parts.sort_unstable();
         let joined = parts.join("");
         let mut hasher = Sha1::new();
         hasher.update(joined.as_bytes());
         let signature = hex_digest(&hasher.finalize());
 
         Ok(format!(
-            r#"<xml><Encrypt><![CDATA[{encrypted_b64}]]></Encrypt><MsgSignature><![CDATA[{signature}]]></MsgSignature><TimeStamp>{timestamp}</TimeStamp><Nonce><![CDATA[{nonce}]]></Nonce></xml>"#
+            r"<xml><Encrypt><![CDATA[{encrypted_b64}]]></Encrypt><MsgSignature><![CDATA[{signature}]]></MsgSignature><TimeStamp>{timestamp}</TimeStamp><Nonce><![CDATA[{nonce}]]></Nonce></xml>"
         ))
     }
 }
@@ -152,7 +152,7 @@ fn from_block(b: &Block) -> [u8; 16] {
 }
 
 fn encrypt_cbc(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    if plaintext.len() % BLOCK_SIZE != 0 {
+    if !plaintext.len().is_multiple_of(BLOCK_SIZE) {
         return Err(CryptoError::Aes);
     }
     let cipher = Aes256::new(key.into());
@@ -173,7 +173,7 @@ fn encrypt_cbc(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError>
 }
 
 fn decrypt_cbc(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    if ciphertext.len() % BLOCK_SIZE != 0 {
+    if !ciphertext.len().is_multiple_of(BLOCK_SIZE) {
         return Err(CryptoError::Aes);
     }
     let cipher = Aes256::new(key.into());
