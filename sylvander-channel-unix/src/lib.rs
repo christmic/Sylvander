@@ -27,7 +27,7 @@
 //! {"type":"pong"}
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -87,6 +87,9 @@ enum ClientMsg {
     LoadSession {
         session_id: String,
     },
+    ReattachSession {
+        session_id: String,
+    },
     RenameSession {
         session_id: String,
         label: String,
@@ -132,7 +135,7 @@ enum ClientMsg {
     Ping,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
     Welcome {
@@ -265,6 +268,8 @@ enum ServerMsg {
         cost_nano_usd: Option<u64>,
         notice: Option<String>,
         source_session_id: Option<String>,
+        recovery: bool,
+        replay_truncated: bool,
     },
     SessionUpdated {
         session_id: String,
@@ -318,14 +323,14 @@ enum ServerMsg {
     Pong,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct ToolInfo {
     call_id: String,
     tool_name: String,
     input: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct SessionInfo {
     id: String,
     label: String,
@@ -333,10 +338,26 @@ struct SessionInfo {
     last_seen_secs: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct HistoryMessage {
     role: String,
     text: String,
+}
+
+#[derive(Default)]
+struct SessionReplay {
+    active: bool,
+    events: Vec<ServerMsg>,
+    bytes: usize,
+    truncated: bool,
+}
+
+#[derive(Default)]
+struct RelayHub {
+    clients: HashMap<u64, mpsc::UnboundedSender<ServerMsg>>,
+    session_clients: HashMap<SessionId, HashSet<u64>>,
+    relays: HashSet<SessionId>,
+    replay: HashMap<SessionId, SessionReplay>,
 }
 
 // ===========================================================================
@@ -414,9 +435,7 @@ impl Channel for UnixChannel {
             }
         };
 
-        // Active clients: client_id → tx
-        let clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let hub = Arc::new(Mutex::new(RelayHub::default()));
         let next_id: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
         loop {
@@ -438,19 +457,21 @@ impl Channel for UnixChannel {
             };
 
             let (tx, mut rx) = mpsc::unbounded_channel::<ServerMsg>();
-            clients.lock().await.insert(client_id, tx.clone());
+            hub.lock().await.clients.insert(client_id, tx.clone());
 
             // Spawn writer task
-            let clients_writer = clients.clone();
+            let writer_hub = hub.clone();
             tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
                     if let Ok(s) = serde_json::to_string(&msg) {
-                        let _ = write.write_all(s.as_bytes()).await;
-                        let _ = write.write_all(b"\n").await;
+                        if write.write_all(s.as_bytes()).await.is_err()
+                            || write.write_all(b"\n").await.is_err()
+                        {
+                            break;
+                        }
                     }
                 }
-                // Client disconnected — clean up
-                clients_writer.lock().await.remove(&client_id);
+                detach_client(&writer_hub, client_id).await;
             });
 
             // Spawn reader task
@@ -458,7 +479,7 @@ impl Channel for UnixChannel {
             let agent_id_clone = agent_id.clone();
             let runtime = self.runtime.clone();
             let runtime_control = self.runtime_control.clone();
-            let clients_clean = clients.clone();
+            let reader_hub = hub.clone();
             let client_id_clone = client_id;
             tokio::spawn(async move {
                 let mut negotiated = false;
@@ -513,18 +534,19 @@ impl Channel for UnixChannel {
                         });
                         continue;
                     }
-                    handle_client_msg(
+                    handle_client_msg_for_client(
                         msg,
                         &ctx_clone,
                         &agent_id_clone,
                         &tx,
                         &runtime,
                         runtime_control.as_ref(),
+                        &reader_hub,
+                        client_id,
                     )
                     .await;
                 }
-                // Client disconnected
-                clients_clean.lock().await.remove(&client_id_clone);
+                detach_client(&reader_hub, client_id_clone).await;
             });
         }
     }
@@ -538,6 +560,7 @@ fn ui_protocol_capabilities() -> Vec<String> {
         "diagnostics",
         "model_selection",
         "plans",
+        "session_replay",
         "sessions",
         "tasks",
         "workspace_rollback",
@@ -556,6 +579,63 @@ fn protocol_error(code: &str, message: &str) -> sylvander_protocol::UiProtocolEr
     }
 }
 
+async fn detach_client(hub: &Arc<Mutex<RelayHub>>, client_id: u64) {
+    let mut hub = hub.lock().await;
+    hub.clients.remove(&client_id);
+    for clients in hub.session_clients.values_mut() {
+        clients.remove(&client_id);
+    }
+}
+
+async fn relay_event(hub: &Arc<Mutex<RelayHub>>, session_id: &SessionId, message: ServerMsg) {
+    const MAX_REPLAY_BYTES: usize = 4 * 1024 * 1024;
+    let mut hub = hub.lock().await;
+    let terminal = matches!(
+        &message,
+        ServerMsg::Done { .. } | ServerMsg::Error { .. } | ServerMsg::TurnInterrupted { .. }
+    );
+    let replay = hub.replay.entry(session_id.clone()).or_default();
+    if replay.active {
+        let bytes = serde_json::to_vec(&message).map_or(0, |value| value.len());
+        if bytes > MAX_REPLAY_BYTES {
+            replay.events.clear();
+            replay.bytes = 0;
+            replay.truncated = true;
+        } else {
+            replay.bytes = replay.bytes.saturating_add(bytes);
+            replay.events.push(message.clone());
+            while replay.bytes > MAX_REPLAY_BYTES && replay.events.len() > 1 {
+                let removed = replay.events.remove(0);
+                replay.bytes = replay
+                    .bytes
+                    .saturating_sub(serde_json::to_vec(&removed).map_or(0, |value| value.len()));
+                replay.truncated = true;
+            }
+        }
+        if terminal {
+            replay.active = false;
+            replay.events.clear();
+            replay.bytes = 0;
+            replay.truncated = false;
+        }
+    }
+    if terminal {
+        hub.relays.remove(session_id);
+    }
+    let recipients = hub
+        .session_clients
+        .get(session_id)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| hub.clients.get(id).cloned())
+        .collect::<Vec<_>>();
+    drop(hub);
+    for recipient in recipients {
+        let _ = recipient.send(message.clone());
+    }
+}
+
+#[cfg(test)]
 async fn handle_client_msg(
     msg: ClientMsg,
     ctx: &ChannelContext,
@@ -563,6 +643,21 @@ async fn handle_client_msg(
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
     runtime_control: Option<&sylvander_agent::run::AgentRun>,
+) {
+    let hub = Arc::new(Mutex::new(RelayHub::default()));
+    hub.lock().await.clients.insert(0, tx.clone());
+    handle_client_msg_for_client(msg, ctx, agent_id, tx, runtime, runtime_control, &hub, 0).await;
+}
+
+async fn handle_client_msg_for_client(
+    msg: ClientMsg,
+    ctx: &ChannelContext,
+    agent_id: &AgentId,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    runtime: &RuntimeInfo,
+    runtime_control: Option<&sylvander_agent::run::AgentRun>,
+    hub: &Arc<Mutex<RelayHub>>,
+    client_id: u64,
 ) {
     match msg {
         ClientMsg::Hello { .. } => {}
@@ -577,17 +672,39 @@ async fn handle_client_msg(
                 None => SessionId::new(uuid::Uuid::new_v4().to_string()),
             };
 
-            // Subscribe to bus for this session
-            let mut rx = ctx
-                .bus
-                .subscribe(SubscriptionFilter {
-                    session_ids: Some(vec![sid.clone()]),
-                    recipients: None,
-                    kinds: None,
-                })
-                .await
-                .expect("subscribe");
-
+            let start_relay = {
+                let mut guard = hub.lock().await;
+                if guard.replay.get(&sid).is_some_and(|replay| replay.active) {
+                    drop(guard);
+                    operation_error(tx, "chat", "session already has an active turn");
+                    return;
+                }
+                guard
+                    .session_clients
+                    .entry(sid.clone())
+                    .or_default()
+                    .insert(client_id);
+                let replay = guard.replay.entry(sid.clone()).or_default();
+                replay.active = true;
+                replay.events.clear();
+                replay.bytes = 0;
+                replay.truncated = false;
+                guard.relays.insert(sid.clone())
+            };
+            let relay_rx = if start_relay {
+                Some(
+                    ctx.bus
+                        .subscribe(SubscriptionFilter {
+                            session_ids: Some(vec![sid.clone()]),
+                            recipients: None,
+                            kinds: None,
+                        })
+                        .await
+                        .expect("subscribe"),
+                )
+            } else {
+                None
+            };
             // Send JoinSession for the agent
             let workspace = workspace
                 .map(PathBuf::from)
@@ -636,214 +753,222 @@ async fn handle_client_msg(
             });
 
             // Stream events back to client until Done
-            let tx_clone = tx.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    if let MessageKind::Stream(ev) = msg.kind {
-                        let s = &msg.session_id;
-                        let out = match ev {
-                            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
-                                session_id: s.0.clone(),
-                                delta,
-                            }),
-                            StreamEvent::ThinkingDelta { delta } => {
-                                Some(ServerMsg::ThinkingDelta {
+            let relay_hub = hub.clone();
+            if let Some(mut rx) = relay_rx {
+                tokio::spawn(async move {
+                    while let Some(msg) = rx.recv().await {
+                        if let MessageKind::Stream(ev) = msg.kind {
+                            let s = &msg.session_id;
+                            let out = match ev {
+                                StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
                                     session_id: s.0.clone(),
                                     delta,
-                                })
-                            }
-                            StreamEvent::ModelRetry {
-                                attempt,
-                                max_attempts,
-                                delay_ms,
-                                reason,
-                                cause,
-                            } => Some(ServerMsg::ModelRetry {
-                                session_id: s.0.clone(),
-                                attempt,
-                                max_attempts,
-                                delay_ms,
-                                reason,
-                                cause,
-                            }),
-                            StreamEvent::CompactionStarted { automatic } => {
-                                Some(ServerMsg::CompactionStarted {
-                                    session_id: s.0.clone(),
-                                    automatic,
-                                })
-                            }
-                            StreamEvent::CompactionCompleted { report } => {
-                                Some(ServerMsg::CompactionCompleted {
-                                    session_id: s.0.clone(),
-                                    report,
-                                })
-                            }
-                            StreamEvent::CompactionFailed { automatic, reason } => {
-                                Some(ServerMsg::CompactionFailed {
-                                    session_id: s.0.clone(),
-                                    automatic,
+                                }),
+                                StreamEvent::ThinkingDelta { delta } => {
+                                    Some(ServerMsg::ThinkingDelta {
+                                        session_id: s.0.clone(),
+                                        delta,
+                                    })
+                                }
+                                StreamEvent::ModelRetry {
+                                    attempt,
+                                    max_attempts,
+                                    delay_ms,
                                     reason,
-                                })
-                            }
-                            StreamEvent::ToolCall {
-                                call_id,
-                                tool_name,
-                                input,
-                            } => Some(ServerMsg::ToolCall {
-                                session_id: s.0.clone(),
-                                call_id,
-                                tool_name,
-                                input,
-                            }),
-                            StreamEvent::ToolOutputDelta {
-                                call_id,
-                                tool_name,
-                                delta,
-                            } => Some(ServerMsg::ToolOutputDelta {
-                                session_id: s.0.clone(),
-                                call_id,
-                                tool_name,
-                                delta,
-                            }),
-                            StreamEvent::ToolResult {
-                                call_id,
-                                tool_name,
-                                output,
-                                is_error,
-                                ..
-                            } => Some(ServerMsg::ToolResult {
-                                session_id: s.0.clone(),
-                                call_id,
-                                tool_name,
-                                output,
-                                is_error,
-                            }),
-                            StreamEvent::IterationStart { iteration } => {
-                                Some(ServerMsg::IterationStart {
+                                    cause,
+                                } => Some(ServerMsg::ModelRetry {
+                                    session_id: s.0.clone(),
+                                    attempt,
+                                    max_attempts,
+                                    delay_ms,
+                                    reason,
+                                    cause,
+                                }),
+                                StreamEvent::CompactionStarted { automatic } => {
+                                    Some(ServerMsg::CompactionStarted {
+                                        session_id: s.0.clone(),
+                                        automatic,
+                                    })
+                                }
+                                StreamEvent::CompactionCompleted { report } => {
+                                    Some(ServerMsg::CompactionCompleted {
+                                        session_id: s.0.clone(),
+                                        report,
+                                    })
+                                }
+                                StreamEvent::CompactionFailed { automatic, reason } => {
+                                    Some(ServerMsg::CompactionFailed {
+                                        session_id: s.0.clone(),
+                                        automatic,
+                                        reason,
+                                    })
+                                }
+                                StreamEvent::ToolCall {
+                                    call_id,
+                                    tool_name,
+                                    input,
+                                } => Some(ServerMsg::ToolCall {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    tool_name,
+                                    input,
+                                }),
+                                StreamEvent::ToolOutputDelta {
+                                    call_id,
+                                    tool_name,
+                                    delta,
+                                } => Some(ServerMsg::ToolOutputDelta {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    tool_name,
+                                    delta,
+                                }),
+                                StreamEvent::ToolResult {
+                                    call_id,
+                                    tool_name,
+                                    output,
+                                    is_error,
+                                    ..
+                                } => Some(ServerMsg::ToolResult {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    tool_name,
+                                    output,
+                                    is_error,
+                                }),
+                                StreamEvent::IterationStart { iteration } => {
+                                    Some(ServerMsg::IterationStart {
+                                        session_id: s.0.clone(),
+                                        iteration,
+                                    })
+                                }
+                                StreamEvent::IterationEnd {
+                                    iteration,
+                                    input_tokens,
+                                    output_tokens,
+                                    cost_nano_usd,
+                                } => Some(ServerMsg::IterationEnd {
                                     session_id: s.0.clone(),
                                     iteration,
-                                })
-                            }
-                            StreamEvent::IterationEnd {
-                                iteration,
-                                input_tokens,
-                                output_tokens,
-                                cost_nano_usd,
-                            } => Some(ServerMsg::IterationEnd {
-                                session_id: s.0.clone(),
-                                iteration,
-                                input_tokens,
-                                output_tokens,
-                                cost_nano_usd,
-                            }),
-                            StreamEvent::ToolApprovalRequired {
-                                batch_id,
-                                tools,
-                                allowed_scopes,
-                            } => Some(ServerMsg::ApprovalRequest {
-                                session_id: s.0.clone(),
-                                batch_id,
-                                tools: tools
-                                    .iter()
-                                    .map(|t| ToolInfo {
-                                        call_id: t.call_id.clone(),
-                                        tool_name: t.tool_name.clone(),
-                                        input: t.input.clone(),
+                                    input_tokens,
+                                    output_tokens,
+                                    cost_nano_usd,
+                                }),
+                                StreamEvent::ToolApprovalRequired {
+                                    batch_id,
+                                    tools,
+                                    allowed_scopes,
+                                } => Some(ServerMsg::ApprovalRequest {
+                                    session_id: s.0.clone(),
+                                    batch_id,
+                                    tools: tools
+                                        .iter()
+                                        .map(|t| ToolInfo {
+                                            call_id: t.call_id.clone(),
+                                            tool_name: t.tool_name.clone(),
+                                            input: t.input.clone(),
+                                        })
+                                        .collect(),
+                                    allowed_scopes,
+                                }),
+                                StreamEvent::AskUser {
+                                    call_id,
+                                    question,
+                                    options,
+                                    multi_select,
+                                } => Some(ServerMsg::AskUser {
+                                    session_id: s.0.clone(),
+                                    call_id,
+                                    question,
+                                    options,
+                                    multi_select,
+                                }),
+                                StreamEvent::TurnInterrupted { reason } => {
+                                    Some(ServerMsg::TurnInterrupted {
+                                        session_id: s.0.clone(),
+                                        reason,
                                     })
-                                    .collect(),
-                                allowed_scopes,
-                            }),
-                            StreamEvent::AskUser {
-                                call_id,
-                                question,
-                                options,
-                                multi_select,
-                            } => Some(ServerMsg::AskUser {
-                                session_id: s.0.clone(),
-                                call_id,
-                                question,
-                                options,
-                                multi_select,
-                            }),
-                            StreamEvent::TurnInterrupted { reason } => {
-                                Some(ServerMsg::TurnInterrupted {
+                                }
+                                StreamEvent::PlanProposed {
+                                    plan_id,
+                                    steps,
+                                    current,
+                                } => Some(ServerMsg::PlanProposed {
                                     session_id: s.0.clone(),
-                                    reason,
-                                })
-                            }
-                            StreamEvent::PlanProposed {
-                                plan_id,
-                                steps,
-                                current,
-                            } => Some(ServerMsg::PlanProposed {
-                                session_id: s.0.clone(),
-                                plan_id,
-                                steps,
-                                current,
-                            }),
-                            StreamEvent::PlanUpdated {
-                                plan_id,
-                                steps,
-                                current,
-                            } => Some(ServerMsg::PlanUpdated {
-                                session_id: s.0.clone(),
-                                plan_id,
-                                steps,
-                                current,
-                            }),
-                            StreamEvent::TaskStarted {
-                                task_id,
-                                owner,
-                                purpose,
-                            } => Some(ServerMsg::TaskStarted {
-                                session_id: s.0.clone(),
-                                task_id,
-                                owner,
-                                purpose,
-                            }),
-                            StreamEvent::TaskProgress { task_id, message } => {
-                                Some(ServerMsg::TaskProgress {
+                                    plan_id,
+                                    steps,
+                                    current,
+                                }),
+                                StreamEvent::PlanUpdated {
+                                    plan_id,
+                                    steps,
+                                    current,
+                                } => Some(ServerMsg::PlanUpdated {
+                                    session_id: s.0.clone(),
+                                    plan_id,
+                                    steps,
+                                    current,
+                                }),
+                                StreamEvent::TaskStarted {
+                                    task_id,
+                                    owner,
+                                    purpose,
+                                } => Some(ServerMsg::TaskStarted {
                                     session_id: s.0.clone(),
                                     task_id,
-                                    message,
-                                })
-                            }
-                            StreamEvent::TaskCompleted { task_id, summary } => {
-                                Some(ServerMsg::TaskCompleted {
-                                    session_id: s.0.clone(),
-                                    task_id,
-                                    summary,
-                                })
-                            }
-                            StreamEvent::TaskFailed { task_id, error } => {
-                                Some(ServerMsg::TaskFailed {
-                                    session_id: s.0.clone(),
-                                    task_id,
-                                    error,
-                                })
-                            }
-                            StreamEvent::TaskCancelled { task_id, reason } => {
-                                Some(ServerMsg::TaskCancelled {
-                                    session_id: s.0.clone(),
-                                    task_id,
-                                    reason,
-                                })
-                            }
-                            StreamEvent::Done { text } => {
-                                let _ = tx_clone.send(ServerMsg::Done {
+                                    owner,
+                                    purpose,
+                                }),
+                                StreamEvent::TaskProgress { task_id, message } => {
+                                    Some(ServerMsg::TaskProgress {
+                                        session_id: s.0.clone(),
+                                        task_id,
+                                        message,
+                                    })
+                                }
+                                StreamEvent::TaskCompleted { task_id, summary } => {
+                                    Some(ServerMsg::TaskCompleted {
+                                        session_id: s.0.clone(),
+                                        task_id,
+                                        summary,
+                                    })
+                                }
+                                StreamEvent::TaskFailed { task_id, error } => {
+                                    Some(ServerMsg::TaskFailed {
+                                        session_id: s.0.clone(),
+                                        task_id,
+                                        error,
+                                    })
+                                }
+                                StreamEvent::TaskCancelled { task_id, reason } => {
+                                    Some(ServerMsg::TaskCancelled {
+                                        session_id: s.0.clone(),
+                                        task_id,
+                                        reason,
+                                    })
+                                }
+                                StreamEvent::Done { text } => Some(ServerMsg::Done {
                                     session_id: s.0.clone(),
                                     text,
-                                });
-                                break;
+                                }),
+                                _ => None,
+                            };
+                            if let Some(m) = out {
+                                let terminal = matches!(
+                                    &m,
+                                    ServerMsg::Done { .. }
+                                        | ServerMsg::Error { .. }
+                                        | ServerMsg::TurnInterrupted { .. }
+                                );
+                                relay_event(&relay_hub, s, m).await;
+                                if terminal {
+                                    break;
+                                }
                             }
-                            _ => None,
-                        };
-                        if let Some(m) = out {
-                            let _ = tx_clone.send(m);
                         }
                     }
-                }
-            });
+                });
+            }
         }
         ClientMsg::Approve {
             call_id,
@@ -967,7 +1092,13 @@ async fn handle_client_msg(
                 }
             }
         }
-        ClientMsg::LoadSession { session_id } => {
+        request @ (ClientMsg::LoadSession { .. } | ClientMsg::ReattachSession { .. }) => {
+            let recovery = matches!(&request, ClientMsg::ReattachSession { .. });
+            let session_id = match request {
+                ClientMsg::LoadSession { session_id }
+                | ClientMsg::ReattachSession { session_id } => session_id,
+                _ => unreachable!(),
+            };
             let session_id = SessionId::new(session_id);
             let caller = unix_session_context(agent_id, session_id.clone());
             match ctx.sessions.get(&session_id).await {
@@ -994,7 +1125,7 @@ async fn handle_client_msg(
                             })
                             .collect();
                         let usage = ctx.sessions.usage(&session_id).await.unwrap_or_default();
-                        let _ = tx.send(ServerMsg::SessionHistory {
+                        let mut history = ServerMsg::SessionHistory {
                             session: session_info(session),
                             messages,
                             iterations: usage.iterations,
@@ -1003,7 +1134,35 @@ async fn handle_client_msg(
                             cost_nano_usd: usage.cost_nano_usd,
                             notice: None,
                             source_session_id: None,
-                        });
+                            recovery,
+                            replay_truncated: false,
+                        };
+                        if recovery {
+                            let mut hub = hub.lock().await;
+                            hub.session_clients
+                                .entry(session_id.clone())
+                                .or_default()
+                                .insert(client_id);
+                            let replay = hub.replay.get(&session_id);
+                            let truncated = replay.is_some_and(|replay| replay.truncated);
+                            let events = replay
+                                .map(|replay| replay.events.clone())
+                                .unwrap_or_default();
+                            let ServerMsg::SessionHistory {
+                                replay_truncated, ..
+                            } = &mut history
+                            else {
+                                unreachable!()
+                            };
+                            *replay_truncated = truncated;
+                            let _ = tx.send(history);
+                            for event in events {
+                                let _ = tx.send(event);
+                            }
+                            drop(hub);
+                        } else {
+                            let _ = tx.send(history);
+                        }
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
                 },
@@ -1195,6 +1354,8 @@ async fn handle_client_msg(
                             "Conversation checkpoint branch created · source session and workspace files unchanged".into()
                         })),
                         source_session_id: Some(source_id.0.clone()),
+                        recovery: false,
+                        replay_truncated: false,
                     });
                 }
                 Ok(None) => warn!(%source_id, "unix: fork source not found"),
@@ -1967,6 +2128,103 @@ mod tests {
         .await;
         assert_eq!(deleted["type"], "session_deleted");
         assert_eq!(deleted["session_id"], "session-1");
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_the_complete_in_flight_turn() {
+        let path = socket_path();
+        let agent_id = AgentId::new("agent-1");
+        let bus = Arc::new(InProcessMessageBus::new());
+        let store: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
+        store
+            .save(&StoredSession::new(
+                SessionId::new("session-1"),
+                "Recovery",
+                SessionLifetime::Persistent,
+                sylvander_agent::session::SessionMetadata {
+                    workspace: "/workspace/project".into(),
+                    name: "Recovery".into(),
+                    user_id: "unix-client".into(),
+                },
+                vec![agent_id.clone()],
+            ))
+            .await
+            .expect("save");
+        let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
+        let task = tokio::spawn(channel.run(ChannelContext {
+            bus: bus.clone(),
+            sessions: store,
+        }));
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        negotiate(&mut write, &mut lines).await;
+        let created = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type":"chat",
+                "text":"continue",
+                "session_id":"session-1"
+            }),
+        )
+        .await;
+        assert_eq!(created["type"], "session_created");
+        bus.publish(BusMessage::stream_event(
+            SessionId::new("session-1"),
+            agent_id.clone(),
+            StreamEvent::TextDelta {
+                delta: "before ".into(),
+            },
+        ))
+        .await
+        .expect("first delta");
+        assert!(lines.next_line().await.unwrap().unwrap().contains("before"));
+        let concurrent = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"chat","text":"race","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(concurrent["type"], "operation_error");
+        assert_eq!(concurrent["operation"], "chat");
+        drop(lines);
+        drop(write);
+
+        bus.publish(BusMessage::stream_event(
+            SessionId::new("session-1"),
+            agent_id,
+            StreamEvent::TextDelta {
+                delta: "after".into(),
+            },
+        ))
+        .await
+        .expect("missed delta");
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        negotiate(&mut write, &mut lines).await;
+        let history = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({"type":"reattach_session","session_id":"session-1"}),
+        )
+        .await;
+        assert_eq!(history["type"], "session_history");
+        assert_eq!(history["recovery"], true);
+        let replayed = [
+            lines.next_line().await.unwrap().unwrap(),
+            lines.next_line().await.unwrap().unwrap(),
+        ]
+        .join(" ");
+        assert!(replayed.contains("before"));
+        assert!(replayed.contains("after"));
 
         task.abort();
         let _ = std::fs::remove_file(path);
