@@ -12,7 +12,7 @@ use crate::event::{Action, DomainEvent};
 
 pub struct AgentService {
     client: UnixClient,
-    events: mpsc::UnboundedReceiver<ClientEvent>,
+    events: mpsc::Receiver<ClientEvent>,
 }
 
 impl AgentService {
