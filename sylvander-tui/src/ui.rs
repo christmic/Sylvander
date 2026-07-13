@@ -21,6 +21,7 @@ use ratatui::{
 use crate::app::AppState;
 use crate::compat::Breakpoint;
 use crate::component::Component;
+use crate::modal::ModalPlacement;
 use crate::panel::{ChatPanel, InputPanel, StatusPanel};
 
 pub fn dispatch(frame: &mut Frame, state: &AppState) {
@@ -63,26 +64,96 @@ pub fn dispatch(frame: &mut Frame, state: &AppState) {
     let chat = ChatPanel;
     let input = InputPanel;
     let status = StatusPanel;
-    let panels: [&dyn Component; 3] = [&chat, &input, &status];
-    let constraints: Vec<ratatui::layout::Constraint> =
-        panels.iter().map(|p| p.height(state, area.width)).collect();
+    let chat_height = chat.height(state, area.width);
+    let input_height = input.height(state, area.width);
+    let status_height = status.height(state, area.width);
+    let requested_dock_rows = state
+        .modals
+        .iter()
+        .filter(|modal| modal.active())
+        .last()
+        .and_then(|modal| match modal.placement(state, area.width) {
+            ModalPlacement::BelowComposer { rows } => Some(rows),
+            ModalPlacement::Overlay => None,
+        })
+        .unwrap_or(0);
+    let fixed_rows = constraint_rows(input_height)
+        .saturating_add(constraint_rows(status_height))
+        .saturating_add(1);
+    let dock_rows = requested_dock_rows.min(area.height.saturating_sub(fixed_rows));
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
-        .constraints(constraints)
+        .constraints([
+            chat_height,
+            input_height,
+            ratatui::layout::Constraint::Length(dock_rows),
+            status_height,
+        ])
         .split(area);
 
-    for (panel, chunk) in panels.iter().zip(chunks.iter()) {
-        panel.render(frame, *chunk, state);
-    }
+    chat.render(frame, chunks[0], state);
+    input.render(frame, chunks[1], state);
 
-    // 2. Modal layer — drawn on top, full-screen rect (modal centers itself).
-    for modal in state.modals.iter() {
-        if modal.active() {
+    // Temporary choices are structurally below the Composer. Long-form review
+    // views remain overlays, but neither surface may displace the status line
+    // from the bottom edge.
+    for modal in state.modals.iter().filter(|modal| modal.active()) {
+        if matches!(
+            modal.placement(state, area.width),
+            ModalPlacement::BelowComposer { .. }
+        ) {
+            modal.render(frame, chunks[2], state);
+        }
+    }
+    status.render(frame, chunks[3], state);
+
+    // 2. Long-form modal layer.
+    for modal in state.modals.iter().filter(|modal| modal.active()) {
+        if modal.placement(state, area.width) == ModalPlacement::Overlay {
             modal.render(frame, area, state);
         }
+    }
+}
+
+fn constraint_rows(constraint: ratatui::layout::Constraint) -> u16 {
+    match constraint {
+        ratatui::layout::Constraint::Length(rows) => rows,
+        _ => 0,
     }
 }
 
 // Local re-export so the imports above don't pull ratatui::text::Span into
 // the public surface elsewhere.
 use ratatui::text::Span;
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+
+    #[test]
+    fn empty_focused_composer_exposes_a_hardware_cursor_after_prompt() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| dispatch(frame, &AppState::new()))
+            .expect("draw");
+        terminal.backend_mut().assert_cursor_position((2, 21));
+    }
+
+    #[test]
+    fn chinese_composer_cursor_uses_display_cells_not_scalar_count() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = AppState::new();
+        for character in "你好".chars() {
+            state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        terminal
+            .draw(|frame| dispatch(frame, &state))
+            .expect("draw");
+        terminal.backend_mut().assert_cursor_position((6, 21));
+    }
+}

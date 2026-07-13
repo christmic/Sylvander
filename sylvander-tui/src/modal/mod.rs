@@ -5,6 +5,15 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::app::AppState;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalPlacement {
+    /// A transient interaction row inserted after the Composer and before the
+    /// persistent status line.
+    BelowComposer { rows: u16 },
+    /// A long-form review surface that temporarily owns the main viewport.
+    Overlay,
+}
+
 /// A floating layer drawn on top of the panels. Has its own state and
 /// handles keys. When `handle_key` returns `Consumed::Yes(dismissed)`,
 /// the dispatcher will pop the modal if `dismissed == true`.
@@ -16,6 +25,13 @@ pub trait Modal {
 
     /// Title shown in the popup border.
     fn title(&self) -> &str;
+
+    /// Declare where the interaction belongs in the application structure.
+    /// Ordinary decisions and pickers stay below the Composer; only long-form
+    /// review surfaces may cover the transcript.
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        ModalPlacement::Overlay
+    }
 
     /// Draw into the full-screen `area`. The surface chooses its semantic
     /// placement: Decision Docks and Focus Pickers anchor to the bottom;

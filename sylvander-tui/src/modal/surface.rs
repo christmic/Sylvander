@@ -1,8 +1,8 @@
 //! Shared geometry for temporary interaction surfaces.
 //!
-//! Decision surfaces are part of the terminal flow: they rise from the bottom,
-//! replace the Composer, and leave the one-row status line visible. They never
-//! float in the middle of the transcript.
+//! Decision surfaces are part of the terminal flow. The dispatcher gives them
+//! a dedicated row below the Composer and above the persistent status line;
+//! they never float in the middle of the transcript.
 
 use ratatui::{
     Frame,
@@ -13,8 +13,7 @@ use ratatui::{
 
 use crate::theme;
 
-const STATUS_ROWS: u16 = 1;
-const DOCK_RULE_ROWS: u16 = 2;
+const DOCK_RULE_ROWS: u16 = 1;
 const CONTENT_GUTTER: u16 = 2;
 const MAX_CONTENT_WIDTH: u16 = 110;
 
@@ -34,13 +33,12 @@ pub(crate) struct FocusPickerAreas {
 /// `requested_body_rows` excludes the top and bottom rules. The body is reduced
 /// when the viewport is short; callers should render with wrapping and clipping.
 pub(crate) fn decision_dock(frame: &mut Frame, parent: Rect, requested_body_rows: u16) -> Rect {
-    let available = parent.height.saturating_sub(STATUS_ROWS);
     let dock_height = requested_body_rows
         .saturating_add(DOCK_RULE_ROWS)
-        .min(available);
+        .min(parent.height);
     let dock = Rect {
         x: parent.x,
-        y: parent.y + available.saturating_sub(dock_height),
+        y: parent.y,
         width: parent.width,
         height: dock_height,
     };
@@ -49,12 +47,6 @@ pub(crate) fn decision_dock(frame: &mut Frame, parent: Rect, requested_body_rows
     frame.render_widget(Block::default().style(theme::text_on_canvas()), dock);
 
     if dock.height > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from("─".repeat(dock.width as usize)).style(theme::rule())),
-            Rect { height: 1, ..dock },
-        );
-    }
-    if dock.height > 1 {
         frame.render_widget(
             Paragraph::new(Line::from("─".repeat(dock.width as usize)).style(theme::rule())),
             Rect {
@@ -68,7 +60,7 @@ pub(crate) fn decision_dock(frame: &mut Frame, parent: Rect, requested_body_rows
     let horizontal_gutter = CONTENT_GUTTER.min(dock.width / 2);
     Rect {
         x: dock.x + horizontal_gutter,
-        y: dock.y.saturating_add(1),
+        y: dock.y,
         width: dock
             .width
             .saturating_sub(horizontal_gutter.saturating_mul(2))
@@ -80,7 +72,7 @@ pub(crate) fn decision_dock(frame: &mut Frame, parent: Rect, requested_body_rows
 /// Give long-form material the transcript viewport while keeping status visible.
 pub(crate) fn review_view(frame: &mut Frame, parent: Rect, footer_rows: u16) -> ReviewAreas {
     let view = Rect {
-        height: parent.height.saturating_sub(STATUS_ROWS),
+        height: parent.height.saturating_sub(1),
         ..parent
     };
     frame.render_widget(Clear, view);
@@ -136,20 +128,19 @@ pub(crate) fn focus_picker(
     parent: Rect,
     requested_result_rows: u16,
 ) -> FocusPickerAreas {
-    let available = parent.height.saturating_sub(STATUS_ROWS);
-    let height = requested_result_rows.saturating_add(4).min(available);
+    let height = requested_result_rows.saturating_add(3).min(parent.height);
     let picker = Rect {
         x: parent.x,
-        y: parent.y + available.saturating_sub(height),
+        y: parent.y,
         width: parent.width,
         height,
     };
     frame.render_widget(Clear, picker);
     frame.render_widget(Block::default().style(theme::text_on_canvas()), picker);
 
-    let result_rows = height.saturating_sub(4);
-    let middle_y = picker.y.saturating_add(1).saturating_add(result_rows);
-    for y in [picker.y, middle_y, picker.y + height.saturating_sub(1)] {
+    let result_rows = height.saturating_sub(3);
+    let middle_y = picker.y.saturating_add(result_rows);
+    for y in [middle_y, picker.y + height.saturating_sub(1)] {
         frame.render_widget(
             Paragraph::new(Line::from("─".repeat(picker.width as usize)).style(theme::rule())),
             Rect {
@@ -165,7 +156,7 @@ pub(crate) fn focus_picker(
     FocusPickerAreas {
         results: Rect {
             x: picker.x + gutter,
-            y: picker.y.saturating_add(1),
+            y: picker.y,
             width: picker
                 .width
                 .saturating_sub(gutter.saturating_mul(2))
@@ -187,8 +178,8 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
-    fn dock_leaves_status_row_and_stays_left_anchored() {
-        let backend = TestBackend::new(240, 40);
+    fn dock_fills_assigned_row_and_stays_left_anchored() {
+        let backend = TestBackend::new(240, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut body = Rect::default();
         terminal
@@ -196,20 +187,20 @@ mod tests {
             .expect("draw");
         assert_eq!(body.x, 2);
         assert_eq!(body.width, 110);
-        assert_eq!(body.y, 30);
+        assert_eq!(body.y, 0);
         assert_eq!(body.height, 8);
     }
 
     #[test]
-    fn picker_uses_composer_row_and_preserves_status() {
-        let backend = TestBackend::new(120, 30);
+    fn picker_fills_its_assigned_below_composer_row() {
+        let backend = TestBackend::new(120, 12);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut query = Rect::default();
         terminal
             .draw(|frame| query = focus_picker(frame, frame.area(), 8).query)
             .expect("draw");
         assert_eq!(query.x, 0);
-        assert_eq!(query.y, 27);
+        assert_eq!(query.y, 9);
         assert_eq!(query.width, 120);
     }
 

@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{AppMode, AppState, ToolInfo};
 use crate::approval_presenter::{RiskLevel, summarize};
 use crate::event::Action;
-use crate::modal::{Consumed, Modal, surface::decision_dock};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::decision_dock};
 use crate::theme;
 
 /// Per-tool decision. Pending means user has not yet decided on this row.
@@ -139,6 +139,16 @@ impl Modal for ApprovalModal {
 
     fn title(&self) -> &str {
         "Tool Approval"
+    }
+
+    fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        let body_rows = match self.mode {
+            ApprovalMode::Navigate => 6 + self.choices().len() as u16,
+            ApprovalMode::RejectFeedback => 5,
+        };
+        ModalPlacement::BelowComposer {
+            rows: body_rows.saturating_add(1),
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {

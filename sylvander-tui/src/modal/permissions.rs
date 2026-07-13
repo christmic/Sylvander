@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
 use crate::theme;
 
 pub struct PermissionsPicker {
@@ -77,6 +77,16 @@ impl Modal for PermissionsPicker {
     }
     fn title(&self) -> &str {
         "Permissions"
+    }
+
+    fn placement(&self, state: &AppState, _viewport_width: u16) -> ModalPlacement {
+        ModalPlacement::BelowComposer {
+            rows: if state.metadata.approval_enabled {
+                9
+            } else {
+                10
+            },
+        }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
