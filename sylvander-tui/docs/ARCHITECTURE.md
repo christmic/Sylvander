@@ -87,6 +87,15 @@ delivery: persisted history is sent first, then the active replay, then new live
 events. Terminal turn events clear the replay and retire the relay. This keeps
 recovery transport-owned without leaking socket or replay state into Panels.
 
+Every accepted chat envelope enters one `agent_turn` tracing span. The span
+carries `agent_id`, `session_id`, the bus `request_id`, and the Agent-owned
+`turn_id`; `trace_id` uses that turn root through tool context and durable
+message metadata. Tool execution logs add the provider `call_id` while keeping
+the parent span, including work polled concurrently or by the stream consumer.
+Correlation fields never contain prompt text, tool input/output, credentials,
+or full workspace paths. Successful tool detail is debug-level; failures retain
+the same identifiers at warning level.
+
 `workspace_service.rs` is the corresponding boundary for bounded, read-only
 local workspace queries such as `/diff`. It never mutates Git state and returns
 plain domain data; Panels and Modals do not invoke it directly.

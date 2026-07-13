@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{Instrument as _, info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -807,7 +807,9 @@ impl AgentRun {
                                 interrupt,
                             },
                         );
-                        let result = inner.handle_message_interruptible(msg, interrupted).await;
+                        let result = inner
+                            .handle_message_interruptible(msg, interrupted, turn_id)
+                            .await;
                         let mut active = inner.active_turns.lock().await;
                         if active.get(&sid).is_some_and(|turn| turn.id == turn_id) {
                             active.remove(&sid);
@@ -1531,7 +1533,7 @@ impl AgentRunInner {
 
     /// Core: handle a chat message. Runs the loop with streaming.
     async fn handle_message(&self, msg: BusMessage) -> Result<(), AgentRunError> {
-        self.handle_message_with_interrupt(msg, std::future::pending::<()>())
+        self.handle_message_correlated(msg, std::future::pending::<()>(), uuid::Uuid::new_v4())
             .await
     }
 
@@ -1539,14 +1541,47 @@ impl AgentRunInner {
         &self,
         msg: BusMessage,
         interrupted: oneshot::Receiver<()>,
+        turn_id: uuid::Uuid,
     ) -> Result<(), AgentRunError> {
-        self.handle_message_with_interrupt(msg, interrupted).await
+        self.handle_message_correlated(msg, interrupted, turn_id)
+            .await
+    }
+
+    async fn handle_message_correlated<F>(
+        &self,
+        msg: BusMessage,
+        interrupted: F,
+        turn_id: uuid::Uuid,
+    ) -> Result<(), AgentRunError>
+    where
+        F: std::future::Future,
+    {
+        let correlation = TurnCorrelation::new(&msg, turn_id);
+        let span = tracing::info_span!(
+            "agent_turn",
+            agent_id = %self.id,
+            session_id = %msg.session_id,
+            turn_id = %correlation.turn_id,
+            request_id = %correlation.request_id,
+            trace_id = %correlation.trace_id,
+        );
+        async {
+            info!("turn started");
+            let result = self
+                .handle_message_with_interrupt(msg, interrupted, &correlation.turn_id)
+                .await;
+            info!(succeeded = result.is_ok(), "turn finished");
+            result
+        }
+        .instrument(span)
+        .await
     }
 
     async fn handle_message_with_interrupt<F>(
         &self,
         msg: BusMessage,
         interrupted: F,
+        turn_id: &str,
     ) -> Result<(), AgentRunError>
     where
         F: std::future::Future,
@@ -1638,7 +1673,6 @@ impl AgentRunInner {
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
-        let turn_id = uuid::Uuid::new_v4().to_string();
         let tool_context = tool_context_for_permissions(
             &session_metadata,
             &self.id,
@@ -1646,7 +1680,7 @@ impl AgentRunInner {
             &permissions,
             self.memory.is_some(),
             self.workspace_journal.clone(),
-            Some(&turn_id),
+            Some(turn_id),
         );
         loop_config.tool_context = tool_context.clone();
         loop_config.ask_user_gate = Some(Arc::new(BusAskUserGate {
@@ -2055,6 +2089,24 @@ impl AgentRunInner {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TurnCorrelation {
+    turn_id: String,
+    request_id: String,
+    trace_id: String,
+}
+
+impl TurnCorrelation {
+    fn new(message: &BusMessage, turn_id: uuid::Uuid) -> Self {
+        let turn_id = turn_id.to_string();
+        Self {
+            request_id: message.id.0.to_string(),
+            trace_id: turn_id.clone(),
+            turn_id,
+        }
+    }
+}
+
 fn tool_context_for_permissions(
     metadata: &SessionMetadata,
     agent_id: &AgentId,
@@ -2400,6 +2452,19 @@ mod tests {
         (spec, client)
     }
 
+    #[test]
+    fn turn_correlation_keeps_request_and_trace_boundaries_explicit() {
+        let message = BusMessage::user_chat(SessionId::new("session"), "user", "hello");
+        let request_id = message.id.0.to_string();
+        let turn_id = uuid::Uuid::parse_str("13fcf8b4-31f8-4b3a-9432-0cc9ad73d7c0").unwrap();
+
+        let correlation = TurnCorrelation::new(&message, turn_id);
+
+        assert_eq!(correlation.request_id, request_id);
+        assert_eq!(correlation.turn_id, turn_id.to_string());
+        assert_eq!(correlation.trace_id, correlation.turn_id);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn approval_timeout_rejects_and_clears_the_pending_request() {
         let bus = Arc::new(InProcessMessageBus::new());
@@ -2731,7 +2796,7 @@ mod tests {
             },
             true,
             None,
-            None,
+            Some("turn-1"),
         );
         assert_eq!(
             context.surface.fs_root.as_deref(),
@@ -2743,6 +2808,7 @@ mod tests {
         assert!(context.host_allowed("example.com"));
         assert!(context.has_cap(Cap::MemoryRead));
         assert_eq!(context.user_id().0, metadata.user_id);
+        assert_eq!(context.session.request.trace_id.as_deref(), Some("turn-1"));
     }
 
     #[tokio::test]
