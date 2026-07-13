@@ -254,6 +254,7 @@ struct ActiveTurn {
 struct RuntimeModels {
     available: HashMap<String, ModelInfo>,
     lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
+    pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     current_model: String,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
 }
@@ -290,6 +291,7 @@ impl RuntimeModels {
                     capabilities: model.capabilities.bits(),
                     reasoning_efforts,
                     lifecycle: self.lifecycles.get(&model.id).cloned().unwrap_or_default(),
+                    pricing: self.pricing.get(&model.id).copied(),
                 }
             })
             .collect::<Vec<_>>();
@@ -300,6 +302,28 @@ impl RuntimeModels {
             models,
         }
     }
+}
+
+fn usage_cost_nano_usd(
+    pricing: sylvander_protocol::ModelPricing,
+    usage: &sylvander_llm_anthropic::api::types::Usage,
+) -> Option<u64> {
+    fn component(tokens: u32, rate: u64) -> u128 {
+        // rate is micro-USD / 1M tokens; nano-USD therefore divides by 1,000.
+        (u128::from(tokens) * u128::from(rate) + 500) / 1_000
+    }
+
+    let cache_write = usage.cache_creation_input_tokens.unwrap_or(0);
+    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+    let mut total = component(usage.input_tokens, pricing.input_usd_micros_per_million)
+        + component(usage.output_tokens, pricing.output_usd_micros_per_million);
+    if cache_write > 0 {
+        total += component(cache_write, pricing.cache_write_usd_micros_per_million?);
+    }
+    if cache_read > 0 {
+        total += component(cache_read, pricing.cache_read_usd_micros_per_million?);
+    }
+    total.try_into().ok()
 }
 
 /// A running agent instance — cheap `Clone` handle.
@@ -1403,14 +1427,18 @@ impl AgentRunInner {
     {
         let session_id = msg.session_id.clone();
         let user_message = self.message_to_param(&msg);
-        let (selected_model, selected_effort) = {
+        let (selected_model, selected_effort, selected_pricing) = {
             let runtime = self.runtime_models.read().await;
             let model = runtime
                 .available
                 .get(&runtime.current_model)
                 .expect("current runtime model must exist")
                 .clone();
-            (model, runtime.reasoning_effort)
+            (
+                model,
+                runtime.reasoning_effort,
+                runtime.pricing.get(&runtime.current_model).copied(),
+            )
         };
 
         // 1. Append user message + take history snapshot
@@ -1661,14 +1689,23 @@ impl AgentRunInner {
                     );
                     let mut input_tokens = u64::from(usage.input_tokens);
                     let mut output_tokens = u64::from(usage.output_tokens);
+                    let iteration_cost =
+                        selected_pricing.and_then(|pricing| usage_cost_nano_usd(pricing, &usage));
+                    let mut cost_nano_usd = iteration_cost;
                     if let Some(store) = &self.session_store {
                         match store
-                            .record_usage(&session_id, usage.input_tokens, usage.output_tokens)
+                            .record_usage(
+                                &session_id,
+                                usage.input_tokens,
+                                usage.output_tokens,
+                                iteration_cost,
+                            )
                             .await
                         {
                             Ok(total) => {
                                 input_tokens = total.input_tokens;
                                 output_tokens = total.output_tokens;
+                                cost_nano_usd = total.cost_nano_usd;
                             }
                             Err(error) => {
                                 warn!(%session_id, %error, "failed to persist session usage");
@@ -1681,6 +1718,7 @@ impl AgentRunInner {
                             iteration,
                             input_tokens: u32::try_from(input_tokens).unwrap_or(u32::MAX),
                             output_tokens: u32::try_from(output_tokens).unwrap_or(u32::MAX),
+                            cost_nano_usd,
                         },
                     )
                     .await;
@@ -1924,6 +1962,7 @@ pub struct AgentRunBuilder {
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     available_models: Vec<ModelInfo>,
     model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
+    model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -1942,6 +1981,7 @@ impl AgentRunBuilder {
             model_capabilities: None,
             available_models: Vec::new(),
             model_lifecycles: HashMap::new(),
+            model_pricing: HashMap::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -1996,6 +2036,16 @@ impl AgentRunBuilder {
         lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     ) -> Self {
         self.model_lifecycles = lifecycles;
+        self
+    }
+
+    /// Attach operator-supplied pricing snapshots to advertised models.
+    #[must_use]
+    pub fn model_pricing(
+        mut self,
+        pricing: HashMap<String, sylvander_protocol::ModelPricing>,
+    ) -> Self {
+        self.model_pricing = pricing;
         self
     }
 
@@ -2064,6 +2114,7 @@ impl AgentRunBuilder {
         let runtime_models = RuntimeModels {
             available: available_models,
             lifecycles: self.model_lifecycles,
+            pricing: self.model_pricing,
             current_model: model_info.id.clone(),
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         };
@@ -2173,6 +2224,25 @@ mod tests {
             .build()
             .expect("client");
         (spec, client)
+    }
+
+    #[test]
+    fn configured_pricing_calculates_nano_usd_and_requires_cache_rates() {
+        let pricing = sylvander_protocol::ModelPricing {
+            input_usd_micros_per_million: 3_000_000,
+            output_usd_micros_per_million: 15_000_000,
+            cache_write_usd_micros_per_million: None,
+            cache_read_usd_micros_per_million: Some(300_000),
+        };
+        let mut usage = sylvander_llm_anthropic::api::types::Usage {
+            input_tokens: 1_000,
+            output_tokens: 100,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(10_000),
+        };
+        assert_eq!(usage_cost_nano_usd(pricing, &usage), Some(7_500_000));
+        usage.cache_creation_input_tokens = Some(1);
+        assert_eq!(usage_cost_nano_usd(pricing, &usage), None);
     }
 
     #[tokio::test]

@@ -1176,6 +1176,7 @@ mod tests {
                 capabilities: 0b10001,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
             }],
             permissions: sylvander_protocol::PermissionProfile {
                 file_access: sylvander_protocol::FileAccess::ReadOnly,
@@ -1215,6 +1216,7 @@ mod tests {
                 lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                     replacement: Some("new-model".into()),
                 },
+                pricing: None,
             }],
             permissions: sylvander_protocol::PermissionProfile::default(),
             capabilities: 0,

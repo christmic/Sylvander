@@ -69,6 +69,8 @@ pub struct SessionUsage {
     pub iterations: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// `None` means one or more recorded iterations lacked pricing truth.
+    pub cost_nano_usd: Option<u64>,
 }
 
 impl StoredSession {
@@ -232,6 +234,7 @@ pub trait SessionStore: Send + Sync {
         id: &SessionId,
         input_tokens: u32,
         output_tokens: u32,
+        cost_nano_usd: Option<u64>,
     ) -> Result<SessionUsage, SessionStoreError>;
 
     async fn usage(&self, id: &SessionId) -> Result<SessionUsage, SessionStoreError>;

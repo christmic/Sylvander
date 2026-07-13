@@ -87,6 +87,7 @@ impl SqliteSessionStore {
     /// One-shot schema bootstrap. Idempotent — uses `IF NOT EXISTS`.
     fn init_schema(conn: &Connection) -> Result<(), SessionStoreError> {
         conn.execute_batch(SCHEMA_SQL).map_err(sqlite_err)?;
+        ensure_usage_cost_columns(conn)?;
         Ok(())
     }
 
@@ -170,7 +171,9 @@ CREATE TABLE IF NOT EXISTS session_usage (
     session_id      TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     iterations      INTEGER NOT NULL DEFAULT 0,
     input_tokens    INTEGER NOT NULL DEFAULT 0,
-    output_tokens   INTEGER NOT NULL DEFAULT 0
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    cost_nano_usd   INTEGER NOT NULL DEFAULT 0,
+    cost_complete   INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_user
@@ -194,6 +197,32 @@ CREATE INDEX IF NOT EXISTS idx_messages_session
 CREATE INDEX IF NOT EXISTS idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
 "#;
+
+fn ensure_usage_cost_columns(conn: &Connection) -> Result<(), SessionStoreError> {
+    let has_column = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_usage') WHERE name = ?1)",
+            [name],
+            |row| row.get(0),
+        )
+    };
+    if !has_column("cost_nano_usd").map_err(sqlite_err)? {
+        conn.execute(
+            "ALTER TABLE session_usage ADD COLUMN cost_nano_usd INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(sqlite_err)?;
+    }
+    if !has_column("cost_complete").map_err(sqlite_err)? {
+        // Existing usage predates pricing snapshots, so its full cost is unknown.
+        conn.execute(
+            "ALTER TABLE session_usage ADD COLUMN cost_complete INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(sqlite_err)?;
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Trait impl
@@ -317,17 +346,26 @@ impl SessionStore for SqliteSessionStore {
         id: &SessionId,
         input_tokens: u32,
         output_tokens: u32,
+        cost_nano_usd: Option<u64>,
     ) -> Result<SessionUsage, SessionStoreError> {
         let id = id.clone();
         self.run(move |c| {
             c.execute(
-                "INSERT INTO session_usage (session_id, iterations, input_tokens, output_tokens) \
-                 VALUES (?1, 1, ?2, ?3) \
+                "INSERT INTO session_usage (session_id, iterations, input_tokens, output_tokens, cost_nano_usd, cost_complete) \
+                 VALUES (?1, 1, ?2, ?3, ?4, ?5) \
                  ON CONFLICT(session_id) DO UPDATE SET \
                    iterations = iterations + 1, \
                    input_tokens = input_tokens + excluded.input_tokens, \
-                   output_tokens = output_tokens + excluded.output_tokens",
-                params![id.0, input_tokens, output_tokens],
+                   output_tokens = output_tokens + excluded.output_tokens, \
+                   cost_nano_usd = cost_nano_usd + excluded.cost_nano_usd, \
+                   cost_complete = cost_complete * excluded.cost_complete",
+                params![
+                    id.0,
+                    input_tokens,
+                    output_tokens,
+                    cost_nano_usd.unwrap_or(0),
+                    i64::from(cost_nano_usd.is_some())
+                ],
             )?;
             read_usage(c, &id)
         })
@@ -745,13 +783,15 @@ impl SessionStore for SqliteSessionStore {
 
 fn read_usage(c: &Connection, id: &SessionId) -> Result<SessionUsage, SessionStoreError> {
     Ok(c.query_row(
-        "SELECT iterations, input_tokens, output_tokens FROM session_usage WHERE session_id = ?1",
+        "SELECT iterations, input_tokens, output_tokens, cost_nano_usd, cost_complete FROM session_usage WHERE session_id = ?1",
         params![id.0],
         |row| {
+            let complete: bool = row.get(4)?;
             Ok(SessionUsage {
                 iterations: row.get(0)?,
                 input_tokens: row.get(1)?,
                 output_tokens: row.get(2)?,
+                cost_nano_usd: complete.then(|| row.get(3)).transpose()?,
             })
         },
     )
@@ -1051,17 +1091,50 @@ mod tests {
             .save(&make_session("s1", SessionLifetime::Persistent))
             .await
             .unwrap();
-        store.record_usage(&id, 100, 20).await.unwrap();
-        let usage = store.record_usage(&id, 50, 10).await.unwrap();
+        store
+            .record_usage(&id, 100, 20, Some(30_000))
+            .await
+            .unwrap();
+        let usage = store.record_usage(&id, 50, 10, Some(15_000)).await.unwrap();
         assert_eq!(
             usage,
             SessionUsage {
                 iterations: 2,
                 input_tokens: 150,
-                output_tokens: 30
+                output_tokens: 30,
+                cost_nano_usd: Some(45_000),
             }
         );
         assert_eq!(store.usage(&id).await.unwrap(), usage);
+    }
+
+    #[tokio::test]
+    async fn any_unpriced_iteration_makes_cumulative_cost_unknown() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let id = SessionId::new("s1");
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
+        store.record_usage(&id, 10, 2, Some(1_000)).await.unwrap();
+        let usage = store.record_usage(&id, 5, 1, None).await.unwrap();
+        assert_eq!(usage.cost_nano_usd, None);
+    }
+
+    #[test]
+    fn legacy_usage_table_migrates_with_unknown_historical_cost() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY, iterations INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0); INSERT INTO session_usage VALUES ('old', 1, 10, 2);",
+        )
+        .unwrap();
+        SqliteSessionStore::init_schema(&conn).unwrap();
+        assert_eq!(
+            read_usage(&conn, &SessionId::new("old"))
+                .unwrap()
+                .cost_nano_usd,
+            None
+        );
     }
 
     #[tokio::test]

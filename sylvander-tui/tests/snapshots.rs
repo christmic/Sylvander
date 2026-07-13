@@ -428,6 +428,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
                 sylvander_protocol::ReasoningEffort::High,
             ],
             lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            pricing: None,
         },
         sylvander_protocol::ModelDescriptor {
             id: "fast-code".into(),
@@ -437,6 +438,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
             lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                 replacement: Some("claude-sonnet".into()),
             },
+            pricing: None,
         },
     ];
     sylvander_tui::command::execute(

@@ -266,6 +266,7 @@ mod tests {
                 capabilities: 0,
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
             },
             sylvander_protocol::ModelDescriptor {
                 id: "thinking".into(),
@@ -278,6 +279,7 @@ mod tests {
                 lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                     replacement: Some("plain".into()),
                 },
+                pricing: None,
             },
         ];
         state

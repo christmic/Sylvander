@@ -26,6 +26,7 @@ instead of mid-flight.
 | `SYLVANDER_MODELS` | primary model only | Comma-separated model ids exposed to `/model`; `SYLVANDER_MODEL` is inserted if omitted. |
 | `SYLVANDER_REASONING_MODELS` | empty | Comma-separated subset of model ids that support low/medium/high reasoning. Other models advertise `off` only. |
 | `SYLVANDER_DEPRECATED_MODELS` | empty | Comma-separated `model` or `model=replacement` entries. The lifecycle is advertised to clients; deprecated models remain selectable for old sessions. |
+| `SYLVANDER_MODEL_PRICING` | empty | Comma-separated `model=input:output[:cache_write:cache_read]` prices in USD per million tokens. Invalid values fail startup; omitted prices remain explicitly unknown. |
 | `SYLVANDER_SESSION_DB` | `$XDG_DATA_HOME/sylvander/sessions.db`, or `$HOME/.local/share/sylvander/sessions.db` | Persistent SQLite session/history database. |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
 
@@ -61,6 +62,7 @@ export SYLVANDER_MODEL=fast-code
 export SYLVANDER_MODELS=fast-code,deep-code
 export SYLVANDER_REASONING_MODELS=deep-code
 export SYLVANDER_DEPRECATED_MODELS=fast-code=deep-code
+export SYLVANDER_MODEL_PRICING=fast-code=0.10:0.40,deep-code=3:15:3.75:0.30
 ./target/debug/sylvander
 ```
 

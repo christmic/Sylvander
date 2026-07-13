@@ -816,6 +816,7 @@ mod tests {
                 sylvander_protocol::ReasoningEffort::Medium,
             ],
             lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            pricing: None,
         }];
         execute(parse("model thinking medium").unwrap(), &mut state).unwrap();
         assert!(matches!(

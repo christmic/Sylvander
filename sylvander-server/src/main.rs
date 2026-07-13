@@ -81,6 +81,62 @@ fn model_lifecycles() -> HashMap<String, sylvander_agent::bus::ModelLifecycle> {
         .collect()
 }
 
+fn usd_micros(value: &str) -> Result<u64, String> {
+    let value = value.trim();
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > 6
+    {
+        return Err(format!("invalid USD price `{value}`"));
+    }
+    let whole = whole
+        .parse::<u64>()
+        .map_err(|_| format!("USD price `{value}` is too large"))?;
+    let fraction = format!("{fraction:0<6}")
+        .parse::<u64>()
+        .map_err(|_| format!("invalid USD price `{value}`"))?;
+    whole
+        .checked_mul(1_000_000)
+        .and_then(|amount| amount.checked_add(fraction))
+        .ok_or_else(|| format!("USD price `{value}` is too large"))
+}
+
+fn model_pricing() -> Result<HashMap<String, sylvander_agent::bus::ModelPricing>, String> {
+    comma_values("SYLVANDER_MODEL_PRICING")
+        .into_iter()
+        .map(|entry| {
+            let (model, rates) = entry
+                .split_once('=')
+                .ok_or_else(|| format!("pricing entry `{entry}` must be model=input:output"))?;
+            let rates = rates.split(':').collect::<Vec<_>>();
+            if model.trim().is_empty() || !(2..=4).contains(&rates.len()) {
+                return Err(format!(
+                    "pricing entry `{entry}` must be model=input:output[:cache_write:cache_read]"
+                ));
+            }
+            let optional = |index: usize| {
+                rates
+                    .get(index)
+                    .copied()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| usd_micros(value))
+                    .transpose()
+            };
+            Ok((
+                model.trim().to_string(),
+                sylvander_agent::bus::ModelPricing {
+                    input_usd_micros_per_million: usd_micros(rates[0])?,
+                    output_usd_micros_per_million: usd_micros(rates[1])?,
+                    cache_write_usd_micros_per_million: optional(2)?,
+                    cache_read_usd_micros_per_million: optional(3)?,
+                },
+            ))
+        })
+        .collect()
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -188,6 +244,10 @@ async fn main() {
         .override_tools(tools)
         .available_models(available_models)
         .model_lifecycles(model_lifecycles())
+        .model_pricing(model_pricing().unwrap_or_else(|error| {
+            eprintln!("ERROR: SYLVANDER_MODEL_PRICING: {error}");
+            std::process::exit(1);
+        }))
         .model_capabilities(model.capabilities);
 
     let approval_enabled = std::env::var("SYLVANDER_APPROVAL").is_ok();
@@ -275,4 +335,17 @@ async fn main() {
     info!("shutting down...");
     _agent_task.abort();
     info!("stopped");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usd_price_parser_is_exact_and_rejects_excess_precision() {
+        assert_eq!(usd_micros("3"), Ok(3_000_000));
+        assert_eq!(usd_micros("0.125"), Ok(125_000));
+        assert!(usd_micros("0.1234567").is_err());
+        assert!(usd_micros("-1").is_err());
+    }
 }
