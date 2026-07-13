@@ -183,10 +183,38 @@ pub struct PlatformFeature {
     pub reloadable: bool,
 }
 
+/// A transport-neutral effect contributed by an optional platform facility.
+/// The TUI remains responsible for applying the effect through its normal
+/// application boundary; extensions never receive presentation callbacks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UiCommandEffect {
+    /// Expand a trusted template and submit it through the ordinary chat path.
+    /// `{{args}}` is replaced with the user-supplied command arguments.
+    SubmitPrompt { template: String },
+}
+
+/// Redacted command metadata advertised to UI clients. Names and trust are
+/// validated again by the client because built-in command sets can differ.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiCommandDescriptor {
+    pub id: String,
+    pub name: String,
+    pub usage: String,
+    pub description: String,
+    #[serde(default)]
+    pub hint: String,
+    pub source: String,
+    pub trust: PlatformTrust,
+    pub effect: UiCommandEffect,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformSnapshot {
     #[serde(default)]
     pub features: Vec<PlatformFeature>,
+    #[serde(default)]
+    pub commands: Vec<UiCommandDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -970,6 +998,18 @@ mod tests {
                 auth: PlatformAuthStatus::Configured,
                 capabilities: vec!["tools".into()],
                 reloadable: false,
+            }],
+            commands: vec![UiCommandDescriptor {
+                id: "review-security".into(),
+                name: "security-review".into(),
+                usage: "/security-review [scope]".into(),
+                description: "Review a selected scope".into(),
+                hint: "workspace command".into(),
+                source: "agent configuration".into(),
+                trust: PlatformTrust::Workspace,
+                effect: UiCommandEffect::SubmitPrompt {
+                    template: "Review {{args}} for security issues.".into(),
+                },
             }],
         };
         let json = serde_json::to_string(&snapshot).unwrap();

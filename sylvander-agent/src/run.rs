@@ -469,7 +469,26 @@ impl AgentRun {
             ));
         }
 
-        sylvander_protocol::PlatformSnapshot { features }
+        let commands = self
+            .inner
+            .spec
+            .ui_commands
+            .iter()
+            .map(|command| sylvander_protocol::UiCommandDescriptor {
+                id: command.id.clone(),
+                name: command.name.clone(),
+                usage: command.usage.clone(),
+                description: command.description.clone(),
+                hint: command.hint.clone(),
+                source: "agent configuration".into(),
+                trust: PlatformTrust::Workspace,
+                effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+                    template: command.prompt.clone(),
+                },
+            })
+            .collect();
+
+        sylvander_protocol::PlatformSnapshot { features, commands }
     }
 
     pub async fn context_report(
@@ -2563,6 +2582,14 @@ mod tests {
                     "super-secret".into(),
                 )]),
             })
+            .ui_command(crate::spec::UiCommandConfig {
+                id: "security-review".into(),
+                name: "security-review".into(),
+                usage: "/security-review [scope]".into(),
+                description: "Review a scope".into(),
+                hint: "workspace".into(),
+                prompt: "Review {{args}} for security issues.".into(),
+            })
             .build()
             .unwrap();
         let client = AnthropicClient::builder()
@@ -2577,6 +2604,12 @@ mod tests {
 
         let snapshot = run.platform_snapshot();
         assert_eq!(snapshot.features.len(), 2);
+        assert_eq!(snapshot.commands.len(), 1);
+        assert_eq!(snapshot.commands[0].source, "agent configuration");
+        assert_eq!(
+            snapshot.commands[0].trust,
+            sylvander_protocol::PlatformTrust::Workspace
+        );
         assert_eq!(
             snapshot.features[0].status,
             sylvander_protocol::PlatformFeatureStatus::Configured
