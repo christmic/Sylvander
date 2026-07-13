@@ -46,6 +46,7 @@ negotiates the Unix protocol, submits keyboard input, renders a streamed reply,
 rejects approval with a typed reason, answers AskUser, interrupts an active
 turn, resizes the terminal, and verifies reconnect plus clean idle exit. A
 second runs the real `AgentRun`, `UnixChannel`, and file-backed SQLite stack
-against a locally controlled model endpoint, answers an Agent-owned AskUser
-prompt, interrupts a delayed turn, then starts a fresh TUI process and restores
-the persisted transcript through `Ctrl+P`.
+against a locally controlled model endpoint. Its scenarios answer an
+Agent-owned AskUser prompt, interrupt a delayed turn, reject a write and verify
+it never executes, then start a fresh TUI process and restore the persisted
+transcript through `Ctrl+P`.
