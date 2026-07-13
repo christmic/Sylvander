@@ -37,6 +37,7 @@ pub struct AppState {
     pub connected: bool,
     pub protocol_version: Option<u16>,
     pub protocol_capabilities: Vec<String>,
+    pub platform: sylvander_protocol::PlatformSnapshot,
     pub status: String,
     pub mode: AppMode,
     pub iteration: u32,
@@ -131,6 +132,7 @@ impl AppState {
             connected: false,
             protocol_version: None,
             protocol_capabilities: Vec::new(),
+            platform: sylvander_protocol::PlatformSnapshot::default(),
             status: "Connecting...".into(),
             mode: AppMode::Normal,
             iteration: 0,
@@ -302,6 +304,7 @@ impl AppState {
                 capabilities,
                 approval_enabled,
                 max_attachment_bytes,
+                platform,
             } => {
                 let first_runtime_info = self.metadata.model == "—";
                 let changed = self.metadata.model != "—"
@@ -315,6 +318,7 @@ impl AppState {
                 self.metadata.capabilities = capabilities;
                 self.metadata.approval_enabled = approval_enabled;
                 self.metadata.max_attachment_bytes = max_attachment_bytes;
+                self.platform = platform;
                 let migration = self
                     .metadata
                     .models
@@ -1405,6 +1409,7 @@ mod tests {
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
+            platform: sylvander_protocol::PlatformSnapshot::default(),
         });
         assert_eq!(state.metadata.model, "claude-test");
         assert_eq!(
@@ -1505,6 +1510,7 @@ mod tests {
             capabilities: 0,
             approval_enabled: false,
             max_attachment_bytes: 4096,
+            platform: sylvander_protocol::PlatformSnapshot::default(),
         });
         assert_eq!(state.status, "Model deprecated · old-model → new-model");
         assert!(matches!(

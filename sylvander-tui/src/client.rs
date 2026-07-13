@@ -288,6 +288,8 @@ pub enum ServerMsg {
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
+        #[serde(default)]
+        platform: sylvander_protocol::PlatformSnapshot,
     },
     ContextReport {
         report: sylvander_protocol::ContextReport,
@@ -593,6 +595,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             capabilities,
             approval_enabled,
             max_attachment_bytes,
+            platform,
         } => DomainEvent::RuntimeInfo {
             model,
             reasoning_effort,
@@ -601,6 +604,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             capabilities,
             approval_enabled,
             max_attachment_bytes,
+            platform,
         },
         ServerMsg::ContextReport { report } => DomainEvent::ContextReported { report },
         ServerMsg::CompactionStarted { automatic, .. } => {
@@ -885,6 +889,7 @@ mod tests {
             capabilities: 0b10001,
             approval_enabled: true,
             max_attachment_bytes: 4096,
+            platform: sylvander_protocol::PlatformSnapshot::default(),
         });
         assert!(matches!(
             event,

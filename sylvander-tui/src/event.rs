@@ -38,6 +38,7 @@ pub enum DomainEvent {
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
+        platform: sylvander_protocol::PlatformSnapshot,
     },
     ContextReported {
         report: sylvander_protocol::ContextReport,
