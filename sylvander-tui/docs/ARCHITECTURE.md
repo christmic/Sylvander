@@ -128,9 +128,9 @@ helpers shared by transcript and decision surfaces.
 `modal/surface.rs` is the geometry boundary for temporary interaction. Product
 surfaces use exactly three families:
 
-- Decision Dock replaces Composer rows for approval, Agent questions, plan
-  acceptance, and rollback confirmation.
-- Focus Picker grows upward from the Composer for commands, models,
+- Decision Dock is inserted below the visible Composer and above the status row
+  for approval, Agent questions, plan acceptance, and rollback confirmation.
+- Focus Picker uses the same below-Composer region for commands, models,
   permissions, workspace files, and persisted-session retrieval.
 - Review View temporarily owns the transcript viewport for plan editing, help,
   and long tool output while preserving the status row.
