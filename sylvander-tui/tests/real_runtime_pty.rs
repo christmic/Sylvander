@@ -654,6 +654,10 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
     );
     assert!(beta_output.expect("join beta TUI").contains("active."));
 
+    // Session summaries currently expose second-resolution recency. Cross the
+    // boundary so the replay session is deterministically newer than alpha and
+    // beta instead of relying on an unstable tie between three `0s ago` rows.
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
     disconnect_tui(&socket_path, |writer, captured| {
         submit(writer, b"replay client gamma\r");
         assert!(wait_for_output(
