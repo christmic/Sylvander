@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::input::EditingStyle;
 use crate::keymap::KeyMap;
 use crate::model::RuntimeMetadata;
 use crate::theme::{ColorCapability, ThemeName};
@@ -18,6 +19,7 @@ pub struct TuiConfig {
     pub history_path: Option<PathBuf>,
     pub theme: ThemeName,
     pub color_capability: ColorCapability,
+    pub editing_style: EditingStyle,
     pub render_interval: Duration,
     pub animation_interval: Duration,
     pub reconnect_interval: Duration,
@@ -48,6 +50,9 @@ impl TuiConfig {
             crate::theme::palette_for_capability(theme, color_capability),
             color_capability,
         )?;
+        let editing_style = std::env::var("SYLVANDER_TUI_EDITING")
+            .unwrap_or_else(|_| "standard".into())
+            .parse()?;
         let render_fps = env_number("SYLVANDER_TUI_RENDER_FPS", 30, 5, 120)?;
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
         let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
@@ -61,6 +66,7 @@ impl TuiConfig {
             history_path: history_path(),
             theme,
             color_capability,
+            editing_style,
             render_interval: Duration::from_millis(1_000 / render_fps as u64),
             animation_interval: Duration::from_millis(animation_ms as u64),
             reconnect_interval: Duration::from_millis(reconnect_ms as u64),
@@ -84,9 +90,10 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\ncolors      {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\ncolors      {}\nediting     {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
             self.color_capability,
+            self.editing_style,
             self.socket_path.display(),
             self.history_path
                 .as_deref()
@@ -233,6 +240,7 @@ mod tests {
             history_path: None,
             theme: ThemeName::Midnight,
             color_capability: ColorCapability::TrueColor,
+            editing_style: EditingStyle::Vim,
             render_interval: Duration::from_millis(33),
             animation_interval: Duration::from_millis(200),
             reconnect_interval: Duration::from_millis(1_500),
@@ -245,6 +253,7 @@ mod tests {
         let report = config.report(&config.metadata);
         assert!(report.contains("theme       midnight"));
         assert!(report.contains("colors      truecolor"));
+        assert!(report.contains("editing     vim"));
         assert!(report.contains("history     disabled"));
         assert!(report.contains("socket      /tmp/test.sock"));
         assert!(report.contains("sessions=Ctrl+P"));

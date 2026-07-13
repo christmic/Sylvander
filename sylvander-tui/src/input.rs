@@ -15,8 +15,44 @@ use std::collections::VecDeque;
 
 use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::str::FromStr;
 
 const HISTORY_CAP: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditingStyle {
+    Standard,
+    Vim,
+}
+
+impl FromStr for EditingStyle {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "standard" | "default" => Ok(Self::Standard),
+            "vim" => Ok(Self::Vim),
+            _ => Err(format!(
+                "unknown editing style {value:?}; expected standard or vim"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for EditingStyle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Standard => "standard",
+            Self::Vim => "vim",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VimMode {
+    Insert,
+    Normal,
+}
 
 /// Inline-vs-attachment threshold per design §12.4 — "Pasted content under
 /// eight lines stays inline." Larger pastes collapse to an attachment token.
@@ -237,6 +273,8 @@ pub struct Composer {
     /// the panel renders an IDLE muted border rather than the coral
     /// FOCUSED stroke.
     pub(crate) interacted: bool,
+    editing_style: EditingStyle,
+    vim_mode: VimMode,
 }
 
 impl Default for Composer {
@@ -251,11 +289,47 @@ impl Default for Composer {
             attachments: Vec::new(),
             submitted_attachments: Vec::new(),
             interacted: false,
+            editing_style: EditingStyle::Standard,
+            vim_mode: VimMode::Insert,
         }
     }
 }
 
 impl Composer {
+    pub fn set_editing_style(&mut self, style: EditingStyle) {
+        self.editing_style = style;
+        self.vim_mode = VimMode::Insert;
+    }
+
+    pub fn editing_style(&self) -> EditingStyle {
+        self.editing_style
+    }
+
+    pub fn mode_label(&self) -> Option<&'static str> {
+        match (self.editing_style, self.vim_mode) {
+            (EditingStyle::Standard, _) => None,
+            (EditingStyle::Vim, VimMode::Insert) => Some("INSERT"),
+            (EditingStyle::Vim, VimMode::Normal) => Some("NORMAL"),
+        }
+    }
+
+    pub fn accepts_text_input(&self) -> bool {
+        self.editing_style == EditingStyle::Standard || self.vim_mode == VimMode::Insert
+    }
+
+    pub fn handle_escape(&mut self) -> bool {
+        if self.editing_style == EditingStyle::Vim && self.vim_mode == VimMode::Insert {
+            self.vim_mode = VimMode::Normal;
+            self.anchor = None;
+            if self.cursor_col > 0 {
+                self.move_cursor_left();
+            }
+            self.mark_focused();
+            return true;
+        }
+        false
+    }
+
     /// Current buffer concatenated with `\n` between rows.
     pub fn text(&self) -> String {
         self.rows.join("\n")
@@ -586,6 +660,9 @@ impl Composer {
     /// - plain `Enter` → submit (returns `Some(submitted_text)`)
     /// - `Shift+Enter` (or `Ctrl+Enter` / `Alt+Enter` fallback) → newline
     pub fn handle_key(&mut self, key: &KeyEvent) -> Option<String> {
+        if self.editing_style == EditingStyle::Vim && self.vim_mode == VimMode::Normal {
+            return self.handle_vim_normal(key);
+        }
         // History navigation is independent of selection/shift; do it first.
         if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT {
             match key.code {
@@ -682,6 +759,58 @@ impl Composer {
                 self.clear_selection_if_empty();
             }
             _ => return None,
+        }
+        None
+    }
+
+    fn handle_vim_normal(&mut self, key: &KeyEvent) -> Option<String> {
+        if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
+            return None;
+        }
+        self.mark_focused();
+        match key.code {
+            KeyCode::Char('i') => self.vim_mode = VimMode::Insert,
+            KeyCode::Char('a') => {
+                self.move_cursor_right();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('I') => {
+                self.cursor_col = 0;
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('A') => {
+                self.cursor_col = self.rows[self.cursor_row].len();
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('o') => {
+                self.cursor_row += 1;
+                self.rows.insert(self.cursor_row, String::new());
+                self.cursor_col = 0;
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('O') => {
+                self.rows.insert(self.cursor_row, String::new());
+                self.cursor_col = 0;
+                self.vim_mode = VimMode::Insert;
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.move_cursor_left(),
+            KeyCode::Char('l') | KeyCode::Right => self.move_cursor_right(),
+            KeyCode::Char('j') | KeyCode::Down => self.move_cursor_vertical(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_cursor_vertical(-1),
+            KeyCode::Char('0') | KeyCode::Home => self.cursor_col = 0,
+            KeyCode::Char('$') | KeyCode::End => {
+                self.cursor_col = self.rows[self.cursor_row].len();
+            }
+            KeyCode::Char('w') => self.move_word_forward(),
+            KeyCode::Char('b') => self.move_word_backward(),
+            KeyCode::Char('x') | KeyCode::Delete => self.delete_forward(),
+            KeyCode::Enter => {
+                if self.is_empty() && self.attachments.is_empty() {
+                    return None;
+                }
+                return Some(self.take_submit());
+            }
+            _ => {}
         }
         None
     }
@@ -812,6 +941,50 @@ impl Composer {
             self.cursor_col = 0;
         }
         self.clear_selection_if_empty();
+    }
+
+    fn move_cursor_vertical(&mut self, delta: isize) {
+        let target = (self.cursor_row as isize + delta)
+            .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
+        let desired_chars = self.cursor_col_chars();
+        self.cursor_row = target;
+        self.cursor_col = byte_at_char(&self.rows[target], desired_chars);
+        self.anchor = None;
+    }
+
+    fn move_word_forward(&mut self) {
+        let row = &self.rows[self.cursor_row];
+        let tail = &row[self.cursor_col..];
+        let search_from = if tail.chars().next().is_some_and(is_word_char) {
+            tail.char_indices()
+                .find(|(_, character)| !is_word_char(*character))
+                .map_or(tail.len(), |(offset, _)| offset)
+        } else {
+            0
+        };
+        if let Some((offset, _)) = tail[search_from..]
+            .char_indices()
+            .find(|(_, character)| is_word_char(*character))
+        {
+            self.cursor_col += search_from + offset;
+        } else {
+            self.cursor_col = row.len();
+        }
+    }
+
+    fn move_word_backward(&mut self) {
+        let head = &self.rows[self.cursor_row][..self.cursor_col];
+        let chars = head.char_indices().collect::<Vec<_>>();
+        let Some(mut index) = chars.len().checked_sub(1) else {
+            return;
+        };
+        while index > 0 && !is_word_char(chars[index].1) {
+            index -= 1;
+        }
+        while index > 0 && is_word_char(chars[index - 1].1) {
+            index -= 1;
+        }
+        self.cursor_col = chars[index].0;
     }
 
     fn set_anchor(&mut self, at: (usize, usize)) {
@@ -974,6 +1147,17 @@ fn char_count(s: &str) -> usize {
     s.chars().count()
 }
 
+fn byte_at_char(value: &str, index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(index)
+        .map_or(value.len(), |(offset, _)| offset)
+}
+
+fn is_word_char(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
 /// Truncate to the first `max_chars` and squash newlines so a single-line
 /// preview is safe to render above the draft.
 fn make_preview(content: &str, max_chars: usize) -> String {
@@ -1032,6 +1216,58 @@ mod tests {
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn vim_mode_is_optional_visible_and_does_not_insert_normal_keys() {
+        let mut composer = Composer::default();
+        composer.set_editing_style(EditingStyle::Vim);
+        composer.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "a");
+        assert!(composer.handle_escape());
+        assert_eq!(composer.mode_label(), Some("NORMAL"));
+
+        composer.handle_key(&key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(composer.is_empty());
+        composer.handle_key(&key(KeyCode::Char('i'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('好'), KeyModifiers::NONE));
+        assert_eq!(composer.text(), "好");
+        assert_eq!(composer.mode_label(), Some("INSERT"));
+    }
+
+    #[test]
+    fn vim_normal_motions_are_utf8_safe_across_words_and_rows() {
+        let mut composer = Composer::default();
+        composer.set_editing_style(EditingStyle::Vim);
+        composer.replace_text("alpha 世界\nxy");
+        assert!(composer.handle_escape());
+
+        composer.handle_key(&key(KeyCode::Char('k'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('0'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(composer.cursor_col_chars(), 6);
+        composer.handle_key(&key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(composer.cursor_row(), 1);
+        assert_eq!(composer.cursor_col_chars(), 2);
+        composer.handle_key(&key(KeyCode::Char('k'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(composer.cursor_col_chars(), 0);
+    }
+
+    #[test]
+    fn vim_open_line_and_enter_submit_follow_composer_contract() {
+        let mut composer = Composer::default();
+        composer.set_editing_style(EditingStyle::Vim);
+        composer.replace_text("first");
+        assert!(composer.handle_escape());
+        composer.handle_key(&key(KeyCode::Char('o'), KeyModifiers::NONE));
+        composer.handle_key(&key(KeyCode::Char('二'), KeyModifiers::NONE));
+        assert!(composer.handle_escape());
+        assert_eq!(composer.text(), "first\n二");
+        assert_eq!(
+            composer.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some("first\n二".into())
+        );
     }
 
     #[test]
