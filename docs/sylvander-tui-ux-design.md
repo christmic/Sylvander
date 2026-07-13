@@ -142,6 +142,10 @@ What should we work through?
 - On submit, the user turn is appended below Welcome.
 - Agent output is appended below the user turn.
 - Welcome is never immediately cleared or replaced.
+- Opening a command picker, approval, question, or any other temporary surface
+  never changes whether Welcome belongs to the transcript. These surfaces may
+  reduce its visible viewport temporarily, but closing them restores the same
+  prelude and scroll position.
 - When the conversation exceeds the viewport, normal live-follow scrolling
   moves the oldest lines—including Welcome—off screen.
 - Clearing a transcript may reveal a fresh Welcome prelude again.
