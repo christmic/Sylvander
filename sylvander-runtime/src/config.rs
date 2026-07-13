@@ -43,6 +43,8 @@ pub struct ServerSettings {
     pub workspace_journal: Option<PathBuf>,
     #[serde(default)]
     pub approval: ApprovalSettings,
+    #[serde(default)]
+    pub evidence: EvidenceSettings,
 }
 
 impl Default for ServerSettings {
@@ -53,8 +55,50 @@ impl Default for ServerSettings {
             session_db: None,
             workspace_journal: None,
             approval: ApprovalSettings::default(),
+            evidence: EvidenceSettings::default(),
         }
     }
+}
+
+/// Durable runtime evidence used for recovery, audit, evaluation, and
+/// human-gated improvement proposals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceSettings {
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    pub path: Option<PathBuf>,
+    #[serde(default = "default_evidence_retention_days")]
+    pub retention_days: u32,
+    #[serde(default)]
+    pub content: EvidenceContentPolicy,
+}
+
+impl Default for EvidenceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: None,
+            retention_days: default_evidence_retention_days(),
+            content: EvidenceContentPolicy::MetadataOnly,
+        }
+    }
+}
+
+const fn default_evidence_retention_days() -> u32 {
+    30
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceContentPolicy {
+    /// Store event types, sizes, timings, and digests, but no raw content.
+    #[default]
+    MetadataOnly,
+    /// Store structurally redacted payloads where a recorder supports them.
+    Redacted,
+    /// Store complete payloads. This must be an explicit operator decision.
+    Full,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -286,6 +330,11 @@ impl ServerConfig {
             ));
         }
         require_text("server.name", &self.server.name, &mut errors);
+        if self.server.evidence.enabled
+            && !(1..=3650).contains(&self.server.evidence.retention_days)
+        {
+            errors.push("server evidence retention_days must be between 1 and 3650".into());
+        }
 
         unique_ids(
             "model provider",
