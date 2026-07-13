@@ -4,23 +4,23 @@ expression: "render_buf(&state, 90, 22)"
 ---
                                                                                           
                                                                                           
-                    ┌ Commands ─────────────────────────────────────┐                     
-                    │/_                                             │                     
-                    │───────────────────────────────────────────────│                     
-                    │  › /new          Start a clean local session  │                     
-                    │    /sessions     Browse and switch sessions   │                     
-                    │    /resume       Resume a persisted session   │                     
-                    │    /rename       Rename the current persisted │                     
-                    │    /fork         Fork the current persisted se│                     
-                    │    /rewind       Branch from a completed conve│                     
-                    │    /checkpoint   Create a conversation checkpo│                     
-                    │    /undo         Return to the source conversa│                     
-                    │    /clear        Clear the local transcript   │                     
-                    │    /help         Show interaction help        │                     
-                    │    /theme        Change the active TUI theme  │                     
-                    │    /tools        Toggle tool details          │                     
-                    │    ↓ 21 more                                  │                     
-────────────────────└───────────────────────────────────────────────┘─────────────────────
+                ┌ Commands ──────────────────────────────────────────────┐                
+                │/_                                                      │                
+                │────────────────────────────────────────────────────────│                
+                │  › /new           Start a clean local session          │                
+                │    /sessions      Browse and switch sessions           │                
+                │    /resume        Resume a persisted session           │                
+                │    /rename        Rename the current persisted session │                
+                │    /fork          Fork the current persisted session   │                
+                │    /rewind        Branch from a completed conversation │                
+                │    /checkpoint    Create a conversation checkpoint bran│                
+                │    /undo          Return to the source conversation    │                
+                │    /clear         Clear the local transcript           │                
+                │    /help          Show interaction help                │                
+                │    /theme         Change the active TUI theme          │                
+                │    /tools         Toggle tool details                  │                
+                │    ↓ 21 more                                           │                
+────────────────└────────────────────────────────────────────────────────┘────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

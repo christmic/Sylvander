@@ -266,6 +266,39 @@ impl AppState {
         })
     }
 
+    /// Enter one prompt through the same transcript, queue, and transport
+    /// boundary used by the composer. Dynamic commands call this after their
+    /// typed UI effect has been validated.
+    pub(crate) fn submit_prompt(
+        &mut self,
+        text: String,
+        attachments: Vec<sylvander_protocol::MessageAttachment>,
+    ) -> Option<Action> {
+        self.welcomed = true;
+        if self.turn_active {
+            self.messages.push(ChatMessage::QueuedUser(text.clone()));
+            self.queued_prompts.push_back(text);
+            self.queued_prompt_attachments.push_back(attachments);
+            self.status = format!("Working · {} queued", self.queued_prompts.len());
+            self.chat_scroll = 0;
+            self.unread_events = 0;
+            self.dirty.mark();
+            return None;
+        }
+        self.messages.push(ChatMessage::User(text.clone()));
+        self.turn_active = true;
+        self.interrupt_requested = false;
+        self.chat_scroll = 0;
+        self.unread_events = 0;
+        self.dirty.mark();
+        Some(Action::SendChat {
+            text,
+            attachments,
+            session_id: self.session_id.clone(),
+            workspace: self.metadata.workspace.display().to_string(),
+        })
+    }
+
     fn apply_inner(&mut self, event: DomainEvent) -> Option<Action> {
         match event {
             DomainEvent::Connected => {
@@ -1229,34 +1262,7 @@ impl AppState {
         if let Some(text) = self.composer.handle_key(key) {
             let attachments = self.composer.take_submitted_attachments();
             self.save_history();
-            // First submission establishes the Welcome as this session's
-            // transcript prelude. It remains above the appended turn.
-            self.welcomed = true;
-            // The user's turn belongs in the transcript immediately. The
-            // server assigns identity and streams the response, but it does
-            // not echo the submitted prompt back to this client.
-            if self.turn_active {
-                self.messages.push(ChatMessage::QueuedUser(text.clone()));
-                self.queued_prompts.push_back(text);
-                self.queued_prompt_attachments.push_back(attachments);
-                self.status = format!("Working · {} queued", self.queued_prompts.len());
-                self.chat_scroll = 0;
-                self.unread_events = 0;
-                self.dirty.mark();
-                return None;
-            }
-            self.messages.push(ChatMessage::User(text.clone()));
-            self.turn_active = true;
-            self.interrupt_requested = false;
-            self.chat_scroll = 0;
-            self.unread_events = 0;
-            self.dirty.mark();
-            return Some(Action::SendChat {
-                text,
-                attachments,
-                session_id: self.session_id.clone(),
-                workspace: self.metadata.workspace.display().to_string(),
-            });
+            return self.submit_prompt(text, attachments);
         }
         // Even if composer returned None, it may have mutated (insert char,
         // backspace, history nav). Always mark dirty so the panel re-renders.

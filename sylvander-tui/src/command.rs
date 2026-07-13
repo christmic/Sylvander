@@ -323,8 +323,43 @@ impl CommandAvailability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandMatch {
     pub index: usize,
+    pub dynamic: bool,
     pub score: usize,
     pub availability: CommandAvailability,
+}
+
+pub fn match_name<'a>(entry: &CommandMatch, state: &'a AppState) -> &'a str {
+    if entry.dynamic {
+        state
+            .platform
+            .commands
+            .get(entry.index)
+            .map_or("command-catalog-changed", |command| command.name.as_str())
+    } else {
+        COMMANDS[entry.index].name
+    }
+}
+
+pub fn match_description<'a>(entry: &CommandMatch, state: &'a AppState) -> &'a str {
+    if entry.dynamic {
+        state.platform.commands.get(entry.index).map_or(
+            "Server command catalog changed; type to refresh",
+            |command| command.description.as_str(),
+        )
+    } else {
+        COMMANDS[entry.index].description
+    }
+}
+
+pub fn match_source<'a>(entry: &CommandMatch, state: &'a AppState) -> Option<&'a str> {
+    if !entry.dynamic {
+        return None;
+    }
+    state
+        .platform
+        .commands
+        .get(entry.index)
+        .map(|command| command.source.as_str())
 }
 
 pub fn aliases_for(id: CommandId) -> impl Iterator<Item = &'static str> {
@@ -445,19 +480,132 @@ pub fn ranked_commands(query: &str, state: &AppState) -> Vec<CommandMatch> {
             };
             Some(CommandMatch {
                 index,
+                dynamic: false,
                 score,
                 availability: availability(spec, state),
             })
         })
         .collect::<Vec<_>>();
+    matches.extend(
+        state
+            .platform
+            .commands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, command)| {
+                let score = if needle.is_empty() {
+                    0
+                } else if command.name.len() <= 32 && command.description.len() <= 160 {
+                    fuzzy_score(&needle, &command.name)
+                        .into_iter()
+                        .chain(fuzzy_score(&needle, &command.description).map(|score| score + 80))
+                        .min()?
+                } else {
+                    return None;
+                };
+                Some(CommandMatch {
+                    index,
+                    dynamic: true,
+                    score,
+                    availability: dynamic_availability(index, state),
+                })
+            }),
+    );
     matches.sort_by_key(|entry| {
         (
             entry.score,
-            recent_rank(COMMANDS[entry.index].id),
+            if entry.dynamic {
+                usize::MAX
+            } else {
+                recent_rank(COMMANDS[entry.index].id)
+            },
+            usize::from(entry.dynamic),
             entry.index,
         )
     });
     matches
+}
+
+fn dynamic_availability(index: usize, state: &AppState) -> CommandAvailability {
+    use CommandAvailability::{Available, Unavailable};
+    if !state.connected {
+        return Unavailable("connect to the Agent first".into());
+    }
+    dynamic_command_issue(index, state).map_or(Available, Unavailable)
+}
+
+fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
+    let command = state.platform.commands.get(index)?;
+    let valid_name = !command.name.is_empty()
+        && command.name.len() <= 32
+        && command.name.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit() && index > 0
+                || byte == b'-' && index > 0
+        });
+    if !valid_name {
+        return Some("invalid extension command name".into());
+    }
+    if command.id.is_empty()
+        || command.id.len() > 64
+        || !command
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Some("invalid extension command id".into());
+    }
+    if command.usage.len() > 96
+        || command.description.is_empty()
+        || command.description.len() > 160
+        || command.hint.len() > 64
+        || command.source.is_empty()
+        || command.source.len() > 64
+        || [
+            &command.usage,
+            &command.description,
+            &command.hint,
+            &command.source,
+        ]
+        .into_iter()
+        .any(|value| value.chars().any(char::is_control))
+    {
+        return Some("extension command metadata exceeds UI limits".into());
+    }
+    let expected_usage = format!("/{}", command.name);
+    if command.usage.split_whitespace().next() != Some(expected_usage.as_str()) {
+        return Some("extension command usage must begin with its name".into());
+    }
+    if !matches!(
+        command.trust,
+        sylvander_protocol::PlatformTrust::Workspace | sylvander_protocol::PlatformTrust::User
+    ) {
+        return Some(format!(
+            "{} source is not trusted for commands",
+            platform_trust_label(command.trust)
+        ));
+    }
+    if resolve(&command.name).is_some() {
+        return Some("conflicts with a built-in command or alias".into());
+    }
+    if state.platform.commands[..index]
+        .iter()
+        .any(|other| other.id == command.id || other.name.eq_ignore_ascii_case(&command.name))
+    {
+        return Some("duplicates an earlier extension command".into());
+    }
+    match &command.effect {
+        sylvander_protocol::UiCommandEffect::SubmitPrompt { template }
+            if template.is_empty()
+                || template.len() > 16 * 1024
+                || template.chars().any(|character| {
+                    character.is_control() && !matches!(character, '\n' | '\t')
+                }) =>
+        {
+            Some("prompt template is empty or too large".into())
+        }
+        _ => None,
+    }
 }
 
 fn fuzzy_score(needle: &str, candidate: &str) -> Option<usize> {
@@ -495,6 +643,44 @@ pub fn parse(line: &str) -> Result<Invocation<'_>, String> {
         spec,
         args: parts.collect(),
     })
+}
+
+pub fn execute_line(line: &str, state: &mut AppState) -> Result<(), String> {
+    let mut parts = line.trim().trim_start_matches('/').split_whitespace();
+    let name = parts.next().ok_or_else(|| "Choose a command".to_string())?;
+    if resolve(name).is_some() {
+        return execute(parse(line)?, state);
+    }
+    let Some(index) = state
+        .platform
+        .commands
+        .iter()
+        .position(|command| command.name.eq_ignore_ascii_case(name))
+    else {
+        return Err(format!("Unknown command /{name}"));
+    };
+    if let CommandAvailability::Unavailable(reason) = dynamic_availability(index, state) {
+        return Err(format!("/{name} unavailable: {reason}"));
+    }
+    let command = state.platform.commands[index].clone();
+    let args = parts.collect::<Vec<_>>().join(" ");
+    let sylvander_protocol::UiCommandEffect::SubmitPrompt { template } = command.effect;
+    let prompt = if template.contains("{{args}}") {
+        template.replace("{{args}}", &args)
+    } else if args.is_empty() {
+        template
+    } else {
+        format!("{template}\n\nArguments: {args}")
+    };
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(format!("/{name} produced an empty prompt"));
+    }
+    state.status = format!("Ran /{name} · {}", command.source);
+    if let Some(action) = state.submit_prompt(prompt, Vec::new()) {
+        state.pending_actions.push(action);
+    }
+    Ok(())
 }
 
 pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), String> {
@@ -1556,6 +1742,88 @@ mod tests {
             state.messages.last(),
             Some(ChatMessage::Info(report)) if report.contains("No Skills advertised")
         ));
+    }
+
+    fn dynamic_command(
+        name: &str,
+        trust: sylvander_protocol::PlatformTrust,
+    ) -> sylvander_protocol::UiCommandDescriptor {
+        sylvander_protocol::UiCommandDescriptor {
+            id: format!("workspace.{name}"),
+            name: name.into(),
+            usage: format!("/{name} [scope]"),
+            description: "Review a workspace scope".into(),
+            hint: "workspace command".into(),
+            source: "agent configuration".into(),
+            trust,
+            effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+                template: "Review {{args}} for security issues.".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn trusted_dynamic_command_submits_through_the_normal_chat_path() {
+        let mut state = AppState::new();
+        state.connected = true;
+        state.platform.commands = vec![dynamic_command(
+            "security-review",
+            sylvander_protocol::PlatformTrust::Workspace,
+        )];
+
+        execute_line("/security-review src/auth", &mut state).unwrap();
+
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::SendChat { text, .. }]
+                if text == "Review src/auth for security issues."
+        ));
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::User(text)) if text == "Review src/auth for security issues."
+        ));
+
+        state.pending_actions.clear();
+        execute_line("/security-review src/session", &mut state).unwrap();
+        assert!(state.pending_actions.is_empty());
+        assert_eq!(
+            state.queued_prompts.front().map(String::as_str),
+            Some("Review src/session for security issues.")
+        );
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::QueuedUser(text))
+                if text == "Review src/session for security issues."
+        ));
+    }
+
+    #[test]
+    fn dynamic_registry_exposes_collision_duplicate_and_trust_failures() {
+        let mut state = AppState::new();
+        state.connected = true;
+        state.platform.commands = vec![
+            dynamic_command("status", sylvander_protocol::PlatformTrust::Workspace),
+            dynamic_command(
+                "review-security",
+                sylvander_protocol::PlatformTrust::External,
+            ),
+            dynamic_command(
+                "review-security",
+                sylvander_protocol::PlatformTrust::Workspace,
+            ),
+        ];
+        state.platform.commands[2].id = state.platform.commands[1].id.clone();
+
+        let matches = ranked_commands("", &state);
+        let reasons = matches
+            .iter()
+            .filter(|entry| entry.dynamic)
+            .filter_map(|entry| entry.availability.reason())
+            .collect::<Vec<_>>();
+        assert!(reasons.iter().any(|reason| reason.contains("built-in")));
+        assert!(reasons.iter().any(|reason| reason.contains("not trusted")));
+        assert!(reasons.iter().any(|reason| reason.contains("duplicates")));
+        assert!(execute_line("/review-security", &mut state).is_err());
     }
 
     #[test]

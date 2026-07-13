@@ -62,10 +62,11 @@ point for input tests.
 
 `command.rs` owns command parsing, argument validation, and application-level
 effects. Its registry is the single source for canonical names, aliases, fuzzy
-ranking, recency, and state-derived availability. Command palette rendering does
-not implement command behavior itself. A future extension command must register
-through this boundary and resolve to a typed `Action`; presentation callbacks or
-direct state mutation are not extension points.
+ranking, recency, and state-derived availability. Agent-advertised prompt
+commands join the same registry only after name, ID, collision, metadata, and
+trust validation. Their typed effect expands into the ordinary chat submit or
+queue path; presentation callbacks and direct state mutation are not extension
+points. Rejected commands remain visible with the rejection reason.
 
 ### `service.rs` and `client.rs` — service boundary
 

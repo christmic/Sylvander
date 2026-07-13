@@ -73,6 +73,24 @@ disappearing. Invalid arguments remain in the command line with an inline error.
 | `/status` | Appends model, branch, session, iteration, and token usage |
 | `/quit` | Saves input history and exits |
 
+Workspace-owned prompt commands may be declared in the Agent TOML and appear in
+the same palette with their source shown:
+
+```toml
+[[ui_commands]]
+id = "workspace.security-review"
+name = "security-review"
+usage = "/security-review [scope]"
+description = "Review a workspace scope for security issues"
+hint = "workspace command"
+prompt = "Review {{args}} for security issues."
+```
+
+Invoking `/security-review src/auth` submits the expanded prompt through the
+normal chat/queue path. Built-in or alias collisions, duplicate IDs/names,
+invalid metadata, and external or unverified trust are shown as unavailable;
+they are never invoked.
+
 The model picker never carries a hard-coded catalog. `↑`/`↓` chooses among
 server-advertised models and `←`/`→` chooses only reasoning efforts supported by
 the selected model. `Enter` sends one typed selection request. The Agent validates
