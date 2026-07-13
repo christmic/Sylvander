@@ -433,6 +433,7 @@ impl AppState {
                 input_tokens,
                 output_tokens,
                 cost_nano_usd,
+                notice,
             } => {
                 self.session_id = Some(session.id.clone());
                 self.metadata.workspace = session.workspace.clone().into();
@@ -456,6 +457,9 @@ impl AppState {
                 self.input_tokens = input_tokens;
                 self.output_tokens = output_tokens;
                 self.cost_nano_usd = cost_nano_usd;
+                if let Some(notice) = notice {
+                    self.messages.push(ChatMessage::Info(notice));
+                }
                 self.welcomed = !self.messages.is_empty();
                 self.status = format!("Resumed {}", session.label);
                 if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == session.id)
@@ -1681,6 +1685,7 @@ mod tests {
             input_tokens: 800,
             output_tokens: 120,
             cost_nano_usd: Some(7_500_000),
+            notice: None,
         });
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
@@ -1696,6 +1701,29 @@ mod tests {
             (4, 800, 120)
         );
         assert_eq!(state.cost_nano_usd, Some(7_500_000));
+    }
+
+    #[test]
+    fn rewind_notice_is_kept_in_the_restored_transcript() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::SessionHistoryLoaded {
+            session: crate::model::SessionSummary {
+                id: "rewind-1".into(),
+                label: "Work (rewind 1)".into(),
+                workspace: "/workspace/project".into(),
+                last_seen_secs: 1,
+            },
+            messages: Vec::new(),
+            iterations: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_nano_usd: Some(0),
+            notice: Some("Conversation rewound · workspace files unchanged".into()),
+        });
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text)) if text.contains("workspace files unchanged")
+        ));
     }
 
     #[test]

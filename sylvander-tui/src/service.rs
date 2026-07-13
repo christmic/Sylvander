@@ -129,7 +129,13 @@ impl AgentService {
                     "clipboard actions belong to the terminal runtime",
                 ));
             }
-            Action::ForkSession { session_id } => ClientMsg::ForkSession { session_id },
+            Action::ForkSession {
+                session_id,
+                completed_turns,
+            } => ClientMsg::ForkSession {
+                session_id,
+                completed_turns,
+            },
             Action::Quit => return Ok(()),
         };
         self.client.send(&message).await

@@ -12,14 +12,14 @@ expression: "render_buf(&state, 90, 22)"
                     │    /resume       Resume a persisted session   │                     
                     │    /rename       Rename the current persisted │                     
                     │    /fork         Fork the current persisted se│                     
+                    │    /rewind       Branch from a completed conve│                     
                     │    /clear        Clear the local transcript   │                     
                     │    /help         Show interaction help        │                     
                     │    /theme        Change the active TUI theme  │                     
                     │    /tools        Toggle tool details          │                     
                     │    /queue        Inspect or edit prompts waiti│                     
                     │    /tasks        Inspect or cancel one backgro│                     
-                    │    /attachments  Inspect, reorder, or remove d│                     
-                    │    ↓ 9 more                                   │                     
+                    │    ↓ 10 more                                  │                     
 ────────────────────└───────────────────────────────────────────────┘─────────────────────
 >                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
