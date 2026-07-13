@@ -34,6 +34,17 @@ fn session_db_path() -> std::path::PathBuf {
         .join("sessions.db")
 }
 
+fn workspace_journal_path() -> std::path::PathBuf {
+    std::env::var("SYLVANDER_WORKSPACE_JOURNAL")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            session_db_path()
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("workspace-journal")
+        })
+}
+
 fn require_env(key: &str) -> String {
     let v = std::env::var(key).unwrap_or_else(|_| {
         eprintln!(
@@ -243,6 +254,7 @@ async fn main() {
         .session_store(session_store.clone())
         .override_tools(tools)
         .available_models(available_models)
+        .workspace_journal(workspace_journal_path())
         .model_lifecycles(model_lifecycles())
         .model_pricing(model_pricing().unwrap_or_else(|error| {
             eprintln!("ERROR: SYLVANDER_MODEL_PRICING: {error}");

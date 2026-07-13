@@ -92,6 +92,7 @@ pub mod task_gate;
 pub mod tool;
 pub mod tool_context;
 pub mod tools;
+pub mod workspace_journal;
 
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.

@@ -111,7 +111,10 @@ impl Tool for EditTool {
             .fs_root
             .clone()
             .unwrap_or_else(|| self.workdir.clone());
-        let path = root.join(path_str);
+        let path = match crate::workspace_journal::WorkspaceJournal::resolve(&root, path_str) {
+            Ok(path) => path,
+            Err(error) => return Ok(ToolOutput::err(error)),
+        };
 
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -139,8 +142,30 @@ impl Tool for EditTool {
             content.replacen(old_string, new_string, 1)
         };
 
+        let prepared = if let Some(journal) = &ctx.workspace_journal {
+            let turn_id = ctx.session.request.trace_id.as_deref().ok_or_else(|| {
+                ToolError::Other("workspace journal requires a turn trace id".into())
+            })?;
+            Some(
+                journal
+                    .prepare(
+                        &ctx.session_id().0,
+                        turn_id,
+                        &root,
+                        path_str,
+                        new_content.as_bytes(),
+                    )
+                    .map_err(ToolError::Other)?,
+            )
+        } else {
+            None
+        };
+
         match std::fs::write(&path, &new_content) {
             Ok(()) => {
+                if let (Some(journal), Some(prepared)) = (&ctx.workspace_journal, &prepared) {
+                    journal.commit(prepared).map_err(ToolError::Other)?;
+                }
                 let replaced = if replace_all { occurrences } else { 1 };
                 Ok(ToolOutput::ok(format!(
                     "replaced {replaced} occurrence{} in `{}`",
@@ -194,6 +219,32 @@ mod tests {
             fs::read_to_string(dir.path().join("f.txt")).unwrap(),
             "hello rust"
         );
+    }
+
+    #[tokio::test]
+    async fn edit_is_recorded_by_the_workspace_journal() {
+        let dir = setup_workspace();
+        let data = TempDir::new().unwrap();
+        let file = dir.path().join("f.txt");
+        fs::write(&file, "hello world").unwrap();
+        let journal =
+            std::sync::Arc::new(crate::workspace_journal::WorkspaceJournal::new(data.path()));
+        let context = ToolContext::new(
+            sylvander_protocol::SessionContext::new("u", "a", "s").with_trace_id("turn-1"),
+        )
+        .with_fs_root(dir.path())
+        .with_capability(crate::tool_context::Cap::Write)
+        .with_workspace_journal(journal.clone());
+        EditTool::new(dir.path())
+            .execute(
+                &context,
+                json!({"file_path":"f.txt","old_string":"world","new_string":"agent"}),
+            )
+            .await
+            .unwrap();
+        let preview = journal.preview_latest_turn("s").unwrap();
+        journal.rollback_latest_turn("s", &preview.turn_id).unwrap();
+        assert_eq!(fs::read_to_string(file).unwrap(), "hello world");
     }
 
     #[tokio::test]

@@ -28,6 +28,7 @@ instead of mid-flight.
 | `SYLVANDER_DEPRECATED_MODELS` | empty | Comma-separated `model` or `model=replacement` entries. The lifecycle is advertised to clients; deprecated models remain selectable for old sessions. |
 | `SYLVANDER_MODEL_PRICING` | empty | Comma-separated `model=input:output[:cache_write:cache_read]` prices in USD per million tokens. Invalid values fail startup; omitted prices remain explicitly unknown. |
 | `SYLVANDER_SESSION_DB` | `$XDG_DATA_HOME/sylvander/sessions.db`, or `$HOME/.local/share/sylvander/sessions.db` | Persistent SQLite session/history database. |
+| `SYLVANDER_WORKSPACE_JOURNAL` | sibling `workspace-journal/` beside the session database | Durable pre/post snapshots used only for confirmed rollback of Agent Write/Edit calls. |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
 
 ## Why is `SYLVANDER_MODEL` required?

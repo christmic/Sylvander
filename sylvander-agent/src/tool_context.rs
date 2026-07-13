@@ -55,6 +55,9 @@ pub struct ToolContext {
 
     /// What the tool is allowed to touch in this invocation.
     pub surface: SurfaceView,
+
+    /// Optional durable workspace mutation journal owned by the Agent runtime.
+    pub workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
 }
 
 impl ToolContext {
@@ -66,6 +69,7 @@ impl ToolContext {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
+            workspace_journal: None,
         }
     }
 
@@ -87,6 +91,15 @@ impl ToolContext {
     #[must_use]
     pub fn with_capability(mut self, cap: Cap) -> Self {
         self.surface.capabilities.insert(cap);
+        self
+    }
+
+    #[must_use]
+    pub fn with_workspace_journal(
+        mut self,
+        journal: Arc<crate::workspace_journal::WorkspaceJournal>,
+    ) -> Self {
+        self.workspace_journal = Some(journal);
         self
     }
 
