@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 293
 expression: "render_buf(state, 90, 28)"
 ---
   › run setup                                                                             
@@ -20,8 +21,8 @@ expression: "render_buf(state, 90, 28)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
-                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ Deny this request                                                                     
   Add guidance for Sylvander (optional).                                                  

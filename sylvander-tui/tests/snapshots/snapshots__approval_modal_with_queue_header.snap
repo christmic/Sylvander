@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 318
 expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
@@ -11,8 +12,8 @@ expression: "render_buf(state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
-                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ Permission needed                                                             1 of 1  
   Write file                                                                              
