@@ -28,6 +28,9 @@ The 2026-07-13 audit verified these controls against implementation and tests:
 - Permission profiles construct a workspace-scoped `ToolContext`; the TUI only
   selects profiles advertised by the service.
 - Interrupt routing is keyed by session, so one session cannot cancel another.
+- The Unix Agent socket is forced to owner-only `0600`; startup fails closed if
+  those permissions cannot be applied. Two-client socket tests verify live
+  events remain attached to their own session.
 - Approval rejection reasons remain typed and transport-neutral through Unix
   and WebSocket adapters; the Agent remains the decision authority.
 - Tool input/output strips terminal controls and redacts structured sensitive
@@ -41,8 +44,9 @@ The 2026-07-13 audit verified these controls against implementation and tests:
 - Sylvander Agent does not currently expose a shell/exec tool. Process-group
   termination and descendant cleanup therefore cannot be verified; a visual
   shell renderer is not evidence of safe shell cancellation.
-- Adversarial two-client PTY/socket verification must prove that decisions,
-  interrupts, replay, and session history never cross session ownership.
+- Adversarial two-client PTY verification must still prove that decisions,
+  interrupts, replay, and session history never cross session ownership; live
+  Unix event routing is covered independently.
 - Credentialed live-provider tests remain opt-in and are not security evidence
   unless they run in the release environment with redacted logs inspected.
 
