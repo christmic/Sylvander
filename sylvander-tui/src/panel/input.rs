@@ -20,6 +20,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppState;
 use crate::component::Component;
@@ -143,42 +145,52 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
     let prompt = "> ";
 
     if is_empty {
-        let placeholder = Line::from(Span::styled(">", theme::composer_placeholder()));
+        let placeholder = Line::from(Span::styled(prompt, theme::composer_placeholder()));
         let p = Paragraph::new(placeholder).wrap(Wrap { trim: false });
         frame.render_widget(p, area);
+        if state.modals.is_empty() && area.width > 2 {
+            frame.set_cursor_position((area.x + 2, area.y));
+        }
         return;
     }
 
-    let n = composer.row_count();
+    let content_width = area.width.saturating_sub(2).max(1) as usize;
     let mut visual_lines = Vec::new();
-    for i in 0..n {
-        let first_prefix = if i == 0 { prompt } else { "  " };
-        visual_lines.extend(
-            wrap_composer_row(composer.row(i), first_prefix, area.width.max(1) as usize)
-                .map(Line::from),
-        );
+    let mut cursor = None;
+    for row in 0..composer.row_count() {
+        let first_prefix = if row == 0 { prompt } else { "  " };
+        let mut wrapped = wrap_composer_row(composer.row(row), first_prefix, content_width);
+        if row == composer.cursor_row() {
+            let (line, cell) = cursor_position(
+                composer.row(row),
+                composer.cursor_col_cells(),
+                content_width,
+            );
+            if line == wrapped.len() {
+                wrapped.push("  ".into());
+            }
+            cursor = Some((visual_lines.len() + line, cell));
+        }
+        visual_lines.extend(wrapped.into_iter().map(Line::from));
     }
-    visual_lines.truncate(area.height as usize);
-    frame.render_widget(Paragraph::new(visual_lines), area);
 
-    // Hardware cursor at end of the cursor-row text.
-    let cursor_row = composer.cursor_row();
-    if cursor_row < n {
-        let wrap_width = area.width.max(3) as usize;
-        let content_width = wrap_width.saturating_sub(2).max(1);
-        let rows_before: usize = (0..cursor_row)
-            .map(|row| {
-                composer
-                    .row(row)
-                    .chars()
-                    .count()
-                    .max(1)
-                    .div_ceil(content_width)
-            })
-            .sum();
-        let cursor_cells = composer.cursor_col_chars();
-        let cursor_x = area.x + 2 + (cursor_cells % content_width) as u16;
-        let cursor_y = area.y + rows_before as u16 + (cursor_cells / content_width) as u16;
+    // Keep the hardware cursor visible when a long draft exceeds the eight-row
+    // composer cap. Earlier content scrolls inside the composer instead of
+    // causing the cursor to disappear below the clipped viewport.
+    let visible_rows = area.height as usize;
+    let start = cursor
+        .map(|(line, _)| line.saturating_add(1).saturating_sub(visible_rows))
+        .unwrap_or(0);
+    let visible = visual_lines
+        .into_iter()
+        .skip(start)
+        .take(visible_rows)
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(visible), area);
+
+    if let Some((line, cell)) = cursor.filter(|_| state.modals.is_empty()) {
+        let cursor_x = area.x.saturating_add(2).saturating_add(cell as u16);
+        let cursor_y = area.y.saturating_add(line.saturating_sub(start) as u16);
         if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -189,40 +201,76 @@ fn visual_row_count(state: &AppState, width: usize) -> usize {
     let content_width = width.saturating_sub(2).max(1);
     (0..state.composer.row_count())
         .map(|index| {
-            state
-                .composer
-                .row(index)
-                .chars()
-                .count()
-                .max(1)
-                .div_ceil(content_width)
+            let lines = wrapped_line_count(state.composer.row(index), content_width);
+            if index == state.composer.cursor_row() {
+                let (cursor_line, _) = cursor_position(
+                    state.composer.row(index),
+                    state.composer.cursor_col_cells(),
+                    content_width,
+                );
+                lines.max(cursor_line.saturating_add(1))
+            } else {
+                lines
+            }
         })
         .sum()
 }
 
-fn wrap_composer_row<'a>(
-    text: &'a str,
-    first_prefix: &'a str,
-    width: usize,
-) -> impl Iterator<Item = String> + 'a {
-    let content_width = width.saturating_sub(2).max(1);
-    let chars: Vec<char> = text.chars().collect();
-    let mut chunks: Vec<String> = if chars.is_empty() {
-        vec![first_prefix.to_string()]
-    } else {
-        chars
-            .chunks(content_width)
-            .enumerate()
-            .map(|(index, chunk)| {
-                let prefix = if index == 0 { first_prefix } else { "  " };
-                format!("{prefix}{}", chunk.iter().collect::<String>())
-            })
-            .collect()
-    };
-    if chunks.is_empty() {
-        chunks.push(first_prefix.into());
+fn wrap_composer_row(text: &str, first_prefix: &str, content_width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut cells = 0usize;
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if cells > 0 && cells.saturating_add(width) > content_width {
+            chunks.push(std::mem::take(&mut chunk));
+            cells = 0;
+        }
+        chunk.push_str(grapheme);
+        cells = cells.saturating_add(width);
+        if cells >= content_width {
+            chunks.push(std::mem::take(&mut chunk));
+            cells = 0;
+        }
     }
-    chunks.into_iter()
+    if !chunk.is_empty() || chunks.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let prefix = if index == 0 { first_prefix } else { "  " };
+            format!("{prefix}{chunk}")
+        })
+        .collect()
+}
+
+fn wrapped_line_count(text: &str, content_width: usize) -> usize {
+    wrap_composer_row(text, "", content_width).len()
+}
+
+fn cursor_position(text: &str, cursor_cells: usize, content_width: usize) -> (usize, usize) {
+    let mut line = 0usize;
+    let mut cells = 0usize;
+    let mut consumed = 0usize;
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if consumed.saturating_add(width) > cursor_cells {
+            break;
+        }
+        if cells > 0 && cells.saturating_add(width) > content_width {
+            line = line.saturating_add(1);
+            cells = 0;
+        }
+        cells = cells.saturating_add(width);
+        consumed = consumed.saturating_add(width);
+        if cells >= content_width {
+            line = line.saturating_add(1);
+            cells = 0;
+        }
+    }
+    (line, cells)
 }
 
 #[cfg(test)]
@@ -238,6 +286,33 @@ mod tests {
             state.handle_key(&KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         }
         assert_eq!(visual_row_count(&state, 12), 3);
+    }
+
+    #[test]
+    fn chinese_text_wraps_and_positions_cursor_in_terminal_cells() {
+        let mut state = AppState::new();
+        for character in "你好世界中".chars() {
+            state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+
+        assert_eq!(state.composer.cursor_col_chars(), 5);
+        assert_eq!(state.composer.cursor_col_cells(), 10);
+        assert_eq!(
+            wrap_composer_row("你好世界中", "> ", 8),
+            ["> 你好世界", "  中"]
+        );
+        assert_eq!(cursor_position("你好世界中", 10, 8), (1, 2));
+        assert_eq!(visual_row_count(&state, 10), 2);
+    }
+
+    #[test]
+    fn exact_width_draft_allocates_a_cursor_continuation_row() {
+        let mut state = AppState::new();
+        for character in "你好世界".chars() {
+            state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert_eq!(cursor_position("你好世界", 8, 8), (1, 0));
+        assert_eq!(visual_row_count(&state, 10), 2);
     }
 }
 
