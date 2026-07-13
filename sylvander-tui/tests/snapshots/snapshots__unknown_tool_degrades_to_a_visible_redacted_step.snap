@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 100, 24)"
+expression: "render_buf(state, 100, 24)"
 ---
   ✓ future_extension_tool     00s                                                                   
   │ ✓ future extension tool                                                                         
@@ -25,4 +25,4 @@ expression: "render_buf(&state, 100, 24)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ working · model — · branch — · session — · 0 tok                            esc interrupt   /draft
+◌ working · model — · branch —                                                esc interrupt   /draft

@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 110, 30)"
+expression: "render_buf(state, 110, 30)"
 ---
                                                                                                               
                                                                                                               
@@ -13,14 +13,11 @@ expression: "render_buf(&state, 110, 30)"
                                                                                                               
                                                                                                               
                                                                                                               
-                    ┌ Commands ──────────────────────────────────────────────────────────┐                    
-                    │/theme midnight_                                                    │                    
-                    │────────────────────────────────────────────────────────────────────│                    
-                    │  › /theme         Change the active TUI theme                      │                    
-                    │                                                                    │                    
-                    │                                                                    │                    
-                    │                                                                    │                    
-                    └────────────────────────────────────────────────────────────────────┘                    
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               
@@ -29,6 +26,9 @@ expression: "render_buf(&state, 110, 30)"
                                                                                                               
                                                                                                               
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                             
+  Commands                                                                                          1 result  
+    › /theme         Change the active TUI theme                                                              
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0 tok                                connecting…   draft local
+/theme midnight                                                                                               
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch —                                                    connecting…   draft local

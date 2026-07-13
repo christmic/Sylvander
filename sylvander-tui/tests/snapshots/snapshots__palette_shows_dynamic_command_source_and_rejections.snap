@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 100, 24)"
+expression: "render_buf(state, 100, 24)"
 ---
                                                                                                     
                                                                                                     
@@ -10,19 +10,19 @@ expression: "render_buf(&state, 100, 24)"
                                                                                                     
                                                                                                     
                                                                                                     
-                  ┌ Commands ────────────────────────────────────────────────────┐                  
-                  │/review_                                                      │                  
-                  │──────────────────────────────────────────────────────────────│                  
-                  │  › /review          Ask Sylvander to review workspace changes│                  
-                  │    /security-review Review a workspace scope · agent configur│                  
-                  │    /external-review external source is not trusted for comman│                  
-                  │    /status          conflicts with a built-in command or alia│                  
-                  └──────────────────────────────────────────────────────────────┘                  
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                   
+  Commands                                                                               4 results  
+    › /review          Ask Sylvander to review workspace changes                                    
+      /security-review Review a workspace scope · agent configuration                               
+      /external-review external source is not trusted for commands                                  
+      /status          conflicts with a built-in command or alias                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-● asking · model — · branch — · session — · 0 tok                              ↵ submit   esc cancel
+/review                                                                                             
+────────────────────────────────────────────────────────────────────────────────────────────────────
+● choosing command · model — · branch —                         ↑↓ select   tab complete · esc close

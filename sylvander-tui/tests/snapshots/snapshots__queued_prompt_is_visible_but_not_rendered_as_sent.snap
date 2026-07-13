@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 110, 30)"
+expression: "render_buf(state, 110, 30)"
 ---
   › finish the current implementation                                                                         
                                                                                                               
@@ -31,4 +31,4 @@ expression: "render_buf(&state, 110, 30)"
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                             
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ working · model — · branch — · session — · 0 tok · 1 queued                           esc interrupt   /draft
+◌ working · model — · branch — · 1 queued                                               esc interrupt   /draft

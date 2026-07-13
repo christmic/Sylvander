@@ -1,26 +1,26 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 22)"
+expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
                                                                                           
                                                                                           
-              ┌ Sessions ───────────────────────────────────────────────────┐             
-              │Search sessions… _                                           │             
-              │─────────────────────────────────────────────────────────────│             
-              │  ▾ ~/Projects/acme-api                                      │             
-              │  ›   auth-refactor           working   ~/Projects/acme-api  │             
-              │        2m ago                                               │             
-              │      auth-debug              waiting   ~/Projects/acme-api  │             
-              │        1h ago                                               │             
-              │  ▾ ~/Projects/web                                           │             
-              │      login-tests             complete  ~/Projects/web       │             
-              │        1d ago                                               │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │type filter · ↑↓ select · ↵ open · d archive · D delete      │             
-──────────────└─────────────────────────────────────────────────────────────┘─────────────
->                                                                                         
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+  Resume a session                                                             3 matches  
+  Loading one session replaces the current conversation.                                  
+  › auth-refactor           ~/Projects/acme-api               2m ago                      
+    auth-debug              ~/Projects/acme-api               1h ago                      
+    login-tests             ~/Projects/web                    1d ago                      
+──────────────────────────────────────────────────────────────────────────────────────────
+/resume                                                                                   
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

@@ -1,28 +1,28 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 24)"
+expression: "render_buf(state, 90, 24)"
 ---
                                                                                           
                                                                                           
                                                                                           
                                                                                           
-             ┌ @ Add workspace file ────────────────────────────────────────┐             
-             │@ _                                                           │             
-             │                                                              │             
-             │No matching workspace files                                   │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │                                                              │             
-             │enter attach · ↑↓ select · esc close                          │             
-             └──────────────────────────────────────────────────────────────┘             
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  Add a workspace file                                                                    
+  No matching workspace files                                                             
 ──────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session —                                            
+@                                                                                         
+──────────────────────────────────────────────────────────────────────────────────────────
+◌ connecting · model — · branch — · session —
