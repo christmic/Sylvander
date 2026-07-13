@@ -16,7 +16,12 @@ Sylvander is an immersive terminal Agent: calm, capable, companionable, and
 technically serious. The interface establishes the Seed-Crab character once,
 then lets the work dominate.
 
-The design borrows useful principles rather than visual forms:
+The conversation surface intentionally follows the familiar Claude Code rhythm
+where learned terminal behavior matters. The verified visual baseline for this
+revision is Claude Code 2.1.197, inspected in a real 80 x 24 PTY on 2026-07-13.
+Sylvander keeps its own identity, state model, runtime, protocol, and tools.
+
+The design sources are:
 
 - Claude Code: content remains dominant and ordinary prose is quiet.
 - Codex: input, status, and live execution remain legible under sustained work.
@@ -27,8 +32,10 @@ The design borrows useful principles rather than visual forms:
 
 ### 1.1 Competitive synthesis
 
-Sylvander does not reproduce another Agent's chrome. It combines the strongest
-interaction principles with the product identity already approved here.
+Sylvander reproduces Claude Code's quiet transcript grammar closely enough that
+users do not need to relearn message and tool hierarchy. Product identity stays
+in the Seed-Crab Welcome, palette, status semantics, and Sylvander-specific
+surfaces rather than in novel conversation chrome.
 
 | Reference | Keep | Improve for Sylvander |
 |---|---|---|
@@ -37,9 +44,9 @@ interaction principles with the product identity already approved here.
 | Kimi Code | Tool-specific previews, inline feedback, structured multi-question flow | Reduce persistent density and keep ordinary work visually quiet |
 | Sylvander existing TUI | Seed-Crab Welcome, pure-black canvas, left-anchored transcript, full-width Composer | Replace generic centered popups with native terminal surfaces |
 
-The result must feel calmer than Kimi, warmer than Codex, more visibly authored
-than Claude, and internally consistent with Sylvander's own Welcome and
-conversation rhythm.
+The result must retain Claude's low-friction reading rhythm, feel calmer than
+Kimi, warmer than Codex, and remain internally consistent with Sylvander's own
+Welcome and semantic state.
 
 ## 2. Visual foundation
 
@@ -94,7 +101,8 @@ presence model.
 ## 4. Horizontal layout
 
 - Transcript and Welcome use a maximum reading width of 110 cells.
-- Their left edge is fixed at terminal column 3: a two-cell gutter.
+- Their left edge is fixed at terminal column 1, matching Claude's transcript
+  and the live Composer prompt.
 - Widening or fullscreening a terminal never recenters this column.
 - Extra fullscreen width remains empty on the right.
 - Composer separators and status span the entire terminal width.
@@ -149,24 +157,27 @@ different identity.
 ### 6.1 User turn
 
 ```text
-> What tools do you have?
+❯ What tools do you have?
 ```
 
-- `>` uses dim bold text and matches the Composer prompt vocabulary.
+- `❯` uses dim bold text and matches the Composer prompt vocabulary.
 - User text uses primary text.
+- A submitted user turn has no surrounding rules and no hardware cursor. Only
+  the bottom live Composer owns those affordances, so history cannot appear to
+  be a second active input surface.
 - A blank row separates meaningful turns.
 
 ### 6.2 Agent turn
 
 ```text
-● I have the following tools available:
+⏺ I have the following tools available:
 
   1. ask_user — Ask for a decision or missing information.
   2. Read — Read a file inside the workspace.
   3. Write — Create or replace file content.
 ```
 
-- `●` is a compact violet presence mark shown once per meaningful Agent turn.
+- `⏺` is a compact violet presence mark shown once per meaningful Agent turn.
 - It is not a fallback Logo and does not replace the full Seed-Crab.
 - Continuation lines align two cells after the transcript origin.
 - The former `/\\`, `(••)`, `<__>` reply face is prohibited.
@@ -185,9 +196,10 @@ shape.
 ### 6.4 Thinking and tools
 
 - Thinking is subdued, compact, and removed or collapsed when final prose starts.
-- Tool activity is inline and uses semantic state symbols.
+- Tool activity is inline. A primary activity uses `⏺`; semantic color and
+  explicit failure copy carry state without adding a second hierarchy of icons.
 - Child tools use one quiet `⎿` relationship marker instead of persistent
-  vertical chrome.
+  vertical chrome or an additional status glyph.
 - Completed Edit and Write operations show a bounded unified diff by default;
   additional context remains explicitly expandable.
 - Routine tool output has no filled container.
@@ -199,25 +211,26 @@ shape.
 
 ```text
 ────────────────────────────────────────────────────────────────
->
+❯
 ────────────────────────────────────────────────────────────────
 ```
 
 - Both rules span the full terminal width.
-- `>` starts at column 1, touching the same left edge as the rules.
+- `❯` starts at column 1, touching the same left edge as the rules.
 - There is no left border, gray box, or `Ask Sylvander…` placeholder.
 - Empty Composer content height is one row.
 
 ### 7.2 Editing
 
-- Typed text follows `> `.
+- Typed text follows `❯ `.
 - The Composer grows upward as text wraps or explicit newlines are inserted.
 - Maximum visible draft height is eight rows; further content scrolls internally.
 - Continuation rows align with text after the prompt.
 - Enter sends; Shift+Enter inserts a newline.
 - While the Composer owns focus, the hardware cursor is visible after the `> `
   prompt even when the draft is empty.
-- The hardware cursor follows the logical cursor by terminal-cell width and never
+- The hardware cursor follows the logical cursor after `❯ ` by terminal-cell
+  width and never
   enters the status row. CJK glyphs, emoji, and combining sequences must not
   displace it.
 
@@ -268,7 +281,7 @@ confirmation, and other short decisions.
 - It shares the Composer's bottom rule as its top boundary and adds only one
   full-width bottom rule.
 - Decision content is left-aligned with the transcript and capped at 110 cells.
-- The Composer `>` remains visible, but its hardware cursor is hidden while the
+- The Composer `❯` remains visible, but its hardware cursor is hidden while the
   Dock owns focus, so there is only one active input target.
 - One question or approval is shown at a time. A batch uses quiet progress such
   as `2 of 3`, not redundant queue terminology.
@@ -373,8 +386,8 @@ A change is acceptable only when all are true:
 
 1. Welcome, first user turn, and first Agent response are simultaneously visible
    in a sufficiently tall fresh session.
-2. A 240-column viewport keeps transcript origin at column 3.
-3. `>` begins at column 1 and both Composer rules span the viewport.
+2. A 240-column viewport keeps transcript origin at column 1.
+3. `❯` begins at column 1 and both Composer rules span the viewport.
 4. A long numbered answer wraps on words and shows no raw Markdown markers.
 5. The Agent presence mark occurs once per turn.
 6. Streaming and settled output keep the same geometry.
@@ -388,6 +401,8 @@ A change is acceptable only when all are true:
     appear as centered desktop dialogs.
 12. `/resume` never suggests that more than one session is active in the TUI.
 13. Closing any temporary surface restores the exact draft and scroll position.
+14. During tool activity, historical `❯` turns remain unframed; exactly one
+    pair of full-width rules and one hardware cursor identify the live Composer.
 
 ## 14. Editable references
 
