@@ -8,17 +8,30 @@ use tokio::sync::mpsc;
 
 use crate::application::UserIntent;
 
-pub fn spawn(mouse_scroll_lines: usize) -> mpsc::UnboundedReceiver<UserIntent> {
-    let (tx, rx) = mpsc::unbounded_channel();
+const INPUT_EVENT_CAPACITY: usize = 256;
+
+pub fn spawn(mouse_scroll_lines: usize) -> mpsc::Receiver<UserIntent> {
+    let (tx, rx) = mpsc::channel(INPUT_EVENT_CAPACITY);
     std::thread::spawn(move || {
         while let Ok(event) = crossterm::event::read() {
-            let intent = translate(event, mouse_scroll_lines);
-            if intent.is_some_and(|intent| tx.send(intent).is_err()) {
-                break;
+            if let Some(intent) = translate(event, mouse_scroll_lines) {
+                if !enqueue(&tx, intent) {
+                    break;
+                }
             }
         }
     });
     rx
+}
+
+fn enqueue(tx: &mpsc::Sender<UserIntent>, intent: UserIntent) -> bool {
+    match intent {
+        UserIntent::Key(_) | UserIntent::Paste(_) => tx.blocking_send(intent).is_ok(),
+        UserIntent::ScrollTranscript { .. } | UserIntent::Redraw => match tx.try_send(intent) {
+            Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => true,
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        },
+    }
 }
 
 pub fn translate(event: Event, mouse_scroll_lines: usize) -> Option<UserIntent> {
@@ -60,5 +73,26 @@ mod tests {
             translate(Event::Mouse(mouse), 4),
             Some(UserIntent::ScrollTranscript { lines: 4 })
         );
+    }
+
+    #[test]
+    fn redraw_flood_is_bounded_without_dropping_a_later_key() {
+        let (tx, mut rx) = mpsc::channel(INPUT_EVENT_CAPACITY);
+        for _ in 0..100_000 {
+            assert!(enqueue(&tx, UserIntent::Redraw));
+        }
+        assert_eq!(rx.len(), INPUT_EVENT_CAPACITY);
+
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        let key_tx = tx.clone();
+        let sender = std::thread::spawn(move || enqueue(&key_tx, UserIntent::Key(key)));
+        assert_eq!(rx.blocking_recv(), Some(UserIntent::Redraw));
+        assert!(sender.join().expect("key sender"));
+
+        let mut delivered_key = false;
+        while let Ok(intent) = rx.try_recv() {
+            delivered_key |= intent == UserIntent::Key(key);
+        }
+        assert!(delivered_key);
     }
 }
