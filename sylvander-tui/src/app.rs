@@ -272,6 +272,11 @@ impl AppState {
                 self.protocol_version = Some(version);
                 self.protocol_capabilities = capabilities;
                 self.status = format!("Connected to {server_name} · protocol v{version}");
+                if let Some(session_id) = self.session_id.clone() {
+                    self.pending_actions.push(Action::RequestRuntimeInfo);
+                    self.status = format!("Reattaching session · protocol v{version}");
+                    return Some(Action::ReconcileSession { session_id });
+                }
                 return Some(Action::RequestRuntimeInfo);
             }
             DomainEvent::ProtocolDiagnostic { message } => {
@@ -393,6 +398,14 @@ impl AppState {
                 self.protocol_capabilities.clear();
                 self.turn_active = false;
                 self.interrupt_requested = false;
+                while self.modals.top().is_some_and(|modal| {
+                    matches!(
+                        modal.title(),
+                        "Tool Approval" | "Agent asks" | "Plan review" | "Plan · Edit step"
+                    )
+                }) {
+                    self.modals.pop();
+                }
                 self.status = format!("Disconnected: {reason}");
                 self.messages
                     .push(ChatMessage::Info(format!("Disconnected: {reason}")));
@@ -464,6 +477,8 @@ impl AppState {
                 cost_nano_usd,
                 notice,
                 source_session_id,
+                recovery,
+                replay_truncated,
             } => {
                 self.session_id = Some(session.id.clone());
                 self.metadata.workspace = session.workspace.clone().into();
@@ -479,8 +494,17 @@ impl AppState {
                 self.streaming_thinking.clear();
                 self.turn_active = false;
                 self.interrupt_requested = false;
-                self.queued_prompts.clear();
-                self.queued_prompt_attachments.clear();
+                if recovery {
+                    self.messages.extend(
+                        self.queued_prompts
+                            .iter()
+                            .cloned()
+                            .map(ChatMessage::QueuedUser),
+                    );
+                } else {
+                    self.queued_prompts.clear();
+                    self.queued_prompt_attachments.clear();
+                }
                 self.chat_scroll = 0;
                 self.unread_events = 0;
                 self.iteration = iterations;
@@ -491,8 +515,18 @@ impl AppState {
                 if let Some(notice) = notice {
                     self.messages.push(ChatMessage::Info(notice));
                 }
+                if replay_truncated {
+                    self.messages.push(ChatMessage::Info(
+                        "Reconnect replay exceeded 4 MiB; older in-flight details were omitted"
+                            .into(),
+                    ));
+                }
                 self.welcomed = !self.messages.is_empty();
-                self.status = format!("Resumed {}", session.label);
+                self.status = if recovery {
+                    format!("Reattached {}", session.label)
+                } else {
+                    format!("Resumed {}", session.label)
+                };
                 if let Some(existing) = self.sessions.iter_mut().find(|item| item.id == session.id)
                 {
                     existing.label = session.label;
@@ -1367,6 +1401,55 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_requests_reconciliation_and_preserves_the_local_queue() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        state.queued_prompts.push_back("follow up".into());
+        let action = state.apply(DomainEvent::ProtocolNegotiated {
+            version: 1,
+            server_name: "test-server".into(),
+            capabilities: vec!["session_replay".into()],
+        });
+        assert!(matches!(
+            action,
+            Some(Action::ReconcileSession { session_id }) if session_id == "session-1"
+        ));
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [Action::RequestRuntimeInfo]
+        ));
+
+        state.apply(DomainEvent::SessionHistoryLoaded {
+            session: crate::model::SessionSummary {
+                id: "session-1".into(),
+                label: "Recovered".into(),
+                workspace: "/workspace/project".into(),
+                last_seen_secs: 0,
+            },
+            messages: vec![crate::model::HistoryEntry {
+                role: HistoryRole::User,
+                text: "active prompt".into(),
+            }],
+            iterations: 1,
+            input_tokens: 10,
+            output_tokens: 0,
+            cost_nano_usd: Some(0),
+            notice: None,
+            source_session_id: None,
+            recovery: true,
+            replay_truncated: false,
+        });
+        assert_eq!(
+            state.queued_prompts.front().map(String::as_str),
+            Some("follow up")
+        );
+        assert!(
+            matches!(state.messages.last(), Some(ChatMessage::QueuedUser(text)) if text == "follow up")
+        );
+        assert_eq!(state.status, "Reattached Recovered");
+    }
+
+    #[test]
     fn current_deprecated_model_surfaces_migration_target() {
         let mut state = AppState::new();
         state.apply(DomainEvent::RuntimeInfo {
@@ -1894,6 +1977,8 @@ mod tests {
             cost_nano_usd: Some(7_500_000),
             notice: None,
             source_session_id: None,
+            recovery: false,
+            replay_truncated: false,
         });
 
         assert_eq!(state.session_id.as_deref(), Some("s2"));
@@ -1928,6 +2013,8 @@ mod tests {
             cost_nano_usd: Some(0),
             notice: Some("Conversation rewound · workspace files unchanged".into()),
             source_session_id: Some("source-1".into()),
+            recovery: false,
+            replay_truncated: false,
         });
         assert!(matches!(
             state.messages.last(),

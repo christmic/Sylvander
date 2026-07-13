@@ -137,6 +137,7 @@ impl AgentService {
             },
             Action::SelectPermissions { profile } => ClientMsg::SelectPermissions { profile },
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
+            Action::ReconcileSession { session_id } => ClientMsg::ReattachSession { session_id },
             Action::RenameSession { session_id, label } => {
                 ClientMsg::RenameSession { session_id, label }
             }

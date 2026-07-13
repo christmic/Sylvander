@@ -57,6 +57,9 @@ pub enum ClientMsg {
     LoadSession {
         session_id: String,
     },
+    ReattachSession {
+        session_id: String,
+    },
     RenameSession {
         session_id: String,
         label: String,
@@ -254,6 +257,10 @@ pub enum ServerMsg {
         notice: Option<String>,
         #[serde(default)]
         source_session_id: Option<String>,
+        #[serde(default)]
+        recovery: bool,
+        #[serde(default)]
+        replay_truncated: bool,
     },
     SessionUpdated {
         session_id: String,
@@ -526,6 +533,7 @@ fn tui_protocol_capabilities() -> Vec<String> {
         "diagnostics",
         "model_selection",
         "plans",
+        "session_replay",
         "sessions",
         "tasks",
         "workspace_rollback",
@@ -746,6 +754,8 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             cost_nano_usd,
             notice,
             source_session_id,
+            recovery,
+            replay_truncated,
         } => DomainEvent::SessionHistoryLoaded {
             session: crate::model::SessionSummary {
                 id: session.id,
@@ -770,6 +780,8 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             cost_nano_usd,
             notice,
             source_session_id,
+            recovery,
+            replay_truncated,
         },
         ServerMsg::SessionUpdated {
             session_id,
@@ -1152,6 +1164,8 @@ mod tests {
             cost_nano_usd: Some(45_000),
             notice: None,
             source_session_id: None,
+            recovery: false,
+            replay_truncated: false,
         });
         assert!(matches!(
             event,
@@ -1164,6 +1178,8 @@ mod tests {
                 cost_nano_usd: Some(45_000),
                 notice: None,
                 source_session_id: None,
+                recovery: false,
+                replay_truncated: false,
             })
                 if session.id == "s1"
                     && messages[0].role == crate::model::HistoryRole::User

@@ -107,6 +107,8 @@ pub enum DomainEvent {
         cost_nano_usd: Option<u64>,
         notice: Option<String>,
         source_session_id: Option<String>,
+        recovery: bool,
+        replay_truncated: bool,
     },
     SessionUpdated {
         session_id: String,
@@ -304,6 +306,9 @@ pub enum Action {
         profile: sylvander_protocol::PermissionProfile,
     },
     LoadSession {
+        session_id: String,
+    },
+    ReconcileSession {
         session_id: String,
     },
     RenameSession {
