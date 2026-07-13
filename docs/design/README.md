@@ -55,7 +55,7 @@ compact Agent-turn marker is a presence mark, not a fallback logo.
   adds space on the right and never recenters the transcript.
 - Welcome is the first transcript block. Sending a message appends below it;
   it disappears only through normal scrolling.
-- The full Seed-Crab appears once at session entry.
+- The compact half-scale Seed-Crab appears once at session entry.
 - User turns begin with `›`. Agent turns begin with one violet `◆` presence
   mark. The former three-line `/\\ (••) <__>` reply marker is prohibited.
 - Agent prose wraps on word boundaries. Markdown control characters are not

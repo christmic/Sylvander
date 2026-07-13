@@ -2,7 +2,7 @@
   "$schema": "https://design-tokens.github.io/community-group/format/",
   "meta": {
     "name": "Sylvander TUI Current",
-    "version": "4.1",
+    "version": "4.2",
     "sourceOfTruth": "docs/sylvander-tui-ux-design.md"
   },
   "color": {
@@ -22,9 +22,10 @@
     "layout": {
       "leftGutterCells": { "$value": 2, "$type": "number" },
       "readingMaxCells": { "$value": 110, "$type": "number" },
-      "welcomeHorizontalMinCells": { "$value": 88, "$type": "number" },
-      "welcomeCharacterCells": { "$value": 44, "$type": "number" },
-      "welcomeGapCells": { "$value": 4, "$type": "number" },
+      "welcomeHorizontalMinCells": { "$value": 68, "$type": "number" },
+      "welcomeCharacterCells": { "$value": 21, "$type": "number" },
+      "welcomeCharacterRows": { "$value": 6, "$type": "number" },
+      "welcomeGapCells": { "$value": 3, "$type": "number" },
       "composerMinRows": { "$value": 1, "$type": "number" },
       "composerMaxRows": { "$value": 8, "$type": "number" },
       "decisionMaxCells": { "$value": 110, "$type": "number" },
