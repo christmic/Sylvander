@@ -45,9 +45,10 @@ warning role and remains expandable.
 
 ## Command Line
 
-`/` and `Ctrl+K` open the command line. Commands may be selected or typed with
-arguments. Matching accepts contiguous text and ordered fuzzy characters across
-names, aliases, and descriptions. `Tab` completes the selected canonical name;
+`/` and `Ctrl+K` open the Focus Picker above the Composer. Commands may be
+selected or typed with arguments. Matching accepts contiguous text and ordered
+fuzzy characters across names, aliases, and descriptions. `Tab` completes the
+selected canonical name;
 successful commands move to the front when the next empty palette opens.
 Unavailable commands stay visible with the exact prerequisite instead of
 disappearing. Invalid arguments remain in the command line with an inline error.
@@ -162,8 +163,9 @@ tools, not filesystem rollback.
 `/rollback` is that separate filesystem operation. It covers only successful
 Agent `Write` and `Edit` calls recorded by the durable workspace journal; shell
 commands and user edits are never inferred. The first request is read-only and
-returns the exact file list. A focus-owning modal explains the scope, then a
-second request carries the previewed turn id. The Agent refuses a stale turn id,
+returns the exact file list. A Review View shows the scope and a focus-owning
+Decision Dock asks for confirmation, then a second request carries the previewed
+turn id. The Agent refuses a stale turn id,
 an active turn, symlink/`..` escapes, files over the 8 MiB snapshot limit, or
 any file changed since the Agent edit. Every file is conflict-checked before
 the first restore. A durable recovery marker completes an interrupted rollback
@@ -185,15 +187,18 @@ on the next journal operation. Conversation history is never changed.
 
 ## Approval
 
-Approval is a focus-owning decision layer. Keys never leak into global shortcuts
-or the Composer.
+Approval is a focus-owning Decision Dock that temporarily replaces the Composer.
+Keys never leak into global shortcuts or the saved draft.
 
-- Each request shows risk, semantic action, and filesystem/process scope.
-- `Enter`, `y`, or `1` approves the selected request once.
+- One request is shown at a time with intent, exact target, consequence, and
+  available scope in that order.
+- `↑`/`↓` choose a plain-language action and `Enter` confirms it.
+- `y` always allows once; `n`/`r` always deny. Number keys activate the visible
+  numbered row, whose order is deliberately safe-first for critical actions.
 - `s` approves the exact tool-and-arguments request for the current session.
 - `p` persists that exact request across sessions only when the server advertises
   persistent approval. It is hidden when the operator has not configured a store.
-- `n`, `r`, or `2` rejects it and opens an optional, bounded reason input. The
+- Denial opens an optional, bounded guidance input. The
   reason is attached to the typed approval decision; it never becomes a second
   chat turn.
 - `a`/`Y` approves all remaining requests once; `N` rejects all remaining requests.
@@ -231,7 +236,7 @@ background investigations stop after 600 seconds.
 
 - Approval and plan timeouts reject the pending decision; question timeout
   resumes with an empty answer. All three remove their Agent-owned pending entry.
-- A matching approval, question, or plan modal closes immediately, so a late key
+- A matching approval, question, or plan surface closes immediately, so a late key
   press cannot submit a decision for work that has already resumed.
 - Tool timeouts settle the tool row as an error. Background-task timeouts emit
   both the timeout and the terminal failed state; neither leaves a spinner alive.
@@ -243,14 +248,22 @@ background investigations stop after 600 seconds.
 
 ## Sessions
 
+The standalone TUI owns one active session. This browser is a temporary Focus
+Picker for loading a different persisted session; it is not a sidebar and does
+not imply that several sessions are active at once. Multi-session navigation is
+owned only by a Ghostty host running independent TUI processes.
+
 - Opening the browser requests current persisted session metadata from the
   service and merges it with locally observed sessions.
-- Filtering and selection have separate focus; `Tab` switches focus.
+- Typing filters while `↑`/`↓` continue to move selection. `Tab` exposes the
+  secondary rename/archive actions without turning the candidates into live
+  session tabs.
 - `Ctrl+N` prepares a new session without sending an empty Agent message.
 - Rename persists through `SessionStore`; delete confirmation archives the same
   original entry even when the list is filtered.
-- Switching requests stored history and replaces the transcript only after the
-  service responds. It is disabled while a turn is active.
+- Switching requests stored history and replaces the one loaded transcript only
+  after the service responds; until then the current conversation and draft are
+  unchanged. Switching is disabled while a turn is active.
 - Fork copies stored message history into a new session id and opens the fork.
 - The Agent and Unix channel share one SQLite store. The Agent restores model
   history when joining a known session and persists terminal assistant output

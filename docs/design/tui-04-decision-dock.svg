@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1240" viewBox="0 0 1800 1240">
+  <title>Sylvander TUI — Decision Dock</title>
+  <defs><style>
+    .page{fill:#0B0B0D}.screen{fill:#000;stroke:#343A40;stroke-width:1}.text{fill:#ECE7DE}.dim{fill:#989B9D}.muted{fill:#666C72}.warm{fill:#F0BE72}.violet{fill:#9B72FF}.active{fill:#75A7E8}.ok{fill:#72C7B1}.wait{fill:#D9AF62}.danger{fill:#E06C75}.rule{stroke:#343A40;stroke-width:1}
+    .title{font:700 28px Inter,system-ui,sans-serif}.subtitle{font:15px Inter,system-ui,sans-serif}.head{font:700 18px Inter,system-ui,sans-serif}.mono{font:17px 'SFMono-Regular',Menlo,monospace;white-space:pre}.monoBold{font:700 17px 'SFMono-Regular',Menlo,monospace;white-space:pre}.small{font:14px 'SFMono-Regular',Menlo,monospace;white-space:pre}.note{font:13px Inter,system-ui,sans-serif}
+  </style></defs>
+  <rect class="page" width="1800" height="1240"/>
+  <text class="title text" x="50" y="52">SYLVANDER TUI · DECISION DOCK</text>
+  <text class="subtitle dim" x="50" y="80">Approvals and Agent questions replace the Composer; context remains visible and only one focus exists.</text>
+
+  <g id="approval-critical" transform="translate(50 112)">
+    <text class="head violet" y="0">01 · CRITICAL APPROVAL · SAFE ACTION SELECTED</text>
+    <rect class="screen" y="20" width="1700" height="500" rx="8"/>
+    <g id="approval-transcript" class="mono" transform="translate(24 64)">
+      <text class="dim">›</text><text class="text" x="34">clean generated cache files</text>
+      <text class="violet" y="42">◆</text><text class="text" x="34" y="42">I found a destructive command and need your confirmation.</text>
+      <text class="wait" x="34" y="80">◌ Run shell</text><text class="muted" x="212" y="80">waiting for approval</text>
+    </g>
+    <g id="approval-dock">
+      <line class="rule" x1="0" y1="190" x2="1700" y2="190"/>
+      <g transform="translate(24 224)">
+        <text class="monoBold wait">◆ Permission needed</text><text class="small muted" x="930">1 of 1</text>
+        <text class="small muted" y="34">Run command</text>
+        <text class="mono text" x="22" y="66">$ rm -rf ./target/cache</text>
+        <text class="small danger" x="22" y="94">Critical · recursively deletes files · workspace ~/Projects/Sylvander</text>
+        <g id="approval-actions" transform="translate(0 126)">
+          <text class="monoBold danger">› 1. Deny</text><text class="small muted" x="150">recommended for critical operations</text>
+          <text class="mono text" y="32">  2. Allow once</text>
+          <text class="mono text" y="64">  3. Allow this exact command for this session</text>
+          <text class="small muted" y="96">  Add guidance…</text>
+        </g>
+      </g>
+      <line class="rule" x1="0" y1="468" x2="1700" y2="468"/>
+      <text class="small wait" x="0" y="494">● approval · model MiniMax-M3 · branch master · session 7ac21f</text>
+      <text class="small muted" x="1390" y="494">↑↓ select   ↵ confirm   esc deny</text>
+    </g>
+    <g id="approval-notes" transform="translate(1260 64)">
+      <text class="note violet">DECISION ORDER</text>
+      <text class="note dim" y="30">1. Intent</text><text class="note dim" y="54">2. Exact target</text>
+      <text class="note dim" y="78">3. Consequence and risk</text><text class="note dim" y="102">4. Plain-language scopes</text>
+      <text class="note dim" y="126">5. Optional guidance</text>
+      <text class="note violet" y="190">NO DUPLICATE COMPOSER</text>
+      <text class="note dim" y="220">The saved draft is hidden, not lost.</text>
+      <text class="note dim" y="244">The Dock owns the only visible focus.</text>
+    </g>
+  </g>
+
+  <g id="ask-user" transform="translate(50 666)">
+    <text class="head violet" y="0">02 · AGENT QUESTION · NATURAL PRODUCT COPY</text>
+    <rect class="screen" y="20" width="1700" height="500" rx="8"/>
+    <g id="question-transcript" class="mono" transform="translate(24 64)">
+      <text class="dim">›</text><text class="text" x="34">redesign the permission experience</text>
+      <text class="violet" y="42">◆</text><text class="text" x="34" y="42">I have two viable interaction directions.</text>
+    </g>
+    <g id="question-dock">
+      <line class="rule" x1="0" y1="150" x2="1700" y2="150"/>
+      <g transform="translate(24 184)">
+        <text class="monoBold violet">◆ One choice needed</text><text class="small muted" x="930">Question 1 of 2</text>
+        <text class="mono text" y="42">Which behavior should approval use by default?</text>
+        <g id="question-actions" transform="translate(0 82)">
+          <text class="monoBold violet">› 1. Conservative</text>
+          <text class="small dim" x="34" y="26">Select Deny first when an action is destructive.</text>
+          <text class="mono text" y="64">  2. Balanced</text>
+          <text class="small dim" x="34" y="90">Select Allow once for ordinary workspace changes.</text>
+          <text class="mono text" y="128">  3. Other…</text>
+        </g>
+      </g>
+      <line class="rule" x1="0" y1="468" x2="1700" y2="468"/>
+      <text class="small violet" x="0" y="494">● answering · model MiniMax-M3 · branch master · session 7ac21f</text>
+      <text class="small muted" x="1390" y="494">↑↓ select   ↵ choose   esc skip</text>
+    </g>
+    <g id="question-notes" transform="translate(1260 64)">
+      <text class="note violet">COPY RULE</text>
+      <text class="note dim" y="30">Say what the user must decide.</text>
+      <text class="note dim" y="54">Never show “single-select” or protocol types.</text>
+      <text class="note violet" y="112">MULTIPLE QUESTIONS</text>
+      <text class="note dim" y="142">One question at a time.</text>
+      <text class="note dim" y="166">Review answers only when there is more than one.</text>
+      <text class="note violet" y="224">FREE TEXT</text>
+      <text class="note dim" y="254">“Other…” becomes an inline editor in place.</text>
+    </g>
+  </g>
+</svg>
