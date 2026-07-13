@@ -12,14 +12,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    layout::Rect,
+    style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::focus_picker};
 use crate::theme;
 
 /// Status badge for a session row.
@@ -30,28 +31,6 @@ pub enum SessionStatus {
     Complete,
     Failed,
     Disconnected,
-}
-
-impl SessionStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Working => "working",
-            Self::Waiting => "waiting",
-            Self::Complete => "complete",
-            Self::Failed => "failed",
-            Self::Disconnected => "disconnected",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Self::Working => theme::palette().waiting,
-            Self::Waiting => theme::palette().active,
-            Self::Complete => theme::palette().verified,
-            Self::Failed => theme::palette().danger,
-            Self::Disconnected => theme::palette().text_muted,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,141 +122,106 @@ impl Modal for SessionsOverlay {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
-        let popup_area = centered_rect(70, 16, parent);
-        frame.render_widget(Clear, popup_area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Sessions ")
-                .title_style(theme::modal_title_coral()),
-            popup_area,
-        );
-
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // search
-                Constraint::Length(1), // spacer
-                Constraint::Min(8),    // list
-                Constraint::Length(1), // footer
-            ])
-            .split(inner);
-
-        // 1. Filter input
-        let search_line = if self.filter_focused {
-            Line::from(vec![
-                Span::styled("Search sessions… ", theme::text_muted()),
-                Span::styled(&self.filter, Style::default()),
-                Span::styled("_", theme::cursor()),
-            ])
-        } else {
-            Line::from(Span::styled(
-                format!("Search sessions… {}", self.filter),
-                theme::text_muted(),
-            ))
-        };
-        frame.render_widget(Paragraph::new(search_line), layout[0]);
-
-        // 2. Spacer
-        frame.render_widget(
-            Paragraph::new("─".repeat(layout[1].width as usize)),
-            layout[1],
-        );
-
-        // 3. List
         let filtered = self.filtered();
-        let mut lines: Vec<Line> = Vec::new();
+        let visible = filtered.len().clamp(1, 7) as u16;
+        let areas = focus_picker(frame, parent, visible.saturating_add(2));
+        let count = if filtered.len() == 1 {
+            "1 match".to_string()
+        } else {
+            format!("{} matches", filtered.len())
+        };
+        let title = "Resume a session";
+        let gap = (areas.results.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(&*count));
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(title, theme::brand_violet()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(count, theme::text_muted()),
+            ]),
+            Line::from(Span::styled(
+                "Loading one session replaces the current conversation.",
+                theme::text_muted(),
+            )),
+        ];
         if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "  (no sessions match)",
+                "  No persisted sessions match",
                 theme::subtle_emphasis(theme::text_muted()),
             )));
         } else {
-            let mut workspace = None::<&str>;
-            for (row_i, (orig_idx, entry)) in filtered.iter().enumerate() {
-                if workspace != Some(entry.workspace.as_str()) {
-                    workspace = Some(entry.workspace.as_str());
-                    lines.push(Line::from(vec![
-                        Span::styled("  ▾ ", theme::brand_violet()),
-                        Span::styled(truncate(&entry.workspace, 64), theme::text_muted()),
-                    ]));
-                }
+            let list_rows = areas.results.height.saturating_sub(2) as usize;
+            let start = self.cursor.saturating_add(1).saturating_sub(list_rows);
+            for (row_i, (_, entry)) in filtered.iter().enumerate().skip(start).take(list_rows) {
                 let is_active = state
                     .session_id
                     .as_deref()
                     .map(|sid| sid == entry.id.as_str())
                     .unwrap_or(false);
                 let is_cursor = row_i == self.cursor;
-                let cursor_marker = if is_cursor { "  › " } else { "    " };
-                let active_marker = if is_active { "● " } else { "  " };
+                let cursor_marker = if is_cursor { "› " } else { "  " };
                 let color = if is_cursor {
                     theme::palette().active
                 } else {
                     theme::palette().text_dim
                 };
-
-                let status_color = entry.status.color();
                 lines.push(Line::from(vec![
                     Span::styled(cursor_marker, Style::default().fg(color)),
-                    Span::styled(active_marker, Style::default().fg(entry.status.color())),
                     Span::styled(
                         format!("{:<24}", truncate(&entry.label, 24)),
                         Style::default().fg(color),
                     ),
                     Span::styled(
-                        format!("{:<10}", entry.status.label()),
-                        Style::default().fg(status_color),
-                    ),
-                    Span::styled(
-                        format!("{:<30}", truncate(&entry.workspace, 30)),
+                        format!("{:<34}", truncate(&entry.workspace, 34)),
                         theme::text_muted(),
                     ),
                     Span::styled(entry.format_time(), theme::text_muted()),
+                    Span::styled(
+                        if is_active { "  current" } else { "" },
+                        theme::text_muted(),
+                    ),
                 ]));
-                let _ = orig_idx; // surfacing only used in confirm-delete
             }
         }
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), layout[2]);
+        frame.render_widget(Paragraph::new(lines), areas.results);
 
-        // 4. Footer
-        let footer = if self.renaming.is_some() {
+        let query = if self.renaming.is_some() {
             Line::from(vec![
-                Span::styled("Rename: ", theme::active()),
+                Span::styled("Rename > ", theme::active()),
                 Span::styled(&self.rename_buffer, theme::text()),
-                Span::styled("_", theme::active()),
                 Span::styled("  Enter save · Esc cancel", theme::text_muted()),
             ])
         } else if self.pending_permanent_delete.is_some() {
             Line::from(vec![
-                Span::styled("Permanent delete: type DELETE ", theme::danger()),
+                Span::styled("Type DELETE > ", theme::danger()),
                 Span::styled(&self.permanent_delete_buffer, theme::text()),
-                Span::styled("_  Enter confirm · Esc cancel", theme::text_muted()),
+                Span::styled("  Enter confirm · Esc cancel", theme::text_muted()),
             ])
         } else if self.pending_delete.is_some() {
             Line::from(vec![
-                Span::styled("Delete this session? ", theme::warning()),
-                Span::styled("[y] confirm  [n/Esc] cancel", theme::text_muted()),
+                Span::styled("Archive this session? ", theme::warning()),
+                Span::styled("y confirm · n/esc cancel", theme::text_muted()),
             ])
-        } else if self.filter_focused {
-            Line::from(Span::styled(
-                "type filter · ↑↓ select · ↵ open · d archive · D delete",
-                theme::text_muted(),
-            ))
         } else {
-            Line::from(Span::styled(
-                "↑↓ select · ↵ open · r rename · d archive · D delete",
-                theme::text_muted(),
-            ))
+            Line::from(vec![
+                Span::styled("/resume ", theme::brand_violet()),
+                Span::styled(&self.filter, theme::text()),
+                if self.filter_focused {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        "  actions: r rename · d archive · D delete",
+                        theme::text_muted(),
+                    )
+                },
+            ])
         };
-        frame.render_widget(Paragraph::new(footer), layout[3]);
+        frame.render_widget(Paragraph::new(query), areas.query);
 
-        // Hardware cursor in filter when focused.
         if self.filter_focused {
-            let cursor_x = inner.x + 17 + self.filter.chars().count() as u16;
-            let cursor_y = inner.y;
-            if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
-                frame.set_cursor_position((cursor_x, cursor_y));
+            let x = areas.query.x + 8 + UnicodeWidthStr::width(self.filter.as_str()) as u16;
+            if x < areas.query.x + areas.query.width {
+                frame.set_cursor_position((x, areas.query.y));
             }
         }
     }
@@ -435,7 +379,7 @@ impl Modal for SessionsOverlay {
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
-            KeyCode::Enter if !self.filter_focused => {
+            KeyCode::Enter => {
                 if state.turn_active {
                     state.status = "Interrupt active work before switching sessions".into();
                     state.dirty.mark();
@@ -455,19 +399,17 @@ impl Modal for SessionsOverlay {
                 Consumed::Ignored
             }
             KeyCode::Up => {
-                if !self.filter_focused && self.cursor > 0 {
+                if self.cursor > 0 {
                     self.cursor -= 1;
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Down => {
-                if !self.filter_focused {
-                    let len = self.filtered().len();
-                    if self.cursor + 1 < len {
-                        self.cursor += 1;
-                        state.dirty.mark();
-                    }
+                let len = self.filtered().len();
+                if self.cursor + 1 < len {
+                    self.cursor += 1;
+                    state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
@@ -521,12 +463,6 @@ impl Modal for SessionsOverlay {
                 }
                 Consumed::Yes { dismiss: false }
             }
-            KeyCode::Enter if self.filter_focused => {
-                // Enter while typing jumps to the list.
-                self.filter_focused = false;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
             _ => Consumed::Ignored,
         }
     }
@@ -540,26 +476,6 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-        ])
-        .split(parent);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-            Constraint::Percentage(percent_x.min(95)),
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-        ])
-        .split(v[1]);
-    h[1]
 }
 
 // ===========================================================================

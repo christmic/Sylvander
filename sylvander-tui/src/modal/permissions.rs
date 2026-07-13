@@ -3,11 +3,11 @@ use ratatui::{
     Frame,
     layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::focus_picker};
 use crate::theme;
 
 pub struct PermissionsPicker {
@@ -80,22 +80,12 @@ impl Modal for PermissionsPicker {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
-        let width = parent.width.saturating_sub(4).min(70).max(34);
-        let height = 11.min(parent.height);
-        let area = Rect {
-            x: parent.x + parent.width.saturating_sub(width) / 2,
-            y: parent.y + parent.height.saturating_sub(height) / 2,
-            width,
-            height,
+        let result_rows = if state.metadata.approval_enabled {
+            6
+        } else {
+            7
         };
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Permissions · workspace scoped · next turn ")
-                .title_style(theme::modal_title_coral()),
-            area,
-        );
+        let areas = focus_picker(frame, parent, result_rows);
         let workspace = state.metadata.workspace.display().to_string();
         let rows = [
             ("filesystem", file_label(self.profile.file_access)),
@@ -104,10 +94,16 @@ impl Modal for PermissionsPicker {
         ];
         let mut lines = vec![
             Line::from(vec![
+                Span::styled("Permissions", theme::brand_violet()),
+                Span::styled(
+                    " · workspace scoped · applies next turn",
+                    theme::text_muted(),
+                ),
+            ]),
+            Line::from(vec![
                 Span::styled("root  ", theme::text_muted()),
                 Span::styled(workspace, theme::text_dim()),
             ]),
-            Line::from(Span::styled("", theme::text_muted())),
         ];
         for (index, (label, value)) in rows.into_iter().enumerate() {
             lines.push(Line::from(vec![
@@ -126,20 +122,19 @@ impl Modal for PermissionsPicker {
                 ),
             ]));
         }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "↑↓ field   ←→ value   enter apply   esc close",
-            theme::text_muted(),
-        )));
         if !state.metadata.approval_enabled {
             lines.push(Line::from(Span::styled(
                 "approval ask unavailable: server operator disabled prompts",
                 theme::warning(),
             )));
         }
+        frame.render_widget(Paragraph::new(lines), areas.results);
         frame.render_widget(
-            Paragraph::new(lines),
-            Block::default().borders(Borders::ALL).inner(area),
+            Paragraph::new(Line::from(vec![
+                Span::styled("/permissions", theme::brand_violet()),
+                Span::styled("  ←→ change selected value", theme::text_muted()),
+            ])),
+            areas.query,
         );
     }
 

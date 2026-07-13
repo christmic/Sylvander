@@ -5,13 +5,14 @@ use std::path::{Path, PathBuf};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::focus_picker};
 use crate::theme;
 
 pub struct FileMentionModal {
@@ -58,80 +59,62 @@ impl Modal for FileMentionModal {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let area = centered_rect(72, 15, parent);
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" @ Add workspace file ")
-                .title_style(theme::active_bold()),
-            area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(area);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Min(8),
-                Constraint::Length(1),
-            ])
-            .split(inner);
+        let matches = self.matches();
+        let areas = focus_picker(frame, parent, matches.len().clamp(1, 8) as u16 + 1);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("@ ", theme::brand_violet()),
                 Span::styled(&self.query, theme::text()),
-                Span::styled("_", theme::active()),
             ])),
-            rows[0],
+            areas.query,
         );
-        let matches = self.matches();
-        let lines = if matches.is_empty() {
-            vec![Line::from(Span::styled(
+        let x = areas.query.x + 2 + UnicodeWidthStr::width(self.query.as_str()) as u16;
+        if x < areas.query.x + areas.query.width {
+            frame.set_cursor_position((x, areas.query.y));
+        }
+        let mut lines = vec![Line::from(Span::styled(
+            self.error.as_deref().unwrap_or("Add a workspace file"),
+            if self.error.is_some() {
+                theme::danger()
+            } else {
+                theme::brand_violet()
+            },
+        ))];
+        if matches.is_empty() {
+            lines.push(Line::from(Span::styled(
                 "No matching workspace files",
                 theme::text_muted(),
-            ))]
+            )));
         } else {
-            matches
-                .iter()
-                .enumerate()
-                .map(|(index, path)| {
-                    Line::from(vec![
-                        Span::styled(
-                            if index == self.cursor { "› " } else { "  " },
-                            if index == self.cursor {
-                                theme::active()
-                            } else {
-                                theme::text_muted()
-                            },
-                        ),
-                        Span::styled(
-                            (*path).to_string(),
-                            if index == self.cursor {
-                                theme::text()
-                            } else {
-                                theme::text_dim()
-                            },
-                        ),
-                    ])
-                })
-                .collect()
-        };
-        frame.render_widget(Paragraph::new(lines), rows[1]);
-        let footer = self
-            .error
-            .as_deref()
-            .unwrap_or("enter attach · ↑↓ select · esc close");
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                footer,
-                if self.error.is_some() {
-                    theme::danger()
-                } else {
-                    theme::text_muted()
-                },
-            )),
-            rows[2],
-        );
+            lines.extend(
+                matches
+                    .iter()
+                    .take(areas.results.height.saturating_sub(1) as usize)
+                    .enumerate()
+                    .map(|(index, path)| {
+                        Line::from(vec![
+                            Span::styled(
+                                if index == self.cursor { "› " } else { "  " },
+                                if index == self.cursor {
+                                    theme::active()
+                                } else {
+                                    theme::text_muted()
+                                },
+                            ),
+                            Span::styled(
+                                (*path).to_string(),
+                                if index == self.cursor {
+                                    theme::text()
+                                } else {
+                                    theme::text_dim()
+                                },
+                            ),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        frame.render_widget(Paragraph::new(lines), areas.results);
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
@@ -254,26 +237,6 @@ fn fuzzy_score(candidate: &str, query: &str) -> Option<usize> {
         score += found + 4;
     }
     Some(score)
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Min(0),
-        ])
-        .split(parent);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Min(0),
-        ])
-        .split(vertical[1]);
-    horizontal[1]
 }
 
 #[cfg(test)]

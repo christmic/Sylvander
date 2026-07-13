@@ -1,13 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::app::{AppState, reasoning_label};
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::focus_picker};
 use crate::theme;
 
 pub struct ModelPicker {
@@ -70,31 +70,11 @@ impl Modal for ModelPicker {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
-        let width = parent.width.saturating_sub(4).min(76).max(30);
-        let height = (state.metadata.models.len() as u16 + 6)
-            .min(parent.height.saturating_sub(4))
-            .max(8);
-        let area = centered(width, height, parent);
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Model · applies next turn ")
-                .title_style(theme::modal_title_coral()),
-            area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(area);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Min(2),
-                Constraint::Length(1),
-            ])
-            .split(inner);
+        let visible_models = state.metadata.models.len().clamp(1, 8) as u16;
+        let areas = focus_picker(frame, parent, visible_models.saturating_add(2));
         let mut active_line = vec![
-            Span::styled("active  ", theme::text_muted()),
+            Span::styled("Model · applies next turn  ", theme::brand_violet()),
+            Span::styled("current  ", theme::text_muted()),
             Span::styled(&state.metadata.model, theme::header()),
             Span::styled("  reasoning ", theme::text_muted()),
             Span::styled(
@@ -118,75 +98,79 @@ impl Modal for ModelPicker {
                 theme::text_muted(),
             ));
         }
-        frame.render_widget(Paragraph::new(Line::from(active_line)), rows[0]);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "─".repeat(rows[1].width as usize),
-                theme::rule(),
-            ))),
-            rows[1],
-        );
-
-        let visible = rows[2].height as usize;
+        let visible = areas.results.height.saturating_sub(2) as usize;
         let start = self.cursor.saturating_add(1).saturating_sub(visible);
-        let lines = state
-            .metadata
-            .models
-            .iter()
-            .enumerate()
-            .skip(start)
-            .take(visible)
-            .map(|(index, model)| {
-                let selected = index == self.cursor;
-                let active = model.id == state.metadata.model;
-                let effort = if selected {
-                    model.reasoning_efforts.get(self.effort_index).copied()
-                } else if active {
-                    Some(state.metadata.reasoning_effort)
-                } else {
-                    model.reasoning_efforts.first().copied()
-                }
-                .unwrap_or_default();
-                let mut spans = vec![
-                    Span::styled(if selected { "› " } else { "  " }, theme::active_bold()),
-                    Span::styled(if active { "● " } else { "○ " }, theme::verified()),
-                    Span::styled(
-                        table_cell(&model.id, 24),
-                        if selected {
-                            theme::active_bold()
-                        } else {
-                            theme::text_dim()
-                        },
-                    ),
-                ];
-                match &model.lifecycle {
-                    sylvander_protocol::ModelLifecycle::Active => {
-                        spans.push(Span::styled(
-                            table_cell(&model.provider, 22),
-                            theme::text_muted(),
-                        ));
-                        spans.push(Span::styled(
-                            reasoning_label(effort),
-                            theme::thinking_text(),
-                        ));
+        let mut lines = vec![Line::from(active_line), Line::from("")];
+        lines.extend(
+            state
+                .metadata
+                .models
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+                .map(|(index, model)| {
+                    let selected = index == self.cursor;
+                    let active = model.id == state.metadata.model;
+                    let effort = if selected {
+                        model.reasoning_efforts.get(self.effort_index).copied()
+                    } else if active {
+                        Some(state.metadata.reasoning_effort)
+                    } else {
+                        model.reasoning_efforts.first().copied()
                     }
-                    sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
-                        let label = replacement
-                            .as_ref()
-                            .map_or_else(|| "deprecated".into(), |id| format!("deprecated → {id}"));
-                        spans.push(Span::styled(label, theme::danger()));
+                    .unwrap_or_default();
+                    let mut spans = vec![
+                        Span::styled(if selected { "› " } else { "  " }, theme::active_bold()),
+                        Span::styled(if active { "● " } else { "○ " }, theme::verified()),
+                        Span::styled(
+                            table_cell(&model.id, 24),
+                            if selected {
+                                theme::active_bold()
+                            } else {
+                                theme::text_dim()
+                            },
+                        ),
+                    ];
+                    match &model.lifecycle {
+                        sylvander_protocol::ModelLifecycle::Active => {
+                            spans.push(Span::styled(
+                                table_cell(&model.provider, 22),
+                                theme::text_muted(),
+                            ));
+                            spans.push(Span::styled(
+                                reasoning_label(effort),
+                                theme::thinking_text(),
+                            ));
+                        }
+                        sylvander_protocol::ModelLifecycle::Deprecated { replacement } => {
+                            let label = replacement.as_ref().map_or_else(
+                                || "deprecated".into(),
+                                |id| format!("deprecated → {id}"),
+                            );
+                            spans.push(Span::styled(label, theme::danger()));
+                        }
                     }
-                }
-                Line::from(spans)
-            })
-            .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(lines), rows[2]);
+                    Line::from(spans)
+                })
+                .collect::<Vec<_>>(),
+        );
+        frame.render_widget(Paragraph::new(lines), areas.results);
+        let selected = self.selected(state);
+        let query = selected.map_or_else(
+            || "/model".to_string(),
+            |model| {
+                let effort = model
+                    .reasoning_efforts
+                    .get(self.effort_index)
+                    .copied()
+                    .unwrap_or_default();
+                format!("/model {} {}", model.id, reasoning_label(effort))
+            },
+        );
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "↑↓ model   ←→ reasoning   enter apply   esc close",
-                theme::text_muted(),
-            ))),
-            rows[3],
+            Paragraph::new(Line::from(Span::styled(query, theme::text()))),
+            areas.query,
         );
     }
 
@@ -241,15 +225,6 @@ impl Modal for ModelPicker {
             }
             _ => Consumed::Ignored,
         }
-    }
-}
-
-fn centered(width: u16, height: u16, parent: Rect) -> Rect {
-    Rect {
-        x: parent.x + parent.width.saturating_sub(width) / 2,
-        y: parent.y + parent.height.saturating_sub(height) / 2,
-        width: width.min(parent.width),
-        height: height.min(parent.height),
     }
 }
 
