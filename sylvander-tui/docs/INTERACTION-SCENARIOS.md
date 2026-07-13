@@ -141,7 +141,7 @@ on the next journal operation. Conversation history is never changed.
 
 - `/mention` opens the same bounded, fuzzy workspace-file picker as `@`; it
   attaches the selected file to the draft and never sends by itself.
-- `/diff` inspects both staged and unstaged Git changes. `/diff staged` and
+- `/diff` inspects staged, unstaged, and untracked Git changes. `/diff staged` and
   `/diff unstaged` narrow the scope. The read-only query disables external diff
   drivers and Git locks, caps output at 2 MiB, and opens the existing searchable,
   copyable inspector without changing the transcript or repository.
