@@ -23,7 +23,11 @@ impl AgentService {
 
     pub async fn connect(&mut self) -> DomainEvent {
         match self.client.connect().await {
-            Ok(()) => DomainEvent::Connected,
+            Ok(protocol) => DomainEvent::ProtocolNegotiated {
+                version: protocol.version,
+                server_name: protocol.server_name,
+                capabilities: protocol.capabilities,
+            },
             Err(error) => DomainEvent::Disconnected {
                 reason: error.to_string(),
             },
@@ -43,6 +47,9 @@ impl AgentService {
                         return Some(event);
                     }
                 }
+                ClientEvent::Diagnostic(message) => {
+                    return Some(DomainEvent::ProtocolDiagnostic { message });
+                }
             }
         }
     }
@@ -59,6 +66,9 @@ impl AgentService {
                     if let Some(event) = parse_server_msg(message) {
                         return Some(event);
                     }
+                }
+                ClientEvent::Diagnostic(message) => {
+                    return Some(DomainEvent::ProtocolDiagnostic { message });
                 }
             }
         }

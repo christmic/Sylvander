@@ -61,10 +61,7 @@ async fn connect_with_retry(path: &std::path::Path) -> UnixStream {
     unreachable!()
 }
 
-/// Stub server: accepts one client and replies with the canned 4-message
-/// sequence (Pong + session_created + text_delta + done) for every line
-/// the client sends. Keeps replying as long as the client has anything
-/// to say.
+/// Stub server: negotiates protocol v1, then replies with a canned stream.
 fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
     let path = path.to_path_buf();
     std::thread::spawn(move || {
@@ -89,6 +86,16 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut buf = String::new();
+        if reader.read_line(&mut buf).unwrap_or(0) == 0 {
+            return;
+        }
+        let hello: serde_json::Value = serde_json::from_str(&buf).expect("hello json");
+        assert_eq!(hello["type"], "hello");
+        let welcome = r#"{"type":"welcome","protocol":{"server_name":"stub","version":1,"capabilities":["diagnostics"]}}"#;
+        let _ = stream.write_all(welcome.as_bytes());
+        let _ = stream.write_all(b"\n");
+        let _ = stream.flush();
+        buf.clear();
         while reader.read_line(&mut buf).unwrap_or(0) > 0 {
             buf.clear();
             for line in [
@@ -103,6 +110,21 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
             let _ = stream.flush();
         }
     })
+}
+
+async fn negotiate<R, W>(reader: &mut R, write: &mut W)
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    write
+        .write_all(b"{\"type\":\"hello\",\"protocol\":{\"client_name\":\"e2e\",\"min_version\":1,\"max_version\":1,\"capabilities\":[]}}\n")
+        .await
+        .expect("write hello");
+    let line = read_line_with_timeout(reader).await;
+    let welcome: ServerMsg = serde_json::from_str(&line).expect("parse welcome");
+    assert!(matches!(welcome, ServerMsg::Welcome { protocol } if protocol.version == 1));
 }
 
 /// Read the next line from a `BufReader<ReadHalf>` (or anything AsyncBufRead)
@@ -131,6 +153,7 @@ async fn e2e_handshake_ping_returns_pong() {
     let mut reader = BufReader::new(read);
 
     use tokio::io::AsyncWriteExt;
+    negotiate(&mut reader, &mut write).await;
     write
         .write_all(b"{\"type\":\"ping\"}\n")
         .await
@@ -154,6 +177,7 @@ async fn e2e_state_machine_progresses_through_stream() {
     let mut reader = BufReader::new(read);
 
     use tokio::io::AsyncWriteExt;
+    negotiate(&mut reader, &mut write).await;
     write
         .write_all(b"{\"type\":\"chat\",\"text\":\"hi\"}\n")
         .await

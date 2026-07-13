@@ -21,6 +21,9 @@ use crate::event::DomainEvent;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
+    Hello {
+        protocol: sylvander_protocol::UiProtocolHello,
+    },
     Chat {
         text: String,
         #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -101,6 +104,12 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
+    Welcome {
+        protocol: sylvander_protocol::UiProtocolWelcome,
+    },
+    ProtocolError {
+        error: sylvander_protocol::UiProtocolError,
+    },
     SessionCreated {
         session_id: String,
     },
@@ -345,6 +354,7 @@ pub enum ClientEvent {
     Disconnected,
     /// A parsed server message arrived.
     Message(ServerMsg),
+    Diagnostic(String),
 }
 
 // ===========================================================================
@@ -377,22 +387,81 @@ impl UnixClient {
         )
     }
 
-    /// Try to establish a Unix socket connection. Returns Ok(()) if the
-    /// stream was acquired; on failure, the caller can retry later.
-    pub async fn connect(&mut self) -> std::io::Result<()> {
+    /// Establish a Unix socket connection and negotiate the UI protocol.
+    pub async fn connect(&mut self) -> std::io::Result<sylvander_protocol::UiProtocolWelcome> {
         let stream = tokio::net::UnixStream::connect(&self.path).await?;
-        let (read, write) = stream.into_split();
+        let (read, mut write) = stream.into_split();
+        let hello = ClientMsg::Hello {
+            protocol: sylvander_protocol::UiProtocolHello {
+                client_name: "sylvander-tui".into(),
+                min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+                max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+                capabilities: tui_protocol_capabilities(),
+            },
+        };
+        let encoded = serde_json::to_string(&hello)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        write.write_all(encoded.as_bytes()).await?;
+        write.write_all(b"\n").await?;
+        write.flush().await?;
+
+        let mut reader = BufReader::new(read);
+        let mut line = String::new();
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reader.read_line(&mut line),
+        )
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "protocol handshake timed out")
+        })??;
+        if bytes == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "server closed during protocol handshake",
+            ));
+        }
+        let welcome = match serde_json::from_str::<ServerMsg>(&line) {
+            Ok(ServerMsg::Welcome { protocol }) => protocol,
+            Ok(ServerMsg::ProtocolError { error }) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("protocol {}: {}", error.code, error.message),
+                ));
+            }
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "server did not acknowledge protocol handshake",
+                ));
+            }
+            Err(error) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid protocol handshake: {error}"),
+                ));
+            }
+        };
+        if !(sylvander_protocol::UI_PROTOCOL_MIN_VERSION
+            ..=sylvander_protocol::UI_PROTOCOL_MAX_VERSION)
+            .contains(&welcome.version)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("server selected unsupported protocol v{}", welcome.version),
+            ));
+        }
         self.writer = Some(write);
-        self.spawn_reader(read);
-        Ok(())
+        self.spawn_reader(reader);
+        Ok(welcome)
     }
 
     /// Spawn the read loop. Each parsed line is forwarded as a Message
     /// event; the loop exits when the socket closes.
-    fn spawn_reader(&self, read: OwnedReadHalf) {
+    fn spawn_reader(&self, reader: BufReader<OwnedReadHalf>) {
         let tx = self.event_tx.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(read).lines();
+            let mut reader = reader.lines();
             loop {
                 match reader.next_line().await {
                     Ok(Some(line)) => {
@@ -400,15 +469,16 @@ impl UnixClient {
                         if line.is_empty() {
                             continue;
                         }
-                        match serde_json::from_str::<ServerMsg>(line) {
+                        match parse_server_line(line) {
                             Ok(msg) => {
                                 if tx.send(ClientEvent::Message(msg)).is_err() {
                                     break;
                                 }
                             }
-                            Err(_) => {
-                                // Drop bad lines silently — server may be
-                                // half-started. Real impl could log.
+                            Err(diagnostic) => {
+                                if tx.send(ClientEvent::Diagnostic(diagnostic)).is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -448,6 +518,37 @@ impl UnixClient {
     }
 }
 
+fn tui_protocol_capabilities() -> Vec<String> {
+    [
+        "attachments",
+        "approval_scopes",
+        "compaction",
+        "diagnostics",
+        "model_selection",
+        "plans",
+        "sessions",
+        "tasks",
+        "workspace_rollback",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn bounded_diagnostic(message: &str) -> String {
+    message.chars().take(240).collect()
+}
+
+fn parse_server_line(line: &str) -> Result<ServerMsg, String> {
+    serde_json::from_str(line).map_err(|error| {
+        format!(
+            "Rejected server message ({} bytes): {}",
+            line.len(),
+            bounded_diagnostic(&error.to_string())
+        )
+    })
+}
+
 // ===========================================================================
 // Protocol → Domain adapter (only place that knows both worlds)
 // ===========================================================================
@@ -459,6 +560,15 @@ impl UnixClient {
 /// other file needs to change.
 pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
     Some(match msg {
+        ServerMsg::Welcome { protocol } => DomainEvent::ProtocolDiagnostic {
+            message: format!(
+                "unexpected repeated welcome for protocol v{}",
+                protocol.version
+            ),
+        },
+        ServerMsg::ProtocolError { error } => DomainEvent::ProtocolDiagnostic {
+            message: format!("{}: {}", error.code, error.message),
+        },
         ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
         ServerMsg::RuntimeInfo {
             model,
@@ -698,6 +808,14 @@ fn default_approval_scopes() -> Vec<sylvander_protocol::ApprovalScope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_server_messages_produce_bounded_diagnostics() {
+        let line = format!(r#"{{"type":"future_{}"}}"#, "x".repeat(500));
+        let diagnostic = parse_server_line(&line).expect_err("unknown event must be visible");
+        assert!(diagnostic.starts_with("Rejected server message"));
+        assert!(diagnostic.chars().count() < 300);
+    }
 
     #[test]
     fn runtime_wire_event_preserves_server_capabilities() {
