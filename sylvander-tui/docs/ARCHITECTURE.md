@@ -80,6 +80,13 @@ The wire reader converts malformed or unknown messages into bounded diagnostic
 domain events. Raw message bodies are never copied into diagnostics or logs, so
 future event types remain visible without exposing prompt or credential data.
 
+The Unix service owns one session relay per active turn. Relays outlive an
+individual socket, broadcast to every attached client, and retain an ordered,
+4 MiB-bounded replay of the in-flight turn. Reattachment is atomic with relay
+delivery: persisted history is sent first, then the active replay, then new live
+events. Terminal turn events clear the replay and retire the relay. This keeps
+recovery transport-owned without leaking socket or replay state into Panels.
+
 `workspace_service.rs` is the corresponding boundary for bounded, read-only
 local workspace queries such as `/diff`. It never mutates Git state and returns
 plain domain data; Panels and Modals do not invoke it directly.

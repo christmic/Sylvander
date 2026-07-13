@@ -213,8 +213,14 @@ messages become bounded transcript diagnostics instead of disappearing; their
 raw payload is not displayed.
 
 The runtime reconnects to the Unix Agent service on a configurable interval.
-Draft and input history survive disconnection. Service events are coalesced;
-keyboard feedback remains immediate.
+When a session is active, reconnect requests a reattachment rather than merely
+opening another socket. The service atomically returns durable history followed
+by the ordered in-flight turn replay, including text, tool, approval, question,
+plan, and task events that arrived while disconnected. Local queued prompts and
+drafts survive the replacement. The replay is capped at 4 MiB; overflow remains
+bounded and produces an explicit recovery notice instead of silently presenting
+an incomplete transcript. A second concurrent turn for the same session is
+rejected rather than interleaved.
 
 `/doctor` opens a redacted runtime report, `/doctor copy` sends that same report
 through the bounded terminal clipboard, and `/doctor export <path>` writes it
