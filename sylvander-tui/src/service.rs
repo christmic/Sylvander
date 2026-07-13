@@ -132,9 +132,11 @@ impl AgentService {
             Action::ForkSession {
                 session_id,
                 completed_turns,
+                checkpoint,
             } => ClientMsg::ForkSession {
                 session_id,
                 completed_turns,
+                checkpoint,
             },
             Action::Quit => return Ok(()),
         };

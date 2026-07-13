@@ -121,6 +121,12 @@ session and workspace files unchanged. Invalid or unfinished boundaries create
 no branch. Filesystem rollback is intentionally a separate future operation;
 the TUI never implies that conversation rewind reverted code.
 
+`/checkpoint` creates a full conversation branch and keeps the source session
+as the return point. `/undo` returns to that structured source session exactly
+once. Both surfaces repeat `workspace files unchanged`; loading any unrelated
+session clears the stale undo target. These commands are conversation safety
+tools, not filesystem rollback.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts

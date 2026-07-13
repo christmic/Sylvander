@@ -64,6 +64,7 @@ pub enum DomainEvent {
         output_tokens: u64,
         cost_nano_usd: Option<u64>,
         notice: Option<String>,
+        source_session_id: Option<String>,
     },
     SessionUpdated {
         session_id: String,
@@ -276,6 +277,7 @@ pub enum Action {
     ForkSession {
         session_id: String,
         completed_turns: Option<usize>,
+        checkpoint: bool,
     },
     /// Send a feedback message to the agent (e.g. after rejecting a tool
     /// call, so it can adjust its next attempt). Wraps as a chat message

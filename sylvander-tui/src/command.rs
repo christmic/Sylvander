@@ -13,6 +13,8 @@ pub enum CommandId {
     Rename,
     Fork,
     Rewind,
+    Checkpoint,
+    Undo,
     Clear,
     Help,
     Theme,
@@ -82,6 +84,20 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/rewind <completed-turn>",
         description: "Branch from a completed conversation turn",
         hint: "workspace unchanged",
+    },
+    CommandSpec {
+        id: CommandId::Checkpoint,
+        name: "checkpoint",
+        usage: "/checkpoint",
+        description: "Create a conversation checkpoint branch",
+        hint: "workspace unchanged",
+    },
+    CommandSpec {
+        id: CommandId::Undo,
+        name: "undo",
+        usage: "/undo",
+        description: "Return to the source conversation",
+        hint: "does not revert files",
     },
     CommandSpec {
         id: CommandId::Clear,
@@ -284,6 +300,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .push(crate::event::Action::ForkSession {
                     session_id,
                     completed_turns: None,
+                    checkpoint: false,
                 });
             state.status = "Forking session…".into();
         }
@@ -308,8 +325,41 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .push(crate::event::Action::ForkSession {
                     session_id,
                     completed_turns: Some(completed_turns),
+                    checkpoint: false,
                 });
             state.status = "Rewinding into a new conversation branch · workspace unchanged…".into();
+        }
+        CommandId::Checkpoint => {
+            require_no_args(&invocation)?;
+            if state.turn_active {
+                return Err("Interrupt active work before checkpointing".into());
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no persisted session to checkpoint".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::ForkSession {
+                    session_id,
+                    completed_turns: None,
+                    checkpoint: true,
+                });
+            state.status = "Creating conversation checkpoint · workspace unchanged…".into();
+        }
+        CommandId::Undo => {
+            require_no_args(&invocation)?;
+            if state.turn_active {
+                return Err("Interrupt active work before returning to the source session".into());
+            }
+            let session_id = state
+                .last_branch_source_session_id
+                .take()
+                .ok_or_else(|| "There is no conversation branch to undo".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::LoadSession { session_id });
+            state.status = "Returning to source conversation · workspace files unchanged…".into();
         }
         CommandId::Clear => {
             require_no_args(&invocation)?;
@@ -860,11 +910,35 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::ForkSession {
                 session_id,
-                completed_turns: Some(2)
+                completed_turns: Some(2),
+                checkpoint: false,
             }] if session_id == "session-1"
         ));
         assert!(state.status.contains("workspace unchanged"));
         assert!(execute(parse("rewind 0").unwrap(), &mut state).is_err());
+    }
+
+    #[test]
+    fn checkpoint_and_undo_keep_file_safety_explicit() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        execute(parse("checkpoint").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::ForkSession {
+                checkpoint: true,
+                completed_turns: None,
+                ..
+            }]
+        ));
+        state.pending_actions.clear();
+        state.last_branch_source_session_id = Some("session-1".into());
+        execute(parse("undo").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::LoadSession { session_id }] if session_id == "session-1"
+        ));
+        assert!(state.status.contains("workspace files unchanged"));
     }
 
     #[test]
