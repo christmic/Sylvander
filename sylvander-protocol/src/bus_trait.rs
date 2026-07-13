@@ -38,10 +38,10 @@ impl SubscriptionFilter {
 
     #[must_use]
     pub fn matches(&self, msg: &BusMessage) -> bool {
-        if let Some(ref ids) = self.session_ids {
-            if !ids.contains(&msg.session_id) {
-                return false;
-            }
+        if let Some(ref ids) = self.session_ids
+            && !ids.contains(&msg.session_id)
+        {
+            return false;
         }
         if let Some(ref recipients) = self.recipients {
             let ok = recipients.iter().any(|r| match r {
@@ -54,10 +54,10 @@ impl SubscriptionFilter {
                 return false;
             }
         }
-        if let Some(ref kinds) = self.kinds {
-            if !kinds.contains(&msg.kind) {
-                return false;
-            }
+        if let Some(ref kinds) = self.kinds
+            && !kinds.contains(&msg.kind)
+        {
+            return false;
         }
         true
     }
