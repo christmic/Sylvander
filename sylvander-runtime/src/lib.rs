@@ -22,6 +22,7 @@
 //! └──────────────────┘
 //! ```
 
+pub mod composition;
 pub mod config;
 
 use std::collections::HashMap;
