@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
+use crate::keymap::{KeyAction, KeyMap};
 use crate::modal::{
     ModalStack, SessionEntry, SessionStatus, SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
 };
@@ -27,6 +28,7 @@ pub use crate::model::{
 
 pub struct AppState {
     pub metadata: RuntimeMetadata,
+    pub keymap: KeyMap,
     // ---- business data (read-only for renderers) ----
     pub messages: Vec<ChatMessage>,
     pub streaming: String,
@@ -117,6 +119,7 @@ impl AppState {
         }
         let state = Self {
             metadata,
+            keymap: KeyMap::default(),
             messages: Vec::new(),
             streaming: String::new(),
             streaming_thinking: String::new(),
@@ -1110,11 +1113,7 @@ impl AppState {
         // dedicated draft-stash interaction is tracked in the readiness list.
 
         // 3. Ctrl+P toggles the sessions overlay (UX §10).
-        let is_ctrl_p = key.code == crossterm::event::KeyCode::Char('p')
-            && key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL);
-        if is_ctrl_p {
+        if self.keymap.matches(KeyAction::Sessions, key) {
             // If there's an existing modal on top, the modal's own keymap
             // handles Ctrl+P (closes itself). So we only open when nothing
             // is on top.
@@ -1128,11 +1127,7 @@ impl AppState {
             return None;
         }
 
-        let is_ctrl_o = key.code == crossterm::event::KeyCode::Char('o')
-            && key
-                .modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL);
-        if is_ctrl_o {
+        if self.keymap.matches(KeyAction::ToolDetails, key) {
             self.tool_details_expanded = !self.tool_details_expanded;
             self.status = if self.tool_details_expanded {
                 "Expanded tool details".into()
@@ -1147,10 +1142,7 @@ impl AppState {
         //     is empty and no modal is on top.
         let opens_commands = (key.code == crossterm::event::KeyCode::Char('/')
             && key.modifiers == crossterm::event::KeyModifiers::NONE)
-            || (key.code == crossterm::event::KeyCode::Char('k')
-                && key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL));
+            || self.keymap.matches(KeyAction::Commands, key);
         if opens_commands && self.composer.is_empty() && self.modals.is_empty() {
             use crate::modal::palette::CommandPalette;
             self.modals.push(Box::new(CommandPalette::new()));
@@ -1196,26 +1188,19 @@ impl AppState {
 
         // Transcript navigation is global while no decision layer owns focus.
         // Returning to the bottom clears the stable unread indicator.
-        match key.code {
-            crossterm::event::KeyCode::PageUp => {
-                self.scroll_transcript(8);
-                return None;
-            }
-            crossterm::event::KeyCode::PageDown => {
-                self.scroll_transcript(-8);
-                return None;
-            }
-            crossterm::event::KeyCode::End
-                if key
-                    .modifiers
-                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
-            {
-                self.chat_scroll = 0;
-                self.unread_events = 0;
-                self.dirty.mark();
-                return None;
-            }
-            _ => {}
+        if self.keymap.matches(KeyAction::TranscriptPageUp, key) {
+            self.scroll_transcript(8);
+            return None;
+        }
+        if self.keymap.matches(KeyAction::TranscriptPageDown, key) {
+            self.scroll_transcript(-8);
+            return None;
+        }
+        if self.keymap.matches(KeyAction::ReturnLive, key) {
+            self.chat_scroll = 0;
+            self.unread_events = 0;
+            self.dirty.mark();
+            return None;
         }
 
         // 4. Otherwise, the focused panel owns the key.

@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::keymap::KeyMap;
 use crate::model::RuntimeMetadata;
 use crate::theme::ThemeName;
 
@@ -20,6 +21,7 @@ pub struct TuiConfig {
     pub animation_interval: Duration,
     pub reconnect_interval: Duration,
     pub mouse_scroll_lines: usize,
+    pub keymap: KeyMap,
     pub metadata: RuntimeMetadata,
 }
 
@@ -37,6 +39,7 @@ impl TuiConfig {
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
         let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
         let mouse_scroll_lines = env_number("SYLVANDER_TUI_MOUSE_SCROLL_LINES", 4, 1, 40)?;
+        let keymap = KeyMap::from_environment()?;
 
         Ok(Self {
             socket_path,
@@ -46,6 +49,7 @@ impl TuiConfig {
             animation_interval: Duration::from_millis(animation_ms as u64),
             reconnect_interval: Duration::from_millis(reconnect_ms as u64),
             mouse_scroll_lines,
+            keymap,
             metadata: RuntimeMetadata {
                 model: std::env::var("SYLVANDER_MODEL").unwrap_or_else(|_| "—".into()),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
@@ -62,7 +66,7 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {} ms\nreconnect   {} ms\nmouse wheel {} lines\nattachment  {} bytes",
+            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {} ms\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
             self.socket_path.display(),
             self.history_path
@@ -74,6 +78,7 @@ impl TuiConfig {
             self.animation_interval.as_millis(),
             self.reconnect_interval.as_millis(),
             self.mouse_scroll_lines,
+            self.keymap.summary(),
             metadata.max_attachment_bytes,
         )
     }
@@ -163,11 +168,13 @@ mod tests {
             animation_interval: Duration::from_millis(200),
             reconnect_interval: Duration::from_millis(1_500),
             mouse_scroll_lines: 4,
+            keymap: KeyMap::default(),
             metadata: RuntimeMetadata::default(),
         };
         let report = config.report(&config.metadata);
         assert!(report.contains("theme       midnight"));
         assert!(report.contains("history     disabled"));
         assert!(report.contains("socket      /tmp/test.sock"));
+        assert!(report.contains("sessions=Ctrl+P"));
     }
 }

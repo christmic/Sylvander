@@ -52,7 +52,8 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     terminal.clear()?;
     execute!(stdout(), EnableBracketedPaste, EnableMouseCapture)?;
 
-    let state = AppState::with_metadata(config.history_path.clone(), config.metadata.clone());
+    let mut state = AppState::with_metadata(config.history_path.clone(), config.metadata.clone());
+    state.keymap = config.keymap.clone();
     let mut application = Application::new(state);
     let mut input = terminal_input::spawn(config.mouse_scroll_lines);
     let mut service = AgentService::new(&config.socket_path);
