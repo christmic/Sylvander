@@ -45,8 +45,10 @@ warning role and remains expandable.
 
 ## Command Line
 
-`/` and `Ctrl+K` open the Focus Picker above the Composer. Commands may be
-selected or typed with arguments. Matching accepts contiguous text and ordered
+`/` and `Ctrl+K` open the Focus Picker between the Composer and bottom status
+row. Its command rows and query share the Composer's left baseline; it has no
+redundant title or popup indentation. Commands may be selected or typed with
+arguments. Matching accepts contiguous text and ordered
 fuzzy characters across names, aliases, and descriptions. `Tab` completes the
 selected canonical name;
 successful commands move to the front when the next empty palette opens.
@@ -187,8 +189,9 @@ on the next journal operation. Conversation history is never changed.
 
 ## Approval
 
-Approval is a focus-owning Decision Dock that temporarily replaces the Composer.
-Keys never leak into global shortcuts or the saved draft.
+Approval is a focus-owning Decision Dock inserted below the visible Composer and
+above the bottom status row. Keys never leak into global shortcuts or the saved
+draft, and the Composer's hardware cursor is hidden while the Dock owns focus.
 
 - One request is shown at a time with intent, exact target, consequence, and
   available scope in that order.

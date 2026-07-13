@@ -47,14 +47,25 @@ latency. The runtime now uses `tokio::select!` with independent wake sources:
 ```text
 terminal input ───────── immediate state update + immediate render
 service event ────────── state update, render on next frame clock
-frame clock (30 FPS) ─── coalesced streaming render
+frame clock (60 FPS) ─── coalesced streaming render
 animation clock (200ms)  low-frequency status/elapsed update
 reconnect clock (1500ms) retry a disconnected Agent service
 ```
 
 `SYLVANDER_TUI_RENDER_FPS` and `SYLVANDER_TUI_ANIMATION_MS` configure these
 clocks. Service bursts are capped at 256 events per cycle and input bursts at 64
-events so neither source can starve the other.
+events so neither source can starve the other. Input collected while handling a
+service wake is rendered before the remaining service burst. Draft persistence
+is debounced by 250ms and flushed on exit, keeping filesystem writes out of the
+keystroke path.
+
+Composer editing uses Unicode grapheme boundaries and terminal cell width rather
+than Unicode scalar count. Wide CJK glyphs therefore occupy two cells, combining
+sequences move and delete as one visible unit, and an eight-row draft window
+keeps the logical cursor visible. The terminal owns IME pre-edit and candidate
+UI; committed text and the hardware cursor remain aligned inside the TUI. When
+the Composer owns focus, even an empty draft exposes the hardware cursor after
+the `> ` prompt. A temporary interaction surface takes that cursor while open.
 
 The queues themselves are bounded independently of those per-cycle drain limits:
 service events apply socket backpressure at 1024 items; terminal input retains at
@@ -101,7 +112,9 @@ At minimum, preserve tests for:
 - idle ticks do not schedule repaint;
 - streaming and settled replies keep the same vertical origin;
 - wide/fullscreen resize keeps the transcript left anchored;
-- Composer wrapping grows upward without moving the status row.
+- Composer wrapping grows upward without moving the status row;
+- CJK, combining sequences, and exact-width wrapping preserve the hardware
+  cursor's terminal-cell position;
 - redraw floods remain bounded and do not drop a subsequent keyboard event;
 - transcript count/byte budgets and streaming/tool payload limits remain bounded.
 - the compiled binary completes chat, streamed rendering, approval rejection,

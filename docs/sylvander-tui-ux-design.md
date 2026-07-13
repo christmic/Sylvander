@@ -70,7 +70,9 @@ From top to bottom:
 
 1. Transcript, including the Welcome prelude and conversation turns.
 2. Full-width Composer.
-3. One-row status line.
+3. Temporary interaction region, present only while a decision or picker owns
+   focus.
+4. One-row status line.
 
 There is no permanent top Header. Model, branch, session, tool count, mode, and
 contextual shortcuts belong in the bottom status line.
@@ -209,7 +211,11 @@ shape.
 - Maximum visible draft height is eight rows; further content scrolls internally.
 - Continuation rows align with text after the prompt.
 - Enter sends; Shift+Enter inserts a newline.
-- The hardware cursor follows the logical cursor and never enters the status row.
+- While the Composer owns focus, the hardware cursor is visible after the `> `
+  prompt even when the draft is empty.
+- The hardware cursor follows the logical cursor by terminal-cell width and never
+  enters the status row. CJK glyphs, emoji, and combining sequences must not
+  displace it.
 
 ## 8. Status line
 
@@ -253,12 +259,13 @@ Every temporary surface belongs to one of three families.
 The Decision Dock handles approvals, Agent questions, plan acceptance, rollback
 confirmation, and other short decisions.
 
-- It replaces the Composer rows while active; the saved draft is hidden and
-  restored afterward.
-- It is bounded only by the same full-width horizontal rules as the Composer.
+- It is inserted below the visible Composer and above the bottom status row; the
+  saved draft remains visible but does not receive input.
+- It shares the Composer's bottom rule as its top boundary and adds only one
+  full-width bottom rule.
 - Decision content is left-aligned with the transcript and capped at 110 cells.
-- The original Composer `>` is not visible, so there is never a second apparent
-  input focus.
+- The Composer `>` remains visible, but its hardware cursor is hidden while the
+  Dock owns focus, so there is only one active input target.
 - One question or approval is shown at a time. A batch uses quiet progress such
   as `2 of 3`, not redundant queue terminology.
 - Choice labels use natural language. Protocol types such as `single-select`,
@@ -289,9 +296,12 @@ receive a final answer review.
 The Focus Picker handles commands, model selection, permission profiles,
 workspace-file mentions, and persisted-session selection.
 
-- It grows upward from the Composer instead of floating in the center.
-- The search or filter query occupies the Composer row; results appear directly
-  above it between full-width rules.
+- It is inserted below the Composer instead of floating in the center.
+- Results appear first, followed by one filter-query row and a bottom rule. The
+  visible heading is omitted when the result rows already communicate the
+  surface purpose.
+- Commands and the query share the viewport's left baseline; selection uses one
+  concise marker rather than nested popup indentation.
 - At standard width it shows 6–10 results. At narrow width it uses fewer rows and
   removes secondary descriptions before truncating primary labels.
 - Selection, current value, availability, and consequences have distinct visual
@@ -345,7 +355,7 @@ never the sole carrier of risk, selection, or state.
 - Character-level prose wrapping that splits normal words.
 - Gray transcript cards or a permanent bordered Composer.
 - Generic centered modal rectangles for decisions or pickers.
-- A visible Composer prompt underneath another text-entry surface.
+- Two simultaneous hardware cursors or two surfaces that both appear editable.
 - Implementation labels such as `single-select`, `batch`, or `call_id` in UI copy.
 - Duplicating an inline plan inside a second review popup.
 - A permanent or temporary session sidebar inside the standalone TUI.
@@ -366,8 +376,8 @@ A change is acceptable only when all are true:
 6. Streaming and settled output keep the same geometry.
 7. 70-column layout uses the same Welcome character above metadata.
 8. Pure black remains visible in unused space.
-9. Approval replaces the Composer, leaves the transcript readable, and exposes
-   exactly one apparent focus.
+9. Approval follows the visible Composer, leaves the transcript readable, keeps
+   status bottommost, and exposes exactly one apparent focus.
 10. AskUser, plan acceptance, and rollback confirmation share Decision Dock
     geometry without sharing inappropriate copy.
 11. Command, model, permission, and resume pickers rise from the bottom and never
