@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use futures_util::{Stream, StreamExt};
-use tracing::warn;
+use tracing::{Instrument as _, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::error::AnthropicError;
@@ -547,7 +547,8 @@ pub fn run_stream(
                     }),
                 };
                 let _ = done_tx.send(result);
-            });
+            }
+            .instrument(tracing::Span::current()));
 
             // Drain events into the outer stream until consumer ends.
             let stream_err: Option<AgentLoopError> = loop {
@@ -696,6 +697,7 @@ pub fn run_stream(
                                             tool,
                                             &context,
                                             input,
+                                            &id,
                                             &name,
                                             tool_timeout,
                                             progress,
@@ -972,6 +974,7 @@ pub fn run_stream(
                                 tool,
                                 &config.tool_context,
                                 input,
+                                &tool_use.id,
                                 &name,
                                 tool_timeout,
                                 progress,
@@ -1181,12 +1184,16 @@ async fn execute_registered_tool(
     tool: Option<Arc<dyn crate::tool::Tool>>,
     context: &crate::tool_context::ToolContext,
     input: serde_json::Value,
+    call_id: &str,
     name: &str,
     timeout: Option<std::time::Duration>,
     progress: crate::tool::ToolProgressSink,
 ) -> ToolExecutionOutcome {
+    let session_id = &context.session.identity.session_id;
+    let trace_id = context.session.request.trace_id.as_deref().unwrap_or("");
+    tracing::debug!(%session_id, %trace_id, %call_id, tool = %name, "tool execution started");
     let Some(tool) = tool else {
-        warn!(tool = %name, "tool not found in registry");
+        warn!(%session_id, %trace_id, %call_id, tool = %name, "tool not found in registry");
         return ToolExecutionOutcome {
             output: format!("tool `{name}` not found in registry"),
             is_error: true,
@@ -1198,7 +1205,7 @@ async fn execute_registered_tool(
         {
             Ok(result) => result,
             Err(_) => {
-                warn!(tool = %name, "tool execution timed out");
+                warn!(%session_id, %trace_id, %call_id, tool = %name, "tool execution timed out");
                 return ToolExecutionOutcome {
                     output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
                     is_error: true,
@@ -1210,13 +1217,16 @@ async fn execute_registered_tool(
         tool.execute_streaming(context, input, progress).await
     };
     match result {
-        Ok(output) => ToolExecutionOutcome {
-            output: output.content,
-            is_error: output.is_error,
-            timed_out_after: None,
-        },
+        Ok(output) => {
+            tracing::debug!(%session_id, %trace_id, %call_id, tool = %name, is_error = output.is_error, "tool execution finished");
+            ToolExecutionOutcome {
+                output: output.content,
+                is_error: output.is_error,
+                timed_out_after: None,
+            }
+        }
         Err(error) => {
-            warn!(tool = %name, %error, "tool execution failed");
+            warn!(%session_id, %trace_id, %call_id, tool = %name, %error, "tool execution failed");
             ToolExecutionOutcome {
                 output: format!("tool execution failed: {error}"),
                 is_error: true,
@@ -1519,6 +1529,7 @@ mod tests {
             Some(Arc::new(SlowTool)),
             &crate::tool_context::defaults::system_tool_context(),
             serde_json::json!({}),
+            "call-slow",
             "slow",
             Some(std::time::Duration::from_millis(1)),
             crate::tool::ToolProgressSink::new(|_| {}),
