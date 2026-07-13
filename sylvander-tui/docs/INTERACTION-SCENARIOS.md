@@ -46,7 +46,11 @@ warning role and remains expandable.
 ## Command Line
 
 `/` and `Ctrl+K` open the command line. Commands may be selected or typed with
-arguments. Invalid arguments remain in the command line with an inline error.
+arguments. Matching accepts contiguous text and ordered fuzzy characters across
+names, aliases, and descriptions. `Tab` completes the selected canonical name;
+successful commands move to the front when the next empty palette opens.
+Unavailable commands stay visible with the exact prerequisite instead of
+disappearing. Invalid arguments remain in the command line with an inline error.
 
 | Command | Effect |
 |---|---|

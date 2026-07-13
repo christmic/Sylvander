@@ -15,63 +15,61 @@ use ratatui::{
 };
 
 use crate::app::{AppMode, AppState};
-pub use crate::command::{COMMANDS, CommandSpec as Command};
+pub use crate::command::{COMMANDS, CommandMatch, CommandSpec as Command};
 use crate::modal::{Consumed, Modal};
 
 pub struct CommandPalette {
     pub filter: String,
     pub cursor: usize,
-    pub filtered: Vec<usize>,
+    pub filtered: Vec<CommandMatch>,
     pub error: Option<String>,
 }
 
 impl CommandPalette {
-    pub fn new() -> Self {
+    pub fn new(state: &AppState) -> Self {
         let mut s = Self {
             filter: String::new(),
             cursor: 0,
             filtered: Vec::new(),
             error: None,
         };
-        s.recompute();
+        s.recompute(state);
         s
     }
 
-    pub fn recompute(&mut self) {
-        let needle = self.filter.split_whitespace().next().unwrap_or("");
-        self.filtered = COMMANDS
-            .iter()
-            .enumerate()
-            .filter_map(|(i, command)| {
-                if needle.is_empty()
-                    || command.name.contains(&needle.to_ascii_lowercase())
-                    || command
-                        .description
-                        .to_ascii_lowercase()
-                        .contains(&needle.to_ascii_lowercase())
-                {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .collect();
+    pub fn recompute(&mut self, state: &AppState) {
+        self.filtered = crate::command::ranked_commands(&self.filter, state);
         if self.cursor >= self.filtered.len() {
             self.cursor = 0;
         }
+    }
+
+    fn complete_selection(&mut self, state: &mut AppState) {
+        let Some(selected) = self.filtered.get(self.cursor) else {
+            return;
+        };
+        let name = COMMANDS[selected.index].name;
+        let suffix = self
+            .filter
+            .find(char::is_whitespace)
+            .map(|index| self.filter[index..].trim_start().to_string());
+        self.filter = suffix
+            .filter(|suffix| !suffix.is_empty())
+            .map_or_else(|| format!("{name} "), |suffix| format!("{name} {suffix}"));
+        self.error = None;
+        self.recompute(state);
+        state.dirty.mark();
     }
 
     /// Run the currently-selected command, pushing the appropriate
     /// side-effect onto AppState's pending_actions.
     fn invoke(&mut self, state: &mut AppState) -> Consumed {
         let typed_name = self.filter.split_whitespace().next().unwrap_or("");
-        let exact_typed = COMMANDS
-            .iter()
-            .any(|command| command.name.eq_ignore_ascii_case(typed_name));
+        let exact_typed = crate::command::resolve(typed_name).is_some();
         let line = if exact_typed {
             self.filter.clone()
-        } else if let Some(&command_index) = self.filtered.get(self.cursor) {
-            COMMANDS[command_index].name.to_string()
+        } else if let Some(command_match) = self.filtered.get(self.cursor) {
+            COMMANDS[command_match.index].name.to_string()
         } else {
             self.error = Some("No matching command".into());
             return Consumed::Yes { dismiss: false };
@@ -86,12 +84,6 @@ impl CommandPalette {
                 Consumed::Yes { dismiss: false }
             }
         }
-    }
-}
-
-impl Default for CommandPalette {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -168,14 +160,14 @@ impl Modal for CommandPalette {
             let needs_more_row = self.filtered.len() > start + visible_rows;
             let command_rows = visible_rows.saturating_sub(usize::from(needs_more_row));
             let hidden_below = self.filtered.len().saturating_sub(start + command_rows);
-            for (row_i, &cmd_idx) in self
+            for (row_i, command_match) in self
                 .filtered
                 .iter()
                 .enumerate()
                 .skip(start)
                 .take(command_rows)
             {
-                let cmd = &COMMANDS[cmd_idx];
+                let cmd = &COMMANDS[command_match.index];
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };
                 let color = if is_cursor {
@@ -183,17 +175,27 @@ impl Modal for CommandPalette {
                 } else {
                     theme::palette().text
                 };
+                let available = command_match.availability.is_available();
+                let row_style = if available {
+                    Style::default().fg(color)
+                } else {
+                    theme::text_muted()
+                };
+                let detail = command_match
+                    .availability
+                    .reason()
+                    .map_or(cmd.description.to_string(), |reason| format!("{reason}"));
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
                         format!("/{:<13}", cmd.name),
-                        Style::default().fg(if is_cursor {
+                        Style::default().fg(if is_cursor && available {
                             theme::palette().active
                         } else {
                             theme::palette().brand_violet
                         }),
                     ),
-                    Span::styled(cmd.description, Style::default().fg(color)),
+                    Span::styled(detail, row_style),
                 ]));
             }
             if hidden_below > 0 {
@@ -234,9 +236,13 @@ impl Modal for CommandPalette {
                 if !self.filter.is_empty() {
                     self.filter.pop();
                     self.error = None;
-                    self.recompute();
+                    self.recompute(state);
                     state.dirty.mark();
                 }
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Tab => {
+                self.complete_selection(state);
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => self.invoke(state),
@@ -246,7 +252,7 @@ impl Modal for CommandPalette {
                 {
                     self.filter.push(c);
                     self.error = None;
-                    self.recompute();
+                    self.recompute(state);
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
@@ -293,32 +299,39 @@ mod tests {
 
     #[test]
     fn empty_filter_shows_all_commands() {
-        let p = CommandPalette::new();
+        let state = AppState::new();
+        let p = CommandPalette::new(&state);
         assert_eq!(p.filtered.len(), COMMANDS.len());
     }
 
     #[test]
     fn filter_substring_matches_command_name() {
-        let mut p = CommandPalette::new();
+        let state = AppState::new();
+        let mut p = CommandPalette::new(&state);
         p.filter = "ses".into();
-        p.recompute();
-        let names: Vec<&'static str> = p.filtered.iter().map(|&i| COMMANDS[i].name).collect();
+        p.recompute(&state);
+        let names: Vec<&'static str> = p
+            .filtered
+            .iter()
+            .map(|entry| COMMANDS[entry.index].name)
+            .collect();
         assert!(names.contains(&"sessions"));
         assert!(!names.contains(&"clear"));
     }
 
     #[test]
     fn filter_no_match_yields_empty_list() {
-        let mut p = CommandPalette::new();
+        let state = AppState::new();
+        let mut p = CommandPalette::new(&state);
         p.filter = "zzzzz".into();
-        p.recompute();
+        p.recompute(&state);
         assert!(p.filtered.is_empty());
     }
 
     #[test]
     fn enter_dispatches_quit_command() {
         let mut state = AppState::new();
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&state);
         for character in "quit".chars() {
             let _ = p.handle_key(
                 &key(KeyCode::Char(character), KeyModifiers::NONE),
@@ -335,7 +348,7 @@ mod tests {
         let mut state = AppState::new();
         use crate::app::ChatMessage;
         state.messages.push(ChatMessage::User("hi".into()));
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&state);
         for character in "clear".chars() {
             let _ = p.handle_key(
                 &key(KeyCode::Char(character), KeyModifiers::NONE),
@@ -350,12 +363,32 @@ mod tests {
     #[test]
     fn enter_on_sessions_pushes_sessions_overlay() {
         let mut state = AppState::new();
-        let mut p = CommandPalette::new();
+        let mut p = CommandPalette::new(&state);
         // /sessions is at index 1.
         let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
         let consumed = p.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         // Palette itself was popped, but it pushed a sessions overlay.
         assert_eq!(state.modals.len(), 1);
+    }
+
+    #[test]
+    fn tab_completes_fuzzy_match_and_alias_executes_canonical_command() {
+        let mut state = AppState::new();
+        let mut palette = CommandPalette::new(&state);
+        palette.filter = "sstns".into();
+        palette.recompute(&state);
+        let _ = palette.handle_key(&key(KeyCode::Tab, KeyModifiers::NONE), &mut state);
+        assert_eq!(palette.filter, "sessions ");
+
+        palette.filter = "q".into();
+        palette.recompute(&state);
+        let result = palette.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        assert_eq!(result, Consumed::Yes { dismiss: true });
+        assert!(state.should_quit);
+        assert_eq!(
+            state.recent_commands.front(),
+            Some(&crate::command::CommandId::Quit)
+        );
     }
 }

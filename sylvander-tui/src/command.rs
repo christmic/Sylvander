@@ -263,6 +263,197 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+/// Familiar spellings accepted by the parser and ranked by the palette. An
+/// alias never owns behavior; it resolves to a typed core command first.
+pub const ALIASES: &[(&str, CommandId)] = &[
+    ("history", CommandId::Sessions),
+    ("session", CommandId::Sessions),
+    ("files", CommandId::Mention),
+    ("settings", CommandId::Config),
+    ("diagnostics", CommandId::Doctor),
+    ("perm", CommandId::Permissions),
+    ("ctx", CommandId::Context),
+    ("exit", CommandId::Quit),
+    ("q", CommandId::Quit),
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAvailability {
+    Available,
+    Unavailable(String),
+}
+
+impl CommandAvailability {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Available => None,
+            Self::Unavailable(reason) => Some(reason),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandMatch {
+    pub index: usize,
+    pub score: usize,
+    pub availability: CommandAvailability,
+}
+
+pub fn aliases_for(id: CommandId) -> impl Iterator<Item = &'static str> {
+    ALIASES
+        .iter()
+        .filter(move |(_, target)| *target == id)
+        .map(|(alias, _)| *alias)
+}
+
+pub fn resolve(name: &str) -> Option<&'static CommandSpec> {
+    COMMANDS
+        .iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case(name))
+        .or_else(|| {
+            let id = ALIASES
+                .iter()
+                .find(|(alias, _)| alias.eq_ignore_ascii_case(name))?
+                .1;
+            COMMANDS.iter().find(|spec| spec.id == id)
+        })
+}
+
+pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability {
+    use CommandAvailability::{Available, Unavailable};
+
+    let needs_connection = matches!(
+        spec.id,
+        CommandId::Resume
+            | CommandId::Rename
+            | CommandId::Fork
+            | CommandId::Rewind
+            | CommandId::Checkpoint
+            | CommandId::Context
+            | CommandId::Compact
+            | CommandId::Rollback
+            | CommandId::Model
+            | CommandId::Permissions
+    );
+    if needs_connection && !state.connected {
+        return Unavailable("connect to the Agent first".into());
+    }
+    if state.turn_active
+        && matches!(
+            spec.id,
+            CommandId::New
+                | CommandId::Clear
+                | CommandId::Fork
+                | CommandId::Rewind
+                | CommandId::Checkpoint
+                | CommandId::Review
+                | CommandId::Compact
+                | CommandId::Rollback
+        )
+    {
+        return Unavailable("interrupt active work first".into());
+    }
+    if matches!(
+        spec.id,
+        CommandId::Rename
+            | CommandId::Fork
+            | CommandId::Rewind
+            | CommandId::Checkpoint
+            | CommandId::Compact
+            | CommandId::Rollback
+    ) && state.session_id.is_none()
+    {
+        return Unavailable("requires a persisted session".into());
+    }
+    if spec.id == CommandId::Undo && state.last_branch_source_session_id.is_none() {
+        return Unavailable("no conversation branch to undo".into());
+    }
+    if spec.id == CommandId::Model && state.metadata.models.is_empty() {
+        return Unavailable("model catalog is still loading".into());
+    }
+    if matches!(spec.id, CommandId::Inspect | CommandId::Copy)
+        && find_tool_output(state, None).is_err()
+    {
+        return Unavailable("no completed tool output".into());
+    }
+    Available
+}
+
+/// Rank commands with a deterministic subsequence matcher. Exact/prefix/name
+/// matches beat aliases and descriptions; recency only breaks comparable
+/// results so discovery remains predictable.
+pub fn ranked_commands(query: &str, state: &AppState) -> Vec<CommandMatch> {
+    let needle = query
+        .trim()
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let recent_rank = |id| {
+        state
+            .recent_commands
+            .iter()
+            .position(|recent| *recent == id)
+            .unwrap_or(usize::MAX)
+    };
+    let mut matches = COMMANDS
+        .iter()
+        .enumerate()
+        .filter_map(|(index, spec)| {
+            let score = if needle.is_empty() {
+                0
+            } else {
+                let name = fuzzy_score(&needle, spec.name);
+                let alias = aliases_for(spec.id)
+                    .filter_map(|alias| fuzzy_score(&needle, alias))
+                    .min()
+                    .map(|score| score + 8);
+                let description = fuzzy_score(&needle, spec.description).map(|score| score + 80);
+                name.into_iter().chain(alias).chain(description).min()?
+            };
+            Some(CommandMatch {
+                index,
+                score,
+                availability: availability(spec, state),
+            })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|entry| {
+        (
+            entry.score,
+            recent_rank(COMMANDS[entry.index].id),
+            entry.index,
+        )
+    });
+    matches
+}
+
+fn fuzzy_score(needle: &str, candidate: &str) -> Option<usize> {
+    let candidate = candidate.to_ascii_lowercase();
+    if candidate == needle {
+        return Some(0);
+    }
+    if candidate.starts_with(needle) {
+        return Some(4 + candidate.len().saturating_sub(needle.len()));
+    }
+    if let Some(position) = candidate.find(needle) {
+        return Some(20 + position);
+    }
+    let mut cursor = 0;
+    let mut gaps = 0;
+    for wanted in needle.chars() {
+        let offset = candidate[cursor..].find(wanted)?;
+        gaps += offset;
+        cursor += offset + wanted.len_utf8();
+    }
+    Some(40 + gaps)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation<'a> {
     pub spec: &'static CommandSpec,
@@ -272,10 +463,7 @@ pub struct Invocation<'a> {
 pub fn parse(line: &str) -> Result<Invocation<'_>, String> {
     let mut parts = line.trim().trim_start_matches('/').split_whitespace();
     let name = parts.next().ok_or_else(|| "Choose a command".to_string())?;
-    let spec = COMMANDS
-        .iter()
-        .find(|spec| spec.name.eq_ignore_ascii_case(name))
-        .ok_or_else(|| format!("Unknown command /{name}"))?;
+    let spec = resolve(name).ok_or_else(|| format!("Unknown command /{name}"))?;
     Ok(Invocation {
         spec,
         args: parts.collect(),
@@ -283,6 +471,10 @@ pub fn parse(line: &str) -> Result<Invocation<'_>, String> {
 }
 
 pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), String> {
+    if let CommandAvailability::Unavailable(reason) = availability(invocation.spec, state) {
+        return Err(format!("/{} unavailable: {reason}", invocation.spec.name));
+    }
+    let invoked_id = invocation.spec.id;
     match invocation.spec.id {
         CommandId::New => {
             require_no_args(&invocation)?;
@@ -824,6 +1016,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.should_quit = true;
         }
     }
+    state.recent_commands.retain(|id| *id != invoked_id);
+    state.recent_commands.push_front(invoked_id);
+    state.recent_commands.truncate(8);
     state.dirty.mark();
     Ok(())
 }
@@ -963,6 +1158,35 @@ mod tests {
     }
 
     #[test]
+    fn registry_ranks_fuzzy_names_aliases_and_recent_successes() {
+        let mut state = AppState::new();
+        let fuzzy = ranked_commands("sstns", &state);
+        assert_eq!(COMMANDS[fuzzy[0].index].id, CommandId::Sessions);
+        assert_eq!(parse("/history").unwrap().spec.id, CommandId::Sessions);
+
+        execute(parse("/status").unwrap(), &mut state).unwrap();
+        let unfiltered = ranked_commands("", &state);
+        assert_eq!(COMMANDS[unfiltered[0].index].id, CommandId::Status);
+    }
+
+    #[test]
+    fn registry_explains_commands_that_cannot_run_now() {
+        let mut state = AppState::new();
+        let model = resolve("model").unwrap();
+        assert_eq!(
+            availability(model, &state).reason(),
+            Some("connect to the Agent first")
+        );
+        state.connected = true;
+        state.turn_active = true;
+        let new = resolve("new").unwrap();
+        assert_eq!(
+            availability(new, &state).reason(),
+            Some("interrupt active work first")
+        );
+    }
+
+    #[test]
     fn new_resets_conversation_without_sending_an_empty_prompt() {
         let mut state = AppState::new();
         state.session_id = Some("old".into());
@@ -976,6 +1200,7 @@ mod tests {
     #[test]
     fn context_command_requests_server_truth_for_the_active_session() {
         let mut state = AppState::new();
+        state.connected = true;
         state.session_id = Some("session-7".into());
         execute(parse("/context").expect("parse"), &mut state).expect("execute");
         assert!(matches!(
@@ -988,9 +1213,10 @@ mod tests {
     #[test]
     fn compact_command_requires_an_idle_persisted_session() {
         let mut state = AppState::new();
+        state.connected = true;
         assert_eq!(
             execute(parse("/compact").expect("parse"), &mut state).unwrap_err(),
-            "There is no session to compact"
+            "/compact unavailable: requires a persisted session"
         );
         state.session_id = Some("session-7".into());
         execute(parse("/compact").expect("parse"), &mut state).expect("execute");
@@ -1029,6 +1255,7 @@ mod tests {
     #[test]
     fn rewind_is_a_non_destructive_server_branch_action() {
         let mut state = AppState::new();
+        state.connected = true;
         state.session_id = Some("session-1".into());
         execute(parse("rewind 2").unwrap(), &mut state).unwrap();
         assert!(matches!(
@@ -1046,6 +1273,7 @@ mod tests {
     #[test]
     fn checkpoint_and_undo_keep_file_safety_explicit() {
         let mut state = AppState::new();
+        state.connected = true;
         state.session_id = Some("session-1".into());
         execute(parse("checkpoint").unwrap(), &mut state).unwrap();
         assert!(matches!(
@@ -1069,6 +1297,7 @@ mod tests {
     #[test]
     fn rollback_requests_server_preview_before_any_mutation() {
         let mut state = AppState::new();
+        state.connected = true;
         state.session_id = Some("session-1".into());
         execute(parse("rollback").unwrap(), &mut state).unwrap();
         assert!(matches!(
@@ -1159,6 +1388,7 @@ mod tests {
     #[test]
     fn model_command_uses_only_server_advertised_combinations() {
         let mut state = AppState::new();
+        state.connected = true;
         state.metadata.models = vec![sylvander_protocol::ModelDescriptor {
             id: "thinking".into(),
             provider: "test".into(),

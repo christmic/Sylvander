@@ -314,7 +314,8 @@ mod tests {
         )));
         assert_eq!(status_mode_for(&s), StatusMode::Asking);
         s.modals.pop();
-        s.modals.push(Box::new(CommandPalette::new()));
+        let palette = CommandPalette::new(&s);
+        s.modals.push(Box::new(palette));
         assert_eq!(status_mode_for(&s), StatusMode::Asking);
     }
 

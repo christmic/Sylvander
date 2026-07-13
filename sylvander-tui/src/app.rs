@@ -55,6 +55,10 @@ pub struct AppState {
     pub queued_prompt_attachments: VecDeque<Vec<sylvander_protocol::MessageAttachment>>,
     /// Whether tool inputs and multi-line results are expanded in transcript.
     pub tool_details_expanded: bool,
+    /// Successfully invoked slash commands, newest first. This is deliberately
+    /// session-local: command ranking must not become another persistence or
+    /// privacy surface.
+    pub recent_commands: VecDeque<crate::command::CommandId>,
 
     /// Local cache of known sessions (newest first) — populated as
     /// `SessionCreated` events arrive. Survives reconnects so the user
@@ -139,6 +143,7 @@ impl AppState {
             queued_prompts: VecDeque::new(),
             queued_prompt_attachments: VecDeque::new(),
             tool_details_expanded: false,
+            recent_commands: VecDeque::new(),
             sessions: Vec::new(),
             last_archived_session: None,
             modals: ModalStack::new(),
@@ -1145,7 +1150,8 @@ impl AppState {
             || self.keymap.matches(KeyAction::Commands, key);
         if opens_commands && self.composer.is_empty() && self.modals.is_empty() {
             use crate::modal::palette::CommandPalette;
-            self.modals.push(Box::new(CommandPalette::new()));
+            let palette = CommandPalette::new(self);
+            self.modals.push(Box::new(palette));
             self.dirty.mark();
             return None;
         }

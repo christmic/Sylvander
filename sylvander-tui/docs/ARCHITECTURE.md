@@ -61,7 +61,11 @@ Accepts `UserIntent`, invokes the reducer or Composer, and exposes queued
 point for input tests.
 
 `command.rs` owns command parsing, argument validation, and application-level
-effects. Command palette rendering does not implement command behavior itself.
+effects. Its registry is the single source for canonical names, aliases, fuzzy
+ranking, recency, and state-derived availability. Command palette rendering does
+not implement command behavior itself. A future extension command must register
+through this boundary and resolve to a typed `Action`; presentation callbacks or
+direct state mutation are not extension points.
 
 ### `service.rs` and `client.rs` — service boundary
 

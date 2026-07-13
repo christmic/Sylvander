@@ -386,12 +386,18 @@ fn sessions_overlay_with_filter_match() {
 #[test]
 fn palette_empty_filter_shows_all() {
     let mut state = AppState::new();
+    state.connected = true;
+    state.session_id = Some("snapshot-session".into());
+    state.last_branch_source_session_id = Some("snapshot-source".into());
     // `/` opens the palette when composer is empty.
     state.handle_key(&crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Char('/'),
         crossterm::event::KeyModifiers::NONE,
     ));
     assert_eq!(state.modals.len(), 1);
+    state.connected = false;
+    state.session_id = None;
+    state.last_branch_source_session_id = None;
     insta::assert_snapshot!(render_buf(&state, 90, 22));
 }
 
@@ -414,6 +420,7 @@ fn palette_with_no_match() {
 #[test]
 fn model_picker_shows_server_truth_and_reasoning_control() {
     let mut state = AppState::new();
+    state.connected = true;
     state.metadata.model = "claude-sonnet".into();
     state.metadata.reasoning_effort = sylvander_protocol::ReasoningEffort::Low;
     state.metadata.models = vec![
@@ -451,6 +458,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
         &mut state,
     )
     .expect("open model picker");
+    state.connected = false;
     insta::assert_snapshot!(render_buf(&state, 100, 28));
 }
 
@@ -470,6 +478,7 @@ fn workspace_rollback_requires_a_file_scoped_confirmation() {
 #[test]
 fn permissions_picker_shows_workspace_scoped_runtime_policy() {
     let mut state = AppState::new();
+    state.connected = true;
     state.metadata.workspace = "/workspace/sylvander".into();
     state.metadata.approval_enabled = true;
     state.metadata.permissions = sylvander_protocol::PermissionProfile {
@@ -482,6 +491,7 @@ fn permissions_picker_shows_workspace_scoped_runtime_policy() {
         &mut state,
     )
     .expect("open permissions");
+    state.connected = false;
     insta::assert_snapshot!(render_buf(&state, 100, 28));
 }
 
@@ -766,7 +776,7 @@ fn command_line_accepts_arguments() {
     use sylvander_tui::modal::{CommandPalette, Modal};
 
     let mut state = AppState::new();
-    let mut commands = CommandPalette::new();
+    let mut commands = CommandPalette::new(&state);
     for character in "theme midnight".chars() {
         commands.handle_key(
             &KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),

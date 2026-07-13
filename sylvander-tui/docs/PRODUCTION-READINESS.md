@@ -102,8 +102,10 @@ completed backend feature.
 - [x] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
 - [x] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.
-- [ ] Commands support fuzzy matching, completion, aliases, recent ordering,
-      availability rules, and dynamic registration.
+- [x] Commands support fuzzy matching, completion, aliases, recent ordering,
+      and state-derived availability rules.
+- [ ] Extension slash commands use dynamic registration with typed effects and
+      collision/trust validation.
 
 ## P2 — Platform and operations
 
