@@ -219,6 +219,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.iteration = 0;
             state.input_tokens = 0;
             state.output_tokens = 0;
+            state.cost_nano_usd = None;
             state.turn_active = false;
             state.interrupt_requested = false;
             state.queued_prompts.clear();
@@ -517,14 +518,18 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
             state.messages.push(ChatMessage::Info(format!(
-                "model {} · permissions {} · branch {} · session {} · iteration {} · {} input + {} output tokens",
+                "model {} · permissions {} · branch {} · session {} · iteration {} · {} input + {} output tokens · {}",
                 state.metadata.model_label(),
                 permission_summary(&state.metadata.permissions),
                 state.metadata.branch,
                 session,
                 state.iteration,
                 state.input_tokens,
-                state.output_tokens
+                state.output_tokens,
+                state.cost_nano_usd.map_or_else(
+                    || "cost unavailable".into(),
+                    |cost| format!("estimated cost {}", crate::app::format_cost(cost)),
+                )
             )));
         }
         CommandId::Context => {
@@ -792,6 +797,23 @@ mod tests {
         execute(parse("tools expand").unwrap(), &mut state).unwrap();
         assert!(state.tool_details_expanded);
         assert!(execute(parse("tools sideways").unwrap(), &mut state).is_err());
+    }
+
+    #[test]
+    fn status_distinguishes_priced_and_unpriced_usage() {
+        let mut state = AppState::new();
+        state.cost_nano_usd = Some(7_500_000);
+        execute(parse("status").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text)) if text.contains("estimated cost $0.007500")
+        ));
+        state.cost_nano_usd = None;
+        execute(parse("status").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text)) if text.contains("cost unavailable")
+        ));
     }
 
     #[test]

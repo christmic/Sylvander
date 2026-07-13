@@ -107,6 +107,13 @@ and shows an advertised replacement when one exists. If the active model is
 deprecated, the transcript and status surface `old → replacement`; selection
 remains available so persisted sessions are not broken silently.
 
+Session cost is calculated by the Agent from the model pricing snapshot used
+for each iteration, accumulated durably, and restored with session history.
+The wide status bar shows the estimated USD amount and `/status` expands it.
+When pricing is absent, historical usage predates pricing, or non-zero cache
+usage lacks a cache rate, the UI says `cost unavailable` instead of displaying
+a misleading zero or partial estimate.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts

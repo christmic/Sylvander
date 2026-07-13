@@ -62,6 +62,7 @@ pub enum DomainEvent {
         iterations: u32,
         input_tokens: u64,
         output_tokens: u64,
+        cost_nano_usd: Option<u64>,
     },
     SessionUpdated {
         session_id: String,
@@ -113,6 +114,7 @@ pub enum DomainEvent {
         iteration: u32,
         input_tokens: u64,
         output_tokens: u64,
+        cost_nano_usd: Option<u64>,
     },
     /// The agent loop has emitted its final answer.
     AgentDone {

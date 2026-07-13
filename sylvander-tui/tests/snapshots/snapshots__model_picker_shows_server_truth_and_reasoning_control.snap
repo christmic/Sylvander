@@ -13,7 +13,7 @@ expression: "render_buf(&state, 100, 28)"
                                                                                                     
                                                                                                     
             ┌ Model · applies next turn ───────────────────────────────────────────────┐            
-            │active  claude-sonnet  reasoning low                                      │            
+            │active  claude-sonnet  reasoning low  · in $3 / out $15 · 1M              │            
             │──────────────────────────────────────────────────────────────────────────│            
             │› ● claude-sonnet           anthropic-compatible  low                     │            
             │  ○ fast-code               deprecated → claude-sonnet                    │            
