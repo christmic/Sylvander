@@ -14,7 +14,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::post,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
@@ -66,12 +71,6 @@ struct SendMessage {
     text: String,
 }
 
-#[derive(Debug, Serialize)]
-struct ApiResponse<T> {
-    ok: bool,
-    result: Option<T>,
-}
-
 // ===========================================================================
 // Channel
 // ===========================================================================
@@ -80,9 +79,10 @@ pub struct TelegramChannel {
     token: String,
     webhook_addr: SocketAddr,
     agent_id: AgentId,
-    /// chat_id → bot message_id (for editMessageText during streaming)
+    /// `chat_id` → bot `message_id` (for `editMessageText` during streaming)
     last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
     http: reqwest::Client,
+    webhook_secret: Option<String>,
 }
 
 impl TelegramChannel {
@@ -97,7 +97,15 @@ impl TelegramChannel {
             agent_id: agent_id.into(),
             last_bot_msg: Arc::new(RwLock::new(HashMap::new())),
             http: reqwest::Client::new(),
+            webhook_secret: None,
         }
+    }
+
+    /// Require Telegram's secret-token header on every webhook request.
+    #[must_use]
+    pub fn with_webhook_secret(mut self, secret: impl Into<String>) -> Self {
+        self.webhook_secret = Some(secret.into());
+        self
     }
 
     fn api(&self, method: &str) -> String {
@@ -107,7 +115,7 @@ impl TelegramChannel {
 
 #[async_trait]
 impl Channel for TelegramChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "telegram"
     }
 
@@ -121,16 +129,10 @@ impl Channel for TelegramChannel {
 
         // HTTP server for incoming webhooks
         let state = Arc::new(AppState {
+            sessions: ctx.sessions.clone(),
             ctx,
-            token: self.token.clone(),
             agent_id: self.agent_id.clone(),
-            sessions: Arc::new(
-                sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
-                    .await
-                    .expect("open session store"),
-            ),
-            last_bot_msg: self.last_bot_msg.clone(),
-            http: self.http.clone(),
+            webhook_secret: self.webhook_secret.clone(),
         });
 
         let app = Router::new()
@@ -154,6 +156,7 @@ impl Clone for TelegramChannel {
             agent_id: self.agent_id.clone(),
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
+            webhook_secret: self.webhook_secret.clone(),
         }
     }
 }
@@ -164,40 +167,42 @@ impl Clone for TelegramChannel {
 
 struct AppState {
     ctx: Arc<ChannelContext>,
-    token: String,
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
-    last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
-    http: reqwest::Client,
+    webhook_secret: Option<String>,
 }
 
 async fn handle_webhook(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(update): Json<Update>,
-) -> &'static str {
+) -> Result<&'static str, StatusCode> {
+    if !valid_webhook_secret(&headers, state.webhook_secret.as_deref()) {
+        warn!("telegram: rejected webhook with invalid secret token");
+        return Err(StatusCode::UNAUTHORIZED);
+    }
     let Some(msg) = update.message else {
-        return "ok";
+        return Ok("ok");
     };
     let Some(text) = msg.text else {
-        return "ok";
+        return Ok("ok");
     };
 
     let chat_id = msg.chat.id;
     let chat_id_str = chat_id.to_string();
 
     // Find or create session
-    let session_id = resolve_session(&state.sessions, &chat_id_str).await;
+    let session_id = resolve_session(&state.sessions, &chat_id_str, &state.agent_id).await;
     let sender_name = msg
         .from
         .as_ref()
-        .map(|u| u.first_name.clone())
-        .unwrap_or_else(|| "user".into());
+        .map_or_else(|| "user".into(), |user| user.first_name.clone());
 
     // Send user message
     let bus_msg = BusMessage::user_chat(session_id.clone(), &sender_name, &text);
     if let Err(e) = state.ctx.bus.publish(bus_msg).await {
         warn!(error = %e, "telegram: bus publish failed");
-        return "error";
+        return Ok("error");
     }
 
     // Send JoinSession for agent (only first time)
@@ -226,10 +231,23 @@ async fn handle_webhook(
         .await;
 
     info!(%chat_id, sender = %sender_name, text, "telegram: message received");
-    "ok"
+    Ok("ok")
 }
 
-async fn resolve_session(store: &Arc<dyn SessionStore>, chat_id: &str) -> SessionId {
+fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
+    expected.is_none_or(|expected| {
+        headers
+            .get("x-telegram-bot-api-secret-token")
+            .and_then(|value| value.to_str().ok())
+            == Some(expected)
+    })
+}
+
+async fn resolve_session(
+    store: &Arc<dyn SessionStore>,
+    chat_id: &str,
+    agent_id: &AgentId,
+) -> SessionId {
     if let Some(sid) = find_by_chat_id(store, chat_id).await {
         return sid;
     }
@@ -245,7 +263,7 @@ async fn resolve_session(store: &Arc<dyn SessionStore>, chat_id: &str) -> Sessio
         session_name,
         SessionLifetime::Persistent,
         meta,
-        vec![],
+        vec![agent_id.clone()],
     )
     .with_external_meta("chat_id", chat_id);
     let _ = store.save(&stored).await;
@@ -278,9 +296,8 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
             continue;
         };
 
-        let chat_id = match get_chat_id(&ctx.sessions, &msg.session_id).await {
-            Some(id) => id,
-            None => continue,
+        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id).await else {
+            continue;
         };
 
         let text = match ev {
@@ -337,13 +354,16 @@ async fn send_message(ch: &TelegramChannel, chat_id: i64, text: &str) {
 }
 
 fn split_message(text: &str, max_len: usize) -> Vec<&str> {
-    if text.len() <= max_len {
+    if text.chars().count() <= max_len {
         return vec![text];
     }
     let mut chunks = Vec::new();
     let mut start = 0;
     while start < text.len() {
-        let end = (start + max_len).min(text.len());
+        let end = text[start..]
+            .char_indices()
+            .nth(max_len)
+            .map_or(text.len(), |(index, _)| start + index);
         chunks.push(&text[start..end]);
         start = end;
     }
@@ -351,3 +371,23 @@ fn split_message(text: &str, max_len: usize) -> Vec<&str> {
 }
 
 fn _unused_json(_v: JsonValue) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webhook_secret_is_required_when_configured() {
+        let mut headers = HeaderMap::new();
+        assert!(valid_webhook_secret(&headers, None));
+        assert!(!valid_webhook_secret(&headers, Some("secret")));
+        headers.insert("x-telegram-bot-api-secret-token", "secret".parse().unwrap());
+        assert!(valid_webhook_secret(&headers, Some("secret")));
+        assert!(!valid_webhook_secret(&headers, Some("other")));
+    }
+
+    #[test]
+    fn message_split_respects_unicode_character_boundaries() {
+        assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
+    }
+}
