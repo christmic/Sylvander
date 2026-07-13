@@ -2,16 +2,16 @@
 source: sylvander-tui/tests/snapshots.rs
 expression: "render_buf(s, 40, 20)"
 ---
-                                        
+ ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀                    
+⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄                   
+ ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘                    
                                         
 Sylvander                               
 agent workspace                         
                                         
 model     —                             
 workspace ~/workspace                   
-branch    —                             
-session   new                           
-                                        
+branch    — · session new               
 What should we work through?            
                                         
                                         

@@ -1,28 +1,27 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 747
 expression: "render_buf(s, 80, 24)"
 ---
- ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                       
- ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇                                      
-   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                       
-                                                                                
-                                                                                
-Sylvander                                                                       
-agent workspace                                                                 
-                                                                                
-model     —                                                                     
-workspace ~/workspace                                                           
-branch    —                                                                     
-session   new                                                                   
-                                                                                
-What should we work through?                                                    
+        ⢀⣠⣶⣾⣀           Sylvander                                               
+      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀        agent workspace                                         
+⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆                                                               
+ ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀    model     —                                             
+⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄   workspace ~/workspace                                   
+ ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘    branch    — · session new                               
+                        What should we work through?                            
                                                                                 
 ▶ tasks 1/2 done · 1 running                                                    
   ● inspect auth middleware · a1b2c3d4                                          
     running read                                                                
   ✓ check test coverage · e5f6g7h8                                              
     coverage gaps found in refresh flow                                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
 ❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
