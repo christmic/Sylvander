@@ -105,8 +105,10 @@ completed backend feature.
       and `/config` render server or local service truth.
 - [x] Commands support fuzzy matching, completion, aliases, recent ordering,
       and state-derived availability rules.
-- [ ] Extension slash commands use dynamic registration with typed effects and
-      collision/trust validation.
+- [x] Workspace/user prompt commands use dynamic registration with typed
+      effects and visible collision/trust validation.
+- [ ] Runtime extensions can register non-prompt slash effects through an
+      Agent-owned dispatcher.
 
 ## P2 — Platform and operations
 

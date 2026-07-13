@@ -402,6 +402,43 @@ fn palette_empty_filter_shows_all() {
 }
 
 #[test]
+fn palette_shows_dynamic_command_source_and_rejections() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let mut state = AppState::new();
+    state.connected = true;
+    let command = sylvander_protocol::UiCommandDescriptor {
+        id: "workspace.security-review".into(),
+        name: "security-review".into(),
+        usage: "/security-review [scope]".into(),
+        description: "Review a workspace scope".into(),
+        hint: "workspace command".into(),
+        source: "agent configuration".into(),
+        trust: sylvander_protocol::PlatformTrust::Workspace,
+        effect: sylvander_protocol::UiCommandEffect::SubmitPrompt {
+            template: "Review {{args}} for security issues.".into(),
+        },
+    };
+    let mut collision = command.clone();
+    collision.id = "workspace.status".into();
+    collision.name = "status".into();
+    collision.usage = "/status".into();
+    let mut untrusted = command.clone();
+    untrusted.id = "external.review".into();
+    untrusted.name = "external-review".into();
+    untrusted.usage = "/external-review".into();
+    untrusted.source = "third-party extension".into();
+    untrusted.trust = sylvander_protocol::PlatformTrust::External;
+    state.platform.commands = vec![command, collision, untrusted];
+
+    state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for character in "review".chars() {
+        state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    insta::assert_snapshot!(render_buf(&state, 100, 24));
+}
+
+#[test]
 fn palette_with_no_match() {
     let mut state = AppState::new();
     state.handle_key(&crossterm::event::KeyEvent::new(

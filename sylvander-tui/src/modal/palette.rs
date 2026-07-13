@@ -48,7 +48,7 @@ impl CommandPalette {
         let Some(selected) = self.filtered.get(self.cursor) else {
             return;
         };
-        let name = COMMANDS[selected.index].name;
+        let name = crate::command::match_name(selected, state);
         let suffix = self
             .filter
             .find(char::is_whitespace)
@@ -65,18 +65,21 @@ impl CommandPalette {
     /// side-effect onto AppState's pending_actions.
     fn invoke(&mut self, state: &mut AppState) -> Consumed {
         let typed_name = self.filter.split_whitespace().next().unwrap_or("");
-        let exact_typed = crate::command::resolve(typed_name).is_some();
+        let exact_typed = crate::command::resolve(typed_name).is_some()
+            || state
+                .platform
+                .commands
+                .iter()
+                .any(|command| command.name.eq_ignore_ascii_case(typed_name));
         let line = if exact_typed {
             self.filter.clone()
         } else if let Some(command_match) = self.filtered.get(self.cursor) {
-            COMMANDS[command_match.index].name.to_string()
+            crate::command::match_name(command_match, state).to_string()
         } else {
             self.error = Some("No matching command".into());
             return Consumed::Yes { dismiss: false };
         };
-        match crate::command::parse(&line)
-            .and_then(|invocation| crate::command::execute(invocation, state))
-        {
+        match crate::command::execute_line(&line, state) {
             Ok(()) => Consumed::Yes { dismiss: true },
             Err(error) => {
                 self.error = Some(error);
@@ -103,7 +106,7 @@ impl Modal for CommandPalette {
         let desired_height = (self.filtered.len() as u16)
             .saturating_add(4)
             .clamp(8, max_height);
-        let popup_area = centered_rect(55, desired_height, parent);
+        let popup_area = centered_rect(64, desired_height, parent);
         frame.render_widget(Clear, popup_area);
         frame.render_widget(
             Block::default()
@@ -119,7 +122,7 @@ impl Modal for CommandPalette {
             .constraints([
                 Constraint::Length(1), // input
                 Constraint::Length(1), // error or divider
-                Constraint::Min(7),    // command list
+                Constraint::Min(1),    // command list
             ])
             .split(inner);
 
@@ -160,6 +163,15 @@ impl Modal for CommandPalette {
             let needs_more_row = self.filtered.len() > start + visible_rows;
             let command_rows = visible_rows.saturating_sub(usize::from(needs_more_row));
             let hidden_below = self.filtered.len().saturating_sub(start + command_rows);
+            let name_width = self
+                .filtered
+                .iter()
+                .skip(start)
+                .take(command_rows)
+                .map(|entry| crate::command::match_name(entry, _state).chars().count())
+                .max()
+                .unwrap_or(13)
+                .clamp(13, 18);
             for (row_i, command_match) in self
                 .filtered
                 .iter()
@@ -167,7 +179,7 @@ impl Modal for CommandPalette {
                 .skip(start)
                 .take(command_rows)
             {
-                let cmd = &COMMANDS[command_match.index];
+                let name = crate::command::match_name(command_match, _state);
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "  › " } else { "    " };
                 let color = if is_cursor {
@@ -181,14 +193,19 @@ impl Modal for CommandPalette {
                 } else {
                     theme::text_muted()
                 };
-                let detail = command_match
-                    .availability
-                    .reason()
-                    .map_or(cmd.description.to_string(), |reason| format!("{reason}"));
+                let description = command_match.availability.reason().map_or_else(
+                    || crate::command::match_description(command_match, _state).to_string(),
+                    str::to_string,
+                );
+                let detail = crate::command::match_source(command_match, _state)
+                    .filter(|_| command_match.availability.is_available())
+                    .map_or(description.clone(), |source| {
+                        format!("{description} · {source}")
+                    });
                 lines.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(color)),
                     Span::styled(
-                        format!("/{:<13}", cmd.name),
+                        format!("/{name:<name_width$} "),
                         Style::default().fg(if is_cursor && available {
                             theme::palette().active
                         } else {
