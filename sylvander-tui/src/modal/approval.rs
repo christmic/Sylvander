@@ -1,4 +1,4 @@
-//! Approval modal — UX §8.
+//! Approval Decision Dock — UX §10.1.
 //!
 //! Two sub-modes:
 //! - `Navigate` (default): the user sees the tool list and chooses
@@ -10,16 +10,17 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    layout::Rect,
+    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState, ToolInfo};
 use crate::approval_presenter::{RiskLevel, summarize};
 use crate::event::Action;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::decision_dock};
 use crate::theme;
 
 /// Per-tool decision. Pending means user has not yet decided on this row.
@@ -38,11 +39,21 @@ pub enum ApprovalMode {
     RejectFeedback,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalChoice {
+    Once,
+    Reject,
+    Session,
+    Persistent,
+}
+
 /// One batch of tools awaiting user approval.
 pub struct ApprovalModal {
     pub batch_id: String,
     pub tools: Vec<ToolInfo>,
     pub current: usize,
+    /// Cursor over the plain-language choices for the current request.
+    pub choice_index: usize,
     pub decisions: Vec<Decision>,
     pub mode: ApprovalMode,
     /// Typed feedback for the current rejection. Captured in `RejectFeedback`.
@@ -59,17 +70,20 @@ pub struct ApprovalModal {
 impl ApprovalModal {
     pub fn new(batch_id: String, tools: Vec<ToolInfo>) -> Self {
         let decisions = vec![Decision::Pending; tools.len()];
-        Self {
+        let mut modal = Self {
             batch_id,
             tools,
             current: 0,
+            choice_index: 0,
             decisions,
             mode: ApprovalMode::Navigate,
             feedback: String::new(),
             stack_position: 0,
             queue_total: 1,
             allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
-        }
+        };
+        modal.reset_choice();
+        modal
     }
 
     pub fn with_allowed_scopes(
@@ -87,21 +101,34 @@ impl ApprovalModal {
         self
     }
 
-    /// Per-row decision labels for rendering.
-    fn marker(d: Decision, is_current: bool) -> &'static str {
-        if is_current {
-            match d {
-                Decision::Pending => "  >> ",
-                Decision::Approve(_) => "  ✓> ",
-                Decision::Reject => "  ✗> ",
-            }
+    fn choices(&self) -> Vec<ApprovalChoice> {
+        let critical = self.tools.get(self.current).is_some_and(|tool| {
+            summarize(&tool.tool_name, &tool.input).risk == RiskLevel::Critical
+        });
+        let mut choices = if critical {
+            vec![ApprovalChoice::Reject, ApprovalChoice::Once]
         } else {
-            match d {
-                Decision::Pending => "     ",
-                Decision::Approve(_) => "  ✓  ",
-                Decision::Reject => "  ✗  ",
-            }
+            vec![ApprovalChoice::Once, ApprovalChoice::Reject]
+        };
+        if self
+            .allowed_scopes
+            .contains(&sylvander_protocol::ApprovalScope::Session)
+        {
+            choices.push(ApprovalChoice::Session);
         }
+        if self
+            .allowed_scopes
+            .contains(&sylvander_protocol::ApprovalScope::Persistent)
+        {
+            choices.push(ApprovalChoice::Persistent);
+        }
+        choices
+    }
+
+    fn reset_choice(&mut self) {
+        // The recommended choice always occupies the first row: Allow once
+        // for ordinary requests, Deny for critical requests.
+        self.choice_index = 0;
     }
 }
 
@@ -111,11 +138,7 @@ impl Modal for ApprovalModal {
     }
 
     fn title(&self) -> &str {
-        if self.mode == ApprovalMode::RejectFeedback {
-            "Rejection Feedback"
-        } else {
-            "Tool Approval"
-        }
+        "Tool Approval"
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
@@ -139,103 +162,98 @@ impl Modal for ApprovalModal {
 
 impl ApprovalModal {
     fn render_navigate(&self, frame: &mut Frame, parent: Rect) {
-        let height = (8 + self.tools.len() as u16 * 2).min(parent.height.saturating_sub(2));
-        let popup_area = centered_rect(72, height, parent);
-        frame.render_widget(Clear, popup_area);
-
-        let title = if self.queue_total > 1 {
-            format!(
-                " Tool Approval (batch {}/{} — {} total) ",
-                self.stack_position + 1,
-                self.queue_total,
-                self.queue_total
-            )
-        } else {
-            " Tool Approval ".to_string()
+        let choices = self.choices();
+        let body = decision_dock(frame, parent, 6 + choices.len() as u16);
+        let Some(tool) = self.tools.get(self.current) else {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "◆ Approval request is no longer available",
+                    theme::warning(),
+                ))),
+                body,
+            );
+            return;
         };
 
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .title_style(theme::warning()),
-            popup_area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from("Review the requested capabilities:".bold()));
-
-        for (i, tool) in self.tools.iter().enumerate() {
-            let is_current = i == self.current;
-            let marker = Self::marker(self.decisions[i], is_current);
-            let palette = theme::palette();
-            let marker_color = match (self.decisions[i], is_current) {
-                (_, true) => palette.waiting,
-                (Decision::Approve(_), _) => palette.verified,
-                (Decision::Reject, _) => palette.danger,
-                (Decision::Pending, _) => palette.text_dim,
-            };
-            let summary = summarize(&tool.tool_name, &tool.input);
-            let risk_style = match summary.risk {
-                RiskLevel::Low => theme::verified(),
-                RiskLevel::Medium => theme::active(),
-                RiskLevel::High => theme::warning(),
-                RiskLevel::Critical => theme::danger().bold(),
-            };
-            lines.push(Line::from(vec![
-                Span::styled(marker, Style::default().fg(marker_color)),
-                Span::styled(format!("{}. ", i + 1), Style::default().fg(marker_color)),
-                Span::styled(format!("{:<9}", summary.risk.label()), risk_style),
-                Span::styled(
-                    truncate_for_display(&summary.action, 58),
-                    Style::default().fg(marker_color),
+        let summary = summarize(&tool.tool_name, &tool.input);
+        let risk_style = match summary.risk {
+            RiskLevel::Low => theme::verified(),
+            RiskLevel::Medium => theme::active(),
+            RiskLevel::High => theme::warning(),
+            RiskLevel::Critical => theme::danger().bold(),
+        };
+        let header = "◆ Permission needed";
+        let progress = format!("{} of {}", self.current + 1, self.tools.len());
+        let gap = (body.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(header) + UnicodeWidthStr::width(&*progress));
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(header, theme::warning().bold()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(progress, theme::text_muted()),
+            ]),
+            Line::from(Span::styled(
+                approval_action_label(&tool.tool_name),
+                theme::text_muted(),
+            )),
+            Line::from(Span::styled(
+                truncate_for_display(
+                    &approval_target(&tool.tool_name, &summary.action),
+                    body.width as usize,
                 ),
-            ]));
+                theme::text().bold(),
+            )),
+            Line::from(Span::styled(
+                truncate_for_display(
+                    &format!(
+                        "{} · {} · {}",
+                        risk_label(summary.risk),
+                        risk_explanation(summary.risk),
+                        summary.scope
+                    ),
+                    body.width as usize,
+                ),
+                risk_style,
+            )),
+            Line::from(""),
+        ];
+
+        for (index, choice) in choices.iter().copied().enumerate() {
+            let selected = index == self.choice_index;
+            let choice_style = if choice == ApprovalChoice::Reject {
+                if selected {
+                    theme::danger().bold()
+                } else {
+                    theme::text()
+                }
+            } else if selected {
+                theme::brand_violet().bold()
+            } else {
+                theme::text()
+            };
+            let recommendation =
+                if choice == ApprovalChoice::Reject && summary.risk == RiskLevel::Critical {
+                    "  recommended for critical operations"
+                } else {
+                    ""
+                };
             lines.push(Line::from(vec![
-                Span::raw("       "),
-                Span::styled("scope  ", theme::text_muted()),
-                Span::styled(truncate_for_display(&summary.scope, 58), theme::text_dim()),
+                Span::styled(if selected { "› " } else { "  " }, choice_style),
+                Span::styled(
+                    format!("{}. {}", index + 1, approval_choice_label(choice)),
+                    choice_style,
+                ),
+                Span::styled(recommendation, theme::text_muted()),
             ]));
         }
 
-        lines.push(Line::from(""));
-        let mut actions = vec!["↵/y once"];
-        if self
-            .allowed_scopes
-            .contains(&sylvander_protocol::ApprovalScope::Session)
-        {
-            actions.push("s session");
-        }
-        if self
-            .allowed_scopes
-            .contains(&sylvander_protocol::ApprovalScope::Persistent)
-        {
-            actions.push("p always");
-        }
-        actions.push("n reject");
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{}/{}  {}",
-                self.current + 1,
-                self.tools.len(),
-                actions.join(" · ")
-            ),
-            theme::text_muted(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "     a all once · N none · esc deny",
-            theme::text_muted(),
-        )));
-
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
     }
 
     fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match (key.code, key.modifiers) {
-            (KeyCode::Enter, _)
-            | (KeyCode::Char('y'), KeyModifiers::NONE)
-            | (KeyCode::Char('1'), KeyModifiers::NONE) => {
+            (KeyCode::Enter, _) => self.apply_selected_choice(state),
+            (KeyCode::Char('y'), KeyModifiers::NONE) => {
                 self.decisions[self.current] =
                     Decision::Approve(sylvander_protocol::ApprovalScope::Once);
                 advance(self, state)
@@ -246,16 +264,17 @@ impl ApprovalModal {
             (KeyCode::Char('p'), KeyModifiers::NONE) => {
                 self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
             }
-            (KeyCode::Char('n'), KeyModifiers::NONE)
-            | (KeyCode::Char('r'), KeyModifiers::NONE)
-            | (KeyCode::Char('2'), KeyModifiers::NONE) => {
-                self.decisions[self.current] = Decision::Reject;
-                // Drop into feedback capture for this rejection.
-                self.mode = ApprovalMode::RejectFeedback;
-                self.feedback.clear();
-                state.mode = AppMode::ApprovalPending;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
+            (KeyCode::Char('n'), KeyModifiers::NONE) | (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                self.begin_rejection(state)
+            }
+            (KeyCode::Char(number @ '1'..='4'), KeyModifiers::NONE) => {
+                let index = number as usize - '1' as usize;
+                if index < self.choices().len() {
+                    self.choice_index = index;
+                    self.apply_selected_choice(state)
+                } else {
+                    Consumed::Yes { dismiss: false }
+                }
             }
             (KeyCode::Char('Y'), KeyModifiers::SHIFT)
             | (KeyCode::Char('a'), KeyModifiers::NONE) => {
@@ -281,15 +300,15 @@ impl ApprovalModal {
                 Consumed::Yes { dismiss: false }
             }
             (KeyCode::Up, _) => {
-                if self.current > 0 {
-                    self.current -= 1;
+                if self.choice_index > 0 {
+                    self.choice_index -= 1;
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
             (KeyCode::Down, _) => {
-                if self.current + 1 < self.tools.len() {
-                    self.current += 1;
+                if self.choice_index + 1 < self.choices().len() {
+                    self.choice_index += 1;
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
@@ -298,6 +317,7 @@ impl ApprovalModal {
                 if self.current > 0 {
                     self.current -= 1;
                     self.decisions[self.current] = Decision::Pending;
+                    self.reset_choice();
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
@@ -321,6 +341,35 @@ impl ApprovalModal {
         self.decisions[self.current] = Decision::Approve(scope);
         advance(self, state)
     }
+
+    fn apply_selected_choice(&mut self, state: &mut AppState) -> Consumed {
+        let Some(choice) = self.choices().get(self.choice_index).copied() else {
+            return Consumed::Yes { dismiss: false };
+        };
+        match choice {
+            ApprovalChoice::Once => {
+                self.decisions[self.current] =
+                    Decision::Approve(sylvander_protocol::ApprovalScope::Once);
+                advance(self, state)
+            }
+            ApprovalChoice::Reject => self.begin_rejection(state),
+            ApprovalChoice::Session => {
+                self.approve_with_scope(sylvander_protocol::ApprovalScope::Session, state)
+            }
+            ApprovalChoice::Persistent => {
+                self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
+            }
+        }
+    }
+
+    fn begin_rejection(&mut self, state: &mut AppState) -> Consumed {
+        self.decisions[self.current] = Decision::Reject;
+        self.mode = ApprovalMode::RejectFeedback;
+        self.feedback.clear();
+        state.mode = AppMode::ApprovalPending;
+        state.dirty.mark();
+        Consumed::Yes { dismiss: false }
+    }
 }
 
 // ===========================================================================
@@ -329,39 +378,30 @@ impl ApprovalModal {
 
 impl ApprovalModal {
     fn render_feedback(&self, frame: &mut Frame, parent: Rect) {
-        let popup_area = centered_rect(60, 7, parent);
-        frame.render_widget(Clear, popup_area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Rejection Feedback ")
-                .title_style(theme::warning()),
-            popup_area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
+        let body = decision_dock(frame, parent, 5);
+        let lines = vec![
+            Line::from(Span::styled("◆ Deny this request", theme::danger().bold())),
+            Line::from(Span::styled(
+                "Add guidance for Sylvander (optional).",
+                theme::text_muted(),
+            )),
+            Line::from(vec![
+                Span::styled("> ", theme::danger()),
+                Span::styled(&self.feedback, theme::text()),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "↵ reject with guidance   esc back   500 character max",
+                theme::text_muted(),
+            )),
+        ];
 
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(Span::styled(
-            "Optional reason for rejecting this request:",
-            theme::subtle_emphasis(theme::text_muted()),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("> ", theme::warning()),
-            Span::styled(&self.feedback, Style::default()),
-        ]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "enter reject · esc back · 500 character max",
-            theme::text_muted(),
-        )));
-
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines), body);
 
         // Hardware cursor at end of feedback text.
-        let cursor_x = inner.x + 2 + self.feedback.chars().count() as u16;
-        let cursor_y = inner.y + 2;
-        if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
+        let cursor_x = body.x + 2 + UnicodeWidthStr::width(self.feedback.as_str()) as u16;
+        let cursor_y = body.y + 2;
+        if cursor_x < body.x + body.width && cursor_y < body.y + body.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
@@ -414,6 +454,7 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     }
     if modal.current + 1 < modal.tools.len() {
         modal.current += 1;
+        modal.reset_choice();
         return Consumed::Yes { dismiss: false };
     }
     // Last tool or all decided — fill remaining pending as approve (default).
@@ -478,6 +519,55 @@ fn scope_label(scope: sylvander_protocol::ApprovalScope) -> &'static str {
     }
 }
 
+fn approval_choice_label(choice: ApprovalChoice) -> &'static str {
+    match choice {
+        ApprovalChoice::Once => "Allow once",
+        ApprovalChoice::Reject => "Deny",
+        ApprovalChoice::Session => "Allow this exact request for this session",
+        ApprovalChoice::Persistent => "Always allow this exact request",
+    }
+}
+
+fn approval_action_label(tool_name: &str) -> &'static str {
+    match tool_name.to_ascii_lowercase().as_str() {
+        "bash" | "shell" | "exec" => "Run command",
+        "write" | "write_file" => "Write file",
+        "edit" | "edit_file" => "Edit file",
+        "read" | "read_file" => "Read file",
+        "search" | "grep" | "rg" => "Search workspace",
+        _ => "Use tool",
+    }
+}
+
+fn approval_target(tool_name: &str, target: &str) -> String {
+    if target.trim().is_empty()
+        || target.eq_ignore_ascii_case(tool_name)
+        || target.eq_ignore_ascii_case(approval_action_label(tool_name))
+    {
+        "Target details were not provided".into()
+    } else {
+        target.to_string()
+    }
+}
+
+fn risk_label(risk: RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "Low risk",
+        RiskLevel::Medium => "Medium risk",
+        RiskLevel::High => "High risk",
+        RiskLevel::Critical => "Critical",
+    }
+}
+
+fn risk_explanation(risk: RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "read-only operation",
+        RiskLevel::Medium => "changes workspace content",
+        RiskLevel::High => "runs a process or external capability",
+        RiskLevel::Critical => "may destroy data or repository state",
+    }
+}
+
 fn reject_pending_and_finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     for decision in &mut modal.decisions {
         if *decision == Decision::Pending {
@@ -485,28 +575,6 @@ fn reject_pending_and_finish(modal: &mut ApprovalModal, state: &mut AppState) ->
         }
     }
     finish(modal, state)
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    // `height` is in rows here (not percent) — middle-aligned vertically,
-    // percent_x is the horizontal percentage.
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-        ])
-        .split(parent);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-            Constraint::Percentage(percent_x.min(95)),
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-        ])
-        .split(v[1]);
-    h[1]
 }
 
 fn truncate_for_display(s: &str, max: usize) -> String {
@@ -546,6 +614,20 @@ mod tests {
     fn decision_tracks_pending_state() {
         let m = build_modal_with_n_tools(3);
         assert!(m.decisions.iter().all(|d| *d == Decision::Pending));
+    }
+
+    #[test]
+    fn critical_request_places_deny_first_and_selects_it() {
+        let m = ApprovalModal::new(
+            "b".into(),
+            vec![ToolInfo {
+                call_id: "c".into(),
+                tool_name: "bash".into(),
+                input: serde_json::json!({"command": "rm -rf ./cache"}),
+            }],
+        );
+        assert_eq!(m.choices()[0], ApprovalChoice::Reject);
+        assert_eq!(m.choice_index, 0);
     }
 
     #[test]

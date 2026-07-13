@@ -3,14 +3,15 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppState;
 use crate::event::Action;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::review_view};
 use crate::theme;
 
 pub struct ToolInspector {
@@ -63,43 +64,31 @@ impl Modal for ToolInspector {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let area = inset(parent, 4, 2);
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(
-                    " {} · {} ",
-                    self.tool_name,
-                    short_id(&self.call_id)
-                ))
-                .title_style(theme::active_bold()),
-            area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(area);
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(3),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-        let search = if self.searching {
-            format!("/{}▏", self.query)
-        } else if self.query.is_empty() {
-            "search inactive".into()
-        } else {
-            format!("/{}", self.query)
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(search, theme::text_muted())),
-            rows[0],
-        );
-
         let lines = self.lines();
         let matches = self.matches(&lines);
-        let height = rows[1].height as usize;
+        let areas = review_view(frame, parent, 1);
+        let title = format!("{} output · {}", self.tool_name, short_id(&self.call_id));
+        let detail = if self.query.is_empty() {
+            format!("{} lines", lines.len())
+        } else {
+            format!("{} matches", matches.len())
+        };
+        let gap = (areas.header.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(&*title) + UnicodeWidthStr::width(&*detail));
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(title, theme::brand_violet()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(detail, theme::text_muted()),
+            ])),
+            areas.header,
+        );
+
+        let content = Rect {
+            width: parent.width.saturating_sub(4),
+            ..areas.body
+        };
+        let height = content.height as usize;
         let max_start = lines.len().saturating_sub(height);
         let start = self
             .cursor
@@ -125,19 +114,25 @@ impl Modal for ToolInspector {
                 ])
             })
             .collect::<Vec<_>>();
-        frame.render_widget(Paragraph::new(visible), rows[1]);
-        let match_label = if self.query.is_empty() {
-            String::new()
+        frame.render_widget(Paragraph::new(visible), content);
+        let footer = if self.searching {
+            Line::from(vec![
+                Span::styled("/", theme::brand_violet()),
+                Span::styled(&self.query, theme::text()),
+            ])
         } else {
-            format!(" · {} matches", matches.len())
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!("↑↓ scroll · / search · n next · c copy · esc close{match_label}"),
+            Line::from(Span::styled(
+                "n next match · c copy full output",
                 theme::text_muted(),
-            )),
-            rows[2],
-        );
+            ))
+        };
+        frame.render_widget(Paragraph::new(footer), areas.footer);
+        if self.searching {
+            let x = areas.footer.x + 1 + UnicodeWidthStr::width(self.query.as_str()) as u16;
+            if x < areas.footer.x + areas.footer.width {
+                frame.set_cursor_position((x, areas.footer.y));
+            }
+        }
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
@@ -195,15 +190,6 @@ impl Modal for ToolInspector {
             }
             _ => Consumed::Ignored,
         }
-    }
-}
-
-fn inset(parent: Rect, x: u16, y: u16) -> Rect {
-    Rect {
-        x: parent.x.saturating_add(x),
-        y: parent.y.saturating_add(y),
-        width: parent.width.saturating_sub(x.saturating_mul(2)).max(1),
-        height: parent.height.saturating_sub(y.saturating_mul(2)).max(1),
     }
 }
 

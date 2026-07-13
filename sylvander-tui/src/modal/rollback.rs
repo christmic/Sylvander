@@ -2,17 +2,19 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::Paragraph,
 };
 
 use crate::app::AppState;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::decision_dock};
 use crate::theme;
 
 pub struct WorkspaceRollbackModal {
     session_id: String,
     preview: sylvander_protocol::WorkspaceRollbackPreview,
+    choice_index: usize,
 }
 
 impl WorkspaceRollbackModal {
@@ -20,7 +22,19 @@ impl WorkspaceRollbackModal {
         Self {
             session_id,
             preview,
+            choice_index: 0,
         }
+    }
+
+    fn confirm(&self, state: &mut AppState) -> Consumed {
+        state
+            .pending_actions
+            .push(crate::event::Action::ConfirmWorkspaceRollback {
+                session_id: self.session_id.clone(),
+                expected_turn_id: self.preview.turn_id.clone(),
+            });
+        state.status = "Rolling back Agent file changes…".into();
+        Consumed::Yes { dismiss: true }
     }
 }
 
@@ -34,66 +48,74 @@ impl Modal for WorkspaceRollbackModal {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let width = parent.width.saturating_sub(4).min(76).max(36);
-        let height = (self.preview.files.len() as u16 + 9)
-            .min(parent.height.saturating_sub(2))
-            .max(10);
-        let area = Rect {
-            x: parent.x + parent.width.saturating_sub(width) / 2,
-            y: parent.y + parent.height.saturating_sub(height) / 2,
-            width,
-            height,
-        };
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Rollback · latest Agent file turn ")
-                .title_style(theme::modal_title_coral()),
-            area,
-        );
-        let inner = Block::default().borders(Borders::ALL).inner(area);
+        let body = decision_dock(frame, parent, 6 + self.preview.files.len() as u16);
         let mut lines = vec![
             Line::from(Span::styled(
-                "Restore these files to their pre-turn contents?",
-                theme::header(),
+                "◆ Restore Agent file changes?",
+                theme::danger().bold(),
             )),
             Line::from(Span::styled(
-                "Only Agent-journaled Write/Edit changes are included.",
+                "Conversation history stays unchanged. External file changes can conflict.",
                 theme::text_muted(),
-            )),
-            Line::from(Span::styled(
-                "External changes cause a conflict; conversation history is unchanged.",
-                theme::warning(),
             )),
             Line::default(),
         ];
-        lines.extend(
-            self.preview.files.iter().map(|path| {
-                Line::from(vec![Span::styled("  ↶ ", theme::active()), Span::raw(path)])
-            }),
-        );
+        lines.extend(self.preview.files.iter().map(|path| {
+            Line::from(vec![
+                Span::styled("  ↶ ", theme::active()),
+                Span::styled(path, theme::text()),
+            ])
+        }));
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "enter / y confirm    esc / n cancel",
-            theme::text_muted(),
-        )));
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        for (index, label) in ["Keep current files", "Restore the files listed above"]
+            .iter()
+            .enumerate()
+        {
+            let selected = index == self.choice_index;
+            let style = if selected && index == 0 {
+                theme::brand_violet().bold()
+            } else if selected {
+                theme::danger().bold()
+            } else {
+                theme::text()
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{}{}. {label}",
+                    if selected { "› " } else { "  " },
+                    index + 1
+                ),
+                style,
+            )));
+        }
+        frame.render_widget(Paragraph::new(lines), body);
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
-            KeyCode::Enter | KeyCode::Char('y') => {
-                state
-                    .pending_actions
-                    .push(crate::event::Action::ConfirmWorkspaceRollback {
-                        session_id: self.session_id.clone(),
-                        expected_turn_id: self.preview.turn_id.clone(),
-                    });
-                state.status = "Rolling back Agent file changes…".into();
-                Consumed::Yes { dismiss: true }
+            KeyCode::Up => {
+                self.choice_index = 0;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
             }
-            KeyCode::Esc | KeyCode::Char('n') => {
+            KeyCode::Down => {
+                self.choice_index = 1;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('2') => {
+                self.choice_index = 1;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('1') => {
+                self.choice_index = 0;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Enter if self.choice_index == 1 => self.confirm(state),
+            KeyCode::Char('y') => self.confirm(state),
+            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('n') => {
                 state.status = "File rollback cancelled".into();
                 Consumed::Yes { dismiss: true }
             }
@@ -116,6 +138,7 @@ mod tests {
                 files: vec!["src/lib.rs".into()],
             },
         );
+        modal.handle_key(&KeyEvent::from(KeyCode::Down), &mut state);
         assert_eq!(
             modal.handle_key(&KeyEvent::from(KeyCode::Enter), &mut state),
             Consumed::Yes { dismiss: true }
@@ -127,5 +150,20 @@ mod tests {
                 ..
             }] if expected_turn_id == "turn-7"
         ));
+    }
+
+    #[test]
+    fn safe_choice_is_selected_by_default() {
+        let mut state = AppState::new();
+        let mut modal = WorkspaceRollbackModal::new(
+            "s1".into(),
+            sylvander_protocol::WorkspaceRollbackPreview {
+                turn_id: "turn-7".into(),
+                files: vec!["src/lib.rs".into()],
+            },
+        );
+        let consumed = modal.handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+        assert_eq!(consumed, Consumed::Yes { dismiss: true });
+        assert!(state.pending_actions.is_empty());
     }
 }

@@ -24,6 +24,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 use crate::component::Component;
@@ -45,7 +46,21 @@ pub fn status_mode_for(state: &AppState) -> StatusMode {
         if t == "Tool Approval" {
             return StatusMode::WaitingApproval;
         }
-        if t == "Plan review" || t == "Agent asks" || t == "Commands" {
+        if matches!(
+            t,
+            "Plan review"
+                | "Plan editor"
+                | "Plan · Edit step"
+                | "Agent asks"
+                | "Commands"
+                | "Model"
+                | "Permissions"
+                | "Mention file"
+                | "Sessions"
+                | "Rollback files"
+                | "Tool output"
+                | "Help"
+        ) {
             // Asking covers AskUser + Palette (palette is morally an
             // interactive decision the user must make).
             return StatusMode::Asking;
@@ -116,9 +131,11 @@ impl Component for StatusPanel {
             .unwrap_or_else(|| "—".into());
         let model = state.metadata.model_label();
         let branch = &state.metadata.branch;
+        let surface = state.modals.top().map(|modal| modal.title());
+        let mode_label = surface_status_label(surface, mode);
         if area.width < 100 {
             let compact = Line::from(vec![
-                Span::styled(format!("{} {}", mode.glyph(), mode.label()), mode.style()),
+                Span::styled(format!("{} {mode_label}", mode.glyph()), mode.style()),
                 Span::styled(
                     format!(" · model {model} · branch {branch} · session {session}"),
                     theme::text_dim(),
@@ -141,28 +158,38 @@ impl Component for StatusPanel {
         } else {
             String::new()
         };
+        let metadata_summary = if area.width < 120 {
+            format!(" · model {model} · branch {branch}")
+        } else {
+            format!(
+                " · model {model} · branch {branch} · session {session} · {} tok{cost_summary}{tool_summary}",
+                state.input_tokens.saturating_add(state.output_tokens),
+            )
+        };
         let left = Line::from(vec![
             Span::styled(format!("{} ", mode.glyph()), mode.style()),
-            Span::styled(mode.label(), mode.style()),
-            Span::styled(
-                format!(
-                    " · model {model} · branch {branch} · session {session} · {} tok{cost_summary}{tool_summary}",
-                    state.input_tokens.saturating_add(state.output_tokens),
-                ),
-                theme::text_dim(),
-            ),
+            Span::styled(mode_label, mode.style()),
+            Span::styled(metadata_summary, theme::text_dim()),
             task_span,
             queue_span,
             editing_span,
         ])
         .alignment(Alignment::Left);
 
-        let hints: Vec<Span> = hints_for_mode(state.mode, mode).into_iter().collect();
+        let hints: Vec<Span> = hints_for_surface(surface, state.mode, mode)
+            .into_iter()
+            .collect();
+        let hints_width = hints
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>()
+            .saturating_add(2)
+            .min(area.width as usize) as u16;
         let right = Line::from(hints).alignment(Alignment::Right);
 
         let layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
+            .constraints([Constraint::Min(0), Constraint::Length(hints_width)])
             .split(area);
         frame.render_widget(Paragraph::new(left), layout[0]);
         frame.render_widget(Paragraph::new(right), layout[1]);
@@ -184,14 +211,14 @@ fn hints_for_mode(app_mode: AppMode, status_mode: StatusMode) -> [Span<'static>;
             Span::styled("/draft preserved", theme::text_muted()),
         ],
         (_, StatusMode::WaitingApproval) => [
-            Span::styled("y approve", theme::text_muted()),
+            Span::styled("↑↓ select", theme::text_muted()),
             Span::raw("   "),
-            Span::styled("n reject", theme::text_muted()),
+            Span::styled("↵ confirm · esc deny", theme::text_muted()),
         ],
         (_, StatusMode::Asking) => [
-            Span::styled("↵ submit", theme::text_muted()),
+            Span::styled("↑↓ select", theme::text_muted()),
             Span::raw("   "),
-            Span::styled("esc cancel", theme::text_muted()),
+            Span::styled("↵ choose · esc skip", theme::text_muted()),
         ],
         (_, StatusMode::Working) => [
             Span::styled("esc interrupt", theme::text_muted()),
@@ -214,6 +241,81 @@ fn hints_for_mode(app_mode: AppMode, status_mode: StatusMode) -> [Span<'static>;
             Span::styled("esc cancel", theme::text_muted()),
         ],
     }
+}
+
+fn surface_status_label(surface: Option<&str>, fallback: StatusMode) -> &str {
+    if matches!(fallback, StatusMode::Connecting | StatusMode::Disconnected) {
+        return fallback.label();
+    }
+    match surface {
+        Some("Commands") => "choosing command",
+        Some("Model") => "choosing model",
+        Some("Permissions") => "choosing permissions",
+        Some("Mention file") => "choosing file",
+        Some("Sessions") => "choosing session",
+        Some("Plan review") => "plan review",
+        Some("Plan editor" | "Plan · Edit step") => "editing plan",
+        Some("Agent asks") => "answering",
+        Some("Rollback files") => "rollback confirmation",
+        Some("Tool output") => "reviewing tool output",
+        Some("Help") => "help",
+        _ => fallback.label(),
+    }
+}
+
+fn hints_for_surface(
+    surface: Option<&str>,
+    app_mode: AppMode,
+    status_mode: StatusMode,
+) -> [Span<'static>; 3] {
+    if matches!(
+        status_mode,
+        StatusMode::Connecting | StatusMode::Disconnected
+    ) {
+        return hints_for_mode(app_mode, status_mode);
+    }
+    match surface {
+        Some("Commands") => picker_hints("tab complete"),
+        Some("Model") => picker_hints("←→ effort"),
+        Some("Permissions") => picker_hints("↵ apply"),
+        Some("Mention file") => picker_hints("↵ insert"),
+        Some("Sessions") => picker_hints("↵ load"),
+        Some("Plan review") => decision_hints("↵ confirm"),
+        Some("Plan editor") => [
+            Span::styled("↑↓ step", theme::text_muted()),
+            Span::raw("   "),
+            Span::styled("↵ done · esc back", theme::text_muted()),
+        ],
+        Some("Plan · Edit step") => picker_hints("↵ save"),
+        Some("Rollback files") => decision_hints("↵ confirm"),
+        Some("Tool output") => [
+            Span::styled("↑↓ scroll", theme::text_muted()),
+            Span::raw("   "),
+            Span::styled("/ search · esc close", theme::text_muted()),
+        ],
+        Some("Help") => [
+            Span::styled("reference", theme::text_muted()),
+            Span::raw("   "),
+            Span::styled("esc close", theme::text_muted()),
+        ],
+        _ => hints_for_mode(app_mode, status_mode),
+    }
+}
+
+fn picker_hints(action: &'static str) -> [Span<'static>; 3] {
+    [
+        Span::styled("↑↓ select", theme::text_muted()),
+        Span::raw("   "),
+        Span::styled(format!("{action} · esc close"), theme::text_muted()),
+    ]
+}
+
+fn decision_hints(action: &'static str) -> [Span<'static>; 3] {
+    [
+        Span::styled("↑↓ select", theme::text_muted()),
+        Span::raw("   "),
+        Span::styled(format!("{action} · esc cancel"), theme::text_muted()),
+    ]
 }
 
 // ===========================================================================

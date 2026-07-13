@@ -17,8 +17,9 @@ pub trait Modal {
     /// Title shown in the popup border.
     fn title(&self) -> &str;
 
-    /// Draw into the full-screen `area`. Implementations should call
-    /// `centered_rect` internally to position themselves.
+    /// Draw into the full-screen `area`. The surface chooses its semantic
+    /// placement: Decision Docks and Focus Pickers anchor to the bottom;
+    /// Review Views temporarily own the transcript viewport.
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState);
 
     /// Process a key. Return whether the key was consumed and whether
@@ -118,6 +119,7 @@ pub mod permissions;
 pub mod plan;
 pub mod rollback;
 pub mod sessions;
+pub(crate) mod surface;
 pub mod tool_inspector;
 
 pub use approval::ApprovalModal;

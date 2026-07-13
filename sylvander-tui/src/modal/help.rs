@@ -3,14 +3,14 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::app::AppState;
 use crate::keymap::KeyAction;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::review_view};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,8 +156,6 @@ impl HelpModal {
                 Span::styled(description, theme::text()),
             ])
         }));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Esc close", theme::text_muted())));
         lines
     }
 }
@@ -191,19 +189,24 @@ impl Modal for HelpModal {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
-        let area = centered_rect(68, 16, parent);
-        frame.render_widget(Clear, area);
+        let areas = review_view(frame, parent, 1);
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Sylvander help ")
-                .title_style(theme::modal_title_coral()),
-            area,
+            Paragraph::new(Line::from(vec![
+                Span::styled("Sylvander help", theme::brand_violet()),
+                Span::styled(" · reference", theme::text_muted()),
+            ])),
+            areas.header,
         );
-        let inner = Block::default().borders(Borders::ALL).inner(area);
         frame.render_widget(
             Paragraph::new(self.lines(state)).wrap(Wrap { trim: false }),
-            inner,
+            areas.body,
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Reference for the current interaction mode",
+                theme::text_muted(),
+            )),
+            areas.footer,
         );
     }
 
@@ -213,24 +216,4 @@ impl Modal for HelpModal {
             _ => Consumed::Yes { dismiss: false },
         }
     }
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Min(0),
-        ])
-        .split(parent);
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1]);
-    horizontal[1]
 }

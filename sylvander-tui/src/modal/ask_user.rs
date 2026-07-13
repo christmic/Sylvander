@@ -1,4 +1,4 @@
-//! AskUser modal — model asks the user a clarifying question.
+//! AskUser Decision Dock — model asks the user a clarifying question.
 //!
 //! Three content modes (UX §12.1):
 //! - **Single select**: options != empty, multi_select=false.
@@ -15,15 +15,16 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    layout::Rect,
+    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{Consumed, Modal, surface::decision_dock};
 use crate::theme;
 
 /// Selection state — `None` means single-select with no choice yet, OR
@@ -48,6 +49,8 @@ pub struct AskUserModal {
     pub cursor: usize,
     /// Free-text answer the user has typed (always available).
     pub answer: String,
+    /// Whether the synthetic `Other…` row owns text input.
+    pub editing_other: bool,
     pub validation_error: Option<String>,
 }
 
@@ -58,6 +61,7 @@ impl AskUserModal {
         options: Vec<String>,
         multi_select: bool,
     ) -> Self {
+        let free_text = options.is_empty();
         let selection = if multi_select && !options.is_empty() {
             Selection::Multi(vec![false; options.len()])
         } else {
@@ -71,18 +75,17 @@ impl AskUserModal {
             selection,
             cursor: 0,
             answer: String::new(),
+            editing_other: free_text,
             validation_error: None,
         }
     }
 
-    fn kind(&self) -> &'static str {
-        if self.options.is_empty() {
-            "free text"
-        } else if self.multi_select {
-            "multi-select"
-        } else {
-            "single-select"
-        }
+    fn other_index(&self) -> usize {
+        self.options.len()
+    }
+
+    fn on_other_row(&self) -> bool {
+        self.options.is_empty() || self.cursor == self.other_index()
     }
 
     /// Compose the answer string. Format chosen for easy parsing by the
@@ -90,7 +93,9 @@ impl AskUserModal {
     fn submit_answer(&self) -> String {
         match &self.selection {
             Selection::None if !self.options.is_empty() && !self.multi_select => {
-                let option = self.options.get(self.cursor).cloned().unwrap_or_default();
+                let Some(option) = self.options.get(self.cursor).cloned() else {
+                    return self.answer.trim().to_string();
+                };
                 if self.answer.trim().is_empty() {
                     option
                 } else {
@@ -136,168 +141,169 @@ impl Modal for AskUserModal {
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        // Height adapts to option count + free-text input.
-        let options_lines = self.options.len().max(1) as u16;
-        let height = (8 + options_lines).min(parent.height.saturating_sub(2));
-        let popup_area = centered_rect(60, height, parent);
-        frame.render_widget(Clear, popup_area);
+        let choice_rows = self.options.len().saturating_add(1) as u16;
+        let error_rows = u16::from(self.validation_error.is_some());
+        let body = decision_dock(frame, parent, 4 + choice_rows + error_rows);
+        let heading = if self.options.is_empty() {
+            "◆ Your input is needed"
+        } else if self.multi_select {
+            "◆ Choose any that apply"
+        } else {
+            "◆ One choice needed"
+        };
+        let mut lines = vec![
+            Line::from(Span::styled(heading, theme::brand_violet().bold())),
+            Line::from(Span::styled(
+                wrap_text(&self.question, body.width as usize),
+                theme::text().bold(),
+            )),
+            Line::from(""),
+        ];
 
-        let title = format!(" Agent asks ({}) ", self.kind());
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .title_style(theme::modal_title_coral()),
-            popup_area,
-        );
-
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-        let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(Span::styled(
-            wrap_text(&self.question, (inner.width as usize).saturating_sub(2)),
-            theme::text().bold(),
-        )));
-        lines.push(Line::from(""));
-
-        if !self.options.is_empty() {
-            for (i, opt) in self.options.iter().enumerate() {
-                let is_cursor = i == self.cursor;
-                let (marker, marker_color) = match &self.selection {
-                    Selection::Multi(mask) => {
-                        let check = if mask[i] { "☑" } else { "☐" };
-                        (
-                            format!("{} [{}] ", check, i + 1),
-                            if mask[i] {
-                                theme::palette().verified
-                            } else if is_cursor {
-                                theme::palette().active
-                            } else {
-                                theme::palette().text_dim
-                            },
-                        )
-                    }
-                    _ => (
-                        format!("  [{}] ", i + 1),
-                        if is_cursor {
-                            theme::palette().active
-                        } else {
-                            theme::palette().text_dim
-                        },
-                    ),
-                };
-
-                let prefix = if self.multi_select {
-                    marker
-                } else if is_cursor {
-                    " ›  ".to_string()
-                } else {
-                    "    ".to_string()
-                };
-
-                let label = wrap_text(opt, (inner.width as usize).saturating_sub(8));
-                if self.multi_select {
-                    lines.push(Line::from(vec![
-                        Span::styled(prefix, Style::default().fg(marker_color)),
-                        Span::styled(label, Style::default().fg(marker_color)),
-                    ]));
-                } else {
-                    let color = if is_cursor {
-                        theme::palette().active
-                    } else {
-                        theme::palette().text_dim
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("{prefix}{label}"),
-                        Style::default().fg(color),
-                    )));
-                }
-            }
-            lines.push(Line::from(""));
+        for (index, option) in self.options.iter().enumerate() {
+            let cursor = self.cursor == index && !self.editing_other;
+            let selected = match &self.selection {
+                Selection::Single(selected) => *selected == index,
+                Selection::Multi(mask) => mask.get(index).copied().unwrap_or(false),
+                Selection::None => false,
+            };
+            let style = if cursor {
+                theme::brand_violet().bold()
+            } else if selected {
+                theme::verified()
+            } else {
+                theme::text()
+            };
+            let marker = if self.multi_select {
+                if selected { "[✓]" } else { "[ ]" }
+            } else {
+                ""
+            };
+            let label = if marker.is_empty() {
+                format!(
+                    "{}{}. {}",
+                    if cursor { "› " } else { "  " },
+                    index + 1,
+                    option
+                )
+            } else {
+                format!(
+                    "{}{} {}. {}",
+                    if cursor { "› " } else { "  " },
+                    marker,
+                    index + 1,
+                    option
+                )
+            };
+            lines.push(Line::from(Span::styled(
+                truncate_for_display(&label, body.width as usize),
+                style,
+            )));
         }
 
-        // Free-text answer field.
-        let answer_label = if self.options.is_empty() {
-            "Type your answer:"
+        let other_row = lines.len() as u16;
+        let other_cursor = self.on_other_row();
+        let other_style = if other_cursor {
+            theme::brand_violet().bold()
         } else {
-            "Or type a free-text reply:"
+            theme::text()
         };
-        lines.push(Line::from(Span::styled(answer_label, theme::text_muted())));
+        let other_prefix = if self.options.is_empty() {
+            "> ".to_string()
+        } else {
+            format!(
+                "{}{}. Other… ",
+                if other_cursor { "› " } else { "  " },
+                self.other_index() + 1
+            )
+        };
         lines.push(Line::from(vec![
-            Span::styled("> ", theme::verified()),
-            Span::styled(&self.answer, Style::default()),
+            Span::styled(&other_prefix, other_style),
+            Span::styled(&self.answer, theme::text()),
         ]));
-        lines.push(Line::from(""));
+
         if let Some(error) = &self.validation_error {
             lines.push(Line::from(Span::styled(
                 format!("! {error}"),
                 theme::warning(),
             )));
         }
-        let hint = match self.kind() {
-            "free text" => "Enter submit   Esc cancel and unblock Agent",
-            "multi-select" => "Space toggle   Enter submit   Esc cancel",
-            _ => "↑/↓ select   Enter submit   Esc cancel",
-        };
-        lines.push(Line::from(Span::styled(hint, theme::text_muted())));
+        lines.push(Line::from(Span::styled(
+            if self.editing_other {
+                "Type your answer · ↵ submit · esc return"
+            } else if self.multi_select {
+                "Space toggles · type for Other…"
+            } else {
+                "Type to answer with Other…"
+            },
+            theme::text_muted(),
+        )));
 
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
 
-        // Hardware cursor at end of free-text answer.
-        let cursor_x = inner.x + 2 + self.answer.chars().count() as u16;
-        let cursor_y = inner.y + inner.height.saturating_sub(4);
-        if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
-            frame.set_cursor_position((cursor_x, cursor_y));
+        if self.editing_other {
+            let cursor_x = body.x
+                + UnicodeWidthStr::width(other_prefix.as_str()) as u16
+                + UnicodeWidthStr::width(self.answer.as_str()) as u16;
+            let cursor_y = body.y + other_row;
+            if cursor_x < body.x + body.width && cursor_y < body.y + body.height {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
         }
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
+            KeyCode::Esc if self.editing_other && !self.options.is_empty() => {
+                self.editing_other = false;
+                self.validation_error = None;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
             KeyCode::Esc => self.cancel(state),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.cancel(state)
             }
             KeyCode::Up => {
-                if self.cursor > 0 {
+                if self.editing_other && !self.options.is_empty() {
+                    self.editing_other = false;
+                    self.cursor = self.options.len().saturating_sub(1);
+                    state.dirty.mark();
+                } else if self.cursor > 0 {
                     self.cursor -= 1;
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Down => {
-                if !self.options.is_empty() && self.cursor + 1 < self.options.len() {
+                if !self.editing_other && self.cursor < self.other_index() {
                     self.cursor += 1;
                     state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
-            KeyCode::Char(' ') if self.multi_select => {
-                if let Selection::Multi(ref mut mask) = self.selection {
+            KeyCode::Char(' ') if self.multi_select && !self.editing_other => {
+                if self.on_other_row() {
+                    self.editing_other = true;
+                } else if let Selection::Multi(ref mut mask) = self.selection {
                     if self.cursor < mask.len() {
                         mask[self.cursor] = !mask[self.cursor];
-                        state.dirty.mark();
                     }
                 }
+                self.validation_error = None;
+                state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
-                let answer = self.submit_answer();
-                if answer.is_empty() {
-                    self.validation_error =
-                        Some("Choose an option, type an answer, or press Esc to cancel".into());
+                if self.on_other_row() && !self.editing_other && !self.options.is_empty() {
+                    self.editing_other = true;
                     state.dirty.mark();
                     return Consumed::Yes { dismiss: false };
                 }
-                let call_id = std::mem::take(&mut self.call_id);
-                state.mode = AppMode::Normal;
-                state.pending_actions.push(Action::SendAnswer {
-                    session_id: state.session_id.clone().unwrap_or_default(),
-                    call_id,
-                    answer: answer.clone(),
-                });
-                state.messages.push(crate::app::ChatMessage::Info(format!(
-                    "answered · {answer}"
-                )));
-                Consumed::Yes { dismiss: true }
+                if !self.multi_select && !self.on_other_row() {
+                    self.selection = Selection::Single(self.cursor);
+                }
+                self.submit(state)
             }
             KeyCode::Char(c) => {
                 if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -306,7 +312,9 @@ impl Modal for AskUserModal {
                     return Consumed::Ignored;
                 }
                 // Numeric jump for both single and multi.
-                if let Some(d) = c.to_digit(10) {
+                if !self.editing_other
+                    && let Some(d) = c.to_digit(10)
+                {
                     let idx = (d as usize).saturating_sub(1);
                     if idx < self.options.len() {
                         self.cursor = idx;
@@ -328,23 +336,20 @@ impl Modal for AskUserModal {
                         return Consumed::Yes { dismiss: false };
                     }
                 }
-                // Free-text input (always available as a fallback).
+                // Typing switches directly to the inline Other editor while
+                // preserving any already selected option(s).
+                self.cursor = self.other_index();
+                self.editing_other = true;
                 self.answer.push(c);
                 self.validation_error = None;
                 state.dirty.mark();
-                self.validation_error = None;
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Backspace => {
-                // Prefer to delete from free-text, not from selected option.
                 if !self.answer.is_empty() {
                     self.answer.pop();
-                } else {
-                    // Clearing selection back to "None" if user backspaces
-                    // after a single-select — keeps the modal recoverable.
-                    if matches!(self.selection, Selection::Single(_)) {
-                        self.selection = Selection::None;
-                    }
+                } else if !self.options.is_empty() {
+                    self.editing_other = false;
                 }
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
@@ -355,6 +360,27 @@ impl Modal for AskUserModal {
 }
 
 impl AskUserModal {
+    fn submit(&mut self, state: &mut AppState) -> Consumed {
+        let answer = self.submit_answer();
+        if answer.is_empty() {
+            self.validation_error =
+                Some("Choose an option, type an answer, or press Esc to skip".into());
+            state.dirty.mark();
+            return Consumed::Yes { dismiss: false };
+        }
+        let call_id = std::mem::take(&mut self.call_id);
+        state.mode = AppMode::Normal;
+        state.pending_actions.push(Action::SendAnswer {
+            session_id: state.session_id.clone().unwrap_or_default(),
+            call_id,
+            answer: answer.clone(),
+        });
+        state.messages.push(crate::app::ChatMessage::Info(format!(
+            "answered · {answer}"
+        )));
+        Consumed::Yes { dismiss: true }
+    }
+
     fn cancel(&mut self, state: &mut AppState) -> Consumed {
         let call_id = std::mem::take(&mut self.call_id);
         state.pending_actions.push(Action::SendAnswer {
@@ -370,26 +396,6 @@ impl AskUserModal {
     }
 }
 
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-        ])
-        .split(parent);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-            Constraint::Percentage(percent_x.min(95)),
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-        ])
-        .split(v[1]);
-    h[1]
-}
-
 fn wrap_text(s: &str, max: usize) -> String {
     if s.chars().count() <= max || max < 4 {
         s.to_string()
@@ -398,6 +404,10 @@ fn wrap_text(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
+}
+
+fn truncate_for_display(s: &str, max: usize) -> String {
+    wrap_text(s, max)
 }
 
 // ===========================================================================
