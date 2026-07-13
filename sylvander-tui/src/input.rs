@@ -64,6 +64,11 @@ struct EditSnapshot {
 /// Inline-vs-attachment threshold per design §12.4 — "Pasted content under
 /// eight lines stays inline." Larger pastes collapse to an attachment token.
 pub const INLINE_PASTE_LINE_LIMIT: usize = 8;
+pub const MAX_DRAFT_BYTES: usize = 256 * 1024;
+pub const MAX_DRAFT_ROWS: usize = 1_024;
+pub const MAX_COMPOSER_ATTACHMENTS: usize = 32;
+pub const MAX_LOCAL_ATTACHMENT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DRAFT_SNAPSHOT_BYTES: u64 = 70 * 1024 * 1024;
 
 /// What kinds of attachment the composer can hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -250,6 +255,8 @@ pub enum PasteOutcome {
     Inlined,
     /// Text was collapsed into a new attachment token above the draft.
     Attached,
+    /// The local draft or attachment budget would be exceeded.
+    Rejected,
 }
 
 /// Multiline composer with cursor, optional selection, history, attachments.
@@ -355,8 +362,15 @@ impl Composer {
         self.rows.join("\n")
     }
 
-    pub fn replace_text(&mut self, text: &str) {
-        self.rows = text.split('\n').map(String::from).collect();
+    pub fn replace_text(&mut self, text: &str) -> bool {
+        let original_rows = text.matches('\n').count() + 1;
+        let bounded = bounded_utf8(text, MAX_DRAFT_BYTES);
+        let truncated = bounded.len() != text.len() || original_rows > MAX_DRAFT_ROWS;
+        self.rows = bounded
+            .split('\n')
+            .take(MAX_DRAFT_ROWS)
+            .map(String::from)
+            .collect();
         if self.rows.is_empty() {
             self.rows.push(String::new());
         }
@@ -365,6 +379,7 @@ impl Composer {
         self.anchor = None;
         self.history_idx = None;
         self.mark_focused();
+        truncated
     }
 
     /// True if buffer is empty (single empty row).
@@ -478,10 +493,15 @@ impl Composer {
         max_bytes: usize,
         allow_images: bool,
     ) -> Result<(), String> {
+        if self.attachments.len() >= MAX_COMPOSER_ATTACHMENTS {
+            return Err(format!(
+                "composer supports at most {MAX_COMPOSER_ATTACHMENTS} attachments"
+            ));
+        }
         self.attachments.push(Attachment::from_file(
             workspace,
             path,
-            max_bytes,
+            max_bytes.min(MAX_LOCAL_ATTACHMENT_BYTES),
             allow_images,
         )?);
         self.mark_focused();
@@ -497,6 +517,17 @@ impl Composer {
     ) -> Result<(), String> {
         if content.is_empty() {
             return Err("attachment content is empty".into());
+        }
+        if self.attachments.len() >= MAX_COMPOSER_ATTACHMENTS {
+            return Err(format!(
+                "composer supports at most {MAX_COMPOSER_ATTACHMENTS} attachments"
+            ));
+        }
+        if content.len() > MAX_LOCAL_ATTACHMENT_BYTES {
+            return Err(format!(
+                "attachment exceeds the {} MiB local limit",
+                MAX_LOCAL_ATTACHMENT_BYTES / 1024 / 1024
+            ));
         }
         self.attachments
             .push(Attachment::new_text(kind, name, mime_type, content));
@@ -556,9 +587,22 @@ impl Composer {
             text.matches('\n').count() + 1
         };
         if line_count <= INLINE_PASTE_LINE_LIMIT {
+            let expanded_bytes = text
+                .len()
+                .saturating_add(text.bytes().filter(|byte| *byte == b'\t').count() * 3);
+            if self.draft_bytes().saturating_add(expanded_bytes) > MAX_DRAFT_BYTES
+                || self.rows.len().saturating_add(line_count.saturating_sub(1)) > MAX_DRAFT_ROWS
+            {
+                return PasteOutcome::Rejected;
+            }
             self.paste_inline(text);
             PasteOutcome::Inlined
         } else {
+            if text.len() > MAX_LOCAL_ATTACHMENT_BYTES
+                || self.attachments.len() >= MAX_COMPOSER_ATTACHMENTS
+            {
+                return PasteOutcome::Rejected;
+            }
             self.attachments
                 .push(Attachment::new_paste(text.to_string()));
             PasteOutcome::Attached
@@ -650,13 +694,41 @@ impl Composer {
     }
 
     pub fn restore_draft_from(&mut self, path: &std::path::Path) -> std::io::Result<bool> {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.len() > MAX_DRAFT_SNAPSHOT_BYTES => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "draft snapshot exceeds local size limit",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        }
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error),
         };
         let snapshot: DraftSnapshot = serde_json::from_slice(&bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let invalid = snapshot.text.len() > MAX_DRAFT_BYTES
+            || snapshot.text.matches('\n').count() + 1 > MAX_DRAFT_ROWS
+            || snapshot.attachments.len() > MAX_COMPOSER_ATTACHMENTS
+            || snapshot.attachments.iter().any(|attachment| {
+                attachment.byte_count > MAX_LOCAL_ATTACHMENT_BYTES
+                    || attachment.content.len()
+                        > if attachment.kind == AttachmentKind::Image {
+                            MAX_LOCAL_ATTACHMENT_BYTES.saturating_mul(4) / 3 + 4
+                        } else {
+                            MAX_LOCAL_ATTACHMENT_BYTES
+                        }
+            });
+        if invalid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "draft snapshot contains content beyond local limits",
+            ));
+        }
         self.rows = snapshot.text.split('\n').map(String::from).collect();
         if self.rows.is_empty() {
             self.rows.push(String::new());
@@ -1043,6 +1115,9 @@ impl Composer {
         if let Some((s, e)) = self.selection_range() {
             self.delete_range(s, e);
         }
+        if self.draft_bytes().saturating_add(c.len_utf8()) > MAX_DRAFT_BYTES {
+            return;
+        }
         let row = &mut self.rows[self.cursor_row];
         row.insert(self.cursor_col, c);
         self.cursor_col += c.len_utf8();
@@ -1052,6 +1127,11 @@ impl Composer {
         if let Some((s, e)) = self.selection_range() {
             self.delete_range(s, e);
         }
+        if self.rows.len() >= MAX_DRAFT_ROWS
+            || self.draft_bytes().saturating_add(1) > MAX_DRAFT_BYTES
+        {
+            return;
+        }
         let current = std::mem::take(&mut self.rows[self.cursor_row]);
         let (left, right) = split_at_byte(&current, self.cursor_col);
         self.rows[self.cursor_row] = left;
@@ -1059,6 +1139,14 @@ impl Composer {
         self.rows.insert(self.cursor_row, right);
         self.cursor_col = 0;
         self.anchor = None;
+    }
+
+    fn draft_bytes(&self) -> usize {
+        self.rows
+            .iter()
+            .map(String::len)
+            .sum::<usize>()
+            .saturating_add(self.rows.len().saturating_sub(1))
     }
 
     /// `Backspace` action.
@@ -1375,6 +1463,17 @@ fn split_at_byte(s: &str, byte: usize) -> (String, String) {
         }
         (s[..cut].to_string(), s[cut..].to_string())
     }
+}
+
+fn bounded_utf8(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 fn char_count(s: &str) -> usize {
@@ -1749,6 +1848,35 @@ mod tests {
     }
 
     #[test]
+    fn oversized_paste_and_attachment_flood_are_rejected_without_retention() {
+        let mut composer = Composer::default();
+        assert_eq!(
+            composer.paste(&"x".repeat(MAX_DRAFT_BYTES + 1)),
+            PasteOutcome::Rejected
+        );
+        assert!(composer.is_empty());
+
+        composer.attachments = (0..MAX_COMPOSER_ATTACHMENTS)
+            .map(|_| Attachment::new_paste("line 1\nline 2".into()))
+            .collect();
+        assert_eq!(
+            composer.paste("1\n2\n3\n4\n5\n6\n7\n8\n9"),
+            PasteOutcome::Rejected
+        );
+        assert_eq!(composer.attachment_count(), MAX_COMPOSER_ATTACHMENTS);
+    }
+
+    #[test]
+    fn external_editor_replacement_is_utf8_safe_and_bounded() {
+        let mut composer = Composer::default();
+        let truncated = composer.replace_text(&"蟹".repeat(MAX_DRAFT_BYTES));
+        assert!(truncated);
+        let text = composer.text();
+        assert!(text.len() <= MAX_DRAFT_BYTES);
+        assert!(text.is_char_boundary(text.len()));
+    }
+
+    #[test]
     fn empty_paste_is_noop() {
         let mut c = Composer::default();
         assert_eq!(c.paste(""), PasteOutcome::Inlined);
@@ -1959,6 +2087,23 @@ mod tests {
         restored.take_submit();
         restored.save_draft_to(&path).expect("clear draft");
         assert!(!path.exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn draft_restore_rejects_content_beyond_composer_limits() {
+        let dir = tempdir();
+        let path = dir.join("draft.json");
+        let snapshot = DraftSnapshot {
+            text: "x".repeat(MAX_DRAFT_BYTES + 1),
+            attachments: Vec::new(),
+        };
+        std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+
+        let error = Composer::default()
+            .restore_draft_from(&path)
+            .expect_err("oversized draft");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         std::fs::remove_dir_all(dir).ok();
     }
 

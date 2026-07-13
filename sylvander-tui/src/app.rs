@@ -1140,7 +1140,9 @@ impl AppState {
     /// Handle a paste event from the terminal (M-T2). Forwards to the
     /// composer which decides inline-vs-attachment per design §12.4.
     pub fn handle_paste(&mut self, text: &str) {
-        self.composer.paste(text);
+        if self.composer.paste(text) == crate::input::PasteOutcome::Rejected {
+            self.status = "Paste rejected · local Composer limit exceeded".into();
+        }
         self.dirty.mark();
     }
 
