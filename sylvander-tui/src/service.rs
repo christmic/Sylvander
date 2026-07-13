@@ -88,21 +88,37 @@ impl AgentService {
                 workspace: Some(workspace),
             },
             Action::SendApprove {
+                session_id,
                 call_id,
                 approved,
                 scope,
                 reason,
             } => ClientMsg::Approve {
+                session_id,
                 call_id,
                 approved,
                 scope,
                 reason,
             },
-            Action::SendAnswer { call_id, answer } => ClientMsg::Answer { call_id, answer },
+            Action::SendAnswer {
+                session_id,
+                call_id,
+                answer,
+            } => ClientMsg::Answer {
+                session_id,
+                call_id,
+                answer,
+            },
             Action::InterruptTurn { session_id } => ClientMsg::Interrupt { session_id },
-            Action::ResolvePlan { plan_id, decision } => {
-                ClientMsg::ResolvePlan { plan_id, decision }
-            }
+            Action::ResolvePlan {
+                session_id,
+                plan_id,
+                decision,
+            } => ClientMsg::ResolvePlan {
+                session_id,
+                plan_id,
+                decision,
+            },
             Action::CancelTask {
                 session_id,
                 task_id,

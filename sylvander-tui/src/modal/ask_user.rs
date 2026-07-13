@@ -290,6 +290,7 @@ impl Modal for AskUserModal {
                 let call_id = std::mem::take(&mut self.call_id);
                 state.mode = AppMode::Normal;
                 state.pending_actions.push(Action::SendAnswer {
+                    session_id: state.session_id.clone().unwrap_or_default(),
                     call_id,
                     answer: answer.clone(),
                 });
@@ -357,6 +358,7 @@ impl AskUserModal {
     fn cancel(&mut self, state: &mut AppState) -> Consumed {
         let call_id = std::mem::take(&mut self.call_id);
         state.pending_actions.push(Action::SendAnswer {
+            session_id: state.session_id.clone().unwrap_or_default(),
             call_id,
             answer: String::new(),
         });
@@ -422,7 +424,7 @@ mod tests {
         assert_eq!(s.pending_actions.len(), 1);
         assert!(matches!(
             s.pending_actions[0],
-            Action::SendAnswer { ref call_id, ref answer } if call_id == "c" && answer == "make it blue"
+            Action::SendAnswer { ref call_id, ref answer, .. } if call_id == "c" && answer == "make it blue"
         ));
     }
 
@@ -502,7 +504,7 @@ mod tests {
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         assert!(matches!(
             s.pending_actions.as_slice(),
-            [Action::SendAnswer { call_id, answer }] if call_id == "c" && answer.is_empty()
+            [Action::SendAnswer { call_id, answer, .. }] if call_id == "c" && answer.is_empty()
         ));
         assert_eq!(s.mode, AppMode::Normal);
     }

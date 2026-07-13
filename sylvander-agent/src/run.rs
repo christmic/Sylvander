@@ -88,14 +88,14 @@ pub(crate) struct AgentRunInner {
     /// Static approval rules (auto-approve/auto-reject).
     approval_rules: Vec<crate::approval::ApprovalRule>,
     /// Pending approval requests (shared with BusApprovalGate).
-    pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     /// Agent-owned approval memory. Session grants are isolated by session;
     /// persistent grants exist only when the operator configured a store.
     approval_memory: Arc<Mutex<ApprovalMemory>>,
     /// Pending AskUser answers (shared with BusAskUserGate).
-    pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
+    pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
     /// Pending typed plan decisions (shared with BusPlanGate).
-    pending_plans: Arc<Mutex<HashMap<String, PendingPlan>>>,
+    pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
     /// Independently cancellable read-only background runs.
     background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
     /// Per-session concurrency locks (M12).
@@ -818,7 +818,12 @@ impl AgentRun {
                         scope,
                         reason,
                     } => {
-                        let request = self.inner.pending_approvals.lock().await.remove(call_id);
+                        let request = self
+                            .inner
+                            .pending_approvals
+                            .lock()
+                            .await
+                            .remove(&(msg.session_id.clone(), call_id.clone()));
                         if let Some(request) = request {
                             let decision = if *approved {
                                 if !request.allowed_scopes.contains(scope) {
@@ -854,7 +859,9 @@ impl AgentRun {
                     // M18: forward AskUser answer to the waiting gate
                     SystemMessage::AnswerQuestion { call_id, answer } => {
                         let mut pending = self.inner.pending_answers.lock().await;
-                        if let Some(request) = pending.remove(call_id) {
+                        if let Some(request) =
+                            pending.remove(&(msg.session_id.clone(), call_id.clone()))
+                        {
                             let _ = request.sender.send(vec![answer.clone()]);
                         }
                     }
@@ -864,7 +871,9 @@ impl AgentRun {
                     }
                     SystemMessage::ResolvePlan { plan_id, decision } => {
                         let mut pending = self.inner.pending_plans.lock().await;
-                        if let Some(request) = pending.remove(plan_id) {
+                        if let Some(request) =
+                            pending.remove(&(msg.session_id.clone(), plan_id.clone()))
+                        {
                             let _ = request.sender.send(decision.clone());
                         }
                     }
@@ -994,7 +1003,7 @@ struct BusApprovalGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     approval_memory: Arc<Mutex<ApprovalMemory>>,
 }
 
@@ -1036,7 +1045,7 @@ impl ApprovalGate for BusApprovalGate {
             }
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.pending_approvals.lock().await.insert(
-                tool.call_id.clone(),
+                (self.session_id.clone(), tool.call_id.clone()),
                 PendingApproval {
                     session_id: self.session_id.clone(),
                     fingerprint,
@@ -1092,7 +1101,10 @@ impl ApprovalGate for BusApprovalGate {
                 }
             };
             decisions[index] = Some(decision);
-            self.pending_approvals.lock().await.remove(&call_id);
+            self.pending_approvals
+                .lock()
+                .await
+                .remove(&(self.session_id.clone(), call_id));
         }
         ApprovalBatchResult {
             decisions: decisions
@@ -1192,7 +1204,7 @@ struct BusAskUserGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    pending_answers: Arc<Mutex<HashMap<String, PendingAnswer>>>,
+    pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
 }
 
 #[async_trait::async_trait]
@@ -1206,7 +1218,7 @@ impl AskUserGate for BusAskUserGate {
     ) -> Vec<String> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending_answers.lock().await.insert(
-            call_id.to_string(),
+            (self.session_id.clone(), call_id.to_string()),
             PendingAnswer {
                 session_id: self.session_id.clone(),
                 sender: tx,
@@ -1245,7 +1257,10 @@ impl AskUserGate for BusAskUserGate {
                 Vec::new()
             }
         };
-        self.pending_answers.lock().await.remove(call_id);
+        self.pending_answers
+            .lock()
+            .await
+            .remove(&(self.session_id.clone(), call_id.to_string()));
         answer
     }
 }
@@ -1258,7 +1273,7 @@ struct BusPlanGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
-    pending_plans: Arc<Mutex<HashMap<String, PendingPlan>>>,
+    pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
 }
 
 #[async_trait::async_trait]
@@ -1266,7 +1281,7 @@ impl PlanGate for BusPlanGate {
     async fn review(&self, plan_id: &str, steps: Vec<String>) -> crate::bus::PlanDecision {
         let (tx, rx) = oneshot::channel();
         self.pending_plans.lock().await.insert(
-            plan_id.to_string(),
+            (self.session_id.clone(), plan_id.to_string()),
             PendingPlan {
                 session_id: self.session_id.clone(),
                 sender: tx,
@@ -1303,7 +1318,10 @@ impl PlanGate for BusPlanGate {
                 }
             }
         };
-        self.pending_plans.lock().await.remove(plan_id);
+        self.pending_plans
+            .lock()
+            .await
+            .remove(&(self.session_id.clone(), plan_id.to_string()));
         decision
     }
 
@@ -3017,6 +3035,105 @@ mod tests {
             interrupted_b.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(bus.clone())
+            .build()
+            .expect("build");
+        let session_a = SessionId::new("session-a");
+        let session_b = SessionId::new("session-b");
+        let (approval_a_tx, approval_a_rx) = oneshot::channel();
+        let (approval_b_tx, mut approval_b_rx) = oneshot::channel();
+        let (answer_a_tx, answer_a_rx) = oneshot::channel();
+        let (answer_b_tx, mut answer_b_rx) = oneshot::channel();
+        let (plan_a_tx, plan_a_rx) = oneshot::channel();
+        let (plan_b_tx, mut plan_b_rx) = oneshot::channel();
+
+        for (session, approval, answer, plan) in [
+            (&session_a, approval_a_tx, answer_a_tx, plan_a_tx),
+            (&session_b, approval_b_tx, answer_b_tx, plan_b_tx),
+        ] {
+            run.inner.pending_approvals.lock().await.insert(
+                (session.clone(), "shared-id".into()),
+                PendingApproval {
+                    session_id: session.clone(),
+                    fingerprint: "shared-fingerprint".into(),
+                    allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+                    sender: approval,
+                },
+            );
+            run.inner.pending_answers.lock().await.insert(
+                (session.clone(), "shared-id".into()),
+                PendingAnswer {
+                    session_id: session.clone(),
+                    sender: answer,
+                },
+            );
+            run.inner.pending_plans.lock().await.insert(
+                (session.clone(), "shared-id".into()),
+                PendingPlan {
+                    session_id: session.clone(),
+                    sender: plan,
+                },
+            );
+        }
+
+        let inbox = bus.subscribe(run.subscription_filter()).await.unwrap();
+        let task = tokio::spawn(run.run(inbox));
+        for kind in [
+            SystemMessage::ApproveTool {
+                call_id: "shared-id".into(),
+                approved: false,
+                scope: sylvander_protocol::ApprovalScope::Once,
+                reason: Some("session A rejected".into()),
+            },
+            SystemMessage::AnswerQuestion {
+                call_id: "shared-id".into(),
+                answer: "session A answer".into(),
+            },
+            SystemMessage::ResolvePlan {
+                plan_id: "shared-id".into(),
+                decision: sylvander_protocol::PlanDecision::Approved,
+            },
+        ] {
+            bus.publish(BusMessage {
+                session_id: session_a.clone(),
+                sender: crate::bus::Sender::System,
+                recipient: crate::bus::Recipient::Agent(AgentId::new("test-agent")),
+                kind: MessageKind::System(kind),
+                payload: String::new(),
+                attachments: Vec::new(),
+                timestamp: crate::session::now_secs(),
+                id: crate::bus::MessageId::new(),
+            })
+            .await
+            .unwrap();
+        }
+
+        assert!(matches!(
+            approval_a_rx.await.unwrap(),
+            ApprovalDecision::Rejected { reason } if reason == "session A rejected"
+        ));
+        assert_eq!(answer_a_rx.await.unwrap(), ["session A answer"]);
+        assert_eq!(plan_a_rx.await.unwrap(), crate::bus::PlanDecision::Approved);
+        assert!(matches!(
+            approval_b_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            answer_b_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            plan_b_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        task.abort();
     }
 
     #[tokio::test]

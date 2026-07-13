@@ -37,6 +37,7 @@ pub enum ClientMsg {
         workspace: Option<String>,
     },
     Approve {
+        session_id: String,
         call_id: String,
         approved: bool,
         scope: sylvander_protocol::ApprovalScope,
@@ -44,6 +45,7 @@ pub enum ClientMsg {
         reason: Option<String>,
     },
     Answer {
+        session_id: String,
         call_id: String,
         answer: String,
     },
@@ -51,6 +53,7 @@ pub enum ClientMsg {
         session_id: String,
     },
     ResolvePlan {
+        session_id: String,
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
@@ -1165,17 +1168,20 @@ mod tests {
     #[test]
     fn answer_uses_the_server_supported_wire_shape() {
         let json = serde_json::to_value(ClientMsg::Answer {
+            session_id: "s1".into(),
             call_id: "c1".into(),
             answer: "blue".into(),
         })
         .unwrap();
         assert_eq!(json["type"], "answer");
         assert_eq!(json["call_id"], "c1");
+        assert_eq!(json["session_id"], "s1");
     }
 
     #[test]
     fn approval_rejection_reason_uses_the_typed_wire_shape() {
         let json = serde_json::to_value(ClientMsg::Approve {
+            session_id: "s1".into(),
             call_id: "c1".into(),
             approved: false,
             scope: sylvander_protocol::ApprovalScope::Once,
@@ -1225,6 +1231,7 @@ mod tests {
         ));
 
         let json = serde_json::to_value(ClientMsg::ResolvePlan {
+            session_id: "s1".into(),
             plan_id: "plan-1".into(),
             decision: sylvander_protocol::PlanDecision::Approved,
         })

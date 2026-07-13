@@ -187,6 +187,7 @@ impl PlanReviewModal {
         match key.code {
             KeyCode::Esc => {
                 state.pending_actions.push(Action::ResolvePlan {
+                    session_id: state.session_id.clone().unwrap_or_default(),
                     plan_id: self.plan_id.clone(),
                     decision: sylvander_protocol::PlanDecision::Rejected {
                         reason: "cancelled by user".into(),
@@ -197,6 +198,7 @@ impl PlanReviewModal {
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 state.pending_actions.push(Action::ResolvePlan {
+                    session_id: state.session_id.clone().unwrap_or_default(),
                     plan_id: self.plan_id.clone(),
                     decision: sylvander_protocol::PlanDecision::Rejected {
                         reason: "cancelled by user".into(),
@@ -228,6 +230,7 @@ impl PlanReviewModal {
                     }
                 };
                 state.pending_actions.push(Action::ResolvePlan {
+                    session_id: state.session_id.clone().unwrap_or_default(),
                     plan_id: self.plan_id.clone(),
                     decision,
                 });

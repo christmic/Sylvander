@@ -64,6 +64,8 @@ enum ClientMsg {
         workspace: Option<String>,
     },
     Approve {
+        #[serde(default)]
+        session_id: String,
         call_id: String,
         approved: bool,
         #[serde(default)]
@@ -72,6 +74,8 @@ enum ClientMsg {
         reason: Option<String>,
     },
     Answer {
+        #[serde(default)]
+        session_id: String,
         call_id: String,
         answer: String,
     },
@@ -79,6 +83,8 @@ enum ClientMsg {
         session_id: String,
     },
     ResolvePlan {
+        #[serde(default)]
+        session_id: String,
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
@@ -1004,6 +1010,7 @@ async fn handle_client_msg_for_client(
             }
         }
         ClientMsg::Approve {
+            session_id,
             call_id,
             approved,
             scope,
@@ -1013,7 +1020,7 @@ async fn handle_client_msg_for_client(
             let _ = ctx
                 .bus
                 .publish(BusMessage {
-                    session_id: SessionId::new("").into(), // agent-level
+                    session_id: SessionId::new(session_id),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::ApproveTool {
@@ -1029,11 +1036,15 @@ async fn handle_client_msg_for_client(
                 })
                 .await;
         }
-        ClientMsg::Answer { call_id, answer } => {
+        ClientMsg::Answer {
+            session_id,
+            call_id,
+            answer,
+        } => {
             let _ = ctx
                 .bus
                 .publish(BusMessage {
-                    session_id: SessionId::new("").into(),
+                    session_id: SessionId::new(session_id),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
@@ -1054,11 +1065,15 @@ async fn handle_client_msg_for_client(
                 ))
                 .await;
         }
-        ClientMsg::ResolvePlan { plan_id, decision } => {
+        ClientMsg::ResolvePlan {
+            session_id,
+            plan_id,
+            decision,
+        } => {
             let _ = ctx
                 .bus
                 .publish(BusMessage {
-                    session_id: SessionId::new(""),
+                    session_id: SessionId::new(session_id),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
@@ -2390,6 +2405,7 @@ mod tests {
 
         handle_client_msg(
             ClientMsg::ResolvePlan {
+                session_id: "session-1".into(),
                 plan_id: "plan-1".into(),
                 decision: sylvander_protocol::PlanDecision::Revised {
                     steps: vec!["inspect".into(), "verify".into()],
@@ -2405,11 +2421,12 @@ mod tests {
 
         let message = inbox.recv().await.expect("agent message");
         assert!(matches!(
-            message.kind,
+            (message.session_id.0.as_str(), message.kind),
+            ("session-1",
             MessageKind::System(SystemMessage::ResolvePlan {
                 plan_id,
                 decision: sylvander_protocol::PlanDecision::Revised { steps },
-            }) if plan_id == "plan-1" && steps == ["inspect", "verify"]
+            })) if plan_id == "plan-1" && steps == ["inspect", "verify"]
         ));
     }
 
@@ -2428,6 +2445,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::Approve {
+                session_id: "session-1".into(),
                 call_id: "call-1".into(),
                 approved: false,
                 scope: sylvander_protocol::ApprovalScope::Session,
@@ -2443,13 +2461,14 @@ mod tests {
 
         let message = inbox.recv().await.expect("agent message");
         assert!(matches!(
-            message.kind,
+            (message.session_id.0.as_str(), message.kind),
+            ("session-1",
             MessageKind::System(SystemMessage::ApproveTool {
                 call_id,
                 approved: false,
                 scope: sylvander_protocol::ApprovalScope::Session,
                 reason: Some(reason),
-            }) if call_id == "call-1" && reason == "unsafe outside workspace"
+            })) if call_id == "call-1" && reason == "unsafe outside workspace"
         ));
     }
 

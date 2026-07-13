@@ -60,6 +60,8 @@ enum ClientMsg {
         session_id: Option<String>,
     },
     Approve {
+        #[serde(default)]
+        session_id: String,
         call_id: String,
         approved: bool,
         #[serde(default)]
@@ -69,6 +71,8 @@ enum ClientMsg {
     },
     /// User answered an AskUser question.
     Answer {
+        #[serde(default)]
+        session_id: String,
         call_id: String,
         answer: String,
     },
@@ -418,6 +422,7 @@ async fn handle_client_msg(
             });
         }
         ClientMsg::Approve {
+            session_id,
             call_id,
             approved,
             scope,
@@ -426,7 +431,7 @@ async fn handle_client_msg(
             let _ = ctx
                 .bus
                 .publish(BusMessage {
-                    session_id: SessionId::new(String::new()),
+                    session_id: SessionId::new(session_id),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::ApproveTool {
@@ -442,11 +447,15 @@ async fn handle_client_msg(
                 })
                 .await;
         }
-        ClientMsg::Answer { call_id, answer } => {
+        ClientMsg::Answer {
+            session_id,
+            call_id,
+            answer,
+        } => {
             let _ = ctx
                 .bus
                 .publish(BusMessage {
-                    session_id: SessionId::new(String::new()),
+                    session_id: SessionId::new(session_id),
                     sender: sylvander_agent::bus::Sender::System,
                     recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
                     kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
