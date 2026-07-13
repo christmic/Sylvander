@@ -22,41 +22,24 @@ impl Component for ChatPanel {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+        self.render_with_scroll_limit(frame, area, state);
+    }
+}
+
+impl ChatPanel {
+    pub fn render_with_scroll_limit(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &AppState,
+    ) -> usize {
         let block = Block::default().borders(Borders::NONE);
         let inner = readable_area(area);
         frame.render_widget(block, area);
 
         let width = inner.width as usize;
 
-        // Welcome is the first block in a newly started conversation, not a
-        // separate page. Once the user submits, turns append below it and the
-        // lockup leaves the viewport only through ordinary transcript scroll.
-        let show_welcome = state.welcomed
-            || (state.messages.is_empty() && state.sessions.is_empty() && state.modals.is_empty());
-        let mut lines: Vec<Line> = if show_welcome {
-            build_welcome_lockup(width, state).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        for msg in &state.messages {
-            push_message_lines(msg, &mut lines, width, state.tool_details_expanded);
-        }
-
-        if !state.streaming_thinking.is_empty() {
-            for chunk in char_chunks(&state.streaming_thinking, width) {
-                lines.push(Line::from(Span::styled(
-                    format!("(thinking) {chunk}"),
-                    theme::thinking_text(),
-                )));
-            }
-        }
-
-        if !state.streaming.is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::from(""));
-            }
-            push_agent_turn(&state.streaming, &mut lines, width);
-        }
+        let lines = transcript_lines(state, width);
 
         let has_unread = state.chat_scroll > 0 && state.unread_events > 0;
         let visible = inner.height.saturating_sub(u16::from(has_unread)) as usize;
@@ -95,7 +78,50 @@ impl Component for ChatPanel {
                 unread_area,
             );
         }
+        total.saturating_sub(visible)
     }
+}
+
+impl ChatPanel {
+    pub fn scroll_limit(&self, area: Rect, state: &AppState) -> usize {
+        let inner = readable_area(area);
+        let has_unread = state.chat_scroll > 0 && state.unread_events > 0;
+        let visible = inner.height.saturating_sub(u16::from(has_unread)) as usize;
+        transcript_lines(state, inner.width as usize)
+            .len()
+            .saturating_sub(visible)
+    }
+}
+
+fn transcript_lines<'a>(state: &'a AppState, width: usize) -> Vec<Line<'a>> {
+    // Welcome is the first block in a newly started conversation, not a
+    // separate page. Once the user submits, turns append below it and the
+    // lockup leaves the viewport only through ordinary transcript scroll.
+    let show_welcome = state.welcomed
+        || (state.messages.is_empty() && state.sessions.is_empty() && state.modals.is_empty());
+    let mut lines = if show_welcome {
+        build_welcome_lockup(width, state).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    for message in &state.messages {
+        push_message_lines(message, &mut lines, width, state.tool_details_expanded);
+    }
+    if !state.streaming_thinking.is_empty() {
+        for chunk in char_chunks(&state.streaming_thinking, width) {
+            lines.push(Line::from(Span::styled(
+                format!("(thinking) {chunk}"),
+                theme::thinking_text(),
+            )));
+        }
+    }
+    if !state.streaming.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        push_agent_turn(&state.streaming, &mut lines, width);
+    }
+    lines
 }
 
 fn push_message_lines<'a>(
@@ -114,7 +140,7 @@ fn push_message_lines<'a>(
                 .enumerate()
             {
                 lines.push(Line::from(vec![
-                    Span::styled(if index == 0 { "› " } else { "  " }, theme::user_speaker()),
+                    Span::styled(if index == 0 { "> " } else { "  " }, theme::user_speaker()),
                     Span::styled(chunk.to_string(), theme::text()),
                 ]));
             }
@@ -201,7 +227,17 @@ fn push_message_lines<'a>(
             for child in children {
                 let (g, gstyle) = theme::tool_status_glyph_and_style(child.status);
                 let target = crate::tool_presenter::compact_target(&child.name, &child.input);
-                let meta = if tool_details_expanded {
+                let inline_diff = if tool_details_expanded || child.status == ToolStatus::Pending {
+                    Vec::new()
+                } else {
+                    crate::tool_presenter::inline_mutation_rows(
+                        &child.name,
+                        &child.input,
+                        width.saturating_sub(5),
+                        9,
+                    )
+                };
+                let meta = if tool_details_expanded || !inline_diff.is_empty() {
                     String::new()
                 } else {
                     child
@@ -211,7 +247,7 @@ fn push_message_lines<'a>(
                         .unwrap_or_default()
                 };
                 lines.push(Line::from(vec![
-                    Span::styled("│ ", theme::guide()),
+                    Span::styled("  ⎿ ", theme::guide()),
                     Span::styled(format!("{g} "), gstyle),
                     Span::styled(target, theme::text_dim()),
                     Span::styled(
@@ -223,6 +259,13 @@ fn push_message_lines<'a>(
                         theme::text_muted(),
                     ),
                 ]));
+                for detail in inline_diff {
+                    let style = detail_style(detail.kind, false);
+                    lines.push(Line::from(vec![
+                        Span::styled("     ", theme::guide()),
+                        Span::styled(detail.text, style),
+                    ]));
+                }
                 if tool_details_expanded {
                     for detail in crate::tool_presenter::detail_rows(
                         &child.name,
@@ -231,22 +274,9 @@ fn push_message_lines<'a>(
                         child.is_error.unwrap_or(false),
                         width.saturating_sub(4),
                     ) {
-                        let style = match detail.kind {
-                            crate::tool_presenter::DetailKind::Added => theme::verified(),
-                            crate::tool_presenter::DetailKind::Removed
-                            | crate::tool_presenter::DetailKind::Error => theme::danger(),
-                            crate::tool_presenter::DetailKind::Label => theme::header(),
-                            crate::tool_presenter::DetailKind::Meta => theme::text_muted(),
-                            crate::tool_presenter::DetailKind::Normal => {
-                                if child.is_error == Some(true) {
-                                    theme::warning()
-                                } else {
-                                    theme::text_dim()
-                                }
-                            }
-                        };
+                        let style = detail_style(detail.kind, child.is_error == Some(true));
                         lines.push(Line::from(vec![
-                            Span::styled("│   ", theme::guide()),
+                            Span::styled("     ", theme::guide()),
                             Span::styled(detail.text, style),
                         ]));
                     }
@@ -324,6 +354,24 @@ fn push_message_lines<'a>(
     }
 }
 
+fn detail_style(kind: crate::tool_presenter::DetailKind, is_error: bool) -> ratatui::style::Style {
+    match kind {
+        crate::tool_presenter::DetailKind::Added => theme::verified(),
+        crate::tool_presenter::DetailKind::Removed | crate::tool_presenter::DetailKind::Error => {
+            theme::danger()
+        }
+        crate::tool_presenter::DetailKind::Label => theme::header(),
+        crate::tool_presenter::DetailKind::Meta => theme::text_muted(),
+        crate::tool_presenter::DetailKind::Normal => {
+            if is_error {
+                theme::warning()
+            } else {
+                theme::text_dim()
+            }
+        }
+    }
+}
+
 /// Render one meaningful Sylvander turn. The compact presence mark appears
 /// once; it is not a miniature replacement for the welcome character.
 fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
@@ -335,7 +383,7 @@ fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
             lines.push(Line::from(""));
             continue;
         }
-        let marker = if marked { "   " } else { "◆  " };
+        let marker = if marked { "  " } else { "● " };
         marked = true;
         row.spans
             .insert(0, Span::styled(marker, theme::agent_speaker()));
@@ -650,7 +698,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .find(|cell| cell.symbol() == "›")
+            .find(|cell| cell.symbol() == ">")
             .expect("user speaker cell");
         assert_eq!(cell.fg, crate::theme::TEXT_DIM);
     }
@@ -770,7 +818,7 @@ mod tests {
                     if c.fg == crate::theme::BRAND_WARM && c.symbol() != " " {
                         found_brand = true;
                     }
-                    if c.symbol() == "›" {
+                    if c.symbol() == ">" {
                         found_turn = true;
                     }
                 }
@@ -791,7 +839,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(rendered.matches('›').count(), 1);
+        assert_eq!(rendered.matches('>').count(), 1);
         assert!(rendered.lines().skip(1).all(|line| line.starts_with("  ")));
     }
 
@@ -809,14 +857,14 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert_eq!(rendered.matches('◆').count(), 1);
+        assert_eq!(rendered.matches('●').count(), 1);
         assert!(!rendered.contains("/\\"));
         assert!(!rendered.contains("(••)"));
         assert!(!rendered.contains("<__>"));
         assert!(!rendered.contains("**"));
         assert!(!rendered.contains('`'));
-        assert!(rendered.contains("\n   1. ask_user"));
-        assert!(rendered.contains("\n   2. Read"));
+        assert!(rendered.contains("\n  1. ask_user"));
+        assert!(rendered.contains("\n  2. Read"));
         assert!(lines.iter().all(|line| line.width() <= 42));
     }
 
@@ -834,7 +882,7 @@ mod tests {
                 .expect("render chat");
             let buffer = terminal.backend().buffer();
             (0..36)
-                .find(|&y| (0..120).any(|x| buffer.cell((x, y)).is_some_and(|c| c.symbol() == "◆")))
+                .find(|&y| (0..120).any(|x| buffer.cell((x, y)).is_some_and(|c| c.symbol() == "●")))
                 .expect("agent presence mark")
         };
 
@@ -921,14 +969,14 @@ mod tests {
             .unwrap();
         let buf = t.backend().buffer().clone();
         // Find the first row of each message kind. User turns use the
-        // immersive `›` marker rather than a repeated "You:" heading.
+        // quiet `>` marker rather than a repeated "You:" heading.
         // The agent body is the row above any tool
         // step (which renders `● Run ...` or `✓ Run ...`).
         let mut you_y = None;
         for y in 0..20 {
             for x in 0..60 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "›" {
+                    if c.symbol() == ">" {
                         you_y = Some(y);
                         break;
                     }

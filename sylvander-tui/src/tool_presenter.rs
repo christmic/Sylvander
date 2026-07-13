@@ -110,6 +110,43 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
     }
 }
 
+/// Return a bounded, file-scoped diff for mutations that benefit from an
+/// immediate visual result. Other tools stay collapsed until detail is opened.
+pub fn inline_mutation_rows(
+    tool_name: &str,
+    input: &Value,
+    width: usize,
+    limit: usize,
+) -> Vec<DetailRow> {
+    if !matches!(
+        normalized_name(tool_name).as_str(),
+        "edit" | "edit_file" | "write" | "write_file"
+    ) {
+        return Vec::new();
+    }
+    if limit == 0 {
+        return Vec::new();
+    }
+    let rows = input_rows(tool_name, input, width)
+        .into_iter()
+        .filter(|row| {
+            !(row.kind == DetailKind::Label && row.text.starts_with("file  "))
+                && !(row.kind == DetailKind::Meta && row.text.starts_with("language  "))
+        })
+        .collect::<Vec<_>>();
+    if rows.len() <= limit {
+        return rows;
+    }
+    let hidden = rows.len().saturating_sub(limit.saturating_sub(1));
+    rows.into_iter()
+        .take(limit.saturating_sub(1))
+        .chain(std::iter::once(DetailRow::new(
+            format!("… {hidden} more diff lines · Ctrl+O expand"),
+            DetailKind::Meta,
+        )))
+        .collect()
+}
+
 fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
     let width = width.max(12);
     if let Some((server, tool)) = mcp_identity(tool_name) {
@@ -779,6 +816,20 @@ mod tests {
             rows.iter()
                 .any(|row| row.text.contains("let new = true;") && row.kind == DetailKind::Added)
         );
+    }
+
+    #[test]
+    fn edit_diff_is_available_inline_and_bounded() {
+        let input = serde_json::json!({
+            "file_path": "src/main.rs",
+            "old_string": "one\ntwo\nthree\nfour\nfive\n",
+            "new_string": "one\nTWO\nthree\nFOUR\nfive\n"
+        });
+        let rows = inline_mutation_rows("edit", &input, 80, 9);
+        assert!(rows.len() <= 9);
+        assert!(rows.iter().any(|row| row.kind == DetailKind::Removed));
+        assert!(rows.iter().any(|row| row.kind == DetailKind::Added));
+        assert!(inline_mutation_rows("read", &input, 80, 9).is_empty());
     }
 
     #[test]

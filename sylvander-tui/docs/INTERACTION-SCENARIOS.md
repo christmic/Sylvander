@@ -38,10 +38,12 @@ Compact mode shows one semantic row per call:
 │ ✓ $ cargo test -p sylvander-tui       130 passed
 ```
 
-`Ctrl+O` or `/tools expand` reveals structured input and up to 12 output rows.
-The formatter understands Bash, Read, Write, Edit, Search, AskUser, and memory
-tools; unknown tools fall back to key/value rendering. Error output uses the
-warning role and remains expandable.
+Edit and Write show a bounded unified diff immediately after completion, with
+removed and added rows using semantic danger/verified colors. `Ctrl+O` or
+`/tools expand` reveals the remaining structured input and up to 12 output rows.
+Other routine tools stay collapsed. The formatter understands Bash, Read, Write,
+Edit, Search, AskUser, and memory tools; unknown tools fall back to key/value
+rendering. Error output uses the warning role and remains expandable.
 
 ## Command Line
 
