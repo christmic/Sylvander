@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::input::EditingStyle;
 use crate::keymap::KeyMap;
 use crate::model::RuntimeMetadata;
-use crate::theme::{ColorCapability, ThemeName};
+use crate::theme::{ColorCapability, ThemeName, ThemeOverrides};
 
 const DEFAULT_SOCKET: &str = "/tmp/sylvander.sock";
 
@@ -18,6 +18,7 @@ pub struct TuiConfig {
     pub socket_path: PathBuf,
     pub history_path: Option<PathBuf>,
     pub theme: ThemeName,
+    pub theme_overrides: ThemeOverrides,
     pub color_capability: ColorCapability,
     pub editing_style: EditingStyle,
     pub render_interval: Duration,
@@ -46,8 +47,12 @@ impl TuiConfig {
             std::env::var("TERM").ok().as_deref(),
             std::env::var("COLORTERM").ok().as_deref(),
         )?;
+        let theme_overrides = ThemeOverrides {
+            foreground: env_color("SYLVANDER_TUI_FOREGROUND")?,
+            accent: env_color("SYLVANDER_TUI_ACCENT")?,
+        };
         crate::theme::validate_palette(
-            crate::theme::palette_for_capability(theme, color_capability),
+            crate::theme::resolved_palette(theme, color_capability, theme_overrides),
             color_capability,
         )?;
         let editing_style = std::env::var("SYLVANDER_TUI_EDITING")
@@ -65,6 +70,7 @@ impl TuiConfig {
             socket_path,
             history_path: history_path(),
             theme,
+            theme_overrides,
             color_capability,
             editing_style,
             render_interval: Duration::from_millis(1_000 / render_fps as u64),
@@ -90,8 +96,10 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\ncolors      {}\nediting     {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\nforeground  {}\naccent      {}\ncolors      {}\nediting     {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
+            self.theme_overrides.describe_foreground(),
+            self.theme_overrides.describe_accent(),
             self.color_capability,
             self.editing_style,
             self.socket_path.display(),
@@ -117,6 +125,14 @@ impl TuiConfig {
             metadata.max_attachment_bytes,
         )
     }
+}
+
+fn env_color(name: &str) -> Result<Option<ratatui::style::Color>, String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| crate::theme::parse_color(&value))
+        .transpose()
 }
 
 fn resolve_color_capability(
@@ -239,6 +255,10 @@ mod tests {
             socket_path: "/tmp/test.sock".into(),
             history_path: None,
             theme: ThemeName::Midnight,
+            theme_overrides: ThemeOverrides {
+                foreground: Some(ratatui::style::Color::Rgb(0xEE, 0xEE, 0xEE)),
+                accent: Some(ratatui::style::Color::Rgb(0xAA, 0x77, 0xFF)),
+            },
             color_capability: ColorCapability::TrueColor,
             editing_style: EditingStyle::Vim,
             render_interval: Duration::from_millis(33),
@@ -252,6 +272,8 @@ mod tests {
         };
         let report = config.report(&config.metadata);
         assert!(report.contains("theme       midnight"));
+        assert!(report.contains("foreground  #EEEEEE"));
+        assert!(report.contains("accent      #AA77FF"));
         assert!(report.contains("colors      truecolor"));
         assert!(report.contains("editing     vim"));
         assert!(report.contains("history     disabled"));
