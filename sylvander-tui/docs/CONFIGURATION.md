@@ -11,6 +11,7 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_HISTORY_PATH` | `$XDG_CACHE_HOME/sylvander-tui/history.json` | path or empty | Composer history; empty disables persistence |
 | `SYLVANDER_MODEL` | `—` | model label | Pre-connection fallback only; server runtime truth replaces it |
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
+| `SYLVANDER_TUI_COLOR` | `auto` | `auto`, `none`, `ansi16`, `ansi256`, `truecolor` | Override detected terminal color capability |
 | `SYLVANDER_TUI_RENDER_FPS` | `30` | 5–120 | Maximum coalesced service render rate |
 | `SYLVANDER_TUI_ANIMATION_MS` | `200` | 50–2000 | Low-frequency animation/status heartbeat |
 | `SYLVANDER_TUI_RECONNECT_MS` | `1500` | 250–30000 | Retry interval after the Agent service disconnects |
@@ -23,6 +24,9 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_TUI_KEY_RETURN_LIVE` | `ctrl+end` | key chord | Return to live output |
 
 Invalid values fail at startup with a concrete configuration error.
+`auto` respects `NO_COLOR`, then detects truecolor from `COLORTERM`/`TERM`,
+256 colors from `TERM`, and otherwise selects the conservative ANSI-16 palette.
+The selected palette is checked for semantic text/status contrast at startup.
 Key names are case-insensitive and use `ctrl+`, `alt+`, or `shift+` modifiers.
 Two actions cannot use the same chord. Unmodified printable global keys are
 rejected, and printable chords require Ctrl or Alt, so custom bindings cannot
@@ -74,3 +78,5 @@ To add a theme:
 5. Document the new value in the table above.
 
 Layout, symbols, and behavior must remain unchanged when a theme changes.
+Limited-color terminals map the selected theme to their advertised capability;
+monochrome mode keeps state distinguishable through labels, glyphs, and modifiers.

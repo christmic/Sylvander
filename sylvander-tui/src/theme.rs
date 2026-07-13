@@ -55,6 +55,63 @@ impl std::fmt::Display for ThemeName {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorCapability {
+    Monochrome,
+    Ansi16,
+    Ansi256,
+    TrueColor,
+}
+
+impl FromStr for ColorCapability {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "mono" | "monochrome" => Ok(Self::Monochrome),
+            "16" | "ansi" | "ansi16" => Ok(Self::Ansi16),
+            "256" | "ansi256" => Ok(Self::Ansi256),
+            "truecolor" | "24bit" | "24-bit" => Ok(Self::TrueColor),
+            _ => Err(format!(
+                "unknown color capability {value:?}; expected auto, none, ansi16, ansi256, or truecolor"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ColorCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Monochrome => "monochrome",
+            Self::Ansi16 => "ansi16",
+            Self::Ansi256 => "ansi256",
+            Self::TrueColor => "truecolor",
+        })
+    }
+}
+
+pub fn detect_color_capability(
+    no_color: bool,
+    term: Option<&str>,
+    color_term: Option<&str>,
+) -> ColorCapability {
+    let term = term.unwrap_or_default().to_ascii_lowercase();
+    let color_term = color_term.unwrap_or_default().to_ascii_lowercase();
+    if no_color || term == "dumb" {
+        ColorCapability::Monochrome
+    } else if matches!(color_term.as_str(), "truecolor" | "24bit")
+        || term.contains("truecolor")
+        || term.contains("24bit")
+        || term.contains("direct")
+    {
+        ColorCapability::TrueColor
+    } else if term.contains("256color") {
+        ColorCapability::Ansi256
+    } else {
+        ColorCapability::Ansi16
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub canvas: Color,
     pub text: Color,
@@ -119,8 +176,25 @@ pub const HIGH_CONTRAST: Palette = Palette {
     guide: Color::DarkGray,
 };
 
+const MONOCHROME: Palette = Palette {
+    canvas: Color::Black,
+    text: Color::White,
+    text_dim: Color::Gray,
+    text_muted: Color::Gray,
+    identity: Color::White,
+    brand_warm: Color::White,
+    brand_violet: Color::White,
+    active: Color::White,
+    verified: Color::White,
+    waiting: Color::White,
+    danger: Color::White,
+    rule: Color::DarkGray,
+    guide: Color::Gray,
+};
+
 static ACTIVE: RwLock<Palette> = RwLock::new(SYLVANDER);
 static ACTIVE_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::Sylvander);
+static ACTIVE_CAPABILITY: RwLock<ColorCapability> = RwLock::new(ColorCapability::TrueColor);
 static ACCESSIBILITY: RwLock<Accessibility> = RwLock::new(Accessibility {
     reduced_motion: false,
     no_italic: false,
@@ -191,13 +265,140 @@ pub fn palette_for(name: ThemeName) -> Palette {
     }
 }
 
+pub fn palette_for_capability(name: ThemeName, capability: ColorCapability) -> Palette {
+    match capability {
+        ColorCapability::Monochrome => MONOCHROME,
+        ColorCapability::Ansi16 => HIGH_CONTRAST,
+        ColorCapability::Ansi256 => map_palette(palette_for(name), rgb_to_ansi256),
+        ColorCapability::TrueColor => palette_for(name),
+    }
+}
+
+fn map_palette(palette: Palette, map: impl Fn(Color) -> Color) -> Palette {
+    Palette {
+        canvas: map(palette.canvas),
+        text: map(palette.text),
+        text_dim: map(palette.text_dim),
+        text_muted: map(palette.text_muted),
+        identity: map(palette.identity),
+        brand_warm: map(palette.brand_warm),
+        brand_violet: map(palette.brand_violet),
+        active: map(palette.active),
+        verified: map(palette.verified),
+        waiting: map(palette.waiting),
+        danger: map(palette.danger),
+        rule: map(palette.rule),
+        guide: map(palette.guide),
+    }
+}
+
+fn rgb_to_ansi256(color: Color) -> Color {
+    let Color::Rgb(red, green, blue) = color else {
+        return color;
+    };
+    let level = |channel: u8| ((u16::from(channel) * 5 + 127) / 255) as u8;
+    Color::Indexed(16 + 36 * level(red) + 6 * level(green) + level(blue))
+}
+
+pub fn validate_palette(palette: Palette, capability: ColorCapability) -> Result<(), String> {
+    if palette.text == palette.canvas {
+        return Err("theme text and canvas must differ".into());
+    }
+    if capability == ColorCapability::Monochrome {
+        return Ok(());
+    }
+    for (role, color, minimum) in [
+        ("text", palette.text, 7.0),
+        ("text_dim", palette.text_dim, 4.0),
+        ("text_muted", palette.text_muted, 3.0),
+        ("identity", palette.identity, 3.0),
+        ("active", palette.active, 3.0),
+        ("verified", palette.verified, 3.0),
+        ("waiting", palette.waiting, 3.0),
+        ("danger", palette.danger, 3.0),
+    ] {
+        let ratio = contrast_ratio(color, palette.canvas)
+            .ok_or_else(|| format!("cannot validate terminal color for semantic role {role}"))?;
+        if ratio < minimum {
+            return Err(format!(
+                "semantic role {role} has contrast {ratio:.2}:1; requires {minimum:.1}:1"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn contrast_ratio(foreground: Color, background: Color) -> Option<f64> {
+    let foreground = relative_luminance(color_rgb(foreground)?);
+    let background = relative_luminance(color_rgb(background)?);
+    Some((foreground.max(background) + 0.05) / (foreground.min(background) + 0.05))
+}
+
+fn relative_luminance((red, green, blue): (u8, u8, u8)) -> f64 {
+    let linear = |value: u8| {
+        let value = f64::from(value) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+}
+
+fn color_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Black => Some((0, 0, 0)),
+        Color::Red => Some((128, 0, 0)),
+        Color::Green => Some((0, 128, 0)),
+        Color::Yellow => Some((128, 128, 0)),
+        Color::Blue => Some((0, 0, 128)),
+        Color::Magenta => Some((128, 0, 128)),
+        Color::Cyan => Some((0, 128, 128)),
+        Color::Gray => Some((192, 192, 192)),
+        Color::DarkGray => Some((128, 128, 128)),
+        Color::LightRed => Some((255, 0, 0)),
+        Color::LightGreen => Some((0, 255, 0)),
+        Color::LightYellow => Some((255, 255, 0)),
+        Color::LightBlue => Some((0, 0, 255)),
+        Color::LightMagenta => Some((255, 0, 255)),
+        Color::LightCyan => Some((0, 255, 255)),
+        Color::White => Some((255, 255, 255)),
+        Color::Indexed(index) if index >= 16 => {
+            let index = index - 16;
+            let channel = |value: u8| if value == 0 { 0 } else { 55 + value * 40 };
+            Some((
+                channel(index / 36),
+                channel(index % 36 / 6),
+                channel(index % 6),
+            ))
+        }
+        Color::Rgb(red, green, blue) => Some((red, green, blue)),
+        _ => None,
+    }
+}
+
 pub fn configure(name: ThemeName) {
+    let capability = active_color_capability();
     *ACTIVE
         .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = palette_for(name);
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        palette_for_capability(name, capability);
     *ACTIVE_NAME
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+}
+
+pub fn configure_color_capability(capability: ColorCapability) {
+    *ACTIVE_CAPABILITY
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = capability;
+}
+
+pub fn active_color_capability() -> ColorCapability {
+    *ACTIVE_CAPABILITY
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn active_name() -> ThemeName {
@@ -479,6 +680,61 @@ mod tests {
             palette_for(ThemeName::HighContrast)
         );
         assert_eq!(palette_for(ThemeName::Sylvander).canvas, BG);
+    }
+
+    #[test]
+    fn terminal_color_detection_is_conservative_and_honors_opt_out() {
+        assert_eq!(
+            detect_color_capability(false, Some("xterm-256color"), None),
+            ColorCapability::Ansi256
+        );
+        assert_eq!(
+            detect_color_capability(false, Some("xterm"), Some("truecolor")),
+            ColorCapability::TrueColor
+        );
+        assert_eq!(
+            detect_color_capability(false, Some("xterm"), None),
+            ColorCapability::Ansi16
+        );
+        assert_eq!(
+            detect_color_capability(true, Some("xterm-256color"), Some("truecolor")),
+            ColorCapability::Monochrome
+        );
+    }
+
+    #[test]
+    fn capability_mapping_never_emits_rgb_beyond_truecolor() {
+        let ansi256 = palette_for_capability(ThemeName::Sylvander, ColorCapability::Ansi256);
+        assert!(matches!(ansi256.text, Color::Indexed(_)));
+        assert!(matches!(ansi256.identity, Color::Indexed(_)));
+
+        let ansi16 = palette_for_capability(ThemeName::Midnight, ColorCapability::Ansi16);
+        assert_eq!(ansi16, HIGH_CONTRAST);
+        assert!(!matches!(ansi16.text, Color::Rgb(..) | Color::Indexed(_)));
+
+        let monochrome = palette_for_capability(ThemeName::Sylvander, ColorCapability::Monochrome);
+        assert_eq!(monochrome.identity, Color::White);
+        assert_ne!(monochrome.text, monochrome.canvas);
+    }
+
+    #[test]
+    fn every_built_in_theme_passes_semantic_contrast_validation() {
+        for theme in [
+            ThemeName::Sylvander,
+            ThemeName::Midnight,
+            ThemeName::HighContrast,
+        ] {
+            for capability in [
+                ColorCapability::Monochrome,
+                ColorCapability::Ansi16,
+                ColorCapability::Ansi256,
+                ColorCapability::TrueColor,
+            ] {
+                let palette = palette_for_capability(theme, capability);
+                validate_palette(palette, capability)
+                    .unwrap_or_else(|error| panic!("{theme}/{capability}: {error}"));
+            }
+        }
     }
 
     #[test]
