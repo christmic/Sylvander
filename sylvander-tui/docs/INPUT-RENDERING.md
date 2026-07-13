@@ -69,6 +69,10 @@ Composer retention is bounded separately: 256 KiB/1024 rows for draft text,
 usually smaller advertised limit is applied. Oversized paste is rejected with a
 visible status; external-editor text is UTF-8-safely truncated with an explicit
 notice. Draft restore validates the same limits before retaining content.
+Prompts submitted during active work use a 100-item FIFO; once full, Enter keeps
+the draft intact and directs the user to remove an item before queuing more.
+The session selector caches the 5000 most recent summaries while the Agent's
+persistent store remains authoritative.
 
 ## Dirty rendering
 
