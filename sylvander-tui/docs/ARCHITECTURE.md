@@ -128,6 +128,12 @@ Approval follows the same boundary: the modal selects only a server-advertised
 validation, session isolation, and durable storage. The TUI never caches an
 approval rule or claims persistence based on local state.
 
+Interaction deadlines follow the same ownership rule. The Agent publishes a
+transport-neutral timeout kind, subject identifier, actual deadline, and
+recovery class. Adapters preserve those fields unchanged. The reducer may close
+the matching stale modal and explain recovery, but it never starts a local
+timer, fabricates a timeout, retries a tool, or assumes that work completed.
+
 Compaction follows the same service boundary. `/compact` produces an action;
 the Agent owns session locking, model summarization, live-history replacement,
 and durable-history replacement. Automatic and manual runs return the same

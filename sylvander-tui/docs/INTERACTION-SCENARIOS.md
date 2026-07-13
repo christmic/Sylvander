@@ -188,6 +188,25 @@ required.
 - `Esc` sends an explicit empty answer so the waiting Agent resumes instead of
   timing out.
 
+## Interaction timeouts
+
+Timeouts are typed Agent events rather than TUI estimates. Approval waits use a
+120-second deadline, questions and plan reviews use 300 seconds, registered
+tools use their execution-budget deadline (120 seconds by default), and
+background investigations stop after 600 seconds.
+
+- Approval and plan timeouts reject the pending decision; question timeout
+  resumes with an empty answer. All three remove their Agent-owned pending entry.
+- A matching approval, question, or plan modal closes immediately, so a late key
+  press cannot submit a decision for work that has already resumed.
+- Tool timeouts settle the tool row as an error. Background-task timeouts emit
+  both the timeout and the terminal failed state; neither leaves a spinner alive.
+- The transcript keeps the timeout kind, bounded subject id, actual deadline,
+  and Agent-selected recovery: request again, retry with a narrower scope, or
+  continue without the missing result.
+- Recovery text is guidance, not an automatic retry. Retrying remains an
+  explicit user/Agent turn and never replays a write or shell command silently.
+
 ## Sessions
 
 - Opening the browser requests current persisted session metadata from the

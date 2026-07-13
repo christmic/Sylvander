@@ -2369,6 +2369,15 @@ mod tests {
     use crate::tools::memory::InMemoryMemoryStore;
     use std::path::PathBuf;
 
+    async fn next_stream_event(receiver: &mut mpsc::UnboundedReceiver<BusMessage>) -> StreamEvent {
+        loop {
+            let message = receiver.recv().await.expect("stream event");
+            if let MessageKind::Stream(event) = message.kind {
+                return event;
+            }
+        }
+    }
+
     fn test_metadata() -> SessionMetadata {
         SessionMetadata {
             workspace: PathBuf::from("/tmp/sylvander-test"),
@@ -2389,6 +2398,119 @@ mod tests {
             .build()
             .expect("client");
         (spec, client)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn approval_timeout_rejects_and_clears_the_pending_request() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let mut events = bus.subscribe(SubscriptionFilter::all()).await.unwrap();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let gate = Arc::new(BusApprovalGate {
+            bus,
+            agent_id: AgentId::new("agent"),
+            session_id: SessionId::new("session"),
+            pending_approvals: pending.clone(),
+            approval_memory: Arc::new(Mutex::new(ApprovalMemory::load(None).unwrap())),
+        });
+        let request = ToolUseRequest {
+            call_id: "tool-1".into(),
+            tool_name: "write".into(),
+            input: serde_json::json!({"path": "notes.md"}),
+        };
+        let task = tokio::spawn(async move { gate.check_batch(&[request]).await });
+
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::ToolApprovalRequired { .. }
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(121)).await;
+        let result = task.await.unwrap();
+
+        assert!(matches!(
+            result.decisions.as_slice(),
+            [ApprovalDecision::Rejected { reason }] if reason == "approval timeout"
+        ));
+        assert!(pending.lock().await.is_empty());
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::InteractionTimedOut {
+                kind: sylvander_protocol::InteractionTimeoutKind::Approval,
+                subject_id,
+                timeout_secs: 120,
+                recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            } if subject_id == "tool-1"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn question_timeout_returns_empty_and_clears_the_pending_answer() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let mut events = bus.subscribe(SubscriptionFilter::all()).await.unwrap();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let gate = Arc::new(BusAskUserGate {
+            bus,
+            agent_id: AgentId::new("agent"),
+            session_id: SessionId::new("session"),
+            pending_answers: pending.clone(),
+        });
+        let task =
+            tokio::spawn(async move { gate.ask("question-1", "Continue?", vec![], false).await });
+
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::AskUser { .. }
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+
+        assert!(task.await.unwrap().is_empty());
+        assert!(pending.lock().await.is_empty());
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::InteractionTimedOut {
+                kind: sylvander_protocol::InteractionTimeoutKind::Question,
+                subject_id,
+                timeout_secs: 300,
+                recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            } if subject_id == "question-1"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn plan_timeout_rejects_and_clears_the_pending_review() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let mut events = bus.subscribe(SubscriptionFilter::all()).await.unwrap();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let gate = Arc::new(BusPlanGate {
+            bus,
+            agent_id: AgentId::new("agent"),
+            session_id: SessionId::new("session"),
+            pending_plans: pending.clone(),
+        });
+        let task = tokio::spawn(async move { gate.review("plan-1", vec!["inspect".into()]).await });
+
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::PlanProposed { .. }
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+
+        assert!(matches!(
+            task.await.unwrap(),
+            crate::bus::PlanDecision::Rejected { reason } if reason == "plan review timed out"
+        ));
+        assert!(pending.lock().await.is_empty());
+        assert!(matches!(
+            next_stream_event(&mut events).await,
+            StreamEvent::InteractionTimedOut {
+                kind: sylvander_protocol::InteractionTimeoutKind::Plan,
+                subject_id,
+                timeout_secs: 300,
+                recovery: sylvander_protocol::TimeoutRecovery::RetryRequest,
+            } if subject_id == "plan-1"
+        ));
     }
 
     #[test]
