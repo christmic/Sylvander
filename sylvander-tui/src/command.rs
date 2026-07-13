@@ -25,6 +25,7 @@ pub enum CommandId {
     Model,
     Permissions,
     Context,
+    Compact,
     Status,
     Quit,
 }
@@ -171,6 +172,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/context",
         description: "Show server-confirmed context and cache usage",
         hint: "live report",
+    },
+    CommandSpec {
+        id: CommandId::Compact,
+        name: "compact",
+        usage: "/compact",
+        description: "Summarize older context while preserving recent turns",
+        hint: "server-backed",
     },
     CommandSpec {
         id: CommandId::Quit,
@@ -528,6 +536,20 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 });
             state.status = "Loading context report…".into();
         }
+        CommandId::Compact => {
+            require_no_args(&invocation)?;
+            if state.turn_active {
+                return Err("Interrupt active work before compacting".into());
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no session to compact".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::CompactSession { session_id });
+            state.status = "Requesting context compaction…".into();
+        }
         CommandId::Inspect => {
             let prefix = optional_one_arg(&invocation)?;
             let (call_id, tool_name, output) = find_tool_output(state, prefix)?;
@@ -745,6 +767,22 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::RequestContext { session_id }]
                 if session_id.as_deref() == Some("session-7")
+        ));
+    }
+
+    #[test]
+    fn compact_command_requires_an_idle_persisted_session() {
+        let mut state = AppState::new();
+        assert_eq!(
+            execute(parse("/compact").expect("parse"), &mut state).unwrap_err(),
+            "There is no session to compact"
+        );
+        state.session_id = Some("session-7".into());
+        execute(parse("/compact").expect("parse"), &mut state).expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::CompactSession { session_id }]
+                if session_id == "session-7"
         ));
     }
 

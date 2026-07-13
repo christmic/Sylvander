@@ -311,6 +311,42 @@ impl AppState {
                 )));
                 self.status = "Context report updated".into();
             }
+            DomainEvent::CompactionStarted { automatic } => {
+                self.status = if automatic {
+                    "Auto-compacting context…".into()
+                } else {
+                    "Compacting context…".into()
+                };
+                self.messages.push(ChatMessage::Info(if automatic {
+                    "context · automatic compaction started".into()
+                } else {
+                    "context · compaction started".into()
+                }));
+            }
+            DomainEvent::CompactionCompleted { report } => {
+                let summary = report
+                    .summary
+                    .as_deref()
+                    .map(compact_runtime_reason)
+                    .unwrap_or_else(|| "structural cleanup only".into());
+                self.messages.push(ChatMessage::Info(format!(
+                    "context · {}compacted · {} messages removed · {} blocks condensed · ~{} tokens freed\nsummary · {}",
+                    if report.automatic { "auto-" } else { "" },
+                    report.removed_messages,
+                    report.condensed_blocks,
+                    report.freed_tokens,
+                    summary
+                )));
+                self.status = "Context compacted".into();
+            }
+            DomainEvent::CompactionFailed { automatic, reason } => {
+                self.messages.push(ChatMessage::Info(format!(
+                    "context · {}compaction failed · {}",
+                    if automatic { "automatic " } else { "" },
+                    compact_runtime_reason(&reason)
+                )));
+                self.status = "Context compaction failed".into();
+            }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
                 self.turn_active = false;
@@ -1150,6 +1186,29 @@ mod tests {
                 if text.contains("50000 / 200000 tokens (25%)")
                     && text.contains("40000 read")
                     && text.contains("conversation messages (8)")
+        ));
+    }
+
+    #[test]
+    fn compaction_lifecycle_is_visible_with_a_bounded_summary() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::CompactionStarted { automatic: false });
+        assert_eq!(state.status, "Compacting context…");
+        state.apply(DomainEvent::CompactionCompleted {
+            report: sylvander_protocol::CompactionReport {
+                automatic: false,
+                removed_messages: 12,
+                condensed_blocks: 3,
+                freed_tokens: 4_200,
+                summary: Some("Kept the architecture decisions and pending tests".into()),
+            },
+        });
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text))
+                if text.contains("12 messages removed")
+                    && text.contains("~4200 tokens freed")
+                    && text.contains("architecture decisions")
         ));
     }
 

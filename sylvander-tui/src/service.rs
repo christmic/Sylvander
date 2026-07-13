@@ -107,6 +107,7 @@ impl AgentService {
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
             Action::RequestContext { session_id } => ClientMsg::GetContext { session_id },
+            Action::CompactSession { session_id } => ClientMsg::Compact { session_id },
             Action::SelectModel {
                 model,
                 reasoning_effort,
