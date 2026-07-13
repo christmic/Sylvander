@@ -1,4 +1,4 @@
-//! WeChat enterprise bot channel — encrypted XML callbacks.
+//! `WeChat` enterprise bot channel — encrypted XML callbacks.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,7 +52,7 @@ impl WechatChannel {
 
 #[async_trait]
 impl Channel for WechatChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "wechat"
     }
 
@@ -66,14 +66,10 @@ impl Channel for WechatChannel {
 
         // HTTP server
         let state = Arc::new(AppState {
+            sessions: ctx.sessions.clone(),
             ctx,
             crypto: self.crypto.clone(),
             agent_id: self.agent_id.clone(),
-            sessions: Arc::new(
-                sylvander_agent::session_store::SqliteSessionStore::open_in_memory()
-                    .await
-                    .expect("open session store"),
-            ),
         });
 
         let app = Router::new()
@@ -184,7 +180,18 @@ async fn handle_callback(
     info!(from = %msg.from_user_name, msg_type = %msg.msg_type, "wechat: message");
 
     // Session mapping
-    let session_id = resolve_session(&state.sessions, &msg.from_user_name).await;
+    let session_id = resolve_session(&state.sessions, &msg.from_user_name, &state.agent_id).await;
+    if let Ok(Some(session)) = state.sessions.get(&session_id).await {
+        let _ = state
+            .ctx
+            .bus
+            .publish(BusMessage::system_join_session(
+                state.agent_id.clone(),
+                session_id.clone(),
+                session.metadata,
+            ))
+            .await;
+    }
 
     // Publish to bus
     let _ = state
@@ -200,7 +207,11 @@ async fn handle_callback(
     "success".into()
 }
 
-async fn resolve_session(store: &Arc<dyn SessionStore>, user_name: &str) -> SessionId {
+async fn resolve_session(
+    store: &Arc<dyn SessionStore>,
+    user_name: &str,
+    agent_id: &AgentId,
+) -> SessionId {
     if let Some(sid) = find_by_user(store, user_name).await {
         return sid;
     }
@@ -216,7 +227,7 @@ async fn resolve_session(store: &Arc<dyn SessionStore>, user_name: &str) -> Sess
         session_name,
         SessionLifetime::Persistent,
         meta,
-        vec![],
+        vec![agent_id.clone()],
     )
     .with_external_meta("from_user_name", user_name);
     let _ = store.save(&stored).await;
@@ -254,15 +265,14 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
         };
 
         // Find from_user_name for this session
-        let user_name = match get_user_name(&ctx.sessions, &msg.session_id).await {
-            Some(u) => u,
-            None => continue,
+        let Some(user_name) = get_user_name(&ctx.sessions, &msg.session_id).await else {
+            continue;
         };
 
         let text = match ev {
             StreamEvent::TextDelta { delta } => delta.clone(),
             StreamEvent::Done { text } => {
-                send_reply(&ch, &user_name, text).await;
+                send_reply(&ch, &user_name, text);
                 continue;
             }
             StreamEvent::ToolCall { tool_name, .. } => format!("🔧 {tool_name}"),
@@ -273,7 +283,7 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
                 ..
             } => {
                 let icon = if *is_error { "❌" } else { "✅" };
-                format!("{icon} {tool_name}: {}", &output[..output.len().min(200)])
+                format!("{icon} {tool_name}: {}", truncate_chars(output, 200))
             }
             StreamEvent::ToolApprovalRequired { tools, .. } => {
                 let list: Vec<String> = tools.iter().map(|t| t.tool_name.clone()).collect();
@@ -285,8 +295,15 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
             _ => continue,
         };
 
-        send_reply(&ch, &user_name, &text).await;
+        send_reply(&ch, &user_name, &text);
     }
+}
+
+fn truncate_chars(value: &str, limit: usize) -> &str {
+    value
+        .char_indices()
+        .nth(limit)
+        .map_or(value, |(index, _)| &value[..index])
 }
 
 async fn get_user_name(store: &Arc<dyn SessionStore>, sid: &SessionId) -> Option<String> {
@@ -298,7 +315,7 @@ async fn get_user_name(store: &Arc<dyn SessionStore>, sid: &SessionId) -> Option
         .map(String::from)
 }
 
-async fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
+fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
     // Build text reply XML
     let now = chrono::Utc::now().timestamp();
     let text_xml = format!(
@@ -324,5 +341,26 @@ async fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
             );
         }
         Err(e) => warn!(error = %e, "wechat: encrypt reply failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sylvander_agent::session_store::SqliteSessionStore;
+
+    #[tokio::test]
+    async fn channel_session_uses_shared_store_and_agent_membership() {
+        let store: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let agent = AgentId::new("agent-1");
+        let session = resolve_session(&store, "user-1", &agent).await;
+        let persisted = store.get(&session).await.unwrap().unwrap();
+        assert_eq!(persisted.agents, vec![agent]);
+    }
+
+    #[test]
+    fn tool_output_truncation_is_unicode_safe() {
+        assert_eq!(truncate_chars("中文消息", 2), "中文");
     }
 }
