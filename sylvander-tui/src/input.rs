@@ -16,6 +16,8 @@ use std::collections::VecDeque;
 use base64::Engine as _;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::str::FromStr;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const HISTORY_CAP: usize = 100;
 
@@ -410,6 +412,13 @@ impl Composer {
     /// Current cursor col, in *chars* (not bytes — for rendering width).
     pub fn cursor_col_chars(&self) -> usize {
         char_count(&self.rows[self.cursor_row][..self.cursor_col])
+    }
+
+    /// Current cursor column in terminal cells. Unlike a Unicode scalar count,
+    /// this keeps CJK, emoji, and combining sequences aligned with the hardware
+    /// cursor used by the renderer.
+    pub fn cursor_col_cells(&self) -> usize {
+        UnicodeWidthStr::width(&self.rows[self.cursor_row][..self.cursor_col])
     }
 
     pub fn can_open_file_mention(&self) -> bool {
@@ -1158,10 +1167,7 @@ impl Composer {
         }
         if self.cursor_col > 0 {
             let row = &mut self.rows[self.cursor_row];
-            let mut pos = self.cursor_col - 1;
-            while pos > 0 && !row.is_char_boundary(pos) {
-                pos -= 1;
-            }
+            let pos = previous_grapheme_boundary(row, self.cursor_col);
             row.drain(pos..self.cursor_col);
             self.cursor_col = pos;
         } else if self.cursor_row > 0 {
@@ -1183,10 +1189,7 @@ impl Composer {
         }
         let row_len = self.rows[self.cursor_row].len();
         if self.cursor_col < row_len {
-            let mut end = self.cursor_col + 1;
-            while end < row_len && !self.rows[self.cursor_row].is_char_boundary(end) {
-                end += 1;
-            }
+            let end = next_grapheme_boundary(&self.rows[self.cursor_row], self.cursor_col);
             self.rows[self.cursor_row].drain(self.cursor_col..end);
         } else if self.cursor_row + 1 < self.rows.len() {
             let next = self.rows.remove(self.cursor_row + 1);
@@ -1226,11 +1229,8 @@ impl Composer {
 
     fn move_cursor_left(&mut self) {
         if self.cursor_col > 0 {
-            let mut pos = self.cursor_col - 1;
-            while pos > 0 && !self.rows[self.cursor_row].is_char_boundary(pos) {
-                pos -= 1;
-            }
-            self.cursor_col = pos;
+            self.cursor_col =
+                previous_grapheme_boundary(&self.rows[self.cursor_row], self.cursor_col);
         } else if self.cursor_row > 0 {
             self.cursor_row -= 1;
             self.cursor_col = self.rows[self.cursor_row].len();
@@ -1241,11 +1241,7 @@ impl Composer {
     fn move_cursor_right(&mut self) {
         let row_len = self.rows[self.cursor_row].len();
         if self.cursor_col < row_len {
-            let mut pos = self.cursor_col + 1;
-            while pos < row_len && !self.rows[self.cursor_row].is_char_boundary(pos) {
-                pos += 1;
-            }
-            self.cursor_col = pos;
+            self.cursor_col = next_grapheme_boundary(&self.rows[self.cursor_row], self.cursor_col);
         } else if self.cursor_row + 1 < self.rows.len() {
             self.cursor_row += 1;
             self.cursor_col = 0;
@@ -1256,11 +1252,7 @@ impl Composer {
     fn move_cursor_right_in_row(&mut self) {
         let row_len = self.rows[self.cursor_row].len();
         if self.cursor_col < row_len {
-            let mut position = self.cursor_col + 1;
-            while position < row_len && !self.rows[self.cursor_row].is_char_boundary(position) {
-                position += 1;
-            }
-            self.cursor_col = position;
+            self.cursor_col = next_grapheme_boundary(&self.rows[self.cursor_row], self.cursor_col);
         }
         self.clear_selection_if_empty();
     }
@@ -1268,9 +1260,9 @@ impl Composer {
     fn move_cursor_vertical(&mut self, delta: isize) {
         let target = (self.cursor_row as isize + delta)
             .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
-        let desired_chars = self.cursor_col_chars();
+        let desired_cells = self.cursor_col_cells();
         self.cursor_row = target;
-        self.cursor_col = byte_at_char(&self.rows[target], desired_chars);
+        self.cursor_col = byte_at_cell(&self.rows[target], desired_cells);
         self.anchor = None;
     }
 
@@ -1480,11 +1472,30 @@ fn char_count(s: &str) -> usize {
     s.chars().count()
 }
 
-fn byte_at_char(value: &str, index: usize) -> usize {
-    value
-        .char_indices()
-        .nth(index)
-        .map_or(value.len(), |(offset, _)| offset)
+fn byte_at_cell(value: &str, target: usize) -> usize {
+    let mut cells = 0usize;
+    for (offset, grapheme) in value.grapheme_indices(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if cells.saturating_add(width) > target {
+            return offset;
+        }
+        cells = cells.saturating_add(width);
+    }
+    value.len()
+}
+
+fn previous_grapheme_boundary(value: &str, cursor: usize) -> usize {
+    value[..cursor]
+        .grapheme_indices(true)
+        .next_back()
+        .map_or(0, |(offset, _)| offset)
+}
+
+fn next_grapheme_boundary(value: &str, cursor: usize) -> usize {
+    value[cursor..]
+        .grapheme_indices(true)
+        .nth(1)
+        .map_or(value.len(), |(offset, _)| cursor + offset)
 }
 
 fn is_word_char(character: char) -> bool {
@@ -1724,6 +1735,32 @@ mod tests {
         assert_eq!(c.text(), "你");
         // Cursor should be on the char boundary, not split a code point.
         assert!(c.rows[0].is_char_boundary(c.cursor_col));
+    }
+
+    #[test]
+    fn cursor_and_delete_treat_combining_text_as_one_grapheme() {
+        let mut composer = Composer::default();
+        for character in "e\u{301}好".chars() {
+            composer.handle_key(&key(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        assert_eq!(composer.cursor_col_cells(), 3);
+
+        composer.handle_key(&key(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(composer.cursor_col_cells(), 1);
+        composer.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(composer.text(), "好");
+        assert_eq!(composer.cursor_col_cells(), 0);
+    }
+
+    #[test]
+    fn vertical_motion_preserves_terminal_cell_column_for_cjk() {
+        let mut composer = Composer::default();
+        composer.replace_text("你好世界\nabcdef");
+        composer.handle_key(&key(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(composer.cursor_row(), 0);
+        assert_eq!(composer.cursor_col_cells(), 6);
+        composer.handle_key(&key(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(composer.cursor_col_cells(), 6);
     }
 
     #[test]

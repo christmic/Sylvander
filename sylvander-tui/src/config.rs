@@ -53,7 +53,7 @@ impl TuiConfig {
         let editing_style = std::env::var("SYLVANDER_TUI_EDITING")
             .unwrap_or_else(|_| "standard".into())
             .parse()?;
-        let render_fps = env_number("SYLVANDER_TUI_RENDER_FPS", 30, 5, 120)?;
+        let render_fps = env_number("SYLVANDER_TUI_RENDER_FPS", 60, 5, 120)?;
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
         let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
         let mouse_scroll_lines = env_number("SYLVANDER_TUI_MOUSE_SCROLL_LINES", 4, 1, 40)?;

@@ -4,6 +4,7 @@
 //! configured frame rate, while lower-frequency animation ticks are isolated.
 
 use std::io::{Write, stdout};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
@@ -30,6 +31,27 @@ enum Wake {
 
 const MAX_INPUT_BATCH: usize = 64;
 const MAX_SERVICE_BATCH: usize = 256;
+const DRAFT_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+#[derive(Default)]
+struct DraftSaveSchedule {
+    due: Option<Instant>,
+}
+
+impl DraftSaveSchedule {
+    fn mark_changed(&mut self, now: Instant) {
+        self.due = Some(now + DRAFT_SAVE_DEBOUNCE);
+    }
+
+    fn take_due(&mut self, now: Instant) -> bool {
+        if self.due.is_some_and(|due| due <= now) {
+            self.due = None;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 struct TerminalModeGuard;
 
@@ -70,6 +92,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     reconnect_clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut input_open = true;
     let mut service_open = true;
+    let mut draft_save = DraftSaveSchedule::default();
 
     loop {
         let wake = tokio::select! {
@@ -82,8 +105,12 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
 
         let render_immediately = matches!(&wake, Wake::Input(Some(_)));
         let frame_due = matches!(&wake, Wake::Frame);
+        let mut draft_changed = false;
         match wake {
-            Wake::Input(Some(intent)) => application.handle(intent),
+            Wake::Input(Some(intent)) => {
+                draft_changed = affects_draft(&intent);
+                application.handle(intent);
+            }
             Wake::Input(None) => input_open = false,
             Wake::Service(Some(event)) => application.apply(event),
             Wake::Service(None) => service_open = false,
@@ -104,10 +131,17 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
                 break;
             };
             had_input = true;
+            draft_changed |= affects_draft(&intent);
             application.handle(intent);
         }
-        if had_input {
-            application.state.save_draft();
+        if draft_changed {
+            draft_save.mark_changed(Instant::now());
+        }
+
+        // Keyboard input owns the latency budget. Draw it before draining a
+        // potentially large service burst or performing any persistence I/O.
+        if had_input && application.state.dirty.take() {
+            terminal.draw(|frame| ui::dispatch(frame, &application.state))?;
         }
         for _ in 0..MAX_SERVICE_BATCH {
             let Some(event) = service.try_recv() else {
@@ -233,11 +267,16 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
         application.state.modals.reap();
 
-        if (render_immediately || frame_due) && application.state.dirty.take() {
+        if draft_save.take_due(Instant::now()) {
+            application.state.save_draft();
+        }
+
+        if frame_due && application.state.dirty.take() {
             terminal.draw(|frame| ui::dispatch(frame, &application.state))?;
         }
 
         if application.state.should_quit {
+            application.state.save_draft();
             application.state.save_history();
             return Ok(());
         }
@@ -246,6 +285,10 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
             return Ok(());
         }
     }
+}
+
+fn affects_draft(intent: &UserIntent) -> bool {
+    matches!(intent, UserIntent::Key(_) | UserIntent::Paste(_))
 }
 
 fn copy_osc52(text: &str) -> std::io::Result<()> {
@@ -342,5 +385,31 @@ mod tests {
                 .unwrap();
         assert_eq!(edited, "after");
         assert!(edit_draft_with_command("before", "sh -c 'exit 7'").is_err());
+    }
+
+    #[test]
+    fn draft_persistence_waits_for_an_input_pause() {
+        let start = Instant::now();
+        let mut schedule = DraftSaveSchedule::default();
+        schedule.mark_changed(start);
+        assert!(!schedule.take_due(start + Duration::from_millis(249)));
+
+        schedule.mark_changed(start + Duration::from_millis(200));
+        assert!(!schedule.take_due(start + Duration::from_millis(449)));
+        assert!(schedule.take_due(start + Duration::from_millis(450)));
+        assert!(!schedule.take_due(start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn only_text_input_schedules_draft_persistence() {
+        assert!(affects_draft(&UserIntent::Key(
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('中'),
+                crossterm::event::KeyModifiers::NONE,
+            )
+        )));
+        assert!(affects_draft(&UserIntent::Paste("中文".into())));
+        assert!(!affects_draft(&UserIntent::Redraw));
+        assert!(!affects_draft(&UserIntent::ScrollTranscript { lines: 4 }));
     }
 }
