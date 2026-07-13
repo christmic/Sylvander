@@ -62,6 +62,7 @@ mod tests {
             .composer
             .history
             .push_back("previous command".into());
+        app.state.set_chat_scroll_limit(40);
         app.handle(UserIntent::ScrollTranscript { lines: 4 });
         assert_eq!(app.state.chat_scroll, 4);
         assert!(app.state.composer.is_empty());
@@ -85,11 +86,26 @@ mod tests {
     #[test]
     fn mouse_scroll_down_returns_to_live_and_clears_unread() {
         let mut app = Application::new(AppState::new());
+        app.state.set_chat_scroll_limit(40);
         app.state.chat_scroll = 3;
         app.state.unread_events = 2;
         app.handle(UserIntent::ScrollTranscript { lines: -4 });
         assert_eq!(app.state.chat_scroll, 0);
         assert_eq!(app.state.unread_events, 0);
+    }
+
+    #[test]
+    fn transcript_scroll_stops_at_the_rendered_top_without_accumulating() {
+        let mut app = Application::new(AppState::new());
+        app.state.set_chat_scroll_limit(12);
+
+        for _ in 0..100 {
+            app.handle(UserIntent::ScrollTranscript { lines: 4 });
+        }
+        assert_eq!(app.state.chat_scroll, 12);
+
+        app.handle(UserIntent::ScrollTranscript { lines: -4 });
+        assert_eq!(app.state.chat_scroll, 8);
     }
 
     #[test]

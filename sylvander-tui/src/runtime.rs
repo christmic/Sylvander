@@ -141,7 +141,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         // Keyboard input owns the latency budget. Draw it before draining a
         // potentially large service burst or performing any persistence I/O.
         if had_input && application.state.dirty.take() {
-            terminal.draw(|frame| ui::dispatch(frame, &application.state))?;
+            draw(&mut terminal, &mut application)?;
         }
         for _ in 0..MAX_SERVICE_BATCH {
             let Some(event) = service.try_recv() else {
@@ -272,7 +272,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         if frame_due && application.state.dirty.take() {
-            terminal.draw(|frame| ui::dispatch(frame, &application.state))?;
+            draw(&mut terminal, &mut application)?;
         }
 
         if application.state.should_quit {
@@ -285,6 +285,18 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
             return Ok(());
         }
     }
+}
+
+fn draw(
+    terminal: &mut ratatui::DefaultTerminal,
+    application: &mut Application,
+) -> std::io::Result<()> {
+    let metrics = std::cell::Cell::new(ui::FrameMetrics::default());
+    terminal.draw(|frame| metrics.set(ui::dispatch_with_metrics(frame, &application.state)))?;
+    application
+        .state
+        .set_chat_scroll_limit(metrics.get().transcript_scroll_limit);
+    Ok(())
 }
 
 fn affects_draft(intent: &UserIntent) -> bool {

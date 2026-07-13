@@ -34,6 +34,8 @@ The active Vim mode is always visible in the status row.
 
 - At `chat_scroll == 0`, the transcript follows live output.
 - Scrolling upward sets a positive offset and preserves the viewport anchor.
+- The offset is clamped to the measured oldest rendered row. Further wheel or
+  PageUp input at the top does not accumulate invisible distance or repaint.
 - New events received while detached increment `unread_events` without moving the
   viewport.
 - Scrolling down to zero or pressing `Ctrl+End` returns to live output and clears
@@ -117,6 +119,8 @@ At minimum, preserve tests for:
   cursor's terminal-cell position;
 - redraw floods remain bounded and do not drop a subsequent keyboard event;
 - transcript count/byte budgets and streaming/tool payload limits remain bounded.
+- repeated scrolling at the oldest row remains bounded and the next downward
+  input moves immediately;
 - the compiled binary completes chat, streamed rendering, approval rejection,
   AskUser, interrupt, resize, and idle exit inside a real pseudo-terminal rather
   than only a `TestBackend`; the same process also reconnects and reapplies typed
