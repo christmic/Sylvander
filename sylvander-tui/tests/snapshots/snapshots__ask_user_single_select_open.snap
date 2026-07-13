@@ -1,9 +1,9 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 332
+assertion_line: 356
 expression: "render_buf(state, 90, 24)"
 ---
-  › change it                                                                             
+  > change it                                                                             
                                                                                           
                                                                                           
                                                                                           

@@ -1,14 +1,15 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 140, 40)"
+assertion_line: 782
+expression: "render_buf(s, 140, 40)"
 ---
-  › Add JWT auth middleware                                                                                                                 
+  > Add JWT auth middleware                                                                                                                 
   ◌ Run `ls`     00s                                                                                                                        
-  │ ✓ $ ls src/http  router.rs                                                                                                              
-  │ ◌ Read src/http/middleware.rs                                                                                                           
+    ⎿ ✓ $ ls src/http  router.rs                                                                                                            
+    ⎿ ◌ Read src/http/middleware.rs                                                                                                         
                                                                                                                                             
-  ◆  Inspecting the existing router to understand the auth surface. I see we have a TokenGuard already — let me                             
-     check it covers Bearer + API-key.                                                                                                      
+  ● Inspecting the existing router to understand the auth surface. I see we have a TokenGuard already — let me                              
+    check it covers Bearer + API-key.                                                                                                       
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

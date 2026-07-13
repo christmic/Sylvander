@@ -1,11 +1,11 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 176
+assertion_line: 200
 expression: "render_buf(state, 80, 24)"
 ---
-  › rm -rf /                                                                    
+  > rm -rf /                                                                    
   ◌ Run `rm`     00s                                                            
-  │ ◌ $ rm -rf /                                                                
+    ⎿ ◌ $ rm -rf /                                                              
                                                                                 
                                                                                 
                                                                                 
