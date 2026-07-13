@@ -15,7 +15,7 @@ use sylvander_agent::prelude::{
     StreamEvent, SubscriptionFilter, ToolRegistry,
 };
 use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
-use sylvander_agent::tools::AskUserTool;
+use sylvander_agent::tools::{AskUserTool, WriteTool};
 use sylvander_channel::{Channel, ChannelContext};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -25,6 +25,123 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 #[derive(Clone, Default)]
 struct RealAgentScenario {
     request_index: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct ApprovalScenario {
+    request_index: Arc<AtomicUsize>,
+}
+
+impl Respond for ApprovalScenario {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        match self.request_index.fetch_add(1, Ordering::SeqCst) {
+            0 => ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_approval_request", "type": "message", "role": "assistant",
+                "content": [{
+                    "type": "tool_use", "id": "write_real_1", "name": "write",
+                    "input": {"file_path": "blocked.txt", "content": "must not exist"}
+                }],
+                "model": "sylvander-test-model", "stop_reason": "tool_use",
+                "usage": {"input_tokens": 10, "output_tokens": 6}
+            })),
+            1 => ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_approval_rejected", "type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "Real approval rejection respected."}],
+                "model": "sylvander-test-model", "stop_reason": "end_turn",
+                "usage": {"input_tokens": 17, "output_tokens": 5}
+            })),
+            index => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected approval scenario request {index}")),
+        }
+    }
+}
+
+struct RuntimeHarness {
+    bus: Arc<InProcessMessageBus>,
+    agent_task: tokio::task::JoinHandle<()>,
+    channel_task: tokio::task::JoinHandle<()>,
+}
+
+impl RuntimeHarness {
+    fn shutdown(self) {
+        self.channel_task.abort();
+        self.agent_task.abort();
+    }
+}
+
+async fn start_runtime(
+    socket_path: &Path,
+    store: Arc<dyn SessionStore>,
+    client: AnthropicClient,
+    tools: ToolRegistry,
+    approval_enabled: bool,
+) -> RuntimeHarness {
+    let bus = Arc::new(InProcessMessageBus::new());
+    let spec = AgentSpec::builder()
+        .id("real-runtime-test")
+        .name("Sylvander")
+        .model_name("sylvander-test-model")
+        .build()
+        .expect("build agent spec");
+    let builder = AgentRun::builder(spec, client)
+        .bus(bus.clone())
+        .session_store(store.clone())
+        .override_tools(tools)
+        .model_capabilities(ModelCapabilities::TOOL_USE);
+    let run = if approval_enabled {
+        builder.enable_approval()
+    } else {
+        builder
+    }
+    .build()
+    .expect("build AgentRun");
+    let runtime_control = run.clone();
+    let agent_id = run.id().clone();
+    let inbox = bus
+        .subscribe(run.subscription_filter())
+        .await
+        .expect("subscribe AgentRun");
+    let agent_task = tokio::spawn(run.run(inbox));
+    let approval_policy = if approval_enabled {
+        sylvander_protocol::ApprovalPolicy::Ask
+    } else {
+        sylvander_protocol::ApprovalPolicy::Allow
+    };
+    let channel = Arc::new(
+        UnixChannel::new(socket_path, agent_id)
+            .with_runtime_info(RuntimeInfo {
+                model: "sylvander-test-model".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                models: Vec::new(),
+                permissions: sylvander_protocol::PermissionProfile {
+                    file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
+                    network_access: sylvander_protocol::NetworkAccess::Denied,
+                    approval_policy,
+                },
+                capabilities: ModelCapabilities::TOOL_USE.bits(),
+                approval_enabled,
+                max_attachment_bytes: 512 * 1024,
+                platform: sylvander_protocol::PlatformSnapshot::default(),
+            })
+            .with_runtime_control(runtime_control),
+    );
+    let channel_task = tokio::spawn(channel.run(ChannelContext {
+        bus: bus.clone(),
+        sessions: store,
+    }));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !socket_path.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "UnixChannel did not create its socket"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    RuntimeHarness {
+        bus,
+        agent_task,
+        channel_task,
+    }
 }
 
 impl Respond for RealAgentScenario {
@@ -160,8 +277,21 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .await
             .expect("open SQLite session store"),
     );
-    let bus = Arc::new(InProcessMessageBus::new());
-    let mut observed = bus
+    let client = AnthropicClient::builder()
+        .api_key("test-key")
+        .base_url(upstream.uri())
+        .build()
+        .expect("build local model client");
+    let runtime = start_runtime(
+        &socket_path,
+        store,
+        client,
+        ToolRegistry::new().register(AskUserTool::new()),
+        false,
+    )
+    .await;
+    let mut observed = runtime
+        .bus
         .subscribe(SubscriptionFilter::all())
         .await
         .expect("subscribe runtime observer");
@@ -174,57 +304,6 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             }
         }
     });
-    let client = AnthropicClient::builder()
-        .api_key("test-key")
-        .base_url(upstream.uri())
-        .build()
-        .expect("build local model client");
-    let spec = AgentSpec::builder()
-        .id("real-runtime-test")
-        .name("Sylvander")
-        .model_name("sylvander-test-model")
-        .build()
-        .expect("build agent spec");
-    let run = AgentRun::builder(spec, client)
-        .bus(bus.clone())
-        .session_store(store.clone())
-        .override_tools(ToolRegistry::new().register(AskUserTool::new()))
-        .model_capabilities(ModelCapabilities::TOOL_USE)
-        .build()
-        .expect("build AgentRun");
-    let runtime_control = run.clone();
-    let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("subscribe AgentRun");
-    let agent_task = tokio::spawn(run.run(inbox));
-    let channel = Arc::new(
-        UnixChannel::new(&socket_path, agent_id)
-            .with_runtime_info(RuntimeInfo {
-                model: "sylvander-test-model".into(),
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-                models: Vec::new(),
-                permissions: sylvander_protocol::PermissionProfile::default(),
-                capabilities: 0,
-                approval_enabled: false,
-                max_attachment_bytes: 512 * 1024,
-                platform: sylvander_protocol::PlatformSnapshot::default(),
-            })
-            .with_runtime_control(runtime_control),
-    );
-    let channel_task = tokio::spawn(channel.run(ChannelContext {
-        bus: bus.clone(),
-        sessions: store,
-    }));
-    let socket_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while !socket_path.exists() {
-        assert!(
-            tokio::time::Instant::now() < socket_deadline,
-            "UnixChannel did not create its socket"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 
     let completed_for_tui = Arc::clone(&completed_turns);
     let first = run_tui(&socket_path, |writer, captured| {
@@ -309,7 +388,68 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     });
     assert!(second.contains("persist") && second.contains("turn"));
 
-    channel_task.abort();
-    agent_task.abort();
+    runtime.shutdown();
     observer_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_agent_approval_rejection_prevents_tool_execution() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ApprovalScenario::default())
+        .mount(&upstream)
+        .await;
+    let temp = tempfile::tempdir().expect("create approval tempdir");
+    let socket_path = temp.path().join("approval.sock");
+    let store: Arc<dyn SessionStore> = Arc::new(
+        SqliteSessionStore::open(temp.path().join("approval.db"))
+            .await
+            .expect("open approval session store"),
+    );
+    let client = AnthropicClient::builder()
+        .api_key("test-key")
+        .base_url(upstream.uri())
+        .build()
+        .expect("build approval model client");
+    let runtime = start_runtime(
+        &socket_path,
+        store,
+        client,
+        ToolRegistry::new().register(WriteTool::new(temp.path())),
+        true,
+    )
+    .await;
+
+    let rendered = run_tui(&socket_path, |writer, captured| {
+        writer
+            .write_all(b"try protected write\r")
+            .expect("submit approval turn");
+        writer.flush().expect("flush approval turn");
+        assert!(
+            wait_for_output(captured, "Tool Approval", Duration::from_secs(4)),
+            "real Agent approval was not rendered"
+        );
+        writer.write_all(b"n").expect("reject real Agent tool");
+        writer.flush().expect("flush approval rejection");
+        assert!(
+            wait_for_output(captured, "Optional reason", Duration::from_secs(3)),
+            "approval reason input was not rendered"
+        );
+        writer
+            .write_all(b"outside safe scope\r")
+            .expect("submit approval rejection reason");
+        writer.flush().expect("flush approval reason");
+        assert!(
+            wait_for_output(captured, "respected.", Duration::from_secs(5)),
+            "real Agent did not continue after approval rejection"
+        );
+        std::thread::sleep(Duration::from_millis(150));
+    });
+    assert!(rendered.contains("outside safe scope"));
+    assert!(
+        !temp.path().join("blocked.txt").exists(),
+        "rejected real Agent tool must not write the file"
+    );
+    runtime.shutdown();
 }
