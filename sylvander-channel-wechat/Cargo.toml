@@ -11,16 +11,16 @@ sylvander-channel = { path = "../sylvander-channel" }
 sylvander-agent = { path = "../sylvander-agent" }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-quick-xml = { version = "0.36", features = ["serialize"] }
-sha1 = "0.10"
-aes = "0.8"
-cipher = "0.4"
+quick-xml = { version = "0.41", features = ["serialize"] }
+sha1 = "0.11"
+aes = "0.9"
+cipher = "0.5"
 # cbc not needed; using raw aes block cipher + manual CBC
 base64 = "0.22"
-rand = "0.8"
+rand = "0.10"
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4"] }

@@ -350,6 +350,11 @@ impl SessionStore for SqliteSessionStore {
     ) -> Result<SessionUsage, SessionStoreError> {
         let id = id.clone();
         self.run(move |c| {
+            let stored_cost = i64::try_from(cost_nano_usd.unwrap_or(0)).map_err(|error| {
+                SessionStoreError::Store(format!(
+                    "usage cost exceeds SQLite INTEGER range: {error}"
+                ))
+            })?;
             c.execute(
                 "INSERT INTO session_usage (session_id, iterations, input_tokens, output_tokens, cost_nano_usd, cost_complete) \
                  VALUES (?1, 1, ?2, ?3, ?4, ?5) \
@@ -363,7 +368,7 @@ impl SessionStore for SqliteSessionStore {
                     id.0,
                     input_tokens,
                     output_tokens,
-                    cost_nano_usd.unwrap_or(0),
+                    stored_cost,
                     i64::from(cost_nano_usd.is_some())
                 ],
             )?;
@@ -789,14 +794,27 @@ fn read_usage(c: &Connection, id: &SessionId) -> Result<SessionUsage, SessionSto
             let complete: bool = row.get(4)?;
             Ok(SessionUsage {
                 iterations: row.get(0)?,
-                input_tokens: row.get(1)?,
-                output_tokens: row.get(2)?,
-                cost_nano_usd: complete.then(|| row.get(3)).transpose()?,
+                input_tokens: read_nonnegative_u64(row, 1)?,
+                output_tokens: read_nonnegative_u64(row, 2)?,
+                cost_nano_usd: complete
+                    .then(|| read_nonnegative_u64(row, 3))
+                    .transpose()?,
             })
         },
     )
     .optional()?
     .unwrap_or_default())
+}
+
+fn read_nonnegative_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1137,23 @@ mod tests {
         store.record_usage(&id, 10, 2, Some(1_000)).await.unwrap();
         let usage = store.record_usage(&id, 5, 1, None).await.unwrap();
         assert_eq!(usage.cost_nano_usd, None);
+    }
+
+    #[tokio::test]
+    async fn usage_rejects_cost_beyond_sqlite_integer_range() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let id = SessionId::new("s1");
+        store
+            .save(&make_session("s1", SessionLifetime::Persistent))
+            .await
+            .unwrap();
+
+        let error = store
+            .record_usage(&id, 1, 1, Some(u64::MAX))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("SQLite INTEGER range"));
+        assert_eq!(store.usage(&id).await.unwrap(), SessionUsage::default());
     }
 
     #[test]

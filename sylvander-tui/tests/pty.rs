@@ -173,14 +173,18 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
     });
     let mut writer = pair.master.take_writer().expect("take PTY writer");
 
-    assert!(
-        wait_for_output(
-            &captured,
-            "What should we work through?",
-            Duration::from_secs(3)
-        ),
-        "TUI did not render its welcome surface before input"
-    );
+    if !wait_for_output(
+        &captured,
+        "What should we work through?",
+        Duration::from_secs(3),
+    ) {
+        let rendered = captured.lock().expect("lock startup output").clone();
+        child.kill().expect("kill unresponsive TUI child");
+        panic!(
+            "TUI did not render its welcome surface before input; output={}",
+            String::from_utf8_lossy(&rendered)
+        );
+    }
     writer.write_all(b"hello from PTY\r").expect("type chat");
     writer.flush().expect("flush chat input");
     let submitted = recv_message(&messages, "chat");

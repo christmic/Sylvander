@@ -8,15 +8,15 @@ license.workspace = true
 
 [dependencies]
 sylvander-protocol = { path = "../sylvander-protocol" }
-ratatui = "0.29"
-crossterm = { version = "0.28", features = ["bracketed-paste"] }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["bracketed-paste"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-pulldown-cmark = "0.12.2"
+pulldown-cmark = "0.13"
 unicode-width = "0.2"
 unicode-segmentation = "1.12"
-similar = "2.7"
+similar = "3.1"
 base64 = "0.22"
 shell-words = "1.1"
 

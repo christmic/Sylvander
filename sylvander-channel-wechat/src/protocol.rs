@@ -1,14 +1,11 @@
 //! WeChat enterprise messaging — encryption + XML parsing.
 
 use aes::Aes256;
-use aes::cipher::BlockDecrypt;
-use aes::cipher::BlockEncrypt;
-use aes::cipher::KeyInit;
-use aes::cipher::generic_array::GenericArray;
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD as B64};
 use sha1::{Digest, Sha1};
 
-type Block = GenericArray<u8, aes::cipher::generic_array::typenum::U16>;
+type Block = aes::cipher::Block<Aes256>;
 
 #[derive(Debug)]
 pub enum CryptoError {
@@ -70,7 +67,7 @@ impl WechatCrypto {
         let joined = parts.join("");
         let mut hasher = Sha1::new();
         hasher.update(joined.as_bytes());
-        let result = format!("{:x}", hasher.finalize());
+        let result = hex_digest(&hasher.finalize());
         result == signature
     }
 
@@ -130,7 +127,7 @@ impl WechatCrypto {
         let joined = parts.join("");
         let mut hasher = Sha1::new();
         hasher.update(joined.as_bytes());
-        let signature = format!("{:x}", hasher.finalize());
+        let signature = hex_digest(&hasher.finalize());
 
         Ok(format!(
             r#"<xml><Encrypt><![CDATA[{encrypted_b64}]]></Encrypt><MsgSignature><![CDATA[{signature}]]></MsgSignature><TimeStamp>{timestamp}</TimeStamp><Nonce><![CDATA[{nonce}]]></Nonce></xml>"#
@@ -145,12 +142,12 @@ impl WechatCrypto {
 const BLOCK_SIZE: usize = 16;
 
 fn to_block(arr: [u8; 16]) -> Block {
-    *GenericArray::from_slice(&arr)
+    arr.into()
 }
 
 fn from_block(b: &Block) -> [u8; 16] {
     let mut arr = [0u8; 16];
-    arr.copy_from_slice(b.as_slice());
+    arr.copy_from_slice(b);
     arr
 }
 
@@ -183,7 +180,9 @@ fn decrypt_cbc(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError
     let mut prev = to_block([0u8; 16]);
     let mut plaintext = Vec::with_capacity(ciphertext.len());
     for chunk in ciphertext.chunks(BLOCK_SIZE) {
-        let mut blk = to_block([0u8; 16]);
+        let mut current = [0u8; 16];
+        current.copy_from_slice(chunk);
+        let mut blk = to_block(current);
         cipher.decrypt_block(&mut blk);
         let mut arr = from_block(&blk);
         for i in 0..16 {
@@ -207,6 +206,15 @@ fn decrypt_cbc(key: &[u8; 32], ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError
     }
     plaintext.truncate(plaintext.len() - pad);
     Ok(plaintext)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 // ===========================================================================
@@ -241,8 +249,19 @@ pub fn parse_message_xml(xml: &str) -> Result<IncomingMessage, String> {
                 current_value.clear();
             }
             Ok(Event::Text(t)) => {
-                let s = t.unescape().unwrap_or_default();
+                let decoded = t.decode().map_err(|error| format!("xml decode: {error}"))?;
+                let s = quick_xml::escape::unescape(&decoded)
+                    .map_err(|error| format!("xml escape: {error}"))?;
                 current_value.push_str(&s);
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                let name = reference
+                    .decode()
+                    .map_err(|error| format!("xml reference decode: {error}"))?;
+                let encoded = format!("&{name};");
+                let resolved = quick_xml::escape::unescape(&encoded)
+                    .map_err(|error| format!("xml reference: {error}"))?;
+                current_value.push_str(&resolved);
             }
             Ok(Event::CData(c)) => {
                 current_value.push_str(&String::from_utf8_lossy(&c));
@@ -288,5 +307,21 @@ mod tests {
         assert_eq!(msg.msg_type, "text");
         assert_eq!(msg.content, "hello world");
         assert_eq!(msg.msg_id, "123456");
+    }
+
+    #[test]
+    fn aes_cbc_round_trips_multiple_blocks() {
+        let key = [0x2a; 32];
+        let mut padded = vec![0x11; 31];
+        padded.push(1);
+        let encrypted = encrypt_cbc(&key, &padded).unwrap();
+        assert_ne!(encrypted, padded);
+        assert_eq!(decrypt_cbc(&key, &encrypted).unwrap(), vec![0x11; 31]);
+    }
+
+    #[test]
+    fn parse_xml_unescapes_text_entities() {
+        let xml = r#"<xml><Content>one &amp; two &#x1F980;</Content></xml>"#;
+        assert_eq!(parse_message_xml(xml).unwrap().content, "one & two 🦀");
     }
 }

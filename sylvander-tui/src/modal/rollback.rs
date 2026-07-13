@@ -2,7 +2,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Stylize,
     text::{Line, Span},
     widgets::Paragraph,
 };
