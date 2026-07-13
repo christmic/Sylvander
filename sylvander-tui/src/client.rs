@@ -75,6 +75,9 @@ pub enum ClientMsg {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
+    Compact {
+        session_id: String,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -245,6 +248,19 @@ pub enum ServerMsg {
     },
     ContextReport {
         report: sylvander_protocol::ContextReport,
+    },
+    CompactionStarted {
+        session_id: String,
+        automatic: bool,
+    },
+    CompactionCompleted {
+        session_id: String,
+        report: sylvander_protocol::CompactionReport,
+    },
+    CompactionFailed {
+        session_id: String,
+        automatic: bool,
+        reason: String,
     },
     OperationError {
         operation: String,
@@ -430,6 +446,15 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             max_attachment_bytes,
         },
         ServerMsg::ContextReport { report } => DomainEvent::ContextReported { report },
+        ServerMsg::CompactionStarted { automatic, .. } => {
+            DomainEvent::CompactionStarted { automatic }
+        }
+        ServerMsg::CompactionCompleted { report, .. } => {
+            DomainEvent::CompactionCompleted { report }
+        }
+        ServerMsg::CompactionFailed {
+            automatic, reason, ..
+        } => DomainEvent::CompactionFailed { automatic, reason },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
         ServerMsg::ModelRetry {
@@ -699,6 +724,32 @@ mod tests {
             event,
             Some(DomainEvent::ContextReported { report })
                 if report.used_tokens == 25_000 && report.cache_read_tokens == 20_000
+        ));
+    }
+
+    #[test]
+    fn compaction_wire_lifecycle_preserves_manual_identity_and_summary() {
+        let request = serde_json::to_value(ClientMsg::Compact {
+            session_id: "session-1".into(),
+        })
+        .expect("serialize");
+        assert_eq!(request["type"], "compact");
+        assert_eq!(request["session_id"], "session-1");
+
+        let event = parse_server_msg(ServerMsg::CompactionCompleted {
+            session_id: "session-1".into(),
+            report: sylvander_protocol::CompactionReport {
+                automatic: false,
+                removed_messages: 8,
+                condensed_blocks: 0,
+                freed_tokens: 2_000,
+                summary: Some("preserved summary".into()),
+            },
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::CompactionCompleted { report })
+                if !report.automatic && report.summary.as_deref() == Some("preserved summary")
         ));
     }
 

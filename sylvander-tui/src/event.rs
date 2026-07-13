@@ -34,6 +34,16 @@ pub enum DomainEvent {
     ContextReported {
         report: sylvander_protocol::ContextReport,
     },
+    CompactionStarted {
+        automatic: bool,
+    },
+    CompactionCompleted {
+        report: sylvander_protocol::CompactionReport,
+    },
+    CompactionFailed {
+        automatic: bool,
+        reason: String,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -228,6 +238,9 @@ pub enum Action {
     RequestRuntimeInfo,
     RequestContext {
         session_id: Option<String>,
+    },
+    CompactSession {
+        session_id: String,
     },
     SelectModel {
         model: String,
