@@ -221,6 +221,11 @@ async fn l0_offloads_oversized_tool_result() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
+        .tool_context(
+            ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+                .with_fs_root(tmp.path())
+                .with_capability(sylvander_agent::tool_context::Cap::Read),
+        )
         .compression_pipeline(pipeline)
         .max_iterations(3)
         .build()

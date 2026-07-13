@@ -45,6 +45,12 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+fn read_context(root: &std::path::Path) -> ToolContext {
+    ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
+        .with_capability(sylvander_agent::tool_context::Cap::Read)
+}
+
 #[tokio::test]
 async fn real_use_case_l0_offloads_huge_read_result() {
     let server = MockServer::start().await;
@@ -115,6 +121,7 @@ async fn real_use_case_l0_offloads_huge_read_result() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
+        .tool_context(read_context(tmp.path()))
         .compression_pipeline(pipeline)
         .max_iterations(3)
         .build()
@@ -288,6 +295,7 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
         .client(mock_client(&server))
         .model(test_model())
         .tool(read_tool)
+        .tool_context(read_context(tmp.path()))
         .compression_pipeline(pipeline)
         .max_iterations(2) // 2 iterations: tool_use + end_turn
         .build()
