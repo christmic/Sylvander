@@ -209,6 +209,12 @@ The runtime reconnects to the Unix Agent service on a configurable interval.
 Draft and input history survive disconnection. Service events are coalesced;
 keyboard feedback remains immediate.
 
+`/doctor` opens a redacted runtime report, `/doctor copy` sends that same report
+through the bounded terminal clipboard, and `/doctor export <path>` writes it
+with a same-directory temporary file and atomic rename. Reports contain resolved
+TUI/runtime state but only path basenames; environment variables, credentials,
+full home paths, prompt contents, and tool output are excluded.
+
 ## Backend-dependent Surfaces
 
 Plan review and background-task rendering already have UI states and snapshot

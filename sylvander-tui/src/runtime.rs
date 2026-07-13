@@ -114,6 +114,42 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         for effect in application.take_effects() {
+            if let crate::event::Action::RunDoctor { destination } = effect {
+                let report = crate::diagnostics::report(&config, &application.state);
+                let event = match destination {
+                    crate::event::DoctorDestination::Inspect => DomainEvent::DoctorCompleted {
+                        report: Some(report),
+                        message: "Redacted diagnostics loaded".into(),
+                    },
+                    crate::event::DoctorDestination::Copy => match copy_osc52(&report) {
+                        Ok(()) => DomainEvent::DoctorCompleted {
+                            report: None,
+                            message: "Copied redacted diagnostics".into(),
+                        },
+                        Err(error) => DomainEvent::DoctorFailed {
+                            reason: error.to_string(),
+                        },
+                    },
+                    crate::event::DoctorDestination::Export(path) => {
+                        match crate::diagnostics::export(
+                            &report,
+                            &path,
+                            &application.state.metadata.workspace,
+                        ) {
+                            Ok(path) => DomainEvent::DoctorCompleted {
+                                report: None,
+                                message: format!(
+                                    "Exported redacted diagnostics to {}",
+                                    path.display()
+                                ),
+                            },
+                            Err(reason) => DomainEvent::DoctorFailed { reason },
+                        }
+                    }
+                };
+                application.apply(event);
+                continue;
+            }
             if matches!(effect, crate::event::Action::InspectConfig) {
                 application.apply(DomainEvent::ConfigInspected {
                     report: config.report(&application.state.metadata),

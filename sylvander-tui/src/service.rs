@@ -137,7 +137,8 @@ impl AgentService {
             | Action::EditDraft
             | Action::InspectWorkspaceDiff { .. }
             | Action::ReviewWorkspaceChanges { .. }
-            | Action::InspectConfig => {
+            | Action::InspectConfig
+            | Action::RunDoctor { .. } => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "local actions belong to the terminal runtime",

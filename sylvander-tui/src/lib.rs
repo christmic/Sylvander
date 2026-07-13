@@ -10,6 +10,7 @@ pub mod command;
 pub mod compat;
 pub mod component;
 pub mod config;
+pub mod diagnostics;
 pub mod dirty;
 pub mod event;
 pub mod input;

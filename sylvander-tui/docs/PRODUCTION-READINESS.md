@@ -121,7 +121,7 @@ completed backend feature.
 - [ ] Malformed/unknown messages produce bounded diagnostic events.
 - [ ] Reconnect reattaches to the active session and reconciles missed events.
 - [ ] Approval, question, tool, and task timeouts have explicit recovery UI.
-- [ ] `/doctor` can export a redacted diagnostic report.
+- [x] `/doctor` can export a redacted diagnostic report.
 - [x] Crash-safe drafts and session state restore after terminal/server failure.
 - [ ] Logs carry session, turn, request, call, and trace identifiers.
 
