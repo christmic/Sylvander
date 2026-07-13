@@ -816,6 +816,7 @@ impl AgentRun {
                         call_id,
                         approved,
                         scope,
+                        reason,
                     } => {
                         let request = self.inner.pending_approvals.lock().await.remove(call_id);
                         if let Some(request) = request {
@@ -843,7 +844,7 @@ impl AgentRun {
                                 }
                             } else {
                                 crate::approval::ApprovalDecision::Rejected {
-                                    reason: "rejected by user".into(),
+                                    reason: normalize_rejection_reason(reason.as_deref()),
                                 }
                             };
                             let _ = request.sender.send(decision);
@@ -1131,6 +1132,14 @@ fn approval_fingerprint(tool: &ToolUseRequest) -> String {
         tool.tool_name,
         serde_json::to_string(&canonical_json(&tool.input)).unwrap_or_default()
     )
+}
+
+fn normalize_rejection_reason(reason: Option<&str>) -> String {
+    reason
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .map(|reason| reason.chars().take(500).collect())
+        .unwrap_or_else(|| "rejected by user".into())
 }
 
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
@@ -2522,6 +2531,23 @@ mod tests {
     use crate::bus::InProcessMessageBus;
     use crate::tools::memory::InMemoryMemoryStore;
     use std::path::PathBuf;
+
+    #[test]
+    fn approval_rejection_reason_is_trimmed_bounded_and_optional() {
+        assert_eq!(normalize_rejection_reason(None), "rejected by user");
+        assert_eq!(
+            normalize_rejection_reason(Some("  \n ")),
+            "rejected by user"
+        );
+        assert_eq!(
+            normalize_rejection_reason(Some("  unsafe outside workspace  ")),
+            "unsafe outside workspace"
+        );
+        assert_eq!(
+            normalize_rejection_reason(Some(&"x".repeat(501))).len(),
+            500
+        );
+    }
 
     async fn next_stream_event(receiver: &mut mpsc::UnboundedReceiver<BusMessage>) -> StreamEvent {
         loop {
