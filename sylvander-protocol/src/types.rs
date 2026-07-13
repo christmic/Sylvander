@@ -76,6 +76,15 @@ pub struct ContextReport {
     pub sources: Vec<ContextSource>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionReport {
+    pub automatic: bool,
+    pub removed_messages: usize,
+    pub condensed_blocks: usize,
+    pub freed_tokens: u32,
+    pub summary: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileAccess {
@@ -287,6 +296,16 @@ pub enum StreamEvent {
         attempt: u32,
         max_attempts: u32,
         delay_ms: u64,
+        reason: String,
+    },
+    CompactionStarted {
+        automatic: bool,
+    },
+    CompactionCompleted {
+        report: CompactionReport,
+    },
+    CompactionFailed {
+        automatic: bool,
         reason: String,
     },
     ToolCall {

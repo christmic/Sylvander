@@ -12,7 +12,7 @@
 
 use serde_json::Value as JsonValue;
 
-use sylvander_llm_anthropic::api::types::{Message, Usage};
+use sylvander_llm_anthropic::api::types::{Message, MessageParam, Usage};
 
 use crate::compress::layer::LayerReport;
 use crate::error::AgentLoopError;
@@ -86,6 +86,9 @@ pub enum AgentEvent {
         reason: String,
     },
 
+    /// An LLM-backed automatic compaction is about to start.
+    CompressionStarted,
+
     /// Compression was applied this iteration.
     ///
     /// Always emitted when at least one layer produced work (removed,
@@ -94,6 +97,14 @@ pub enum AgentEvent {
     /// For the legacy single-strategy path it is a 1-element vec.
     Compressed {
         /// Per-layer breakdown. Empty only if no layer ran.
+        layers: Vec<LayerReport>,
+    },
+    /// Internal synchronization snapshot emitted immediately after
+    /// `Compressed`; consumers that only need telemetry can ignore it.
+    HistoryCompacted {
+        /// Exact history that the next provider request will receive.
+        /// AgentRun uses this to keep subsequent turns in sync.
+        history: Vec<MessageParam>,
         layers: Vec<LayerReport>,
     },
 

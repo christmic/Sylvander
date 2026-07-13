@@ -38,12 +38,14 @@ use crate::bus::{
     AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
     StreamEvent, SubscriptionFilter, SystemMessage, ToolCallInfo,
 };
+use crate::compress::layer::CompressionLayer;
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
-    MessageRole as StoredMessageRole, SessionLifetime, SessionStore, StoredSession,
+    MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
+    StoredSession,
 };
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
@@ -422,6 +424,79 @@ impl AgentRun {
             cache_write_tokens: usage.cache_write_tokens,
             sources,
         }
+    }
+
+    /// Force semantic compaction for one idle session. The per-session lock
+    /// makes this mutually exclusive with turns; the caller gets an explicit
+    /// error instead of silently queueing behind active work.
+    pub async fn compact_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CompactionReport, String> {
+        if self
+            .inner
+            .active_turns
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err("interrupt active work before compacting".into());
+        }
+        let lock = self.get_session_lock(session_id).await;
+        let _guard = lock.lock().await;
+        if self
+            .inner
+            .active_turns
+            .lock()
+            .await
+            .contains_key(session_id)
+        {
+            return Err("interrupt active work before compacting".into());
+        }
+        let mut history = self
+            .inner
+            .sessions
+            .read()
+            .await
+            .get(session_id)
+            .ok_or_else(|| format!("unknown session: {session_id}"))?
+            .history_snapshot();
+        if history.len() <= 4 {
+            return Err("not enough conversation history to compact".into());
+        }
+        let runtime = self.inner.runtime_models.read().await;
+        let model = runtime
+            .available
+            .get(&runtime.current_model)
+            .cloned()
+            .expect("current model belongs to runtime catalog");
+        drop(runtime);
+        let usage = sylvander_llm_anthropic::api::types::Usage {
+            input_tokens: model.context_window,
+            output_tokens: 0,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        };
+        let summarizer =
+            crate::compress::AgentLoopAutoCompactLlm::new(self.inner.loop_config.client.clone());
+        let mut context = crate::compress::CompressContext {
+            messages: &mut history,
+            last_usage: &usage,
+            model_info: &model,
+            auto_compact_llm: Some(&summarizer),
+        };
+        let report = crate::compress::layers::auto_compact::AutoCompactLayer::new()
+            .with_trigger_ratio(0.0)
+            .apply(&mut context)
+            .await;
+        if let Some(reason) = report.failure.clone() {
+            return Err(reason);
+        }
+        let layers = vec![report];
+        self.inner
+            .apply_compacted_history(session_id, &history, &layers)
+            .await?;
+        Ok(public_compaction_report(false, &layers))
     }
 
     pub async fn select_permissions(
@@ -866,6 +941,30 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+fn compaction_summary(layers: &[crate::compress::layer::LayerReport]) -> Option<String> {
+    layers.iter().find_map(|layer| {
+        layer
+            .details
+            .as_ref()?
+            .get("summary")?
+            .as_str()
+            .map(str::to_owned)
+    })
+}
+
+fn public_compaction_report(
+    automatic: bool,
+    layers: &[crate::compress::layer::LayerReport],
+) -> sylvander_protocol::CompactionReport {
+    sylvander_protocol::CompactionReport {
+        automatic,
+        removed_messages: crate::compress::layer::total_removed(layers),
+        condensed_blocks: crate::compress::layer::total_condensed(layers),
+        freed_tokens: crate::compress::layer::total_freed(layers),
+        summary: compaction_summary(layers),
+    }
+}
+
 // ===========================================================================
 // BusAskUserGate — M18
 // ===========================================================================
@@ -1101,6 +1200,67 @@ impl TaskGate for BusTaskGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    async fn apply_compacted_history(
+        &self,
+        session_id: &SessionId,
+        history: &[sylvander_llm_anthropic::api::types::MessageParam],
+        layers: &[crate::compress::layer::LayerReport],
+    ) -> Result<(), String> {
+        let metadata = {
+            let mut sessions = self.sessions.write().await;
+            let Some(session) = sessions.get_mut(session_id) else {
+                return Err(format!("unknown session: {session_id}"));
+            };
+            session.history = history.to_vec();
+            session.updated_at = now_secs();
+            session.metadata.clone()
+        };
+        self.context_usage.write().await.remove(session_id);
+        let Some(summary) = compaction_summary(layers) else {
+            return Ok(());
+        };
+        let Some(store) = &self.session_store else {
+            return Ok(());
+        };
+        let caller = sylvander_protocol::SessionContext::new(
+            metadata.user_id,
+            self.id.clone(),
+            session_id.clone(),
+        );
+        let result = async {
+            let mut replacement = Vec::with_capacity(history.len());
+            for (index, message) in history.iter().enumerate() {
+                let content = serde_json::to_value(message).map_err(|error| {
+                    crate::session_store::SessionStoreError::Store(error.to_string())
+                })?;
+                let role = match message.role {
+                    sylvander_llm_anthropic::api::types::MessageRole::User => {
+                        StoredMessageRole::User
+                    }
+                    sylvander_llm_anthropic::api::types::MessageRole::Assistant => {
+                        StoredMessageRole::Assistant
+                    }
+                };
+                replacement.push(ReplacementMessage {
+                    role,
+                    content,
+                    tool_name: (index == 0).then(|| "context_summary".into()),
+                });
+            }
+            store
+                .replace_active_history(&caller, session_id, replacement)
+                .await
+        }
+        .await;
+        if let Err(error) = result {
+            warn!(%session_id, %error, %summary, "failed to persist compacted history");
+            return Err(format!(
+                "compacted live context but failed to persist it: {error}"
+            ));
+        }
+        Ok(())
+    }
+
     async fn restore_session_context(
         &self,
         session_id: &SessionId,
@@ -1521,7 +1681,46 @@ impl AgentRunInner {
                     )
                     .await;
                 }
+                crate::event::AgentEvent::CompressionStarted => {
+                    self.publish_stream(
+                        &session_id,
+                        crate::bus::StreamEvent::CompactionStarted { automatic: true },
+                    )
+                    .await;
+                }
                 crate::event::AgentEvent::Compressed { .. } => {}
+                crate::event::AgentEvent::HistoryCompacted { layers, history } => {
+                    let persisted = self
+                        .apply_compacted_history(&session_id, &history, &layers)
+                        .await;
+                    if let Some(reason) = crate::compress::layer::first_failure(&layers) {
+                        self.publish_stream(
+                            &session_id,
+                            crate::bus::StreamEvent::CompactionFailed {
+                                automatic: true,
+                                reason: reason.into(),
+                            },
+                        )
+                        .await;
+                    } else if let Err(reason) = persisted {
+                        self.publish_stream(
+                            &session_id,
+                            crate::bus::StreamEvent::CompactionFailed {
+                                automatic: true,
+                                reason,
+                            },
+                        )
+                        .await;
+                    } else {
+                        self.publish_stream(
+                            &session_id,
+                            crate::bus::StreamEvent::CompactionCompleted {
+                                report: public_compaction_report(true, &layers),
+                            },
+                        )
+                        .await;
+                    }
+                }
                 crate::event::AgentEvent::AskUser {
                     call_id,
                     question,
@@ -2201,6 +2400,95 @@ mod tests {
             .await;
 
         assert_eq!(restored.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compacted_history_replaces_runtime_and_durable_active_history() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let agent_id = spec.id.clone();
+        let store: Arc<dyn SessionStore> = Arc::new(
+            crate::session_store::SqliteSessionStore::open_in_memory()
+                .await
+                .expect("store"),
+        );
+        let session_id = SessionId::new("compact-session");
+        let metadata = test_metadata();
+        store
+            .save(&StoredSession::new(
+                session_id.clone(),
+                metadata.name.clone(),
+                SessionLifetime::Persistent,
+                metadata.clone(),
+                vec![agent_id.clone()],
+            ))
+            .await
+            .expect("save");
+        let caller = sylvander_protocol::SessionContext::new(
+            metadata.user_id.clone(),
+            agent_id,
+            session_id.clone(),
+        );
+        for index in 0..6 {
+            store
+                .append_message(
+                    &caller,
+                    &session_id,
+                    StoredMessageRole::User,
+                    serde_json::to_value(sylvander_llm_anthropic::api::types::MessageParam::user(
+                        format!("message {index}"),
+                    ))
+                    .expect("serialize"),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .expect("append");
+        }
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .session_store(store.clone())
+            .build()
+            .expect("build");
+        run.inner.sessions.write().await.insert(
+            session_id.clone(),
+            SessionContext::new(session_id.clone(), metadata),
+        );
+        let history = vec![
+            sylvander_llm_anthropic::api::types::MessageParam::user(
+                "[Earlier conversation summary]\nimportant decisions",
+            ),
+            sylvander_llm_anthropic::api::types::MessageParam::user("recent one"),
+            sylvander_llm_anthropic::api::types::MessageParam::user("recent two"),
+        ];
+        let layers = vec![crate::compress::layer::LayerReport {
+            name: "auto_compact".into(),
+            removed_count: 4,
+            freed_tokens: 500,
+            details: Some(serde_json::json!({"summary": "important decisions"})),
+            ..Default::default()
+        }];
+        run.inner
+            .apply_compacted_history(&session_id, &history, &layers)
+            .await
+            .expect("replace history");
+
+        assert_eq!(
+            run.get_session(&session_id).await.expect("session").len(),
+            3
+        );
+        let active = store
+            .read_history(&caller, &session_id, false, None)
+            .await
+            .expect("active history");
+        assert_eq!(active.len(), 3);
+        assert!(
+            active[0]
+                .content
+                .to_string()
+                .contains("important decisions")
+        );
     }
 
     #[tokio::test]

@@ -115,6 +115,7 @@ impl CompressionLayer for AutoCompactLayer {
                 condensed_count: 0,
                 freed_tokens,
                 details: Some(json!({
+                    "summary": summary.clone(),
                     "summary_chars": summary.len(),
                     "kept_messages": keep_count,
                     "trigger_threshold": threshold,
