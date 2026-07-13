@@ -50,6 +50,15 @@ impl EvidenceRecorder {
                         while let Ok(message) = receiver.try_recv() {
                             record_message(&task_store, &task_run_id, content, &mut active_turns, message).await;
                         }
+                        let ended_at = now_secs();
+                        for turn_id in active_turns.into_values() {
+                            if let Err(error) = task_store
+                                .finish_turn(turn_id, ended_at, "interrupted", 0)
+                                .await
+                            {
+                                error!(%error, "failed to close active turn during shutdown");
+                            }
+                        }
                         break;
                     }
                 }
