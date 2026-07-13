@@ -3,24 +3,24 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 931
 expression: "render_buf(state, 110, 30)"
 ---
+                     ⢀⣠⢠⡖                                                                                     
+                  ⢀⣠⣶⣿⡇⣿⣷⣤⣀                     Sylvander                                                     
+                ⢀⣠⣤⠄⣿⣿⡇⣿⣿⡇⣤⣤⡀                   agent workspace                                               
+             ⢀⣴⣶⣿⠿⣋⣾⡿⠛⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄                                                                              
+      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉     ⠉⠻⢿⣬⡻⣿⡌⣧⡀              model     —                                                   
+  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀   ⢀⡀  ⢹⣷⠄⣾⣿⣿              workspace ~/workspace                                         
+   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆             branch    —                                                   
+   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀        session   new                                                 
+ ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                                                     
+ ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇      What should we work through?                                  
+   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                                                     
+                                                                                                              
 ❯ finish the current implementation                                                                           
                                                                                                               
 ↳  then run the full test suite                                                                               
    queued                                                                                                     
                                                                                                               
 ⏺ I am still working on the first request.                                                                    
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
-                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               

@@ -3,26 +3,26 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 98
 expression: "render_buf(state, 80, 24)"
 ---
+   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀                                        
+ ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄ ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷                                       
+ ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟ ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇                                      
+   ⠙       ⠻⠁   ⠉            ⠋  ⠈⡿⠃     ⠟                                       
+                                                                                
+                                                                                
+Sylvander                                                                       
+agent workspace                                                                 
+                                                                                
+model     —                                                                     
+workspace ~/workspace                                                           
+branch    —                                                                     
+session   new                                                                   
+                                                                                
+What should we work through?                                                    
+                                                                                
+                                                                                
 ❯ hello                                                                         
                                                                                 
 ⏺ Thinking about it.                                                            
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
 ────────────────────────────────────────────────────────────────────────────────
 ❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
