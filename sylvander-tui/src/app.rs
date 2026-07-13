@@ -504,7 +504,11 @@ impl AppState {
                 while self.modals.top().is_some_and(|modal| {
                     matches!(
                         modal.title(),
-                        "Tool Approval" | "Agent asks" | "Plan review" | "Plan · Edit step"
+                        "Tool Approval"
+                            | "Agent asks"
+                            | "Plan review"
+                            | "Plan editor"
+                            | "Plan · Edit step"
                     )
                 }) {
                     self.modals.pop();
@@ -721,7 +725,11 @@ impl AppState {
                     _ => None,
                 };
                 if modal_title.is_some_and(|title| {
-                    self.modals.top().is_some_and(|modal| modal.title() == title)
+                    self.modals.top().is_some_and(|modal| {
+                        modal.title() == title
+                            || (kind == sylvander_protocol::InteractionTimeoutKind::Plan
+                                && matches!(modal.title(), "Plan editor" | "Plan · Edit step"))
+                    })
                 }) {
                     self.modals.pop();
                     self.mode = AppMode::Normal;
@@ -1007,7 +1015,11 @@ impl AppState {
                 while self.modals.top().is_some_and(|modal| {
                     matches!(
                         modal.title(),
-                        "Tool Approval" | "Agent asks" | "Plan review" | "Plan · Edit step"
+                        "Tool Approval"
+                            | "Agent asks"
+                            | "Plan review"
+                            | "Plan editor"
+                            | "Plan · Edit step"
                     )
                 }) {
                     self.modals.pop();

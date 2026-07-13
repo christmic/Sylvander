@@ -1,31 +1,32 @@
-//! Plan review modal — UX §9 + §12.2.
+//! Plan interaction surfaces — Decision Dock first, Review View on demand.
 //!
-//! Triggered by `DomainEvent::PlanReceived`. Two sub-modes:
-//! - **Navigate** (default): user can approve, edit the focused step,
-//!   add a step after the cursor, remove a step, or cancel.
-//! - **Edit**: user types replacement text for the focused step. Enter
-//!   commits the edit and returns to Navigate; Esc cancels the edit.
-//!
-//! Every exit resolves the typed plan gate so the Agent never remains
-//! blocked behind a dismissed modal.
+//! The plan already lives in transcript history. Receiving a plan therefore
+//! opens only a short decision surface. Explicit revision temporarily owns the
+//! transcript viewport and returns to the same decision when editing is done.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Style, Stylize},
+    layout::Rect,
+    style::Stylize,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 use crate::event::Action;
-use crate::modal::{Consumed, Modal};
+use crate::modal::{
+    Consumed, Modal,
+    surface::{decision_dock, review_view},
+};
+use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlanMode {
-    Navigate,
-    Edit,
+    Decision,
+    Review,
+    EditStep,
 }
 
 pub struct PlanReviewModal {
@@ -33,9 +34,8 @@ pub struct PlanReviewModal {
     steps: Vec<String>,
     original_steps: Vec<String>,
     cursor: usize,
-    /// Step currently being edited (only when `mode == Edit`).
+    decision_index: usize,
     edit_step: usize,
-    /// Edit buffer for the focused step.
     edit_buffer: String,
     mode: PlanMode,
     _session_id: Option<String>,
@@ -54,39 +54,251 @@ impl PlanReviewModal {
             original_steps: steps.clone(),
             steps,
             cursor,
+            decision_index: 0,
             edit_step: 0,
             edit_buffer: String::new(),
-            mode: PlanMode::Navigate,
+            mode: PlanMode::Decision,
             _session_id: session_id,
         }
     }
 
-    fn render_steps(&self, area: Rect, frame: &mut Frame) {
-        let lines: Vec<Line> = self
+    fn render_decision(&self, frame: &mut Frame, parent: Rect) {
+        let body = decision_dock(frame, parent, 5);
+        let count = format!("{} steps", self.steps.len());
+        let title = "◆ Ready to proceed?";
+        let gap = (body.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(&*count));
+        let first = if self.steps == self.original_steps {
+            "Start implementation"
+        } else {
+            "Use the revised plan"
+        };
+        let choices = [first, "Revise the plan", "Cancel"];
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(title, theme::brand_violet().bold()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(count, theme::text_muted()),
+            ]),
+            Line::from(""),
+        ];
+        for (index, choice) in choices.iter().enumerate() {
+            let selected = self.decision_index == index;
+            let style = if selected && index == 2 {
+                theme::danger().bold()
+            } else if selected {
+                theme::brand_violet().bold()
+            } else {
+                theme::text()
+            };
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{}{}. {choice}",
+                    if selected { "› " } else { "  " },
+                    index + 1
+                ),
+                style,
+            )));
+        }
+        frame.render_widget(Paragraph::new(lines), body);
+    }
+
+    fn render_editor(&self, frame: &mut Frame, parent: Rect) {
+        let footer_rows = u16::from(self.mode == PlanMode::EditStep) + 1;
+        let areas = review_view(frame, parent, footer_rows);
+        let title = "Plan editor";
+        let count = format!("{} steps", self.steps.len());
+        let gap = (areas.header.width as usize)
+            .saturating_sub(UnicodeWidthStr::width(title) + UnicodeWidthStr::width(&*count));
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(title, theme::brand_violet().bold()),
+                Span::raw(" ".repeat(gap)),
+                Span::styled(count, theme::text_muted()),
+            ])),
+            areas.header,
+        );
+
+        let visible = areas.body.height as usize;
+        let start = self
+            .cursor
+            .saturating_sub(visible.saturating_sub(1).min(visible / 2));
+        let lines = self
             .steps
             .iter()
             .enumerate()
-            .map(|(i, step)| {
-                let is_cursor = i == self.cursor;
-                let (marker, color) = if is_cursor {
-                    ("● ", theme::palette().active)
-                } else {
-                    ("  ", theme::palette().text_muted)
-                };
+            .skip(start)
+            .take(visible)
+            .map(|(index, step)| {
+                let selected = index == self.cursor;
                 Line::from(vec![
-                    Span::styled(marker, Style::default().fg(color).bold()),
                     Span::styled(
-                        format!("{}. {}", i + 1, step),
-                        Style::default().fg(if is_cursor {
-                            theme::palette().text
+                        if selected { "› " } else { "  " },
+                        if selected {
+                            theme::brand_violet().bold()
                         } else {
-                            theme::palette().text_dim
-                        }),
+                            theme::text_muted()
+                        },
+                    ),
+                    Span::styled(
+                        format!("{}. {step}", index + 1),
+                        if selected {
+                            theme::text().bold()
+                        } else {
+                            theme::text_dim()
+                        },
                     ),
                 ])
             })
-            .collect();
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+            .collect::<Vec<_>>();
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), areas.body);
+
+        if self.mode == PlanMode::EditStep {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("> ", theme::brand_violet()),
+                        Span::styled(&self.edit_buffer, theme::text()),
+                    ]),
+                    Line::from(Span::styled("↵ save   esc discard", theme::text_muted())),
+                ]),
+                areas.footer,
+            );
+            let x = areas.footer.x + 2 + UnicodeWidthStr::width(self.edit_buffer.as_str()) as u16;
+            if x < areas.footer.x + areas.footer.width {
+                frame.set_cursor_position((x, areas.footer.y));
+            }
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "e edit step   a add below   d remove",
+                    theme::text_muted(),
+                )),
+                areas.footer,
+            );
+        }
+    }
+
+    fn approve(&mut self, state: &mut AppState) -> Consumed {
+        let decision = if self.steps == self.original_steps {
+            sylvander_protocol::PlanDecision::Approved
+        } else {
+            sylvander_protocol::PlanDecision::Revised {
+                steps: self.steps.clone(),
+            }
+        };
+        state.pending_actions.push(Action::ResolvePlan {
+            session_id: state.session_id.clone().unwrap_or_default(),
+            plan_id: self.plan_id.clone(),
+            decision,
+        });
+        state.mode = AppMode::Normal;
+        state.dirty.mark();
+        Consumed::Yes { dismiss: true }
+    }
+
+    fn reject(&mut self, state: &mut AppState) -> Consumed {
+        state.pending_actions.push(Action::ResolvePlan {
+            session_id: state.session_id.clone().unwrap_or_default(),
+            plan_id: self.plan_id.clone(),
+            decision: sylvander_protocol::PlanDecision::Rejected {
+                reason: "cancelled by user".into(),
+            },
+        });
+        state.mode = AppMode::Normal;
+        Consumed::Yes { dismiss: true }
+    }
+
+    fn handle_decision_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
+        match key.code {
+            KeyCode::Up if self.decision_index > 0 => {
+                self.decision_index -= 1;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Down if self.decision_index < 2 => {
+                self.decision_index += 1;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Char('e') => {
+                self.mode = PlanMode::Review;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Enter if self.decision_index == 1 => {
+                self.mode = PlanMode::Review;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            KeyCode::Enter if self.decision_index == 0 => self.approve(state),
+            KeyCode::Esc | KeyCode::Enter => self.reject(state),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.reject(state)
+            }
+            KeyCode::Char(number @ '1'..='3') => {
+                self.decision_index = number as usize - '1' as usize;
+                state.dirty.mark();
+                Consumed::Yes { dismiss: false }
+            }
+            _ => Consumed::Yes { dismiss: false },
+        }
+    }
+
+    fn handle_review_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.mode = PlanMode::Decision;
+                self.decision_index = 0;
+                state.dirty.mark();
+            }
+            KeyCode::Up if self.cursor > 0 => self.cursor -= 1,
+            KeyCode::Down if self.cursor + 1 < self.steps.len() => self.cursor += 1,
+            KeyCode::Char('e') if !self.steps.is_empty() => {
+                self.edit_step = self.cursor;
+                self.edit_buffer = self.steps[self.cursor].clone();
+                self.mode = PlanMode::EditStep;
+            }
+            KeyCode::Char('a') => {
+                self.steps.insert(self.cursor + 1, "(new step)".into());
+                self.cursor += 1;
+            }
+            KeyCode::Char('d') if self.steps.len() > 1 => {
+                self.steps.remove(self.cursor);
+                self.cursor = self.cursor.min(self.steps.len() - 1);
+            }
+            _ => return Consumed::Yes { dismiss: false },
+        }
+        state.dirty.mark();
+        Consumed::Yes { dismiss: false }
+    }
+
+    fn handle_edit_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = PlanMode::Review;
+                self.edit_buffer.clear();
+            }
+            KeyCode::Enter => {
+                if self.edit_step < self.steps.len() && !self.edit_buffer.trim().is_empty() {
+                    self.steps[self.edit_step] = std::mem::take(&mut self.edit_buffer);
+                }
+                self.mode = PlanMode::Review;
+            }
+            KeyCode::Backspace => {
+                self.edit_buffer.pop();
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.edit_buffer.push(character);
+            }
+            _ => return Consumed::Yes { dismiss: false },
+        }
+        state.dirty.mark();
+        Consumed::Yes { dismiss: false }
     }
 }
 
@@ -96,262 +308,52 @@ impl Modal for PlanReviewModal {
     }
 
     fn title(&self) -> &str {
-        if self.mode == PlanMode::Edit {
-            "Plan · Edit step"
-        } else {
-            "Plan review"
+        match self.mode {
+            PlanMode::Decision => "Plan review",
+            PlanMode::Review => "Plan editor",
+            PlanMode::EditStep => "Plan · Edit step",
         }
     }
 
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let popup_area = centered_rect(70, 16, parent);
-        frame.render_widget(Clear, popup_area);
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" Plan review ({} steps) ", self.steps.len()))
-                .title_style(theme::warning()),
-            popup_area,
-        );
-
-        let inner = Block::default().borders(Borders::ALL).inner(popup_area);
-        let layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // header
-                Constraint::Min(5),    // steps
-                Constraint::Length(2), // edit buffer (when in edit mode)
-                Constraint::Length(1), // footer
-            ])
-            .split(inner);
-
-        // 1. Header
-        let intro = Line::from(match self.mode {
-            PlanMode::Navigate => {
-                "Review the plan — enter approves, e edits the focused step, a adds, d removes, esc cancels."
-            }
-            PlanMode::Edit => {
-                "Editing a step. Enter commits; Esc discards the edit and returns to review."
-            }
-        });
-        frame.render_widget(Paragraph::new(intro).wrap(Wrap { trim: false }), layout[0]);
-
-        // 2. Steps
-        self.render_steps(layout[1], frame);
-
-        // 3. Edit buffer (only when editing)
-        if self.mode == PlanMode::Edit {
-            let prompt = Line::from(vec![
-                Span::styled("> ", theme::verified()),
-                Span::styled(&self.edit_buffer, Style::default()),
-                Span::styled("_", theme::cursor()),
-            ]);
-            frame.render_widget(Paragraph::new(prompt), layout[2]);
-            // Hardware cursor at end of edit buffer.
-            let cursor_x = inner.x + 2 + self.edit_buffer.chars().count() as u16;
-            let cursor_y = inner.y + layout[2].y - inner.y + (layout[2].height / 2);
-            // Best-effort cursor positioning — modal is centered so the
-            // exact row depends on layout; we just put it on layout[2]'s
-            // first row.
-            let y_abs =
-                inner.y + layout[0].height + layout[1].height + (layout[2].height / 2).min(0);
-            let _ = cursor_y;
-            if cursor_x < inner.x + inner.width && y_abs < inner.y + inner.height {
-                frame.set_cursor_position((cursor_x, y_abs));
-            }
+        match self.mode {
+            PlanMode::Decision => self.render_decision(frame, parent),
+            PlanMode::Review | PlanMode::EditStep => self.render_editor(frame, parent),
         }
-
-        // 4. Footer
-        let footer = match self.mode {
-            PlanMode::Navigate => "enter=approve  e=edit  a=add  d=remove  esc=cancel",
-            PlanMode::Edit => "enter=commit  esc=cancel edit",
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(footer, theme::text_muted())),
-            layout[3],
-        );
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match self.mode {
-            PlanMode::Navigate => self.handle_navigate_key(key, state),
-            PlanMode::Edit => self.handle_edit_key(key, state),
+            PlanMode::Decision => self.handle_decision_key(key, state),
+            PlanMode::Review => self.handle_review_key(key, state),
+            PlanMode::EditStep => self.handle_edit_key(key, state),
         }
     }
 }
-
-use crate::theme;
-
-impl PlanReviewModal {
-    fn handle_navigate_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
-        match key.code {
-            KeyCode::Esc => {
-                state.pending_actions.push(Action::ResolvePlan {
-                    session_id: state.session_id.clone().unwrap_or_default(),
-                    plan_id: self.plan_id.clone(),
-                    decision: sylvander_protocol::PlanDecision::Rejected {
-                        reason: "cancelled by user".into(),
-                    },
-                });
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                state.pending_actions.push(Action::ResolvePlan {
-                    session_id: state.session_id.clone().unwrap_or_default(),
-                    plan_id: self.plan_id.clone(),
-                    decision: sylvander_protocol::PlanDecision::Rejected {
-                        reason: "cancelled by user".into(),
-                    },
-                });
-                state.mode = AppMode::Normal;
-                Consumed::Yes { dismiss: true }
-            }
-            KeyCode::Up => {
-                if self.cursor > 0 {
-                    self.cursor -= 1;
-                    state.dirty.mark();
-                }
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Down => {
-                if self.cursor + 1 < self.steps.len() {
-                    self.cursor += 1;
-                    state.dirty.mark();
-                }
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Enter => {
-                let decision = if self.steps == self.original_steps {
-                    sylvander_protocol::PlanDecision::Approved
-                } else {
-                    sylvander_protocol::PlanDecision::Revised {
-                        steps: self.steps.clone(),
-                    }
-                };
-                state.pending_actions.push(Action::ResolvePlan {
-                    session_id: state.session_id.clone().unwrap_or_default(),
-                    plan_id: self.plan_id.clone(),
-                    decision,
-                });
-                state.mode = AppMode::Normal;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: true }
-            }
-            KeyCode::Char('e') => {
-                // Enter edit mode for the focused step.
-                self.edit_step = self.cursor;
-                self.edit_buffer = self.steps[self.cursor].clone();
-                self.mode = PlanMode::Edit;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Char('a') => {
-                // Add a step after the cursor.
-                self.steps
-                    .insert(self.cursor + 1, String::from("(new step)"));
-                self.cursor += 1;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Char('d') => {
-                if self.steps.len() > 1 {
-                    self.steps.remove(self.cursor);
-                    if self.cursor >= self.steps.len() {
-                        self.cursor = self.steps.len() - 1;
-                    }
-                    state.dirty.mark();
-                }
-                Consumed::Yes { dismiss: false }
-            }
-            _ => Consumed::Ignored,
-        }
-    }
-
-    fn handle_edit_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
-        match key.code {
-            KeyCode::Esc => {
-                // Discard the edit, go back to navigate.
-                self.mode = PlanMode::Navigate;
-                self.edit_buffer.clear();
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Enter => {
-                // Commit the edit to the focused step.
-                if self.edit_step < self.steps.len() {
-                    self.steps[self.edit_step] = std::mem::take(&mut self.edit_buffer);
-                }
-                self.mode = PlanMode::Navigate;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Backspace => {
-                if !self.edit_buffer.is_empty() {
-                    self.edit_buffer.pop();
-                    state.dirty.mark();
-                }
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Char(c) => {
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT)
-                {
-                    self.edit_buffer.push(c);
-                    state.dirty.mark();
-                }
-                Consumed::Yes { dismiss: false }
-            }
-            _ => Consumed::Ignored,
-        }
-    }
-}
-
-fn centered_rect(percent_x: u16, height: u16, parent: Rect) -> Rect {
-    let v = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-            Constraint::Length(height.min(parent.height)),
-            Constraint::Length(parent.height.saturating_sub(height) / 2),
-        ])
-        .split(parent);
-    let h = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-            Constraint::Percentage(percent_x.min(95)),
-            Constraint::Percentage((100 - percent_x.min(95)) / 2),
-        ])
-        .split(v[1]);
-    h[1]
-}
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn key(c: KeyCode, m: KeyModifiers) -> KeyEvent {
-        KeyEvent::new(c, m)
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
     }
 
     fn build_modal(n: usize) -> PlanReviewModal {
-        let steps: Vec<String> = (1..=n).map(|i| format!("step {i}")).collect();
-        PlanReviewModal::new("p1".into(), steps, 0, Some("s1".into()))
+        PlanReviewModal::new(
+            "p1".into(),
+            (1..=n).map(|index| format!("step {index}")).collect(),
+            0,
+            Some("s1".into()),
+        )
     }
 
     #[test]
     fn enter_approves_through_typed_action() {
         let mut state = AppState::new();
-        let mut m = build_modal(3);
-        // Cursor on step 0 (default). Approve.
-        let consumed = m.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        let mut modal = build_modal(3);
+        let consumed = modal.handle_key(&key(KeyCode::Enter), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
-        assert_eq!(state.pending_actions.len(), 1);
         assert!(matches!(
             state.pending_actions[0],
             Action::ResolvePlan {
@@ -362,25 +364,37 @@ mod tests {
     }
 
     #[test]
-    fn edited_plan_is_returned_as_revision() {
+    fn revision_is_explicit_and_returns_to_decision() {
         let mut state = AppState::new();
-        let mut m = build_modal(2);
-        m.steps[0] = "safer first step".into();
-        let _ = m.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
+        let mut modal = build_modal(2);
+        modal.handle_key(&key(KeyCode::Char('e')), &mut state);
+        assert_eq!(modal.mode, PlanMode::Review);
+        modal.handle_key(&key(KeyCode::Char('e')), &mut state);
+        assert_eq!(modal.mode, PlanMode::EditStep);
+        for _ in 0..6 {
+            modal.handle_key(&key(KeyCode::Backspace), &mut state);
+        }
+        for character in "safer step".chars() {
+            modal.handle_key(&key(KeyCode::Char(character)), &mut state);
+        }
+        modal.handle_key(&key(KeyCode::Enter), &mut state);
+        modal.handle_key(&key(KeyCode::Enter), &mut state);
+        assert_eq!(modal.mode, PlanMode::Decision);
+        modal.handle_key(&key(KeyCode::Enter), &mut state);
         assert!(matches!(
             &state.pending_actions[0],
             Action::ResolvePlan {
                 decision: sylvander_protocol::PlanDecision::Revised { steps },
                 ..
-            } if steps[0] == "safer first step"
+            } if steps[0] == "safer step"
         ));
     }
 
     #[test]
     fn escape_rejects_instead_of_abandoning_waiter() {
         let mut state = AppState::new();
-        let mut m = build_modal(2);
-        let _ = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
+        let mut modal = build_modal(2);
+        modal.handle_key(&key(KeyCode::Esc), &mut state);
         assert!(matches!(
             &state.pending_actions[0],
             Action::ResolvePlan {
@@ -391,62 +405,14 @@ mod tests {
     }
 
     #[test]
-    fn edit_mode_round_trip_through_enter() {
+    fn review_can_add_and_remove_steps_without_resolving_gate() {
         let mut state = AppState::new();
-        let mut m = build_modal(2);
-        // Press 'e' to edit step 0 — buffer is initialized with the existing
-        // step text so the user can refine rather than retype.
-        let _ = m.handle_key(&key(KeyCode::Char('e'), KeyModifiers::NONE), &mut state);
-        assert_eq!(m.mode, PlanMode::Edit);
-        assert_eq!(m.edit_step, 0);
-        assert_eq!(m.edit_buffer, "step 1");
-        // Backspace the whole "step 1" to clear the buffer (6 chars).
-        for _ in 0..6 {
-            let _ = m.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE), &mut state);
-        }
-        // Now type the replacement.
-        for ch in "rewritten step".chars() {
-            let _ = m.handle_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &mut state);
-        }
-        // Commit.
-        let _ = m.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
-        assert_eq!(m.mode, PlanMode::Navigate);
-        assert_eq!(m.steps[0], "rewritten step");
-    }
-
-    #[test]
-    fn edit_mode_esc_cancels_without_commit() {
-        let mut state = AppState::new();
-        let mut m = build_modal(2);
-        let _ = m.handle_key(&key(KeyCode::Char('e'), KeyModifiers::NONE), &mut state);
-        for ch in "thrown away".chars() {
-            let _ = m.handle_key(&key(KeyCode::Char(ch), KeyModifiers::NONE), &mut state);
-        }
-        let _ = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
-        assert_eq!(m.mode, PlanMode::Navigate);
-        // Original step text untouched.
-        assert_eq!(m.steps[0], "step 1");
-    }
-
-    #[test]
-    fn a_adds_after_cursor_d_removes_at_cursor() {
-        let mut state = AppState::new();
-        let mut m = build_modal(2);
-        let _ = m.handle_key(&key(KeyCode::Char('a'), KeyModifiers::NONE), &mut state);
-        assert_eq!(m.steps.len(), 3);
-        assert_eq!(m.cursor, 1);
-        // Cursor on the new (empty-named) step; remove it.
-        let _ = m.handle_key(&key(KeyCode::Char('d'), KeyModifiers::NONE), &mut state);
-        assert_eq!(m.steps.len(), 2);
-    }
-
-    #[test]
-    fn esc_cancels_review() {
-        let mut state = AppState::new();
-        let mut m = build_modal(2);
-        let consumed = m.handle_key(&key(KeyCode::Esc, KeyModifiers::NONE), &mut state);
-        assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
-        assert_eq!(state.mode, AppMode::Normal);
-        assert_eq!(state.pending_actions.len(), 1);
+        let mut modal = build_modal(2);
+        modal.handle_key(&key(KeyCode::Char('e')), &mut state);
+        modal.handle_key(&key(KeyCode::Char('a')), &mut state);
+        assert_eq!(modal.steps.len(), 3);
+        modal.handle_key(&key(KeyCode::Char('d')), &mut state);
+        assert_eq!(modal.steps.len(), 2);
+        assert!(state.pending_actions.is_empty());
     }
 }
