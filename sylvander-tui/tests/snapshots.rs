@@ -129,6 +129,30 @@ fn tool_call_done_with_output() {
 }
 
 #[test]
+fn completed_edit_shows_inline_unified_diff() {
+    let mut state = AppState::new();
+    state
+        .messages
+        .push(ChatMessage::User("rename the state".into()));
+    state.apply(DomainEvent::ToolStarted {
+        call_id: "edit-1".into(),
+        tool_name: "edit".into(),
+        input: serde_json::json!({
+            "file_path": "src/state.rs",
+            "old_string": "let old_name = value;\nreturn old_name;\n",
+            "new_string": "let state = value;\nreturn state;\n"
+        }),
+    });
+    state.apply(DomainEvent::ToolFinished {
+        call_id: "edit-1".into(),
+        tool_name: "edit".into(),
+        output: "updated src/state.rs".into(),
+        is_error: false,
+    });
+    insta::assert_snapshot!(render_buf(state, 90, 26));
+}
+
+#[test]
 fn unknown_tool_degrades_to_a_visible_redacted_step() {
     let mut state = AppState::new();
     state.connected = true;

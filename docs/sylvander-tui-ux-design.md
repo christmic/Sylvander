@@ -149,26 +149,26 @@ different identity.
 ### 6.1 User turn
 
 ```text
-›  What tools do you have?
+> What tools do you have?
 ```
 
-- `›` uses dim bold text.
+- `>` uses dim bold text and matches the Composer prompt vocabulary.
 - User text uses primary text.
 - A blank row separates meaningful turns.
 
 ### 6.2 Agent turn
 
 ```text
-◆  I have the following tools available:
+● I have the following tools available:
 
-   1. ask_user — Ask for a decision or missing information.
-   2. Read — Read a file inside the workspace.
-   3. Write — Create or replace file content.
+  1. ask_user — Ask for a decision or missing information.
+  2. Read — Read a file inside the workspace.
+  3. Write — Create or replace file content.
 ```
 
-- `◆` is a compact violet presence mark shown once per meaningful Agent turn.
+- `●` is a compact violet presence mark shown once per meaningful Agent turn.
 - It is not a fallback Logo and does not replace the full Seed-Crab.
-- Continuation lines align three cells after the transcript origin.
+- Continuation lines align two cells after the transcript origin.
 - The former `/\\`, `(••)`, `<__>` reply face is prohibited.
 - Prose wraps at word boundaries. It must not split ordinary words merely to
   fill the final cell.
@@ -186,6 +186,10 @@ shape.
 
 - Thinking is subdued, compact, and removed or collapsed when final prose starts.
 - Tool activity is inline and uses semantic state symbols.
+- Child tools use one quiet `⎿` relationship marker instead of persistent
+  vertical chrome.
+- Completed Edit and Write operations show a bounded unified diff by default;
+  additional context remains explicitly expandable.
 - Routine tool output has no filled container.
 - Long tool details appear only when inspected.
 
