@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 356
 expression: "render_buf(state, 90, 26)"
 ---
                                                                                           
@@ -14,8 +15,8 @@ expression: "render_buf(state, 90, 26)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
-                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ Choose any that apply                                                                 
   Tags for this issue?                                                                    

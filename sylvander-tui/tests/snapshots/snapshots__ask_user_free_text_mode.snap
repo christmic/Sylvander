@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 373
 expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
@@ -14,8 +15,8 @@ expression: "render_buf(state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
-                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   ◆ Your input is needed                                                                  
   Describe the bug in your own words:                                                     
