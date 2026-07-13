@@ -8,7 +8,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Stylize,
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };

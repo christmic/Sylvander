@@ -11,7 +11,7 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
 use crate::app::AppState;
@@ -72,8 +72,15 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     let reduced_motion = config.reduced_motion;
     let mut terminal = ratatui::init();
     let _terminal_mode = TerminalModeGuard;
-    terminal.clear()?;
-    execute!(stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+    // Ratatui 0.30 preserves the cursor around `Terminal::clear`, which requires
+    // a DSR round trip. Some valid PTYs do not answer that query, so clear the
+    // newly entered alternate screen directly before the first full render.
+    execute!(
+        stdout(),
+        Clear(ClearType::All),
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
 
     let mut state = AppState::with_metadata(config.history_path.clone(), config.metadata.clone());
     state.keymap = config.keymap.clone();
