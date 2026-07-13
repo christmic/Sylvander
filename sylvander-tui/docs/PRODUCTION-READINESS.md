@@ -164,18 +164,21 @@ completed backend feature.
   - [x] Agent interrupt and decision routing preserves session identity.
   - [x] The Unix socket is owner-only and simultaneous clients receive live
         events only for their attached session.
-  - [ ] Adversarial multi-client PTY decisions, interrupt, replay, and history
+  - [x] Adversarial multi-client PTY decisions, interrupt, replay, and history
         isolation are verified together.
   - [ ] Shell process-group cancellation is verified when the Agent exposes a
         real shell/exec tool; the current renderer alone does not satisfy this.
 
 Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
 including 265 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.
-Three compiled-binary PTY scenarios now cover the protocol fixture and the real
+Four compiled-binary PTY scenarios now cover the protocol fixture and the real
 `AgentRun + UnixChannel + file-backed SQLite` stack. The real-runtime scenarios
 answer one Agent-owned AskUser prompt, interrupt a delayed turn, reject a write
 with a typed reason and verify it never executes, then restore a persisted
-transcript through `Ctrl+P` in a fresh TUI process.
+transcript through `Ctrl+P` in a fresh TUI process. A two-client adversarial
+scenario forces identical AskUser call IDs, proves answers and interrupts remain
+session-scoped, restores a disconnected live turn from buffered events, and
+audits SQLite transcripts for cross-client contamination.
 Approval intent is backward compatible and transport-neutral across Unix and
 WebSocket adapters. Agent tests cover scoped interrupt, concurrent tool batches,
 approval cleanup, durable sessions, and runtime restore. Capacity tests cover

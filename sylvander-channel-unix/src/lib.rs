@@ -1187,32 +1187,31 @@ async fn handle_client_msg_for_client(
                             recovery,
                             replay_truncated: false,
                         };
-                        if recovery {
-                            let mut hub = hub.lock().await;
-                            hub.session_clients
-                                .entry(session_id.clone())
-                                .or_default()
-                                .insert(client_id);
-                            let replay = hub.replay.get(&session_id);
-                            let truncated = replay.is_some_and(|replay| replay.truncated);
-                            let events = replay
-                                .map(|replay| replay.events.clone())
-                                .unwrap_or_default();
-                            let ServerMsg::SessionHistory {
-                                replay_truncated, ..
-                            } = &mut history
-                            else {
-                                unreachable!()
-                            };
-                            *replay_truncated = truncated;
-                            let _ = tx.send(history);
-                            for event in events {
-                                let _ = tx.send(event);
-                            }
-                            drop(hub);
-                        } else {
-                            let _ = tx.send(history);
+                        let mut hub = hub.lock().await;
+                        for clients in hub.session_clients.values_mut() {
+                            clients.remove(&client_id);
                         }
+                        hub.session_clients
+                            .entry(session_id.clone())
+                            .or_default()
+                            .insert(client_id);
+                        let replay = hub.replay.get(&session_id);
+                        let truncated = replay.is_some_and(|replay| replay.truncated);
+                        let events = replay
+                            .map(|replay| replay.events.clone())
+                            .unwrap_or_default();
+                        let ServerMsg::SessionHistory {
+                            replay_truncated, ..
+                        } = &mut history
+                        else {
+                            unreachable!()
+                        };
+                        *replay_truncated = truncated;
+                        let _ = tx.send(history);
+                        for event in events {
+                            let _ = tx.send(event);
+                        }
+                        drop(hub);
                     }
                     Err(error) => warn!(%error, "unix: failed to load session history"),
                 },

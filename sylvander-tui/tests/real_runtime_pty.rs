@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -30,6 +30,67 @@ struct RealAgentScenario {
 #[derive(Clone, Default)]
 struct ApprovalScenario {
     request_index: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Default)]
+struct CollidingClientsScenario;
+
+impl Respond for CollidingClientsScenario {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("decode model request");
+        let conversation = body.to_string();
+        let last_user = body["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().rev().find(|m| m["role"] == "user"))
+            .map(|message| message["content"].to_string())
+            .unwrap_or_default();
+        let client = if conversation.contains("client alpha") {
+            "Alpha"
+        } else {
+            "Beta"
+        };
+
+        if last_user.contains("slow client alpha") {
+            return ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_json(model_text("Alpha must not render."));
+        }
+        if last_user.contains("slow client beta") {
+            return ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(800))
+                .set_body_json(model_text("Beta stayed active."));
+        }
+        if last_user.contains("replay client gamma") {
+            return ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(1_500))
+                .set_body_json(model_text("Gamma replay completed."));
+        }
+        if last_user.contains("tool_result") {
+            return ResponseTemplate::new(200)
+                .set_body_json(model_text(&format!("{client} answer accepted.")));
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "id": format!("msg_question_{}", client.to_lowercase()),
+            "type": "message", "role": "assistant",
+            "content": [{
+                "type": "tool_use", "id": "shared_question_id", "name": "ask_user",
+                "input": {"question": format!("Question for {client}?"), "options": [],
+                    "multi_select": false}
+            }],
+            "model": "sylvander-test-model", "stop_reason": "tool_use",
+            "usage": {"input_tokens": 12, "output_tokens": 6}
+        }))
+    }
+}
+
+fn model_text(text: &str) -> serde_json::Value {
+    json!({
+        "id": "msg_multi_client", "type": "message", "role": "assistant",
+        "content": [{"type": "text", "text": text}],
+        "model": "sylvander-test-model", "stop_reason": "end_turn",
+        "usage": {"input_tokens": 16, "output_tokens": 4}
+    })
 }
 
 impl Respond for ApprovalScenario {
@@ -197,6 +258,21 @@ fn wait_for_output(captured: &Mutex<Vec<u8>>, needle: &str, timeout: Duration) -
 }
 
 fn run_tui(socket_path: &Path, interact: impl FnOnce(&mut dyn Write, &Mutex<Vec<u8>>)) -> String {
+    run_tui_with_exit(socket_path, false, interact)
+}
+
+fn disconnect_tui(
+    socket_path: &Path,
+    interact: impl FnOnce(&mut dyn Write, &Mutex<Vec<u8>>),
+) -> String {
+    run_tui_with_exit(socket_path, true, interact)
+}
+
+fn run_tui_with_exit(
+    socket_path: &Path,
+    disconnect: bool,
+    interact: impl FnOnce(&mut dyn Write, &Mutex<Vec<u8>>),
+) -> String {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 36,
@@ -242,8 +318,12 @@ fn run_tui(socket_path: &Path, interact: impl FnOnce(&mut dyn Write, &Mutex<Vec<
         "TUI welcome did not render"
     );
     interact(&mut writer, &captured);
-    writer.write_all(b"\x1b").expect("send idle escape");
-    writer.flush().expect("flush idle escape");
+    if disconnect {
+        child.kill().expect("disconnect TUI child");
+    } else {
+        writer.write_all(b"\x1b").expect("send idle escape");
+        writer.flush().expect("flush idle escape");
+    }
 
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -452,4 +532,179 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
         "rejected real Agent tool must not write the file"
     );
     runtime.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
+    let upstream = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(CollidingClientsScenario)
+        .mount(&upstream)
+        .await;
+    let temp = tempfile::tempdir().expect("create multi-client tempdir");
+    let socket_path = temp.path().join("multi-client.sock");
+    let store: Arc<dyn SessionStore> = Arc::new(
+        SqliteSessionStore::open(temp.path().join("multi-client.db"))
+            .await
+            .expect("open multi-client store"),
+    );
+    let client = AnthropicClient::builder()
+        .api_key("test-key")
+        .base_url(upstream.uri())
+        .build()
+        .expect("build multi-client model");
+    let runtime = start_runtime(
+        &socket_path,
+        store.clone(),
+        client,
+        ToolRegistry::new().register(AskUserTool::new()),
+        false,
+    )
+    .await;
+    let rendezvous = Arc::new(Barrier::new(2));
+
+    let alpha_socket = socket_path.clone();
+    let alpha_barrier = Arc::clone(&rendezvous);
+    let alpha = tokio::task::spawn_blocking(move || {
+        run_tui(&alpha_socket, |writer, captured| {
+            submit(writer, b"ask client alpha\r");
+            assert!(wait_for_output(
+                captured,
+                "Type your answer",
+                Duration::from_secs(4)
+            ));
+            captured.lock().expect("clear alpha question").clear();
+            alpha_barrier.wait();
+            submit(writer, b"alpha-only\r");
+            assert!(wait_for_output(
+                captured,
+                "accepted.",
+                Duration::from_secs(4)
+            ));
+
+            captured.lock().expect("clear alpha answer").clear();
+            submit(writer, b"slow client alpha\r");
+            assert!(wait_for_output(
+                captured,
+                "esc interrupt",
+                Duration::from_secs(3)
+            ));
+            alpha_barrier.wait();
+            submit(writer, b"\x1b");
+            assert!(wait_for_output(
+                captured,
+                "interrupted",
+                Duration::from_secs(3)
+            ));
+        })
+    });
+
+    let beta_socket = socket_path.clone();
+    let beta_barrier = Arc::clone(&rendezvous);
+    let beta = tokio::task::spawn_blocking(move || {
+        run_tui(&beta_socket, |writer, captured| {
+            submit(writer, b"ask client beta\r");
+            assert!(wait_for_output(
+                captured,
+                "Type your answer",
+                Duration::from_secs(4)
+            ));
+            captured.lock().expect("clear beta question").clear();
+            beta_barrier.wait();
+            std::thread::sleep(Duration::from_millis(250));
+            assert!(
+                !String::from_utf8_lossy(&captured.lock().expect("inspect beta isolation"))
+                    .contains("Alpha"),
+                "client B rendered client A's answer"
+            );
+            submit(writer, b"beta-only\r");
+            assert!(wait_for_output(
+                captured,
+                "accepted.",
+                Duration::from_secs(4)
+            ));
+
+            captured.lock().expect("clear beta answer").clear();
+            submit(writer, b"slow client beta\r");
+            assert!(wait_for_output(
+                captured,
+                "esc interrupt",
+                Duration::from_secs(3)
+            ));
+            beta_barrier.wait();
+            if !wait_for_output(captured, "active.", Duration::from_secs(3)) {
+                panic!(
+                    "client B did not complete after client A interrupt; output={}",
+                    String::from_utf8_lossy(&captured.lock().expect("inspect beta failure"))
+                );
+            }
+        })
+    });
+
+    let (alpha_output, beta_output) = tokio::join!(alpha, beta);
+    assert!(
+        alpha_output
+            .expect("join alpha TUI")
+            .contains("interrupted")
+    );
+    assert!(beta_output.expect("join beta TUI").contains("active."));
+
+    disconnect_tui(&socket_path, |writer, captured| {
+        submit(writer, b"replay client gamma\r");
+        assert!(wait_for_output(
+            captured,
+            "esc interrupt",
+            Duration::from_secs(3)
+        ));
+    });
+    let replayed = run_tui(&socket_path, |writer, captured| {
+        submit(writer, b"\x10");
+        assert!(wait_for_output(
+            captured,
+            "Sessions",
+            Duration::from_secs(3)
+        ));
+        std::thread::sleep(Duration::from_millis(150));
+        submit(writer, b"\r\r");
+        if !wait_for_output(captured, "completed.", Duration::from_secs(4)) {
+            panic!(
+                "reattached TUI did not receive buffered live events; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect replay failure"))
+            );
+        }
+    });
+    assert!(replayed.contains("completed."));
+
+    let caller = sylvander_protocol::SessionContext::new(
+        "unix-client",
+        "real-runtime-test",
+        "__multi_client_audit__",
+    );
+    let sessions = store
+        .list(&caller, Default::default())
+        .await
+        .expect("list isolated sessions");
+    assert_eq!(sessions.len(), 3);
+    for session in sessions {
+        let history = store
+            .read_history(&caller, &session.id, true, None)
+            .await
+            .expect("read isolated transcript");
+        let transcript = serde_json::to_string(&history).expect("encode transcript");
+        assert_eq!(
+            ["client alpha", "client beta", "client gamma"]
+                .into_iter()
+                .filter(|marker| transcript.contains(marker))
+                .count(),
+            1,
+            "one persisted transcript contains another client's history"
+        );
+    }
+    runtime.shutdown();
+}
+
+fn submit(writer: &mut dyn Write, bytes: &[u8]) {
+    writer.write_all(bytes).expect("write PTY input");
+    writer.flush().expect("flush PTY input");
 }
