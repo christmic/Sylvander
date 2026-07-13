@@ -108,6 +108,16 @@ impl AgentService {
             Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
             Action::RequestContext { session_id } => ClientMsg::GetContext { session_id },
             Action::CompactSession { session_id } => ClientMsg::Compact { session_id },
+            Action::PreviewWorkspaceRollback { session_id } => {
+                ClientMsg::PreviewWorkspaceRollback { session_id }
+            }
+            Action::ConfirmWorkspaceRollback {
+                session_id,
+                expected_turn_id,
+            } => ClientMsg::RollbackWorkspace {
+                session_id,
+                expected_turn_id,
+            },
             Action::SelectModel {
                 model,
                 reasoning_effort,

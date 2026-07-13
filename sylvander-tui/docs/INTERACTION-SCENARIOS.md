@@ -118,14 +118,24 @@ a misleading zero or partial estimate.
 service validates an assistant-completed boundary, creates a new persisted
 session containing history through that boundary, and leaves both the source
 session and workspace files unchanged. Invalid or unfinished boundaries create
-no branch. Filesystem rollback is intentionally a separate future operation;
-the TUI never implies that conversation rewind reverted code.
+no branch. Filesystem rollback is a separate operation; the TUI never implies
+that conversation rewind reverted code.
 
 `/checkpoint` creates a full conversation branch and keeps the source session
 as the return point. `/undo` returns to that structured source session exactly
 once. Both surfaces repeat `workspace files unchanged`; loading any unrelated
 session clears the stale undo target. These commands are conversation safety
 tools, not filesystem rollback.
+
+`/rollback` is that separate filesystem operation. It covers only successful
+Agent `Write` and `Edit` calls recorded by the durable workspace journal; shell
+commands and user edits are never inferred. The first request is read-only and
+returns the exact file list. A focus-owning modal explains the scope, then a
+second request carries the previewed turn id. The Agent refuses a stale turn id,
+an active turn, symlink/`..` escapes, files over the 8 MiB snapshot limit, or
+any file changed since the Agent edit. Every file is conflict-checked before
+the first restore. A durable recovery marker completes an interrupted rollback
+on the next journal operation. Conversation history is never changed.
 
 ## Approval
 

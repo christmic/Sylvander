@@ -112,6 +112,13 @@ enum ClientMsg {
     Compact {
         session_id: String,
     },
+    PreviewWorkspaceRollback {
+        session_id: String,
+    },
+    RollbackWorkspace {
+        session_id: String,
+        expected_turn_id: String,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -281,6 +288,18 @@ enum ServerMsg {
     CompactionFailed {
         session_id: String,
         automatic: bool,
+        reason: String,
+    },
+    WorkspaceRollbackPreview {
+        session_id: String,
+        preview: sylvander_protocol::WorkspaceRollbackPreview,
+    },
+    WorkspaceRollbackCompleted {
+        session_id: String,
+        report: sylvander_protocol::WorkspaceRollbackReport,
+    },
+    WorkspaceRollbackFailed {
+        session_id: String,
         reason: String,
     },
     OperationError {
@@ -1172,6 +1191,61 @@ async fn handle_client_msg(
                 }
             }
         }
+        ClientMsg::PreviewWorkspaceRollback { session_id } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                    session_id,
+                    reason: "runtime workspace rollback is unavailable".into(),
+                });
+                return;
+            };
+            match control
+                .preview_workspace_rollback(&SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(preview) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackPreview {
+                        session_id,
+                        preview: sylvander_protocol::WorkspaceRollbackPreview {
+                            turn_id: preview.turn_id,
+                            files: preview.files,
+                        },
+                    });
+                }
+                Err(reason) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                }
+            }
+        }
+        ClientMsg::RollbackWorkspace {
+            session_id,
+            expected_turn_id,
+        } => {
+            let Some(control) = runtime_control else {
+                let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                    session_id,
+                    reason: "runtime workspace rollback is unavailable".into(),
+                });
+                return;
+            };
+            match control
+                .rollback_workspace_latest(&SessionId::new(session_id.clone()), &expected_turn_id)
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted {
+                        session_id,
+                        report: sylvander_protocol::WorkspaceRollbackReport {
+                            turn_id: report.turn_id,
+                            restored: report.restored,
+                        },
+                    });
+                }
+                Err(reason) => {
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                }
+            }
+        }
         ClientMsg::SelectModel {
             model,
             reasoning_effort,
@@ -1507,6 +1581,84 @@ mod tests {
                 ..
             }) if reason.contains("unknown session")
         ));
+    }
+
+    #[tokio::test]
+    async fn workspace_rollback_preview_and_confirmation_round_trip() {
+        use sylvander_llm_anthropic::api::client::AnthropicClient;
+        let workspace = tempfile::TempDir::new().unwrap();
+        let journal_dir = tempfile::TempDir::new().unwrap();
+        let file = workspace.path().join("file.txt");
+        std::fs::write(&file, "before").unwrap();
+        let bus = Arc::new(InProcessMessageBus::new());
+        let spec = sylvander_agent::spec::AgentSpec::builder()
+            .id("agent-1")
+            .name("Agent")
+            .model_name("test-model")
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder().api_key("test").build().unwrap();
+        let run = sylvander_agent::run::AgentRun::builder(spec, client)
+            .bus(bus.clone())
+            .workspace_journal(journal_dir.path())
+            .build()
+            .unwrap();
+        let session_id = run
+            .join_session(sylvander_agent::session::SessionMetadata {
+                workspace: workspace.path().into(),
+                name: "test".into(),
+                user_id: "unix-client".into(),
+            })
+            .await;
+        let journal = sylvander_agent::workspace_journal::WorkspaceJournal::new(journal_dir.path());
+        let mutation = journal
+            .prepare(
+                &session_id.0,
+                "turn-1",
+                workspace.path(),
+                "file.txt",
+                b"after",
+            )
+            .unwrap();
+        std::fs::write(&file, "after").unwrap();
+        journal.commit(&mutation).unwrap();
+        let context = ChannelContext {
+            bus,
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::PreviewWorkspaceRollback {
+                session_id: session_id.0.clone(),
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            Some(&run),
+        )
+        .await;
+        let turn_id = match rx.recv().await.unwrap() {
+            ServerMsg::WorkspaceRollbackPreview { preview, .. } => preview.turn_id,
+            other => panic!("unexpected preview response: {other:?}"),
+        };
+        handle_client_msg(
+            ClientMsg::RollbackWorkspace {
+                session_id: session_id.0.clone(),
+                expected_turn_id: turn_id,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            Some(&run),
+        )
+        .await;
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::WorkspaceRollbackCompleted { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "before");
     }
 
     #[tokio::test]

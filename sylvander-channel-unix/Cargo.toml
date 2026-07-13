@@ -21,6 +21,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+tempfile = "3"
 
 [lints]
 workspace = true

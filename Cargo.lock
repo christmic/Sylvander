@@ -1986,6 +1986,7 @@ dependencies = [
  "sylvander-channel",
  "sylvander-llm-anthropic",
  "sylvander-protocol",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",

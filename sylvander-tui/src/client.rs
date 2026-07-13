@@ -81,6 +81,13 @@ pub enum ClientMsg {
     Compact {
         session_id: String,
     },
+    PreviewWorkspaceRollback {
+        session_id: String,
+    },
+    RollbackWorkspace {
+        session_id: String,
+        expected_turn_id: String,
+    },
     SelectModel {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
@@ -273,6 +280,18 @@ pub enum ServerMsg {
     CompactionFailed {
         session_id: String,
         automatic: bool,
+        reason: String,
+    },
+    WorkspaceRollbackPreview {
+        session_id: String,
+        preview: sylvander_protocol::WorkspaceRollbackPreview,
+    },
+    WorkspaceRollbackCompleted {
+        session_id: String,
+        report: sylvander_protocol::WorkspaceRollbackReport,
+    },
+    WorkspaceRollbackFailed {
+        session_id: String,
         reason: String,
     },
     OperationError {
@@ -468,6 +487,19 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::CompactionFailed {
             automatic, reason, ..
         } => DomainEvent::CompactionFailed { automatic, reason },
+        ServerMsg::WorkspaceRollbackPreview {
+            session_id,
+            preview,
+        } => DomainEvent::WorkspaceRollbackPreviewed {
+            session_id,
+            preview,
+        },
+        ServerMsg::WorkspaceRollbackCompleted { report, .. } => {
+            DomainEvent::WorkspaceRollbackCompleted { report }
+        }
+        ServerMsg::WorkspaceRollbackFailed { reason, .. } => {
+            DomainEvent::WorkspaceRollbackFailed { reason }
+        }
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
         ServerMsg::ModelRetry {

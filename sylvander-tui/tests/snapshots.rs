@@ -455,6 +455,19 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
 }
 
 #[test]
+fn workspace_rollback_requires_a_file_scoped_confirmation() {
+    let mut state = AppState::new();
+    state.apply(DomainEvent::WorkspaceRollbackPreviewed {
+        session_id: "session-1".into(),
+        preview: sylvander_protocol::WorkspaceRollbackPreview {
+            turn_id: "turn-7".into(),
+            files: vec!["src/lib.rs".into(), "docs/design.md".into()],
+        },
+    });
+    insta::assert_snapshot!(render_buf(&state, 100, 28));
+}
+
+#[test]
 fn permissions_picker_shows_workspace_scoped_runtime_policy() {
     let mut state = AppState::new();
     state.metadata.workspace = "/workspace/sylvander".into();
