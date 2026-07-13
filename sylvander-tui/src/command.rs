@@ -120,7 +120,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Help,
         name: "help",
-        usage: "/help [commands|approval|tools]",
+        usage: "/help [commands|approval|tools|vim]",
         description: "Show interaction help",
         hint: "ui-only",
     },

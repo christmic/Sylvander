@@ -19,6 +19,7 @@ enum HelpTopic {
     Commands,
     Approval,
     Tools,
+    Vim,
 }
 
 pub struct HelpModal {
@@ -32,6 +33,7 @@ impl HelpModal {
             "commands" | "command" => HelpTopic::Commands,
             "approval" | "approvals" | "permissions" => HelpTopic::Approval,
             "tool" | "tools" => HelpTopic::Tools,
+            "vim" | "editing" | "composer" => HelpTopic::Vim,
             other => return Err(format!("Unknown help topic {other:?}")),
         };
         Ok(Self { topic })
@@ -87,7 +89,7 @@ impl HelpModal {
                 ("/status".into(), "append runtime and token details".into()),
                 (
                     "/help <topic>".into(),
-                    "overview, commands, approval, tools".into(),
+                    "overview, commands, approval, tools, vim".into(),
                 ),
             ],
             HelpTopic::Approval => vec![
@@ -120,6 +122,20 @@ impl HelpModal {
                 ),
                 ("amber result".into(), "tool returned an error".into()),
             ],
+            HelpTopic::Vim => vec![
+                ("Esc / i a I A".into(), "Normal / Insert mode".into()),
+                (
+                    "h j k l / arrows".into(),
+                    "move by character or line".into(),
+                ),
+                ("w b / 0 $".into(), "move by word or line edge".into()),
+                ("o O".into(), "open line below or above".into()),
+                ("x / D / dd dw d$".into(), "delete into register".into()),
+                ("C / cc cw c$".into(), "change and enter Insert".into()),
+                ("yy yw / p P".into(), "yank and paste register".into()),
+                ("u / gg G".into(), "undo / first or last line".into()),
+                ("Enter".into(), "send prompt from Normal mode".into()),
+            ],
         };
         let mut lines = vec![
             Line::from(Span::styled(
@@ -128,6 +144,7 @@ impl HelpModal {
                     HelpTopic::Commands => "Command line",
                     HelpTopic::Approval => "Tool approval",
                     HelpTopic::Tools => "Tool activity",
+                    HelpTopic::Vim => "Vim Composer",
                 },
                 theme::header(),
             )),
@@ -142,6 +159,25 @@ impl HelpModal {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("Esc close", theme::text_muted())));
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vim_help_is_discoverable_and_lists_safety_relevant_modes() {
+        let help = HelpModal::new(Some("vim")).expect("documented topic");
+        let lines = help.lines(&AppState::new());
+        let text = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Vim Composer"));
+        assert!(text.contains("Normal / Insert mode"));
+        assert!(text.contains("Enter"));
     }
 }
 
