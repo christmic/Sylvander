@@ -25,10 +25,15 @@ fn unique_socket_path() -> PathBuf {
     ))
 }
 
-fn spawn_server(path: &Path) -> (std::thread::JoinHandle<()>, mpsc::Receiver<String>) {
+fn spawn_server(
+    path: &Path,
+) -> (
+    std::thread::JoinHandle<()>,
+    mpsc::Receiver<serde_json::Value>,
+) {
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path).expect("bind PTY test socket");
-    let (chat_tx, chat_rx) = mpsc::channel();
+    let (message_tx, message_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().expect("accept TUI connection");
         let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone socket"));
@@ -49,22 +54,38 @@ fn spawn_server(path: &Path) -> (std::thread::JoinHandle<()>, mpsc::Receiver<Str
                 break;
             }
             let message: serde_json::Value = serde_json::from_str(&line).expect("parse client msg");
-            if message["type"] != "chat" {
-                continue;
-            }
-            let text = message["text"].as_str().unwrap_or_default().to_owned();
-            chat_tx.send(text).expect("report submitted chat");
-            for response in [
-                r#"{"type":"session_created","session_id":"pty-session"}"#,
-                r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
-                r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
-            ] {
+            message_tx
+                .send(message.clone())
+                .expect("report client message");
+            let responses: &[&str] = match message["type"].as_str() {
+                Some("chat") if message["text"] == "hello from PTY" => &[
+                    r#"{"type":"session_created","session_id":"pty-session"}"#,
+                    r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
+                    r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
+                    r#"{"type":"approval_request","session_id":"pty-session","batch_id":"pty-approval","tools":[{"call_id":"pty-tool","tool_name":"bash","input":{"command":"rm -rf build"}}],"allowed_scopes":["once"]}"#,
+                ],
+                Some("approve") => &[
+                    r#"{"type":"ask_user","session_id":"pty-session","call_id":"pty-question","question":"Which safe direction?","options":[],"multi_select":false}"#,
+                ],
+                Some("chat") if message["text"] == "interrupt me" => {
+                    &[r#"{"type":"text_delta","session_id":"pty-session","delta":"still working"}"#]
+                }
+                Some("interrupt") => &[
+                    r#"{"type":"turn_interrupted","session_id":"pty-session","reason":"PTY interrupt complete"}"#,
+                ],
+                _ => &[],
+            };
+            for response in responses {
                 writeln!(stream, "{response}").expect("send server event");
+                if response.contains(r#""type":"done""#) {
+                    stream.flush().expect("flush completed turn");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
             }
             stream.flush().expect("flush server events");
         }
     });
-    (server, chat_rx)
+    (server, message_rx)
 }
 
 fn wait_for_output(captured: &Mutex<Vec<u8>>, needle: &str, timeout: Duration) -> bool {
@@ -78,10 +99,26 @@ fn wait_for_output(captured: &Mutex<Vec<u8>>, needle: &str, timeout: Duration) -
     false
 }
 
+fn recv_message(
+    messages: &mpsc::Receiver<serde_json::Value>,
+    expected_type: &str,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let message = messages
+            .recv_timeout(remaining)
+            .unwrap_or_else(|error| panic!("missing client message {expected_type}: {error}"));
+        if message["type"] == expected_type {
+            return message;
+        }
+    }
+}
+
 #[test]
-fn binary_renders_chat_and_survives_terminal_resize() {
+fn binary_completes_chat_decisions_interrupt_and_resize() {
     let socket_path = unique_socket_path();
-    let (server, chat_rx) = spawn_server(&socket_path);
+    let (server, messages) = spawn_server(&socket_path);
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 36,
@@ -132,17 +169,8 @@ fn binary_renders_chat_and_survives_terminal_resize() {
     );
     writer.write_all(b"hello from PTY\r").expect("type chat");
     writer.flush().expect("flush chat input");
-    let submitted = chat_rx
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap_or_else(|error| {
-            let rendered = captured.lock().expect("lock failure output").clone();
-            child.kill().expect("kill unresponsive TUI child");
-            panic!(
-                "TUI did not submit chat: {error}; output={}",
-                String::from_utf8_lossy(&rendered)
-            );
-        });
-    assert_eq!(submitted, "hello from PTY");
+    let submitted = recv_message(&messages, "chat");
+    assert_eq!(submitted["text"], "hello from PTY");
     if !wait_for_output(&captured, "rendered", Duration::from_secs(3)) {
         let rendered = captured.lock().expect("lock failure output").clone();
         child.kill().expect("kill unresponsive TUI child");
@@ -151,6 +179,54 @@ fn binary_renders_chat_and_survives_terminal_resize() {
             String::from_utf8_lossy(&rendered)
         );
     }
+
+    assert!(
+        wait_for_output(&captured, "Tool Approval", Duration::from_secs(3)),
+        "approval modal was not rendered"
+    );
+    writer.write_all(b"n").expect("reject approval");
+    writer.flush().expect("flush rejection");
+    assert!(
+        wait_for_output(&captured, "Optional reason", Duration::from_secs(3)),
+        "approval reason input was not rendered"
+    );
+    writer
+        .write_all(b"unsafe location\r")
+        .expect("type rejection reason");
+    writer.flush().expect("flush rejection reason");
+    let approval = recv_message(&messages, "approve");
+    assert_eq!(approval["call_id"], "pty-tool");
+    assert_eq!(approval["approved"], false);
+    assert_eq!(approval["reason"], "unsafe location");
+
+    assert!(
+        wait_for_output(&captured, "Type your answer", Duration::from_secs(3)),
+        "AskUser free-text input was not rendered"
+    );
+    writer.write_all(b"use tests\r").expect("answer AskUser");
+    writer.flush().expect("flush AskUser answer");
+    let answer = recv_message(&messages, "answer");
+    assert_eq!(answer["call_id"], "pty-question");
+    assert_eq!(answer["answer"], "use tests");
+
+    writer
+        .write_all(b"interrupt me\r")
+        .expect("start interruptible turn");
+    writer.flush().expect("flush interruptible turn");
+    let second_chat = recv_message(&messages, "chat");
+    assert_eq!(second_chat["text"], "interrupt me");
+    assert!(
+        wait_for_output(&captured, "still", Duration::from_secs(3)),
+        "partial turn was not rendered before interrupt"
+    );
+    writer.write_all(b"\x1b").expect("interrupt active turn");
+    writer.flush().expect("flush interrupt");
+    let interrupt = recv_message(&messages, "interrupt");
+    assert_eq!(interrupt["session_id"], "pty-session");
+    assert!(
+        wait_for_output(&captured, "complete", Duration::from_secs(3)),
+        "terminal interrupt event was not rendered"
+    );
 
     pair.master
         .resize(PtySize {

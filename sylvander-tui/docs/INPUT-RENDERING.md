@@ -104,5 +104,6 @@ At minimum, preserve tests for:
 - Composer wrapping grows upward without moving the status row.
 - redraw floods remain bounded and do not drop a subsequent keyboard event;
 - transcript count/byte budgets and streaming/tool payload limits remain bounded.
-- the compiled binary completes chat, streamed rendering, resize, and idle exit
-  inside a real pseudo-terminal rather than only a `TestBackend`.
+- the compiled binary completes chat, streamed rendering, approval rejection,
+  AskUser, interrupt, resize, and idle exit inside a real pseudo-terminal rather
+  than only a `TestBackend`.
