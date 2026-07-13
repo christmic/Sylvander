@@ -6,7 +6,7 @@
   </style></defs>
   <rect class="page" width="1800" height="1300"/>
   <text class="title text" x="50" y="52">SYLVANDER TUI · FOCUS PICKER</text>
-  <text class="subtitle dim" x="50" y="80">Selectors rise from the Composer, preserve the transcript, and disappear after one focused choice.</text>
+  <text class="subtitle dim" x="50" y="80">Selectors rise below the Composer, preserve the transcript, and disappear after one focused choice.</text>
 
   <g id="command-picker" transform="translate(50 112)">
     <text class="head violet">01 · COMMANDS</text>
@@ -17,13 +17,12 @@
     </g>
     <g id="command-results">
       <line class="rule" x1="0" y1="170" x2="825" y2="170"/>
-      <text class="monoBold violet" x="22" y="202">Commands</text><text class="small muted" x="700" y="202">6 results</text>
-      <text class="monoBold violet" x="22" y="236">› /review</text><text class="small dim" x="178" y="236">review workspace changes</text>
-      <text class="mono text" x="22" y="268">  /diff</text><text class="small dim" x="178" y="268">inspect Git diff</text>
-      <text class="mono text" x="22" y="300">  /rollback</text><text class="small danger" x="178" y="300">unavailable · no Agent file turn</text>
-      <text class="mono text" x="22" y="332">  /resume</text><text class="small dim" x="178" y="332">load a persisted session</text>
-      <line class="rule" x1="0" y1="356" x2="825" y2="356"/>
-      <text class="mono text" x="0" y="390">/ rev</text>
+      <text class="mono dim" x="0" y="204">❯ </text><text class="mono violet" x="22" y="204">/rev</text>
+      <line class="rule" x1="0" y1="226" x2="825" y2="226"/>
+      <text class="monoBold violet" x="0" y="260">› /review</text><text class="small dim" x="156" y="260">review workspace changes</text>
+      <text class="mono text" x="0" y="292">  /diff</text><text class="small dim" x="156" y="292">inspect Git diff</text>
+      <text class="mono text" x="0" y="324">  /rollback</text><text class="small danger" x="156" y="324">unavailable · no Agent file turn</text>
+      <text class="mono text" x="0" y="356">  /resume</text><text class="small dim" x="156" y="356">load a persisted session</text>
       <line class="rule" x1="0" y1="410" x2="825" y2="410"/>
       <text class="small muted" x="0" y="438">· choosing command</text><text class="small muted" x="585" y="438">↑↓ select  tab complete  esc close</text>
     </g>

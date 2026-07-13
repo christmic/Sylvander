@@ -130,14 +130,15 @@ branch     <branch or —> · session <new or short id>
 What should we work through?
 ```
 
-- Character column: 21 cells.
-- Gap: 3 cells.
-- Horizontal layout begins at 68 available cells.
+- Character column: 31 cells.
+- Gap: 2 cells.
+- Horizontal layout begins at 77 available cells.
 - The full character includes sprout, split shell, paired core lights, both
   claws, and lower walking legs.
-- This is an authored half-scale rendering of the approved terminal character,
-  not a different mark or fallback. It reduces the Welcome's visual dominance
-  while retaining the same silhouette and warm/calm split.
+- This is an authored half-area rendering of the approved terminal character,
+  not a different mark or fallback. Its 31×8 footprint keeps approximately 70%
+  of each linear dimension, preserving the sprout, face, claws, legs, and
+  warm/calm split while reducing visual dominance.
 
 ### 5.2 Lifecycle
 
@@ -324,9 +325,10 @@ The Focus Picker handles commands, model selection, permission profiles,
 workspace-file mentions, and persisted-session selection.
 
 - It is inserted below the Composer instead of floating in the center.
-- Results appear first, followed by one filter-query row and a bottom rule. The
-  visible heading is omitted when the result rows already communicate the
-  surface purpose.
+- Command results appear directly below the persistent Composer and end with a
+  bottom rule. The command query remains in that Composer; a command surface
+  must never draw a second input row. Other selectors may own one query row
+  when they are not editing a Composer command.
 - Commands and the query share the viewport's left baseline; selection uses one
   concise marker rather than nested popup indentation.
 - At standard width it shows 6–10 results. At narrow width it uses fewer rows and
