@@ -605,8 +605,7 @@ pub fn run_stream(
                 .collect();
 
             if !tool_blocks.is_empty() {
-                const TOOL_TIMEOUT: std::time::Duration =
-                    std::time::Duration::from_secs(30);
+                let tool_timeout = config.tool_context.budget.timeout;
 
                 // Check approval gate before executing tools.
                 // The loop PAUSES here if the gate waits for external input.
@@ -698,7 +697,7 @@ pub fn run_stream(
                                             &context,
                                             input,
                                             &name,
-                                            TOOL_TIMEOUT,
+                                            tool_timeout,
                                             progress,
                                         ).await,
                                     )
@@ -731,13 +730,13 @@ pub fn run_stream(
                                 let ToolExecutionOutcome {
                                     output,
                                     is_error,
-                                    timed_out,
+                                    timed_out_after,
                                 } = execution;
-                                if timed_out {
+                                if let Some(timeout) = timed_out_after {
                                     yield AgentEvent::ToolTimedOut {
                                         id: id.clone(),
                                         name: name.clone(),
-                                        timeout_secs: TOOL_TIMEOUT.as_secs(),
+                                        timeout_secs: timeout.as_secs(),
                                     };
                                 }
                                 yield AgentEvent::ToolCallEnd {
@@ -974,7 +973,7 @@ pub fn run_stream(
                                 &config.tool_context,
                                 input,
                                 &name,
-                                TOOL_TIMEOUT,
+                                tool_timeout,
                                 progress,
                             );
                             tokio::pin!(execution);
@@ -1002,13 +1001,13 @@ pub fn run_stream(
                             let ToolExecutionOutcome {
                                 output,
                                 is_error,
-                                timed_out,
+                                timed_out_after,
                             } = execution;
-                            if timed_out {
+                            if let Some(timeout) = timed_out_after {
                                 yield AgentEvent::ToolTimedOut {
                                     id: tool_use.id.clone(),
                                     name: name.clone(),
-                                    timeout_secs: TOOL_TIMEOUT.as_secs(),
+                                    timeout_secs: timeout.as_secs(),
                                 };
                             }
 
@@ -1175,7 +1174,7 @@ enum ParallelToolOutcome {
 struct ToolExecutionOutcome {
     output: String,
     is_error: bool,
-    timed_out: bool,
+    timed_out_after: Option<std::time::Duration>,
 }
 
 async fn execute_registered_tool(
@@ -1183,7 +1182,7 @@ async fn execute_registered_tool(
     context: &crate::tool_context::ToolContext,
     input: serde_json::Value,
     name: &str,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
     progress: crate::tool::ToolProgressSink,
 ) -> ToolExecutionOutcome {
     let Some(tool) = tool else {
@@ -1191,29 +1190,37 @@ async fn execute_registered_tool(
         return ToolExecutionOutcome {
             output: format!("tool `{name}` not found in registry"),
             is_error: true,
-            timed_out: false,
+            timed_out_after: None,
         };
     };
-    match tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await {
-        Ok(Ok(output)) => ToolExecutionOutcome {
+    let result = if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                warn!(tool = %name, "tool execution timed out");
+                return ToolExecutionOutcome {
+                    output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
+                    is_error: true,
+                    timed_out_after: Some(timeout),
+                };
+            }
+        }
+    } else {
+        tool.execute_streaming(context, input, progress).await
+    };
+    match result {
+        Ok(output) => ToolExecutionOutcome {
             output: output.content,
             is_error: output.is_error,
-            timed_out: false,
+            timed_out_after: None,
         },
-        Ok(Err(error)) => {
+        Err(error) => {
             warn!(tool = %name, %error, "tool execution failed");
             ToolExecutionOutcome {
                 output: format!("tool execution failed: {error}"),
                 is_error: true,
-                timed_out: false,
-            }
-        }
-        Err(_) => {
-            warn!(tool = %name, "tool execution timed out");
-            ToolExecutionOutcome {
-                output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
-                is_error: true,
-                timed_out: true,
+                timed_out_after: None,
             }
         }
     }
@@ -1513,11 +1520,14 @@ mod tests {
             &crate::tool_context::defaults::system_tool_context(),
             serde_json::json!({}),
             "slow",
-            std::time::Duration::from_millis(1),
+            Some(std::time::Duration::from_millis(1)),
             crate::tool::ToolProgressSink::new(|_| {}),
         )
         .await;
-        assert!(outcome.timed_out);
+        assert_eq!(
+            outcome.timed_out_after,
+            Some(std::time::Duration::from_millis(1))
+        );
         assert!(outcome.is_error);
         assert!(outcome.output.contains("timed out"));
     }
