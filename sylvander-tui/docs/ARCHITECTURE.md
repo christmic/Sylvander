@@ -105,6 +105,11 @@ Approval follows the same boundary: the modal selects only a server-advertised
 validation, session isolation, and durable storage. The TUI never caches an
 approval rule or claims persistence based on local state.
 
+Compaction follows the same service boundary. `/compact` produces an action;
+the Agent owns session locking, model summarization, live-history replacement,
+and durable-history replacement. Automatic and manual runs return the same
+typed lifecycle, so presentation never infers completion from token counts.
+
 ## Adding a feature
 
 1. Add or reuse a model type in `model.rs`.

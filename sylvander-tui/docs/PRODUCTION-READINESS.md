@@ -92,7 +92,7 @@ completed backend feature.
 - [x] `/permissions` edits workspace-scoped filesystem, network, and approval policy for the next turn.
 - [x] Approval supports once/session/persistent exact-request decisions where policy permits.
 - [x] `/context` reports provider-confirmed window use, cache use, and structural contributing sources.
-- [ ] `/compact` and automatic compaction expose progress and resulting summary.
+- [x] `/compact` and automatic compaction expose progress, failure, and resulting summary.
 - [ ] Cost, rate limit, retry, and model migration states are visible.
 - [ ] Checkpoint, rewind, rollback, and undo have explicit safety boundaries.
 
@@ -100,7 +100,7 @@ completed backend feature.
 
 - [x] Session: `/resume`, `/rename`, `/fork`.
 - [ ] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
-- [ ] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
+- [x] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.
 - [ ] Commands support fuzzy matching, completion, aliases, recent ordering,
       availability rules, and dynamic registration.

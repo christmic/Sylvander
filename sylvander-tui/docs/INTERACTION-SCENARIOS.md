@@ -62,6 +62,7 @@ arguments. Invalid arguments remain in the command line with an inline error.
 | `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
 | `/permissions` | Edits workspace filesystem, network, and approval policy for the next turn |
 | `/context` | Reports the last provider-confirmed window/cache usage and structural sources |
+| `/compact` | Summarizes older context and preserves recent turns for the current idle session |
 | `/status` | Appends model, branch, session, iteration, and token usage |
 | `/quit` | Saves input history and exits |
 
@@ -85,6 +86,15 @@ input; it is intentionally separate from the session's cumulative billing
 counters. Source rows count verifiable structures (system instructions,
 conversation messages, and tool definitions). Sylvander does not invent
 per-source token estimates when the provider did not return them.
+
+`/compact` is a server-backed operation, not a local transcript clear. It is
+rejected while the session has active work. The TUI shows start, completion,
+and failure events; completion includes removed messages, condensed blocks,
+estimated freed tokens, and the bounded resulting summary. Automatic semantic
+compaction emits the same lifecycle. The Agent replaces its live history and,
+when a session store exists, atomically changes the active durable history to
+the summary followed by preserved recent messages so restart does not resurrect
+the pre-compaction context.
 
 ## Approval
 
