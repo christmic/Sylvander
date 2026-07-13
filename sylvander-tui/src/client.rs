@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 
@@ -15,6 +15,7 @@ use crate::app::ToolInfo;
 use crate::event::DomainEvent;
 
 const CLIENT_EVENT_CAPACITY: usize = 1_024;
+const MAX_SERVER_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 // ===========================================================================
 // Wire protocol (mirror of sylvander-channel-unix ServerMsg)
@@ -426,21 +427,22 @@ impl UnixClient {
         write.flush().await?;
 
         let mut reader = BufReader::new(read);
-        let mut line = String::new();
-        let bytes = tokio::time::timeout(
+        let handshake_line = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            reader.read_line(&mut line),
+            read_bounded_line(&mut reader, MAX_SERVER_LINE_BYTES),
         )
         .await
         .map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::TimedOut, "protocol handshake timed out")
         })??;
-        if bytes == 0 {
+        let line = if let Some(line) = handshake_line {
+            line
+        } else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "server closed during protocol handshake",
             ));
-        }
+        };
         let welcome = match serde_json::from_str::<ServerMsg>(&line) {
             Ok(ServerMsg::Welcome { protocol }) => protocol,
             Ok(ServerMsg::ProtocolError { error }) => {
@@ -481,9 +483,9 @@ impl UnixClient {
     fn spawn_reader(&self, reader: BufReader<OwnedReadHalf>) {
         let tx = self.event_tx.clone();
         tokio::spawn(async move {
-            let mut reader = reader.lines();
+            let mut reader = reader;
             loop {
-                match reader.next_line().await {
+                match read_bounded_line(&mut reader, MAX_SERVER_LINE_BYTES).await {
                     Ok(Some(line)) => {
                         let line = line.trim();
                         if line.is_empty() {
@@ -503,7 +505,14 @@ impl UnixClient {
                         }
                     }
                     Ok(None) => break,
-                    Err(_) => break,
+                    Err(error) => {
+                        let _ = tx
+                            .send(ClientEvent::Diagnostic(format!(
+                                "Rejected server stream: {error}"
+                            )))
+                            .await;
+                        break;
+                    }
                 }
             }
             let _ = tx.send(ClientEvent::Disconnected).await;
@@ -536,6 +545,48 @@ impl UnixClient {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+async fn read_bounded_line<R>(reader: &mut R, limit: usize) -> std::io::Result<Option<String>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut line = Vec::with_capacity(4 * 1024);
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(available.len(), |index| index + 1);
+        if line.len().saturating_add(take) > limit {
+            reader.consume(take);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("server message exceeds {} MiB limit", limit / 1024 / 1024),
+            ));
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            break;
+        }
+    }
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    String::from_utf8(line).map(Some).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("server message is not valid UTF-8: {error}"),
+        )
+    })
 }
 
 fn tui_protocol_capabilities() -> Vec<String> {
@@ -847,6 +898,26 @@ fn default_approval_scopes() -> Vec<sylvander_protocol::ApprovalScope> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bounded_line_reader_accepts_crlf_and_rejects_oversized_frames() {
+        let mut reader = BufReader::new(&b"first\r\nsecond\n"[..]);
+        assert_eq!(
+            read_bounded_line(&mut reader, 16).await.unwrap(),
+            Some("first".into())
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, 16).await.unwrap(),
+            Some("second".into())
+        );
+
+        let oversized = vec![b'x'; 17];
+        let mut reader = BufReader::new(oversized.as_slice());
+        let error = read_bounded_line(&mut reader, 16)
+            .await
+            .expect_err("oversized frame");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[test]
     fn socket_event_queue_applies_backpressure_at_its_capacity() {
