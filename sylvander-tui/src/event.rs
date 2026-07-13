@@ -89,6 +89,7 @@ pub enum DomainEvent {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
+        cause: sylvander_protocol::RetryCause,
     },
     /// A tool call started (status: pending).
     ToolStarted {

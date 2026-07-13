@@ -108,6 +108,8 @@ pub enum ServerMsg {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
+        #[serde(default)]
+        cause: sylvander_protocol::RetryCause,
     },
     ToolCall {
         session_id: String,
@@ -462,12 +464,14 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             max_attempts,
             delay_ms,
             reason,
+            cause,
             ..
         } => DomainEvent::ModelRetry {
             attempt,
             max_attempts,
             delay_ms,
             reason,
+            cause,
         },
         ServerMsg::ToolCall {
             call_id,
@@ -774,6 +778,7 @@ mod tests {
             max_attempts: 3,
             delay_ms: 200,
             reason: "rate limited".into(),
+            cause: sylvander_protocol::RetryCause::RateLimit,
         });
         assert!(matches!(
             event,
@@ -782,6 +787,7 @@ mod tests {
                 max_attempts: 3,
                 delay_ms: 200,
                 reason,
+                cause: sylvander_protocol::RetryCause::RateLimit,
             }) if reason == "rate limited"
         ));
     }

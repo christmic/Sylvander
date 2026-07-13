@@ -491,6 +491,7 @@ pub fn run_stream(
                             max_attempts: MAX_STREAM_RETRIES,
                             delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                             reason: source.to_string(),
+                            cause: retry_cause(&source),
                         };
                         tokio::time::sleep(delay).await;
                     }
@@ -1178,6 +1179,18 @@ async fn execute_registered_tool(
 // Internal helpers on AgentLoop (private methods used by run_stream)
 // =====================================================================
 
+fn retry_cause(error: &AnthropicError) -> sylvander_protocol::RetryCause {
+    match error {
+        AnthropicError::Api { status: 429, .. } => sylvander_protocol::RetryCause::RateLimit,
+        AnthropicError::Api { status, .. } if *status >= 500 => {
+            sylvander_protocol::RetryCause::Server
+        }
+        AnthropicError::Http(_) => sylvander_protocol::RetryCause::Network,
+        AnthropicError::SseParse { .. } => sylvander_protocol::RetryCause::Stream,
+        _ => sylvander_protocol::RetryCause::Other,
+    }
+}
+
 impl AgentLoop {
     /// Call the LLM with retry/backoff on transient errors. Returns
     /// a [`MessageStream`]. Tries streaming first (so `TextChunk`s
@@ -1221,6 +1234,7 @@ impl AgentLoop {
                         max_attempts: self.max_retries,
                         delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         reason: e.to_string(),
+                        cause: retry_cause(&e),
                     });
                     tokio::time::sleep(delay).await;
                     last_err = Some(e);
@@ -1254,6 +1268,7 @@ impl AgentLoop {
                         max_attempts: self.max_retries,
                         delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         reason: e.to_string(),
+                        cause: retry_cause(&e),
                     });
                     tokio::time::sleep(delay).await;
                     last_err = Some(e);
@@ -1511,6 +1526,31 @@ mod tests {
         assert_eq!(
             loop_.reasoning_effort(),
             sylvander_protocol::ReasoningEffort::High
+        );
+    }
+
+    #[test]
+    fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
+        let api = |status| AnthropicError::Api {
+            status,
+            error_type: "test".into(),
+            error_message: "failed".into(),
+            request_id: None,
+        };
+        assert_eq!(
+            retry_cause(&api(429)),
+            sylvander_protocol::RetryCause::RateLimit
+        );
+        assert_eq!(
+            retry_cause(&api(503)),
+            sylvander_protocol::RetryCause::Server
+        );
+        assert_eq!(
+            retry_cause(&AnthropicError::SseParse {
+                message: "truncated".into(),
+                position: 10,
+            }),
+            sylvander_protocol::RetryCause::Stream
         );
     }
 

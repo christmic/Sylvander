@@ -506,11 +506,16 @@ impl AppState {
                 max_attempts,
                 delay_ms,
                 reason,
+                cause,
             } => {
                 self.turn_active = true;
-                self.status = format!("Retrying model {attempt}/{max_attempts}");
+                self.status = format!(
+                    "{} · retry {attempt}/{max_attempts}",
+                    retry_cause_label(cause)
+                );
                 self.messages.push(ChatMessage::Info(format!(
-                    "Model retry {attempt}/{max_attempts} in {delay_ms}ms · {}",
+                    "{} · retry {attempt}/{max_attempts} in {delay_ms}ms · {}",
+                    retry_cause_label(cause),
                     compact_runtime_reason(&reason)
                 )));
             }
@@ -1103,6 +1108,16 @@ fn compact_runtime_reason(reason: &str) -> String {
     compact
 }
 
+fn retry_cause_label(cause: sylvander_protocol::RetryCause) -> &'static str {
+    match cause {
+        sylvander_protocol::RetryCause::RateLimit => "Rate limited",
+        sylvander_protocol::RetryCause::Server => "Provider unavailable",
+        sylvander_protocol::RetryCause::Network => "Network interrupted",
+        sylvander_protocol::RetryCause::Stream => "Response stream interrupted",
+        sylvander_protocol::RetryCause::Other => "Model retry",
+    }
+}
+
 pub(crate) fn reasoning_label(effort: sylvander_protocol::ReasoningEffort) -> &'static str {
     match effort {
         sylvander_protocol::ReasoningEffort::Off => "off",
@@ -1258,12 +1273,13 @@ mod tests {
             max_attempts: 3,
             delay_ms: 100,
             reason: format!("provider unavailable {}", "x".repeat(200)),
+            cause: sylvander_protocol::RetryCause::RateLimit,
         });
-        assert_eq!(state.status, "Retrying model 1/3");
+        assert_eq!(state.status, "Rate limited · retry 1/3");
         assert!(matches!(
             state.messages.last(),
             Some(ChatMessage::Info(text))
-                if text.starts_with("Model retry 1/3 in 100ms")
+                if text.starts_with("Rate limited · retry 1/3 in 100ms")
                     && text.chars().count() < 170
         ));
     }

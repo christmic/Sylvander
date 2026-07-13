@@ -1564,6 +1564,7 @@ impl AgentRunInner {
                     max_attempts,
                     delay_ms,
                     reason,
+                    cause,
                 } => {
                     self.publish_stream(
                         &session_id,
@@ -1572,6 +1573,7 @@ impl AgentRunInner {
                             max_attempts,
                             delay_ms,
                             reason,
+                            cause,
                         },
                     )
                     .await;
