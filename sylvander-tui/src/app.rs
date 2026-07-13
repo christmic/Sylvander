@@ -1032,6 +1032,7 @@ impl AppState {
                 if self.modals.is_full() {
                     for tool in tools {
                         self.pending_actions.push(Action::SendApprove {
+                            session_id: self.session_id.clone().unwrap_or_default(),
                             call_id: tool.call_id,
                             approved: false,
                             scope: sylvander_protocol::ApprovalScope::Once,
@@ -1059,6 +1060,7 @@ impl AppState {
             } => {
                 if self.modals.is_full() {
                     self.pending_actions.push(Action::SendAnswer {
+                        session_id: self.session_id.clone().unwrap_or_default(),
                         call_id,
                         answer: String::new(),
                     });
@@ -1088,6 +1090,7 @@ impl AppState {
             } => {
                 if self.modals.is_full() {
                     self.pending_actions.push(Action::ResolvePlan {
+                        session_id: self.session_id.clone().unwrap_or_default(),
                         plan_id,
                         decision: sylvander_protocol::PlanDecision::Rejected {
                             reason: "TUI decision queue is full".into(),

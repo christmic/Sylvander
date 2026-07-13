@@ -453,6 +453,7 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
             Decision::Pending | Decision::Reject => sylvander_protocol::ApprovalScope::Once,
         };
         state.pending_actions.push(Action::SendApprove {
+            session_id: state.session_id.clone().unwrap_or_default(),
             call_id: tool.call_id.clone(),
             approved,
             scope,

@@ -334,6 +334,7 @@ pub enum Action {
     },
     /// Approve or reject a specific tool call.
     SendApprove {
+        session_id: String,
         call_id: String,
         approved: bool,
         scope: sylvander_protocol::ApprovalScope,
@@ -341,6 +342,7 @@ pub enum Action {
     },
     /// Answer an AskUser question.
     SendAnswer {
+        session_id: String,
         call_id: String,
         answer: String,
     },
@@ -349,6 +351,7 @@ pub enum Action {
         session_id: String,
     },
     ResolvePlan {
+        session_id: String,
         plan_id: String,
         decision: sylvander_protocol::PlanDecision,
     },
