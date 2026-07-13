@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 415
 expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
@@ -12,8 +13,8 @@ expression: "render_buf(state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                                                                                          
-                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+>                                                                                         
 ──────────────────────────────────────────────────────────────────────────────────────────
   Resume a session                                                             3 matches  
   Loading one session replaces the current conversation.                                  
