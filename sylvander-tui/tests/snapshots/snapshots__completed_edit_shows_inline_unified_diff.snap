@@ -1,14 +1,18 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-assertion_line: 317
-expression: "render_buf(state, 90, 28)"
+assertion_line: 152
+expression: "render_buf(state, 90, 26)"
 ---
-  > run setup                                                                             
-  ◌ Run `ls`     00s                                                                      
-    ⎿ ◌ $ ls                                                                              
-                                                                                          
-                                                                                          
-                                                                                          
+  > rename the state                                                                      
+  ✓ Edit file     00s                                                                     
+    ⎿ ✓ Edit src/state.rs                                                                 
+       --- a/src/state.rs                                                                 
+       +++ b/src/state.rs                                                                 
+       @@ -1,2 +1,2 @@                                                                    
+       -let old_name = value;                                                             
+       -return old_name;                                                                  
+       +let state = value;                                                                
+       +return state;                                                                     
                                                                                           
                                                                                           
                                                                                           
@@ -23,11 +27,5 @@ expression: "render_buf(state, 90, 28)"
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                         
-──────────────────────────────────────────────────────────────────────────────────────────
-  ◆ Deny this request                                                                     
-  Add guidance for Sylvander (optional).                                                  
-  > use docker                                                                            
-                                                                                          
-  ↵ reject with guidance   esc back   500 character max                                   
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

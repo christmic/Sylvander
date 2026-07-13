@@ -1,17 +1,18 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 896
 expression: "render_buf(state, 110, 30)"
 ---
-  › run the tests                                                                                             
+  > run the tests                                                                                             
   ✓ Run `cargo`     00s                                                                                       
-  │ ✓ $ cargo test -p sylvander-tui --locked                                                                  
-  │   cwd  /workspace/Sylvander                                                                               
-  │   $ cargo test -p sylvander-tui --locked                                                                  
-  │                                                                                                           
-  │   result                                                                                                  
-  │     running 130 tests                                                                                     
-  │     test result: ok. 130 passed                                                                           
-  │     finished in 0.12s                                                                                     
+    ⎿ ✓ $ cargo test -p sylvander-tui --locked                                                                
+       cwd  /workspace/Sylvander                                                                              
+       $ cargo test -p sylvander-tui --locked                                                                 
+                                                                                                              
+       result                                                                                                 
+         running 130 tests                                                                                    
+         test result: ok. 130 passed                                                                          
+         finished in 0.12s                                                                                    
                                                                                                               
                                                                                                               
                                                                                                               

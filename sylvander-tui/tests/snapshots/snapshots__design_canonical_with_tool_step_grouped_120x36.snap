@@ -1,11 +1,12 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 120, 36)"
+assertion_line: 824
+expression: "render_buf(s, 120, 36)"
 ---
-  › Review the auth middleware                                                                                          
+  > Review the auth middleware                                                                                          
   ◌ Run `ls`     00s                                                                                                    
-  │ ✓ $ ls src/http  router.rs                                                                                          
-  │ ◌ Read src/http/middleware.rs                                                                                       
+    ⎿ ✓ $ ls src/http  router.rs                                                                                        
+    ⎿ ◌ Read src/http/middleware.rs                                                                                     
                                                                                                                         
                                                                                                                         
                                                                                                                         

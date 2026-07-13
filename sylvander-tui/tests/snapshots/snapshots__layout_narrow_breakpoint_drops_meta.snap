@@ -1,10 +1,11 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 70, 22)"
+assertion_line: 633
+expression: "render_buf(s, 70, 22)"
 ---
-  › Add JWT auth.                                                     
+  > Add JWT auth.                                                     
                                                                       
-  ◆  Inspecting router.                                               
+  ● Inspecting router.                                                
                                                                       
                                                                       
                                                                       
