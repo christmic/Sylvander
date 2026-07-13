@@ -16,12 +16,23 @@ use sylvander_tui::event::DomainEvent;
 /// Render `state` into a `(width, height)` TestBackend and return the
 /// resulting buffer as a human-friendly string (one cell per char, joined
 /// with newlines per row).
-fn render_buf(state: &AppState, width: u16, height: u16) -> String {
+fn render_buf(mut state: AppState, width: u16, height: u16) -> String {
+    // Rendering must not make golden files depend on scheduler load. The live
+    // TUI still uses wall-clock elapsed time; snapshots pin running tools to
+    // zero seconds by placing their start in the future.
+    for message in &mut state.messages {
+        if let ChatMessage::ToolStep {
+            started_at_secs, ..
+        } = message
+        {
+            *started_at_secs = u64::MAX;
+        }
+    }
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("test terminal");
     terminal
         .draw(|frame| {
-            sylvander_tui::ui::dispatch(frame, state);
+            sylvander_tui::ui::dispatch(frame, &state);
         })
         .expect("draw");
     let buffer = terminal.backend().buffer().clone();
@@ -41,7 +52,7 @@ fn render_buf(state: &AppState, width: u16, height: u16) -> String {
 #[test]
 fn empty_terminal_at_startup() {
     let state = AppState::new();
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -53,7 +64,7 @@ fn one_user_message_visible() {
     state.apply(DomainEvent::AgentDone {
         final_text: "hi there".into(),
     });
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -73,7 +84,7 @@ fn welcome_first_turn_and_clean_agent_reply_share_one_transcript() {
         final_text: String::new(),
     });
 
-    insta::assert_snapshot!(render_buf(&state, 120, 36));
+    insta::assert_snapshot!(render_buf(state, 120, 36));
 }
 
 #[test]
@@ -84,7 +95,7 @@ fn streaming_agent_with_partial_text() {
     state.apply(DomainEvent::TextChunk {
         delta: "Thinking about it.".into(),
     });
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -96,7 +107,7 @@ fn tool_call_in_progress() {
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src"}),
     });
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -114,7 +125,7 @@ fn tool_call_done_with_output() {
         output: "main.rs\nlib.rs".into(),
         is_error: false,
     });
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -136,7 +147,7 @@ fn unknown_tool_degrades_to_a_visible_redacted_step() {
         output: "structured fallback result".into(),
         is_error: false,
     });
-    insta::assert_snapshot!(render_buf(&state, 100, 24));
+    insta::assert_snapshot!(render_buf(state, 100, 24));
 }
 
 #[test]
@@ -162,7 +173,7 @@ fn approval_modal_overlays_chat() {
         }],
     });
     assert_eq!(state.mode, AppMode::ApprovalPending);
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -179,7 +190,7 @@ fn multiline_composer_renders_two_rows() {
     state.handle_key(&k(KeyCode::Char('d'), KeyModifiers::NONE));
     // Sanity check: composer should be 2 rows.
     assert_eq!(state.composer.row_count(), 2);
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -194,7 +205,7 @@ fn auto_wrapped_composer_grows_without_manual_newline() {
         1,
         "draft has no explicit newline"
     );
-    insta::assert_snapshot!(render_buf(&state, 120, 20));
+    insta::assert_snapshot!(render_buf(state, 120, 20));
 }
 
 #[test]
@@ -204,7 +215,7 @@ fn paste_inline_under_8_lines() {
     state.handle_paste("alpha\nbeta\ngamma");
     assert_eq!(state.composer.row_count(), 3);
     assert_eq!(state.composer.attachment_count(), 0);
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -218,7 +229,7 @@ fn paste_over_8_lines_collapses_to_attachment_token() {
     state.handle_paste(&payload);
     assert_eq!(state.composer.attachment_count(), 1);
     assert_eq!(state.composer.row_count(), 1); // draft still empty
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -234,7 +245,7 @@ fn many_attachments_collapses_with_more_indicator() {
         state.handle_paste(&payload);
     }
     assert_eq!(state.composer.attachment_count(), 6);
-    insta::assert_snapshot!(render_buf(&state, 80, 24));
+    insta::assert_snapshot!(render_buf(state, 80, 24));
 }
 
 #[test]
@@ -279,7 +290,7 @@ fn approval_modal_batch_with_three_tools() {
     for ch in "use docker".chars() {
         state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
     }
-    insta::assert_snapshot!(render_buf(&state, 90, 28));
+    insta::assert_snapshot!(render_buf(state, 90, 28));
 }
 
 #[test]
@@ -304,7 +315,7 @@ fn approval_modal_with_queue_header() {
             input: serde_json::json!({}),
         }],
     });
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -318,7 +329,7 @@ fn ask_user_single_select_open() {
         multi_select: false,
     });
     assert_eq!(state.mode, AppMode::AskPending);
-    insta::assert_snapshot!(render_buf(&state, 90, 24));
+    insta::assert_snapshot!(render_buf(state, 90, 24));
 }
 
 #[test]
@@ -343,7 +354,7 @@ fn ask_user_multi_select_with_toggles() {
     for ch in "edge case".chars() {
         state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
     }
-    insta::assert_snapshot!(render_buf(&state, 90, 26));
+    insta::assert_snapshot!(render_buf(state, 90, 26));
 }
 
 #[test]
@@ -360,7 +371,7 @@ fn ask_user_free_text_mode() {
     for ch in "the loader hangs on cold start".chars() {
         state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
     }
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -369,7 +380,7 @@ fn sessions_overlay_empty() {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
     state.handle_key(&key);
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -402,7 +413,7 @@ fn sessions_overlay_with_filter_match() {
         crossterm::event::KeyModifiers::CONTROL,
     );
     state.handle_key(&key);
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -420,7 +431,7 @@ fn palette_empty_filter_shows_all() {
     state.connected = false;
     state.session_id = None;
     state.last_branch_source_session_id = None;
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -457,7 +468,7 @@ fn palette_shows_dynamic_command_source_and_rejections() {
     for character in "review".chars() {
         state.handle_key(&KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
     }
-    insta::assert_snapshot!(render_buf(&state, 100, 24));
+    insta::assert_snapshot!(render_buf(state, 100, 24));
 }
 
 #[test]
@@ -473,7 +484,7 @@ fn palette_with_no_match() {
     for ch in "xyz".chars() {
         state.handle_key(&k(KeyCode::Char(ch), KeyModifiers::NONE));
     }
-    insta::assert_snapshot!(render_buf(&state, 90, 22));
+    insta::assert_snapshot!(render_buf(state, 90, 22));
 }
 
 #[test]
@@ -518,7 +529,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
     )
     .expect("open model picker");
     state.connected = false;
-    insta::assert_snapshot!(render_buf(&state, 100, 28));
+    insta::assert_snapshot!(render_buf(state, 100, 28));
 }
 
 #[test]
@@ -531,7 +542,7 @@ fn workspace_rollback_requires_a_file_scoped_confirmation() {
             files: vec!["src/lib.rs".into(), "docs/design.md".into()],
         },
     });
-    insta::assert_snapshot!(render_buf(&state, 100, 28));
+    insta::assert_snapshot!(render_buf(state, 100, 28));
 }
 
 #[test]
@@ -551,7 +562,7 @@ fn permissions_picker_shows_workspace_scoped_runtime_policy() {
     )
     .expect("open permissions");
     state.connected = false;
-    insta::assert_snapshot!(render_buf(&state, 100, 28));
+    insta::assert_snapshot!(render_buf(state, 100, 28));
 }
 
 #[test]
@@ -561,7 +572,7 @@ fn file_mention_picker_is_a_focused_workspace_surface() {
         crossterm::event::KeyCode::Char('@'),
         crossterm::event::KeyModifiers::NONE,
     ));
-    insta::assert_snapshot!(render_buf(&state, 90, 24));
+    insta::assert_snapshot!(render_buf(state, 90, 24));
 }
 
 // ---------------------------------------------------------------------------
@@ -584,25 +595,25 @@ fn seed_state() -> AppState {
 #[test]
 fn layout_wide_breakpoint() {
     let s = seed_state();
-    insta::assert_snapshot!(render_buf(&s, 132, 30));
+    insta::assert_snapshot!(render_buf(s, 132, 30));
 }
 
 #[test]
 fn layout_standard_breakpoint() {
     let s = seed_state();
-    insta::assert_snapshot!(render_buf(&s, 88, 24));
+    insta::assert_snapshot!(render_buf(s, 88, 24));
 }
 
 #[test]
 fn layout_narrow_breakpoint_drops_meta() {
     let s = seed_state();
-    insta::assert_snapshot!(render_buf(&s, 70, 22));
+    insta::assert_snapshot!(render_buf(s, 70, 22));
 }
 
 #[test]
 fn layout_too_small_renders_resize_message() {
     let s = seed_state();
-    insta::assert_snapshot!(render_buf(&s, 40, 20));
+    insta::assert_snapshot!(render_buf(s, 40, 20));
 }
 
 #[test]
@@ -618,7 +629,7 @@ fn server_side_tool_rejection_lands_in_transcript() {
         tool_name: "bash".into(),
         reason: "destructive commands blocked by policy".into(),
     });
-    insta::assert_snapshot!(render_buf(&s, 80, 22));
+    insta::assert_snapshot!(render_buf(s, 80, 22));
 }
 
 #[test]
@@ -636,7 +647,7 @@ fn plan_block_renders_with_progress_markers() {
         ],
         current: 1,
     });
-    insta::assert_snapshot!(render_buf(&s, 90, 24));
+    insta::assert_snapshot!(render_buf(s, 90, 24));
 }
 
 #[test]
@@ -652,7 +663,7 @@ fn tasks_summary_line_compacts_running_and_done() {
         owner: "coder".into(),
         purpose: "draft verifier".into(),
     });
-    insta::assert_snapshot!(render_buf(&s, 80, 22));
+    insta::assert_snapshot!(render_buf(s, 80, 22));
 }
 
 #[test]
@@ -677,7 +688,7 @@ fn expanded_tasks_show_identity_state_and_latest_detail() {
         task_id: "e5f6g7h8-task".into(),
         summary: "coverage gaps found in refresh flow".into(),
     });
-    insta::assert_snapshot!(render_buf(&s, 80, 24));
+    insta::assert_snapshot!(render_buf(s, 80, 24));
 }
 
 #[test]
@@ -712,7 +723,7 @@ fn full_panel_at_user_terminal_size_140x40() {
         delta: " I see we have a `TokenGuard` already — let me check it covers Bearer + API-key."
             .into(),
     });
-    insta::assert_snapshot!(render_buf(&s, 140, 40));
+    insta::assert_snapshot!(render_buf(s, 140, 40));
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +737,7 @@ fn design_canonical_welcome_lockup_120x36() {
     // lockup (§2.2) appears once on first launch when the
     // transcript + sessions cache are empty.
     let state = AppState::new();
-    insta::assert_snapshot!(render_buf(&state, 120, 36));
+    insta::assert_snapshot!(render_buf(state, 120, 36));
 }
 
 #[test]
@@ -754,7 +765,7 @@ fn design_canonical_with_tool_step_grouped_120x36() {
         tool_name: "read".into(),
         input: serde_json::json!({"path": "src/http/middleware.rs"}),
     });
-    insta::assert_snapshot!(render_buf(&s, 120, 36));
+    insta::assert_snapshot!(render_buf(s, 120, 36));
 }
 
 #[test]
@@ -767,7 +778,7 @@ fn design_disconnected_state_120x36() {
     s.apply(DomainEvent::Disconnected {
         reason: "server closed".into(),
     });
-    insta::assert_snapshot!(render_buf(&s, 120, 36));
+    insta::assert_snapshot!(render_buf(s, 120, 36));
 }
 
 #[test]
@@ -782,7 +793,7 @@ fn design_working_state_120x36() {
         tool_name: "bash".into(),
         input: serde_json::json!({"command": "ls src/http"}),
     });
-    insta::assert_snapshot!(render_buf(&s, 120, 36));
+    insta::assert_snapshot!(render_buf(s, 120, 36));
 }
 
 #[test]
@@ -801,7 +812,7 @@ fn design_waiting_approval_state_120x36() {
             input: serde_json::json!({"command": "rm -rf /"}),
         }],
     )));
-    insta::assert_snapshot!(render_buf(&s, 120, 36));
+    insta::assert_snapshot!(render_buf(s, 120, 36));
 }
 
 #[test]
@@ -826,7 +837,7 @@ fn expanded_tool_details_show_structured_input_and_output() {
         output: "running 130 tests\ntest result: ok. 130 passed\nfinished in 0.12s".into(),
         is_error: false,
     });
-    insta::assert_snapshot!(render_buf(&state, 110, 30));
+    insta::assert_snapshot!(render_buf(state, 110, 30));
 }
 
 #[test]
@@ -843,7 +854,7 @@ fn command_line_accepts_arguments() {
         );
     }
     state.modals.push(Box::new(commands));
-    insta::assert_snapshot!(render_buf(&state, 110, 30));
+    insta::assert_snapshot!(render_buf(state, 110, 30));
 }
 
 #[test]
@@ -861,7 +872,7 @@ fn queued_prompt_is_visible_but_not_rendered_as_sent() {
     state
         .queued_prompts
         .push_back("then run the full test suite".into());
-    insta::assert_snapshot!(render_buf(&state, 110, 30));
+    insta::assert_snapshot!(render_buf(state, 110, 30));
 }
 
 #[test]
@@ -872,7 +883,7 @@ fn help_is_a_visible_interaction_surface() {
     state
         .modals
         .push(Box::new(HelpModal::new(Some("tools")).unwrap()));
-    insta::assert_snapshot!(render_buf(&state, 110, 30));
+    insta::assert_snapshot!(render_buf(state, 110, 30));
 }
 
 #[test]
@@ -888,5 +899,5 @@ fn empty_question_submission_stays_open_with_feedback() {
     });
     state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(state.modals.len(), 1);
-    insta::assert_snapshot!(render_buf(&state, 110, 30));
+    insta::assert_snapshot!(render_buf(state, 110, 30));
 }

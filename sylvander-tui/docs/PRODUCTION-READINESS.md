@@ -144,14 +144,19 @@ completed backend feature.
 - [x] Public protocol changes remain UI-oriented and transport-neutral.
 - [x] Agent-loop changes include cancellation, concurrency, and persistence audit.
 - [x] All existing unit, E2E, and snapshot tests pass.
-- [ ] Real Unix-service + PTY flows cover chat, interrupt, approval, AskUser,
-      reconnect, session resume, and resize.
+- [ ] Real Unix-service + PTY flows:
+  - [x] The compiled TUI completes Unix handshake, keyboard chat submission,
+        streamed response rendering, resize, and idle exit in a pseudo-terminal.
+  - [ ] Interrupt, approval, and AskUser complete against the real Agent service.
+  - [ ] Disconnect/reconnect and persisted session resume complete in a PTY.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
 - [ ] Security review covers path scope, shell cancellation, secret masking, and
       multi-client/session isolation.
 
 Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
 including 264 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.
+The subsequent PTY gate adds one compiled-binary process test for chat and resize;
+`cargo test -p sylvander-tui --locked` passes with that test included.
 Approval intent is backward compatible and transport-neutral across Unix and
 WebSocket adapters. Agent tests cover scoped interrupt, concurrent tool batches,
 approval cleanup, durable sessions, and runtime restore. Capacity tests cover

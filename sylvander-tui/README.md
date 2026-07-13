@@ -38,3 +38,7 @@ SYLVANDER_TUI_THEME=high-contrast cargo run -p sylvander-tui --locked
 cargo check -p sylvander-tui --all-targets --locked
 cargo test -p sylvander-tui --locked
 ```
+
+The test suite includes a real pseudo-terminal process test. It starts the
+compiled binary, negotiates the Unix protocol, submits keyboard input, renders
+a streamed reply, resizes the terminal, and verifies clean idle exit.
