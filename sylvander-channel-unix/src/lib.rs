@@ -138,6 +138,7 @@ enum ServerMsg {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
+        cause: sylvander_protocol::RetryCause,
     },
     ToolCall {
         session_id: String,
@@ -549,12 +550,14 @@ async fn handle_client_msg(
                                 max_attempts,
                                 delay_ms,
                                 reason,
+                                cause,
                             } => Some(ServerMsg::ModelRetry {
                                 session_id: s.0.clone(),
                                 attempt,
                                 max_attempts,
                                 delay_ms,
                                 reason,
+                                cause,
                             }),
                             StreamEvent::CompactionStarted { automatic } => {
                                 Some(ServerMsg::CompactionStarted {

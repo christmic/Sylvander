@@ -87,6 +87,17 @@ pub struct CompactionReport {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RetryCause {
+    RateLimit,
+    Server,
+    Network,
+    Stream,
+    #[default]
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FileAccess {
     None,
     ReadOnly,
@@ -297,6 +308,8 @@ pub enum StreamEvent {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
+        #[serde(default)]
+        cause: RetryCause,
     },
     CompactionStarted {
         automatic: bool,
@@ -731,6 +744,25 @@ mod tests {
             event,
             StreamEvent::ToolApprovalRequired { allowed_scopes, .. }
                 if allowed_scopes == vec![ApprovalScope::Once]
+        ));
+    }
+
+    #[test]
+    fn legacy_retry_events_default_to_other_cause() {
+        let event: StreamEvent = serde_json::from_value(serde_json::json!({
+            "type": "model_retry",
+            "attempt": 1,
+            "max_attempts": 3,
+            "delay_ms": 100,
+            "reason": "temporary"
+        }))
+        .expect("legacy retry event");
+        assert!(matches!(
+            event,
+            StreamEvent::ModelRetry {
+                cause: RetryCause::Other,
+                ..
+            }
         ));
     }
 }

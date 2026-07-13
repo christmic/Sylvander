@@ -96,6 +96,12 @@ when a session store exists, atomically changes the active durable history to
 the summary followed by preserved recent messages so restart does not resurrect
 the pre-compaction context.
 
+Provider retries are typed before reaching presentation. Rate limits, provider
+5xx failures, network failures, and interrupted response streams have distinct
+labels while retaining attempt count, maximum attempts, backoff duration, and a
+bounded diagnostic reason. Older servers without a cause field safely render a
+generic model retry.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts

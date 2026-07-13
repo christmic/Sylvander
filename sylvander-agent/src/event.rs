@@ -45,6 +45,7 @@ pub enum AgentEvent {
         delay_ms: u64,
         /// Sanitized provider error suitable for diagnostics and UI.
         reason: String,
+        cause: sylvander_protocol::RetryCause,
     },
 
     /// The model invoked a tool — about to execute it.
