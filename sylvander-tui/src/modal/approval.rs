@@ -5,7 +5,7 @@
 //!   approve / reject with optional "all remaining" bulk shortcuts.
 //!   `n` enters feedback capture by transitioning to `RejectFeedback`.
 //! - `RejectFeedback`: the user is typing free-form text that will be
-//!   sent as a `SendFeedback` action after the rejection lands.
+//!   attached to each rejected approval decision.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -342,7 +342,7 @@ impl ApprovalModal {
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
-            "Tell Sylvander what to do instead (or press Enter to send empty):",
+            "Optional reason for rejecting this request:",
             theme::subtle_emphasis(theme::text_muted()),
         )));
         lines.push(Line::from(""));
@@ -352,7 +352,7 @@ impl ApprovalModal {
         ]));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "enter=send feedback   esc=back to approval",
+            "enter reject · esc back · 500 character max",
             theme::text_muted(),
         )));
 
@@ -368,19 +368,7 @@ impl ApprovalModal {
 
     fn handle_feedback_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
-            KeyCode::Enter => {
-                // Submit feedback + finish the batch — feedback has already
-                // been recorded in `self.feedback`.
-                let sid = state.session_id.clone();
-                let feedback = self.feedback.trim().to_string();
-                if !feedback.is_empty() {
-                    state.pending_actions.push(Action::SendFeedback {
-                        text: feedback,
-                        session_id: sid,
-                    });
-                }
-                finish(self, state)
-            }
+            KeyCode::Enter => finish(self, state),
             KeyCode::Esc => {
                 // Cancel feedback capture, drop back to navigate so the
                 // user can revise their decision.
@@ -400,8 +388,10 @@ impl ApprovalModal {
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
                 {
-                    self.feedback.push(c);
-                    state.dirty.mark();
+                    if self.feedback.chars().count() < 500 {
+                        self.feedback.push(c);
+                        state.dirty.mark();
+                    }
                 }
                 Consumed::Yes { dismiss: false }
             }
@@ -437,8 +427,11 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
 
 /// Drain decisions into pending_actions and dismiss the modal.
 fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
+    let rejection_reason = (!modal.feedback.trim().is_empty())
+        .then(|| modal.feedback.trim().chars().take(500).collect::<String>());
     let decisions = std::mem::take(&mut modal.decisions);
     let tools = std::mem::take(&mut modal.tools);
+    modal.feedback.clear();
     state.mode = if state
         .modals
         .iter()
@@ -463,6 +456,11 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
             call_id: tool.call_id.clone(),
             approved,
             scope,
+            reason: if approved {
+                None
+            } else {
+                rejection_reason.clone()
+            },
         });
     }
     state.messages.push(crate::app::ChatMessage::Info(format!(
@@ -575,7 +573,12 @@ mod tests {
         assert_eq!(s.pending_actions.len(), 2);
         assert!(matches!(
             s.pending_actions[0],
-            Action::SendApprove { ref call_id, approved: true, .. } if call_id == "c0"
+            Action::SendApprove {
+                ref call_id,
+                approved: true,
+                reason: None,
+                ..
+            } if call_id == "c0"
         ));
         assert!(matches!(
             s.pending_actions[1],
@@ -649,20 +652,27 @@ mod tests {
         }
         let consumed = m.handle_feedback_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
-        // SendFeedback lands first, then SendApprove(false) — feedback gets
-        // attached to the rejected call as follow-up context.
-        assert_eq!(s.pending_actions.len(), 2);
+        assert_eq!(s.pending_actions.len(), 1);
         assert!(matches!(
             s.pending_actions[0],
-            Action::SendFeedback { ref text, .. } if text == "use docker"
-        ));
-        assert!(matches!(
-            s.pending_actions[1],
             Action::SendApprove {
                 approved: false,
+                reason: Some(ref reason),
                 ..
-            }
+            } if reason == "use docker"
         ));
+    }
+
+    #[test]
+    fn rejection_reason_input_is_bounded_before_transport() {
+        let mut modal = build_modal_with_n_tools(1);
+        let mut state = AppState::new();
+        modal.mode = ApprovalMode::RejectFeedback;
+        for _ in 0..501 {
+            let _ =
+                modal.handle_feedback_key(&key(KeyCode::Char('x'), KeyModifiers::NONE), &mut state);
+        }
+        assert_eq!(modal.feedback.chars().count(), 500);
     }
 
     #[test]
@@ -712,8 +722,7 @@ mod tests {
         }
         let consumed = m.handle_feedback_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut s);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
-        // 1 SendFeedback + 3 SendApprove(false).
-        assert_eq!(s.pending_actions.len(), 4);
+        assert_eq!(s.pending_actions.len(), 3);
         let reject_count = s
             .pending_actions
             .iter()
@@ -722,16 +731,13 @@ mod tests {
                     a,
                     Action::SendApprove {
                         approved: false,
+                        reason: Some(reason),
                         ..
-                    }
+                    } if reason == "too destructive"
                 )
             })
             .count();
         assert_eq!(reject_count, 3);
-        assert!(s.pending_actions.iter().any(|a| matches!(
-            a,
-            Action::SendFeedback { text, .. } if text == "too destructive"
-        )));
     }
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

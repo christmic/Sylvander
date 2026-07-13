@@ -337,6 +337,7 @@ pub enum Action {
         call_id: String,
         approved: bool,
         scope: sylvander_protocol::ApprovalScope,
+        reason: Option<String>,
     },
     /// Answer an AskUser question.
     SendAnswer {
@@ -416,14 +417,6 @@ pub enum Action {
         session_id: String,
         completed_turns: Option<usize>,
         checkpoint: bool,
-    },
-    /// Send a feedback message to the agent (e.g. after rejecting a tool
-    /// call, so it can adjust its next attempt). Wraps as a chat message
-    /// with a `[/feedback]` prefix the agent loop recognizes; the wire
-    /// stays a plain `ClientMsg::Chat`.
-    SendFeedback {
-        text: String,
-        session_id: Option<String>,
     },
     /// User wants to quit.
     Quit,
