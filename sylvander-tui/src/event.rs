@@ -54,6 +54,20 @@ pub enum DomainEvent {
     WorkspaceRollbackFailed {
         reason: String,
     },
+    WorkspaceDiffLoaded {
+        scope: WorkspaceDiffScope,
+        diff: String,
+    },
+    WorkspaceDiffFailed {
+        reason: String,
+    },
+    WorkspaceReviewLoaded {
+        scope: WorkspaceDiffScope,
+        diff: String,
+    },
+    WorkspaceReviewFailed {
+        reason: String,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -291,6 +305,14 @@ pub enum Action {
         text: String,
     },
     EditDraft,
+    InspectWorkspaceDiff {
+        scope: WorkspaceDiffScope,
+        workspace: std::path::PathBuf,
+    },
+    ReviewWorkspaceChanges {
+        scope: WorkspaceDiffScope,
+        workspace: std::path::PathBuf,
+    },
     ForkSession {
         session_id: String,
         completed_turns: Option<usize>,
@@ -306,4 +328,21 @@ pub enum Action {
     },
     /// User wants to quit.
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceDiffScope {
+    All,
+    Staged,
+    Unstaged,
+}
+
+impl WorkspaceDiffScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all changes",
+            Self::Staged => "staged changes",
+            Self::Unstaged => "unstaged changes",
+        }
+    }
 }

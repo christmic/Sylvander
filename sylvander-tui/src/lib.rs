@@ -23,3 +23,4 @@ pub mod terminal_input;
 pub mod theme;
 pub mod tool_presenter;
 pub mod ui;
+pub mod workspace_service;

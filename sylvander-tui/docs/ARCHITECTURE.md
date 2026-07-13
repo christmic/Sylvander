@@ -24,6 +24,7 @@ main
        │    └─ event
        ├─ service ─────────► DomainEvent
        │    └─ client (Unix wire adapter)
+       ├─ workspace_service ► read-only local Git queries
        └─ ui
             ├─ panel
             ├─ modal
@@ -67,6 +68,10 @@ effects. Command palette rendering does not implement command behavior itself.
 `client.rs` mirrors the Unix JSON wire format. `service.rs` hides it from the
 runtime and exposes only `DomainEvent` and `Action`. A future WebSocket or replay
 service must implement the same boundary without changing Panels or AppState.
+
+`workspace_service.rs` is the corresponding boundary for bounded, read-only
+local workspace queries such as `/diff`. It never mutates Git state and returns
+plain domain data; Panels and Modals do not invoke it directly.
 
 ### `terminal_input.rs` — terminal adapter
 

@@ -133,10 +133,13 @@ impl AgentService {
             Action::ArchiveSession { session_id } => ClientMsg::ArchiveSession { session_id },
             Action::RestoreSession { session_id } => ClientMsg::RestoreSession { session_id },
             Action::DeleteSession { session_id } => ClientMsg::DeleteSession { session_id },
-            Action::CopyText { .. } | Action::EditDraft => {
+            Action::CopyText { .. }
+            | Action::EditDraft
+            | Action::InspectWorkspaceDiff { .. }
+            | Action::ReviewWorkspaceChanges { .. } => {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "clipboard actions belong to the terminal runtime",
+                    "local actions belong to the terminal runtime",
                 ));
             }
             Action::ForkSession {

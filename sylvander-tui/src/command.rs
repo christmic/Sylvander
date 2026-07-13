@@ -2,7 +2,9 @@
 
 use crate::app::{AppMode, AppState, ChatMessage};
 use crate::input::AttachmentKind;
-use crate::modal::{HelpModal, ModelPicker, PermissionsPicker, SessionsOverlay, ToolInspector};
+use crate::modal::{
+    FileMentionModal, HelpModal, ModelPicker, PermissionsPicker, SessionsOverlay, ToolInspector,
+};
 use crate::theme::ThemeName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +24,9 @@ pub enum CommandId {
     Queue,
     Tasks,
     Attachments,
+    Mention,
+    Diff,
+    Review,
     Inspect,
     Copy,
     Editor,
@@ -148,6 +153,27 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/attachments [selection|tool <id>|diff <id>|drop <n>|up <n>|down <n>|clear]",
         description: "Inspect, reorder, or remove draft attachments",
         hint: "@ adds files",
+    },
+    CommandSpec {
+        id: CommandId::Mention,
+        name: "mention",
+        usage: "/mention",
+        description: "Find and attach a workspace file",
+        hint: "same picker as @",
+    },
+    CommandSpec {
+        id: CommandId::Diff,
+        name: "diff",
+        usage: "/diff [staged|unstaged]",
+        description: "Inspect workspace changes",
+        hint: "searchable · copyable",
+    },
+    CommandSpec {
+        id: CommandId::Review,
+        name: "review",
+        usage: "/review [staged|unstaged]",
+        description: "Ask Sylvander to review workspace changes",
+        hint: "findings first",
     },
     CommandSpec {
         id: CommandId::Status,
@@ -607,6 +633,37 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
+        CommandId::Mention => {
+            require_no_args(&invocation)?;
+            state.modals.push(Box::new(FileMentionModal::new(
+                state.metadata.workspace.clone(),
+                state.metadata.max_attachment_bytes,
+                state.metadata.supports_vision(),
+            )));
+        }
+        CommandId::Diff => {
+            let scope = diff_scope(&invocation)?;
+            state
+                .pending_actions
+                .push(crate::event::Action::InspectWorkspaceDiff {
+                    scope,
+                    workspace: state.metadata.workspace.clone(),
+                });
+            state.status = format!("Loading {}…", scope.label());
+        }
+        CommandId::Review => {
+            if state.turn_active {
+                return Err("Wait for active work to finish before starting a review".into());
+            }
+            let scope = diff_scope(&invocation)?;
+            state
+                .pending_actions
+                .push(crate::event::Action::ReviewWorkspaceChanges {
+                    scope,
+                    workspace: state.metadata.workspace.clone(),
+                });
+            state.status = format!("Preparing review of {}…", scope.label());
+        }
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -819,6 +876,15 @@ fn optional_one_arg<'a>(invocation: &'a Invocation<'a>) -> Result<Option<&'a str
     }
 }
 
+fn diff_scope(invocation: &Invocation<'_>) -> Result<crate::event::WorkspaceDiffScope, String> {
+    match invocation.args.as_slice() {
+        [] => Ok(crate::event::WorkspaceDiffScope::All),
+        ["staged"] => Ok(crate::event::WorkspaceDiffScope::Staged),
+        ["unstaged"] => Ok(crate::event::WorkspaceDiffScope::Unstaged),
+        _ => Err(format!("Usage: {}", invocation.spec.usage)),
+    }
+}
+
 fn find_tool_output(
     state: &AppState,
     prefix: Option<&str>,
@@ -983,6 +1049,48 @@ mod tests {
             state.pending_actions.as_slice(),
             [crate::event::Action::EditDraft]
         ));
+    }
+
+    #[test]
+    fn mention_command_opens_the_same_workspace_picker_as_at_sign() {
+        let mut state = AppState::new();
+        execute(parse("/mention").expect("parse"), &mut state).expect("execute");
+        assert_eq!(
+            state.modals.top().map(|modal| modal.title()),
+            Some("Mention file")
+        );
+        assert!(state.pending_actions.is_empty());
+    }
+
+    #[test]
+    fn diff_command_requests_a_scoped_read_only_workspace_effect() {
+        let mut state = AppState::new();
+        state.metadata.workspace = "/workspace".into();
+        execute(parse("/diff staged").expect("parse"), &mut state).expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::InspectWorkspaceDiff {
+                scope: crate::event::WorkspaceDiffScope::Staged,
+                workspace,
+            }] if workspace == std::path::Path::new("/workspace")
+        ));
+        assert!(execute(parse("/diff unknown").expect("parse"), &mut state).is_err());
+    }
+
+    #[test]
+    fn review_command_loads_diff_only_while_idle() {
+        let mut state = AppState::new();
+        execute(parse("/review unstaged").expect("parse"), &mut state).expect("execute");
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::ReviewWorkspaceChanges {
+                scope: crate::event::WorkspaceDiffScope::Unstaged,
+                ..
+            }]
+        ));
+        state.pending_actions.clear();
+        state.turn_active = true;
+        assert!(execute(parse("/review").expect("parse"), &mut state).is_err());
     }
 
     #[test]
