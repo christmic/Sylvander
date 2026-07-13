@@ -5,6 +5,12 @@ with structured tool approval and user clarification.
 
 ## Architecture
 
+The normative server-Agent architecture, implementation audit, and ordered
+production backlog live in
+[`docs/sylvander-agent-platform.md`](docs/sylvander-agent-platform.md). Crate
+presence does not by itself mean that an adapter is wired into the production
+server; the audit records that distinction explicitly.
+
 ```
 sylvander-server                  binary — boots the system
   ├─ sylvander-channel-http       HTTP debug channel (SSE streaming)
@@ -21,16 +27,17 @@ sylvander-server                  binary — boots the system
 
 ## Core capabilities
 
-| Feature | Status |
+| Feature | Current status |
 |---|---|
-| Multi-agent, multi-session (N:N) | M4-M6 |
-| Bus-based message routing (chat/stream/system) | M4-M8 |
-| Memory: read tool exposed, write system-driven | M8 |
-| Tool approval (rule-based + bus) | M12 |
-| Streaming events (text/thinking/tool/iteration/done) | M11 |
-| AskUser tool (model asks mid-loop) | M18 |
-| Channels: HTTP/WS/Unix/DingTalk/Telegram/WeChat | M13-M17 |
-| Approval + AskUser over WebSocket | M18 |
+| Multi-agent and isolated concurrent sessions | Implemented in the Agent layer |
+| Bus message routing and streaming | Implemented |
+| Durable session history and usage | Implemented |
+| Tool approval and AskUser | Implemented; policy scoping remains in backlog |
+| Persistent Agent memory | Not implemented |
+| Session-scoped model/workspace overrides | Not implemented |
+| AGENTS.md, Skills, and MCP runtime | Not implemented |
+| Local/SSH/container/sandbox executors | Not implemented |
+| Multi-instance channel supervision | Not implemented |
 
 ## Quickstart
 
