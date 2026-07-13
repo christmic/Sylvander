@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 120, 36)"
+expression: "render_buf(s, 120, 36)"
 ---
                                                                                                                         
                                                                                                                         
@@ -15,16 +15,9 @@ expression: "render_buf(&s, 120, 36)"
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                 ┌ Tool Approval ─────────────────────────────────────────────────────────────────────┐                 
-                 │Review the requested capabilities:                                                  │                 
-                 │  >> 1. CRITICAL $ rm -rf /                                                         │                 
-                 │       scope  current workspace                                                     │                 
-                 │                                                                                    │                 
-                 │1/1  ↵/y once · n reject                                                            │                 
-                 │     a all once · N none · esc deny                                                 │                 
-                 │                                                                                    │                 
-                 │                                                                                    │                 
-                 └────────────────────────────────────────────────────────────────────────────────────┘                 
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -35,6 +28,13 @@ expression: "render_buf(&s, 120, 36)"
                                                                                                                         
                                                                                                                         
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                                       
+  ◆ Permission needed                                                                                     1 of 1        
+  Run command                                                                                                           
+  $ rm -rf /                                                                                                            
+  Critical · may destroy data or repository state · current workspace                                                   
+                                                                                                                        
+  › 1. Deny  recommended for critical operations                                                                        
+    2. Allow once                                                                                                       
+                                                                                                                        
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-● approval · model — · branch — · session — · 0 tok                                                 y approve   n reject
+● approval · model — · branch — · session — · 0 tok                                     ↑↓ select   ↵ confirm · esc deny

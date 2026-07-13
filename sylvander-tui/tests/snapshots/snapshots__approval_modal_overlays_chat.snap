@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 80, 24)"
+expression: "render_buf(state, 80, 24)"
 ---
   › rm -rf /                                                                    
   ◌ Run `rm`     00s                                                            
@@ -9,20 +9,20 @@ expression: "render_buf(&state, 80, 24)"
                                                                                 
                                                                                 
                                                                                 
-           ┌ Tool Approval ─────────────────────────────────────────┐           
-           │Review the requested capabilities:                      │           
-           │  >> 1. CRITICAL $ rm -rf /                             │           
-           │       scope  current workspace                         │           
-           │                                                        │           
-           │1/1  ↵/y once · s session · p always · n reject         │           
-           │     a all once · N none · esc deny                     │           
-           │                                                        │           
-           │                                                        │           
-           └────────────────────────────────────────────────────────┘           
+                                                                                
                                                                                 
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
->                                                                               
+  ◆ Permission needed                                                   1 of 1  
+  Run command                                                                   
+  $ rm -rf /                                                                    
+  Critical · may destroy data or repository state · current workspace           
+                                                                                
+  › 1. Deny  recommended for critical operations                                
+    2. Allow once                                                               
+    3. Allow this exact request for this session                                
+    4. Always allow this exact request                                          
+                                                                                
 ────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

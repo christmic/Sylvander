@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 24)"
+expression: "render_buf(state, 90, 24)"
 ---
   › change it                                                                             
                                                                                           
@@ -8,21 +8,21 @@ expression: "render_buf(&state, 90, 24)"
                                                                                           
                                                                                           
                                                                                           
-                  ┌ Agent asks (single-select) ────────────────────────┐                  
-                  │Which style do you prefer?                          │                  
-                  │                                                    │                  
-                  │ ›  Minimalist                                      │                  
-                  │    Colorful                                        │                  
-                  │    Monochrome                                      │                  
-                  │                                                    │                  
-                  │Or type a free-text reply:                          │                  
-                  │>                                                   │                  
-                  │                                                    │                  
-                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  ◆ One choice needed                                                                     
+  Which style do you prefer?                                                              
+                                                                                          
+  › 1. Minimalist                                                                         
+    2. Colorful                                                                           
+    3. Monochrome                                                                         
+    4. Other…                                                                             
+  Type to answer with Other…                                                              
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

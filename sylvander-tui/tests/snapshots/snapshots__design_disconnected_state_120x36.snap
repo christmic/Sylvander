@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 120, 36)"
+expression: "render_buf(s, 120, 36)"
 ---
   › any draft here                                                                                                      
     Disconnected: server closed                                                                                         
@@ -37,4 +37,4 @@ expression: "render_buf(&s, 120, 36)"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 >                                                                                                                       
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-! disconnected · model — · branch — · session — · 0 tok                                   ! reconnecting…   /draft prese
+! disconnected · model — · branch — · session — · 0 tok                               ! reconnecting…   /draft preserved

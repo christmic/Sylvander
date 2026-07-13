@@ -1,7 +1,17 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(state, 100, 28)"
+expression: "render_buf(state, 100, 30)"
 ---
+  Plan editor                                                                              3 steps  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+    1. Preserve the single-session shell                                                            
+  › 2. Replace centered decisions with the Decision Dock                                            
+    3. Verify standard and narrow layouts                                                           
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
                                                                                                     
                                                                                                     
                                                                                                     
@@ -20,13 +30,5 @@ expression: "render_buf(state, 100, 28)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◆ Restore Agent file changes?                                                                     
-  Conversation history stays unchanged. External file changes can conflict.                         
-                                                                                                    
-    ↶ src/lib.rs                                                                                    
-    ↶ docs/design.md                                                                                
-                                                                                                    
-  › 1. Keep current files                                                                           
-    2. Restore the files listed above                                                               
-────────────────────────────────────────────────────────────────────────────────────────────────────
-! disconnected · model — · branch —                               ! reconnecting…   /draft preserved
+e edit step   a add below   d remove                                                                
+● editing plan · model — · branch —                                      ↑↓ step   ↵ done · esc back

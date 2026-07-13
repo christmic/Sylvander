@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 22)"
+expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
                                                                                           
@@ -8,19 +8,19 @@ expression: "render_buf(&state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-                  ┌ Agent asks (free text) ────────────────────────────┐                  
-                  │Describe the bug in your own words:                 │                  
-                  │                                                    │                  
-                  │Type your answer:                                   │                  
-                  │> the loader hangs on cold start                    │                  
-                  │                                                    │                  
-                  │Enter submit   Esc cancel and unblock Agent         │                  
-                  │                                                    │                  
-                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  ◆ Your input is needed                                                                  
+  Describe the bug in your own words:                                                     
+                                                                                          
+  > the loader hangs on cold start                                                        
+  Type your answer · ↵ submit · esc return                                                
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

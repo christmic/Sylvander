@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 22)"
+expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
                                                                                           
@@ -8,19 +8,19 @@ expression: "render_buf(&state, 90, 22)"
                                                                                           
                                                                                           
                                                                                           
-             ┌ Tool Approval (batch 2/2 — 2 total) ─────────────────────────┐             
-             │Review the requested capabilities:                            │             
-             │  >> 1. MEDIUM   Write file                                   │             
-             │       scope  current workspace                               │             
-             │                                                              │             
-             │1/1  ↵/y once · n reject                                      │             
-             │     a all once · N none · esc deny                           │             
-             │                                                              │             
-             │                                                              │             
-             └──────────────────────────────────────────────────────────────┘             
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  ◆ Permission needed                                                             1 of 1  
+  Write file                                                                              
+  Target details were not provided                                                        
+  Medium risk · changes workspace content · current workspace                             
+                                                                                          
+  › 1. Allow once                                                                         
+    2. Deny                                                                               
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
