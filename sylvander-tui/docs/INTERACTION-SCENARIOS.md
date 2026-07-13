@@ -137,6 +137,20 @@ any file changed since the Agent edit. Every file is conflict-checked before
 the first restore. A durable recovery marker completes an interrupted rollback
 on the next journal operation. Conversation history is never changed.
 
+## Workspace inspection and review
+
+- `/mention` opens the same bounded, fuzzy workspace-file picker as `@`; it
+  attaches the selected file to the draft and never sends by itself.
+- `/diff` inspects both staged and unstaged Git changes. `/diff staged` and
+  `/diff unstaged` narrow the scope. The read-only query disables external diff
+  drivers and Git locks, caps output at 2 MiB, and opens the existing searchable,
+  copyable inspector without changing the transcript or repository.
+- `/review` loads the same diff, validates it against the active model attachment
+  limit, and sends exactly one typed diff attachment with a findings-first review
+  request. It is available only while idle and sends nothing when no changes exist.
+- Git failures and non-repository workspaces become bounded visible diagnostics;
+  they never degrade into an empty or fabricated review.
+
 ## Approval
 
 Approval is a focus-owning decision layer. Keys never leak into global shortcuts

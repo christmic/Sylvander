@@ -14,7 +14,7 @@ use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
 use crate::modal::{
-    ModalStack, SessionEntry, SessionStatus, SessionsOverlay, WorkspaceRollbackModal,
+    ModalStack, SessionEntry, SessionStatus, SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
 };
 pub use crate::model::{
     AppMode, ChatMessage, HistoryRole, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
@@ -568,6 +568,63 @@ impl AppState {
                     "workspace rollback failed · {}",
                     compact_runtime_reason(&reason)
                 )));
+            }
+            DomainEvent::WorkspaceDiffLoaded { scope, diff } => {
+                if diff.is_empty() {
+                    self.status = format!("No {}", scope.label());
+                } else {
+                    self.status = format!("Loaded {}", scope.label());
+                    self.modals.push(Box::new(ToolInspector::new(
+                        format!("workspace-diff-{scope:?}").to_ascii_lowercase(),
+                        format!("git diff · {}", scope.label()),
+                        diff,
+                    )));
+                }
+            }
+            DomainEvent::WorkspaceDiffFailed { reason } => {
+                self.status = format!(
+                    "Workspace diff failed: {}",
+                    compact_runtime_reason(&reason)
+                );
+                self.messages.push(ChatMessage::Info(self.status.clone()));
+            }
+            DomainEvent::WorkspaceReviewLoaded { scope, diff } => {
+                if diff.is_empty() {
+                    self.status = format!("No {} to review", scope.label());
+                } else if diff.len() > self.metadata.max_attachment_bytes {
+                    self.status = format!(
+                        "Review diff is too large · {} bytes exceeds model limit {}",
+                        diff.len(),
+                        self.metadata.max_attachment_bytes
+                    );
+                    self.messages.push(ChatMessage::Info(self.status.clone()));
+                } else {
+                    let prompt = "Review the attached workspace changes. Report actionable findings first, ordered by severity, with file and line references. Focus on correctness, regressions, security, and missing tests; keep the summary brief after the findings.".to_string();
+                    let attachment = sylvander_protocol::MessageAttachment {
+                        id: "workspace-review-diff".into(),
+                        kind: sylvander_protocol::AttachmentKind::Diff,
+                        name: format!("workspace-{}.diff", scope.label().replace(' ', "-")),
+                        mime_type: "text/x-diff".into(),
+                        byte_count: diff.len(),
+                        content: sylvander_protocol::AttachmentContent::Text { text: diff },
+                    };
+                    self.messages.push(ChatMessage::User(prompt.clone()));
+                    self.turn_active = true;
+                    self.status = "Reviewing workspace changes".into();
+                    return Some(Action::SendChat {
+                        text: prompt,
+                        attachments: vec![attachment],
+                        session_id: self.session_id.clone(),
+                        workspace: self.metadata.workspace.display().to_string(),
+                    });
+                }
+            }
+            DomainEvent::WorkspaceReviewFailed { reason } => {
+                self.status = format!(
+                    "Workspace review failed: {}",
+                    compact_runtime_reason(&reason)
+                );
+                self.messages.push(ChatMessage::Info(self.status.clone()));
             }
             DomainEvent::ToolStarted {
                 call_id,
@@ -1421,6 +1478,37 @@ mod tests {
             Some(ChatMessage::Info(text))
                 if text.contains("src/lib.rs") && text.contains("conversation history unchanged")
         ));
+    }
+
+    #[test]
+    fn workspace_review_sends_one_typed_diff_attachment() {
+        let mut state = AppState::new();
+        state.session_id = Some("s1".into());
+        let action = state.apply(DomainEvent::WorkspaceReviewLoaded {
+            scope: crate::event::WorkspaceDiffScope::Staged,
+            diff: "diff --git a/a.rs b/a.rs\n+fixed\n".into(),
+        });
+        let Some(Action::SendChat {
+            text,
+            attachments,
+            session_id,
+            ..
+        }) = action
+        else {
+            panic!("review send action");
+        };
+        assert!(text.contains("actionable findings first"));
+        assert_eq!(session_id.as_deref(), Some("s1"));
+        assert!(matches!(
+            attachments.as_slice(),
+            [sylvander_protocol::MessageAttachment {
+                kind: sylvander_protocol::AttachmentKind::Diff,
+                content: sylvander_protocol::AttachmentContent::Text { text },
+                ..
+            }] if text.contains("+fixed")
+        ));
+        assert!(state.turn_active);
+        assert!(matches!(state.messages.last(), Some(ChatMessage::User(_))));
     }
 
     #[test]

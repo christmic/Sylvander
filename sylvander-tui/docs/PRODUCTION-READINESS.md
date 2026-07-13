@@ -99,7 +99,7 @@ completed backend feature.
 ### Core commands
 
 - [x] Session: `/resume`, `/rename`, `/fork`.
-- [ ] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
+- [x] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
 - [x] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [ ] Platform: `/mcp`, `/skills`, `/memory`, `/doctor`, `/config`.
 - [ ] Commands support fuzzy matching, completion, aliases, recent ordering,

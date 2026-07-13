@@ -114,6 +114,22 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         for effect in application.take_effects() {
+            if let crate::event::Action::InspectWorkspaceDiff { scope, workspace } = effect {
+                let event = match crate::workspace_service::load_diff(&workspace, scope) {
+                    Ok(diff) => DomainEvent::WorkspaceDiffLoaded { scope, diff },
+                    Err(reason) => DomainEvent::WorkspaceDiffFailed { reason },
+                };
+                application.apply(event);
+                continue;
+            }
+            if let crate::event::Action::ReviewWorkspaceChanges { scope, workspace } = effect {
+                let event = match crate::workspace_service::load_diff(&workspace, scope) {
+                    Ok(diff) => DomainEvent::WorkspaceReviewLoaded { scope, diff },
+                    Err(reason) => DomainEvent::WorkspaceReviewFailed { reason },
+                };
+                application.apply(event);
+                continue;
+            }
             if let crate::event::Action::CopyText { text } = effect {
                 match copy_osc52(&text) {
                     Ok(()) => application.state.status = "Copied tool output".into(),
