@@ -116,6 +116,27 @@ pub struct MemoryStoreConfig {
     pub path: PathBuf,
 }
 
+/// A workspace-owned prompt command advertised to interactive UI clients.
+/// It expands through the ordinary chat path and cannot invoke presentation
+/// callbacks or bypass the Agent's permission and approval boundaries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiCommandConfig {
+    /// Stable identity used for collision and duplicate detection.
+    pub id: String,
+    /// Slash command name without the leading slash.
+    pub name: String,
+    /// Human-readable usage, normally beginning with `/name`.
+    pub usage: String,
+    /// Short command-palette description.
+    pub description: String,
+    /// Optional compact provenance or behavior hint.
+    #[serde(default)]
+    pub hint: String,
+    /// Prompt template submitted when invoked. `{{args}}` expands to the
+    /// command-line arguments.
+    pub prompt: String,
+}
+
 impl MemoryStoreConfig {
     /// Resolve this config into an actual [`MemoryStore`] implementation.
     ///
@@ -198,6 +219,9 @@ pub struct AgentSpec {
     /// Long-term memory store configurations.
     #[serde(default)]
     pub memory_stores: Vec<MemoryStoreConfig>,
+    /// Workspace-owned prompt commands exposed to interactive UIs.
+    #[serde(default)]
+    pub ui_commands: Vec<UiCommandConfig>,
     /// Behavior tuning.
     #[serde(default)]
     pub behavior: BehaviorConfig,
@@ -253,6 +277,7 @@ pub struct AgentSpecBuilder {
     tools: Vec<ToolRef>,
     mcp_servers: Vec<McpServerConfig>,
     memory_stores: Vec<MemoryStoreConfig>,
+    ui_commands: Vec<UiCommandConfig>,
     behavior: BehaviorConfig,
 }
 
@@ -351,6 +376,13 @@ impl AgentSpecBuilder {
         self
     }
 
+    /// Add a workspace-owned prompt command.
+    #[must_use]
+    pub fn ui_command(mut self, config: UiCommandConfig) -> Self {
+        self.ui_commands.push(config);
+        self
+    }
+
     // -- behavior --
 
     /// Set the entire behavior config.
@@ -393,6 +425,7 @@ impl AgentSpecBuilder {
             tools: self.tools,
             mcp_servers: self.mcp_servers,
             memory_stores: self.memory_stores,
+            ui_commands: self.ui_commands,
             behavior: self.behavior,
         })
     }
@@ -472,6 +505,7 @@ mod tests {
         assert!(spec.tools.is_empty());
         assert!(spec.mcp_servers.is_empty());
         assert!(spec.memory_stores.is_empty());
+        assert!(spec.ui_commands.is_empty());
         assert_eq!(spec.behavior.max_iterations, 50);
         assert_eq!(spec.behavior.max_retries, 3);
         assert_eq!(spec.model.provider, "anthropic");
@@ -498,6 +532,28 @@ mod tests {
         assert_eq!(parsed.persona.system_prompt, spec.persona.system_prompt);
         assert_eq!(parsed.model.model_name, spec.model.model_name);
         assert_eq!(parsed.tools.len(), spec.tools.len());
+    }
+
+    #[test]
+    fn prompt_command_round_trips_through_toml() {
+        let spec = AgentSpec::builder()
+            .id("commands")
+            .name("Commands")
+            .ui_command(UiCommandConfig {
+                id: "review-security".into(),
+                name: "security-review".into(),
+                usage: "/security-review [scope]".into(),
+                description: "Review a scope".into(),
+                hint: "workspace".into(),
+                prompt: "Review {{args}} for security issues.".into(),
+            })
+            .build()
+            .unwrap();
+
+        let encoded = toml::to_string_pretty(&spec).unwrap();
+        let restored: AgentSpec = toml::from_str(&encoded).unwrap();
+        assert_eq!(restored.ui_commands.len(), 1);
+        assert_eq!(restored.ui_commands[0].name, "security-review");
     }
 
     #[test]
