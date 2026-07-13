@@ -133,7 +133,7 @@ completed backend feature.
 - [x] Global key bindings are configurable and conflicts are detected; text,
       decision, and interrupt safety keys remain fixed.
 - [ ] Optional Vim editing is complete, discoverable, and testable.
-- [ ] Themes validate semantic contrast and terminal color capability.
+- [x] Themes validate semantic contrast and terminal color capability.
 - [x] Reduced-motion and no-italic fallbacks preserve hierarchy.
 - [ ] Narrow, standard, wide, tmux, SSH, and Ghostty surfaces are verified.
 

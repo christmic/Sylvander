@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::keymap::KeyMap;
 use crate::model::RuntimeMetadata;
-use crate::theme::ThemeName;
+use crate::theme::{ColorCapability, ThemeName};
 
 const DEFAULT_SOCKET: &str = "/tmp/sylvander.sock";
 
@@ -17,6 +17,7 @@ pub struct TuiConfig {
     pub socket_path: PathBuf,
     pub history_path: Option<PathBuf>,
     pub theme: ThemeName,
+    pub color_capability: ColorCapability,
     pub render_interval: Duration,
     pub animation_interval: Duration,
     pub reconnect_interval: Duration,
@@ -37,6 +38,16 @@ impl TuiConfig {
         let theme = std::env::var("SYLVANDER_TUI_THEME")
             .unwrap_or_else(|_| "sylvander".into())
             .parse()?;
+        let color_capability = resolve_color_capability(
+            std::env::var("SYLVANDER_TUI_COLOR").ok().as_deref(),
+            std::env::var_os("NO_COLOR").is_some(),
+            std::env::var("TERM").ok().as_deref(),
+            std::env::var("COLORTERM").ok().as_deref(),
+        )?;
+        crate::theme::validate_palette(
+            crate::theme::palette_for_capability(theme, color_capability),
+            color_capability,
+        )?;
         let render_fps = env_number("SYLVANDER_TUI_RENDER_FPS", 30, 5, 120)?;
         let animation_ms = env_number("SYLVANDER_TUI_ANIMATION_MS", 200, 50, 2_000)?;
         let reconnect_ms = env_number("SYLVANDER_TUI_RECONNECT_MS", 1_500, 250, 30_000)?;
@@ -49,6 +60,7 @@ impl TuiConfig {
             socket_path,
             history_path: history_path(),
             theme,
+            color_capability,
             render_interval: Duration::from_millis(1_000 / render_fps as u64),
             animation_interval: Duration::from_millis(animation_ms as u64),
             reconnect_interval: Duration::from_millis(reconnect_ms as u64),
@@ -72,8 +84,9 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\ncolors      {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
+            self.color_capability,
             self.socket_path.display(),
             self.history_path
                 .as_deref()
@@ -96,6 +109,24 @@ impl TuiConfig {
             self.keymap.summary(),
             metadata.max_attachment_bytes,
         )
+    }
+}
+
+fn resolve_color_capability(
+    configured: Option<&str>,
+    no_color: bool,
+    term: Option<&str>,
+    color_term: Option<&str>,
+) -> Result<ColorCapability, String> {
+    let configured = configured.map(str::trim);
+    match configured {
+        None | Some("") => Ok(crate::theme::detect_color_capability(
+            no_color, term, color_term,
+        )),
+        Some(value) if value.eq_ignore_ascii_case("auto") => Ok(
+            crate::theme::detect_color_capability(no_color, term, color_term),
+        ),
+        Some(value) => value.parse(),
     }
 }
 
@@ -201,6 +232,7 @@ mod tests {
             socket_path: "/tmp/test.sock".into(),
             history_path: None,
             theme: ThemeName::Midnight,
+            color_capability: ColorCapability::TrueColor,
             render_interval: Duration::from_millis(33),
             animation_interval: Duration::from_millis(200),
             reconnect_interval: Duration::from_millis(1_500),
@@ -212,10 +244,28 @@ mod tests {
         };
         let report = config.report(&config.metadata);
         assert!(report.contains("theme       midnight"));
+        assert!(report.contains("colors      truecolor"));
         assert!(report.contains("history     disabled"));
         assert!(report.contains("socket      /tmp/test.sock"));
         assert!(report.contains("sessions=Ctrl+P"));
         assert!(report.contains("animation   reduced"));
         assert!(report.contains("italics     disabled"));
+    }
+
+    #[test]
+    fn color_capability_prefers_explicit_setting_and_honors_no_color() {
+        assert_eq!(
+            resolve_color_capability(Some("ansi256"), true, Some("dumb"), None).unwrap(),
+            ColorCapability::Ansi256
+        );
+        assert_eq!(
+            resolve_color_capability(None, true, Some("xterm-256color"), None).unwrap(),
+            ColorCapability::Monochrome
+        );
+        assert_eq!(
+            resolve_color_capability(Some("AUTO"), false, Some("xterm-256color"), None).unwrap(),
+            ColorCapability::Ansi256
+        );
+        assert!(resolve_color_capability(Some("millions"), false, None, None).is_err());
     }
 }
