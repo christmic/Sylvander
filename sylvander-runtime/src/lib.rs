@@ -41,6 +41,9 @@ use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
+use crate::composition::{ConfiguredAgent, build_agents};
+use crate::config::{ServerConfig, SystemSecretResolver};
+
 // ---------------------------------------------------------------------------
 // SystemConfig
 // ---------------------------------------------------------------------------
@@ -72,6 +75,8 @@ pub struct Runtime {
     ephemeral: RwLock<HashMap<SessionId, StoredSession>>,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
+    /// Fully configured runs retained for protocol control operations.
+    configured_agents: HashMap<AgentId, ConfiguredAgent>,
 }
 
 impl Runtime {
@@ -97,18 +102,6 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
         );
 
-        // Load persistent sessions
-        for session in session_store
-            .list_persistent()
-            .await
-            .map_err(|e| RuntimeError::Store(format!("list persistent failed: {e}")))?
-        {
-            engine
-                .create_session(&session.name, session.metadata.clone(), &session.agents)
-                .await
-                .map_err(|e| RuntimeError::Engine(format!("load session failed: {e}")))?;
-        }
-
         // Spawn agents
         for spec in &config.agents {
             engine
@@ -117,10 +110,32 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Engine(format!("spawn {} failed: {e}", spec.id)))?;
         }
 
+        // Restore durable identities only after Agents subscribe to the bus.
+        for session in session_store
+            .list_persistent()
+            .await
+            .map_err(|e| RuntimeError::Store(format!("list persistent failed: {e}")))?
+        {
+            engine
+                .attach_session(
+                    session.id.clone(),
+                    &session.name,
+                    session.metadata.clone(),
+                    &session.agents,
+                )
+                .await
+                .map_err(|e| RuntimeError::Engine(format!("load session failed: {e}")))?;
+        }
+
         // Create sessions from config
         for session in &config.sessions {
             engine
-                .create_session(&session.name, session.metadata.clone(), &session.agents)
+                .attach_session(
+                    session.id.clone(),
+                    &session.name,
+                    session.metadata.clone(),
+                    &session.agents,
+                )
                 .await
                 .map_err(|e| {
                     RuntimeError::Engine(format!("create session {} failed: {e}", session.id))
@@ -140,7 +155,93 @@ impl Runtime {
             session_store,
             ephemeral: RwLock::new(HashMap::new()),
             bus,
+            configured_agents: HashMap::new(),
         })
+    }
+
+    /// Bootstrap the production runtime from validated server configuration.
+    pub async fn boot_config(config: ServerConfig) -> Result<Self, RuntimeError> {
+        config
+            .validate()
+            .map_err(|error| RuntimeError::Config(error.to_string()))?;
+        let config = with_resolved_paths(config)?;
+        let session_db = config
+            .server
+            .session_db
+            .as_ref()
+            .expect("resolved session database");
+        if let Some(parent) = session_db.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+                operation: "create session database directory",
+                path: parent.display().to_string(),
+                message: error.to_string(),
+            })?;
+        }
+
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            SqliteSessionStore::open(session_db)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?,
+        );
+        let bus = Arc::new(InProcessMessageBus::new());
+        let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+        let agents = build_agents(
+            &config,
+            bus.clone(),
+            session_store.clone(),
+            &SystemSecretResolver,
+        )
+        .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        let mut configured_agents = HashMap::new();
+        for agent in agents {
+            engine
+                .spawn_run(agent.spec.clone(), agent.run.clone())
+                .await
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            configured_agents.insert(agent.spec.id.clone(), agent);
+        }
+
+        for session in session_store
+            .list_persistent()
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+        {
+            engine
+                .attach_session(
+                    session.id.clone(),
+                    &session.name,
+                    session.metadata,
+                    &session.agents,
+                )
+                .await
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+        }
+
+        info!(
+            name = %config.server.name,
+            agents = configured_agents.len(),
+            session_db = %session_db.display(),
+            "configured runtime booted"
+        );
+        Ok(Self {
+            engine,
+            session_store,
+            ephemeral: RwLock::new(HashMap::new()),
+            bus,
+            configured_agents,
+        })
+    }
+
+    /// Return protocol metadata and control for one configured Agent.
+    #[must_use]
+    pub fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
+        self.configured_agents.get(id)
+    }
+
+    /// Return the shared message bus used by protocol adapters.
+    #[must_use]
+    pub fn bus(&self) -> Arc<dyn MessageBus> {
+        self.bus.clone()
     }
 
     // -- channels --
@@ -235,6 +336,44 @@ pub enum RuntimeError {
     Engine(String),
     #[error("store error: {0}")]
     Store(String),
+    #[error("configuration error: {0}")]
+    Config(String),
+    #[error("composition error: {0}")]
+    Composition(String),
+    #[error("{operation} at {path}: {message}")]
+    Io {
+        operation: &'static str,
+        path: String,
+        message: String,
+    },
+}
+
+fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, RuntimeError> {
+    let data_dir = config.server.data_dir.clone().unwrap_or_else(|| {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join(".local/share"))
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from(".local/share"))
+            .join("sylvander")
+    });
+    std::fs::create_dir_all(&data_dir).map_err(|error| RuntimeError::Io {
+        operation: "create data directory",
+        path: data_dir.display().to_string(),
+        message: error.to_string(),
+    })?;
+    config.server.data_dir = Some(data_dir.clone());
+    config
+        .server
+        .session_db
+        .get_or_insert_with(|| data_dir.join("sessions.db"));
+    config
+        .server
+        .workspace_journal
+        .get_or_insert_with(|| data_dir.join("workspace-journal"));
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +438,85 @@ mod tests {
 
         let rt = Runtime::boot(config, test_client()).await.expect("boot");
         assert_eq!(rt.engine.list_sessions().await.len(), 1);
+        assert!(
+            rt.engine
+                .get_session(&SessionId::new("persistent-1"))
+                .await
+                .is_some()
+        );
         rt.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn configured_boot_restores_database_session_after_agent_spawn() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let database = directory.path().join("sessions.db");
+        let secret = directory.path().join("provider.key");
+        std::fs::write(&secret, "test-secret").unwrap();
+        let store = SqliteSessionStore::open(&database).await.unwrap();
+        store
+            .save(&StoredSession::new(
+                SessionId::new("restored-session"),
+                "restored",
+                SessionLifetime::Persistent,
+                test_metadata(),
+                vec![AgentId::new("assistant")],
+            ))
+            .await
+            .unwrap();
+        drop(store);
+
+        let input = format!(
+            r#"
+schema_version = 1
+
+[server]
+data_dir = "{}"
+session_db = "{}"
+
+[[model_providers]]
+id = "primary"
+base_url = "https://models.example.test"
+
+[model_providers.api_key]
+source = "file"
+path = "{}"
+
+[[model_providers.models]]
+id = "model-a"
+capabilities = ["tool_use"]
+
+[[agents]]
+allow_session_prompt = false
+
+[agents.spec]
+id = "assistant"
+name = "Sylvander"
+
+[agents.spec.model]
+provider = "primary"
+model_name = "model-a"
+"#,
+            directory.path().display(),
+            database.display(),
+            secret.display()
+        );
+        let config = ServerConfig::from_toml(&input).unwrap();
+        let runtime = Runtime::boot_config(config).await.unwrap();
+
+        assert!(
+            runtime
+                .engine
+                .get_session(&SessionId::new("restored-session"))
+                .await
+                .is_some()
+        );
+        assert!(
+            runtime
+                .configured_agent(&AgentId::new("assistant"))
+                .is_some()
+        );
+        runtime.shutdown().await.unwrap();
     }
 
     #[tokio::test]
