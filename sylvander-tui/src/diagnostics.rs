@@ -12,9 +12,13 @@ pub fn report(config: &TuiConfig, state: &AppState) -> String {
         .as_deref()
         .map_or_else(|| "new".into(), |id| id.chars().take(8).collect());
     format!(
-        "Sylvander TUI diagnostic (redacted)\n\nversion      {}\nconnected    {}\ntheme        {}\nsocket       {}\nhistory      {}\nworkspace    {}\nbranch       {}\nmodel        {}\nreasoning    {}\nsession      {}\npermissions  {:?}/{:?}/{:?}\ncapabilities 0x{:02x}\nattachments  {} bytes\nrender       {} ms\nreconnect    {} ms\nmessages     {}\nqueued       {}\nturn active  {}\ntokens       {} input / {} output\ncost         {}",
+        "Sylvander TUI diagnostic (redacted)\n\nversion      {}\nconnected    {}\nprotocol     {}\nprotocol caps {}\ntheme        {}\nsocket       {}\nhistory      {}\nworkspace    {}\nbranch       {}\nmodel        {}\nreasoning    {}\nsession      {}\npermissions  {:?}/{:?}/{:?}\ncapabilities 0x{:02x}\nattachments  {} bytes\nrender       {} ms\nreconnect    {} ms\nmessages     {}\nqueued       {}\nturn active  {}\ntokens       {} input / {} output\ncost         {}",
         env!("CARGO_PKG_VERSION"),
         state.connected,
+        state
+            .protocol_version
+            .map_or_else(|| "none".into(), |version| format!("v{version}")),
+        state.protocol_capabilities.len(),
         config.theme,
         redacted_path(&config.socket_path),
         config

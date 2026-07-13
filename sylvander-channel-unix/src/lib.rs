@@ -50,6 +50,9 @@ use sylvander_channel::{Channel, ChannelContext};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
+    Hello {
+        protocol: sylvander_protocol::UiProtocolHello,
+    },
     Chat {
         text: String,
         #[serde(default)]
@@ -132,6 +135,12 @@ enum ClientMsg {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ServerMsg {
+    Welcome {
+        protocol: sylvander_protocol::UiProtocolWelcome,
+    },
+    ProtocolError {
+        error: sylvander_protocol::UiProtocolError,
+    },
     SessionCreated {
         session_id: String,
     },
@@ -452,14 +461,58 @@ impl Channel for UnixChannel {
             let clients_clean = clients.clone();
             let client_id_clone = client_id;
             tokio::spawn(async move {
+                let mut negotiated = false;
                 while let Ok(Some(line)) = reader.next_line().await {
                     let msg: ClientMsg = match serde_json::from_str(&line) {
                         Ok(m) => m,
                         Err(e) => {
-                            warn!(error = %e, line = %line, "unix: bad json");
+                            warn!(error = %e, bytes = line.len(), "unix: bad client message");
+                            let _ = tx.send(ServerMsg::ProtocolError {
+                                error: protocol_error("malformed_message", &e.to_string()),
+                            });
+                            if !negotiated {
+                                break;
+                            }
                             continue;
                         }
                     };
+                    if !negotiated {
+                        let ClientMsg::Hello { protocol } = msg else {
+                            let _ = tx.send(ServerMsg::ProtocolError {
+                                error: protocol_error(
+                                    "handshake_required",
+                                    "hello must be the first client message",
+                                ),
+                            });
+                            break;
+                        };
+                        match sylvander_protocol::negotiate_ui_protocol(&protocol) {
+                            Ok(version) => {
+                                negotiated = true;
+                                let _ = tx.send(ServerMsg::Welcome {
+                                    protocol: sylvander_protocol::UiProtocolWelcome {
+                                        server_name: "sylvander-server".into(),
+                                        version,
+                                        capabilities: ui_protocol_capabilities(),
+                                    },
+                                });
+                            }
+                            Err(error) => {
+                                let _ = tx.send(ServerMsg::ProtocolError { error });
+                                break;
+                            }
+                        }
+                        continue;
+                    }
+                    if matches!(msg, ClientMsg::Hello { .. }) {
+                        let _ = tx.send(ServerMsg::ProtocolError {
+                            error: protocol_error(
+                                "duplicate_handshake",
+                                "connection is already negotiated",
+                            ),
+                        });
+                        continue;
+                    }
                     handle_client_msg(
                         msg,
                         &ctx_clone,
@@ -477,6 +530,32 @@ impl Channel for UnixChannel {
     }
 }
 
+fn ui_protocol_capabilities() -> Vec<String> {
+    [
+        "attachments",
+        "approval_scopes",
+        "compaction",
+        "diagnostics",
+        "model_selection",
+        "plans",
+        "sessions",
+        "tasks",
+        "workspace_rollback",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn protocol_error(code: &str, message: &str) -> sylvander_protocol::UiProtocolError {
+    sylvander_protocol::UiProtocolError {
+        code: code.into(),
+        message: message.chars().take(240).collect(),
+        server_min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+        server_max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+    }
+}
+
 async fn handle_client_msg(
     msg: ClientMsg,
     ctx: &ChannelContext,
@@ -486,6 +565,7 @@ async fn handle_client_msg(
     runtime_control: Option<&sylvander_agent::run::AgentRun>,
 ) {
     match msg {
+        ClientMsg::Hello { .. } => {}
         ClientMsg::Chat {
             text,
             attachments,
@@ -1436,6 +1516,28 @@ mod tests {
         serde_json::from_str(&line).expect("json response")
     }
 
+    async fn negotiate(
+        write: &mut tokio::net::unix::OwnedWriteHalf,
+        reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    ) {
+        let welcome = send_and_read(
+            write,
+            reader,
+            serde_json::json!({
+                "type":"hello",
+                "protocol": {
+                    "client_name":"channel-test",
+                    "min_version":1,
+                    "max_version":1,
+                    "capabilities":[]
+                }
+            }),
+        )
+        .await;
+        assert_eq!(welcome["type"], "welcome");
+        assert_eq!(welcome["protocol"]["version"], 1);
+    }
+
     #[tokio::test]
     async fn runtime_info_reports_server_truth() {
         let bus = Arc::new(InProcessMessageBus::new());
@@ -1728,6 +1830,7 @@ mod tests {
         let stream = connect(&path).await;
         let (read, mut write) = stream.into_split();
         let mut lines = BufReader::new(read).lines();
+        negotiate(&mut write, &mut lines).await;
 
         let loaded = send_and_read(
             &mut write,

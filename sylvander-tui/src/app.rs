@@ -33,6 +33,8 @@ pub struct AppState {
     pub streaming_thinking: String,
     pub session_id: Option<String>,
     pub connected: bool,
+    pub protocol_version: Option<u16>,
+    pub protocol_capabilities: Vec<String>,
     pub status: String,
     pub mode: AppMode,
     pub iteration: u32,
@@ -120,6 +122,8 @@ impl AppState {
             streaming_thinking: String::new(),
             session_id: None,
             connected: false,
+            protocol_version: None,
+            protocol_capabilities: Vec::new(),
             status: "Connecting...".into(),
             mode: AppMode::Normal,
             iteration: 0,
@@ -259,6 +263,24 @@ impl AppState {
                 self.status = "Connected".into();
                 return Some(Action::RequestRuntimeInfo);
             }
+            DomainEvent::ProtocolNegotiated {
+                version,
+                server_name,
+                capabilities,
+            } => {
+                self.connected = true;
+                self.protocol_version = Some(version);
+                self.protocol_capabilities = capabilities;
+                self.status = format!("Connected to {server_name} · protocol v{version}");
+                return Some(Action::RequestRuntimeInfo);
+            }
+            DomainEvent::ProtocolDiagnostic { message } => {
+                self.status = "Protocol diagnostic".into();
+                self.messages.push(ChatMessage::Info(format!(
+                    "protocol · {}",
+                    compact_runtime_reason(&message)
+                )));
+            }
             DomainEvent::RuntimeInfo {
                 model,
                 reasoning_effort,
@@ -367,6 +389,8 @@ impl AppState {
             }
             DomainEvent::Disconnected { reason } => {
                 self.connected = false;
+                self.protocol_version = None;
+                self.protocol_capabilities.clear();
                 self.turn_active = false;
                 self.interrupt_requested = false;
                 self.status = format!("Disconnected: {reason}");
@@ -1325,6 +1349,21 @@ mod tests {
         assert_eq!(state.metadata.capabilities, 0b10001);
         assert!(state.metadata.approval_enabled);
         assert_eq!(state.metadata.max_attachment_bytes, 4096);
+    }
+
+    #[test]
+    fn protocol_negotiation_records_server_truth() {
+        let mut state = AppState::new();
+        let action = state.apply(DomainEvent::ProtocolNegotiated {
+            version: 1,
+            server_name: "test-server".into(),
+            capabilities: vec!["diagnostics".into()],
+        });
+        assert!(matches!(action, Some(Action::RequestRuntimeInfo)));
+        assert!(state.connected);
+        assert_eq!(state.protocol_version, Some(1));
+        assert_eq!(state.protocol_capabilities, ["diagnostics"]);
+        assert!(state.status.contains("test-server"));
     }
 
     #[test]

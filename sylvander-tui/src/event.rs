@@ -22,6 +22,14 @@ use crate::model::{HistoryEntry, SessionSummary};
 pub enum DomainEvent {
     /// Socket connected.
     Connected,
+    ProtocolNegotiated {
+        version: u16,
+        server_name: String,
+        capabilities: Vec<String>,
+    },
+    ProtocolDiagnostic {
+        message: String,
+    },
     RuntimeInfo {
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
