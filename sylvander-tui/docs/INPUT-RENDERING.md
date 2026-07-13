@@ -106,4 +106,5 @@ At minimum, preserve tests for:
 - transcript count/byte budgets and streaming/tool payload limits remain bounded.
 - the compiled binary completes chat, streamed rendering, approval rejection,
   AskUser, interrupt, resize, and idle exit inside a real pseudo-terminal rather
-  than only a `TestBackend`.
+  than only a `TestBackend`; the same process also reconnects and reapplies typed
+  session history before continuing work.
