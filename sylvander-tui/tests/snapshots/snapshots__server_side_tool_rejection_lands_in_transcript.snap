@@ -3,10 +3,10 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 655
 expression: "render_buf(s, 80, 22)"
 ---
-  > try `rm -rf /`                                                              
-  ◌ Run `rm`     00s                                                            
-    ⎿ ◌ $ rm -rf /                                                              
-    tool bash rejected: destructive commands blocked by policy                  
+❯ try `rm -rf /`                                                                
+⏺ Run `rm`     00s                                                              
+  ⎿  $ rm -rf /                                                                 
+  tool bash rejected: destructive commands blocked by policy                    
                                                                                 
                                                                                 
                                                                                 
@@ -22,6 +22,6 @@ expression: "render_buf(s, 80, 22)"
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
->                                                                               
+❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

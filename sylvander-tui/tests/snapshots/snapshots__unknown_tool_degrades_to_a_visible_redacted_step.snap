@@ -3,13 +3,13 @@ source: sylvander-tui/tests/snapshots.rs
 assertion_line: 174
 expression: "render_buf(state, 100, 24)"
 ---
-  ✓ future_extension_tool     00s                                                                   
-    ⎿ ✓ future extension tool                                                                       
-       api_token  [REDACTED]                                                                        
-       operation  future-mode                                                                       
+⏺ future_extension_tool     00s                                                                     
+  ⎿  future extension tool                                                                          
+     api_token  [REDACTED]                                                                          
+     operation  future-mode                                                                         
                                                                                                     
-       result                                                                                       
-         structured fallback result                                                                 
+     result                                                                                         
+       structured fallback result                                                                   
                                                                                                     
                                                                                                     
                                                                                                     
@@ -24,6 +24,6 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                   
+❯                                                                                                   
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ◌ working · model — · branch —                                                esc interrupt   /draft

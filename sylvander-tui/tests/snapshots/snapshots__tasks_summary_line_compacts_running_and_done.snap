@@ -1,8 +1,9 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 80, 22)"
+assertion_line: 722
+expression: "render_buf(s, 80, 22)"
 ---
-  ▶ tasks 0/2 done · 2 running                                                  
+▶ tasks 0/2 done · 2 running                                                    
                                                                                 
                                                                                 
                                                                                 
@@ -21,6 +22,6 @@ expression: "render_buf(&s, 80, 22)"
                                                                                 
                                                                                 
 ────────────────────────────────────────────────────────────────────────────────
->                                                                               
+❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
