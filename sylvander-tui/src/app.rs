@@ -17,6 +17,14 @@ use crate::keymap::{KeyAction, KeyMap};
 use crate::modal::{
     ModalStack, SessionEntry, SessionStatus, SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
 };
+
+const MAX_TRANSCRIPT_ENTRIES: usize = 2_000;
+const MAX_TRANSCRIPT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+const MAX_TOOL_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_GROUP_ITEMS: usize = 64;
+const TRANSCRIPT_PRUNED_NOTICE: &str =
+    "transcript · older entries omitted from the local view; /resume reloads persisted history";
 pub use crate::model::{
     AppMode, ChatMessage, HistoryRole, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
     ToolStepChild,
@@ -222,8 +230,47 @@ impl AppState {
             self.unread_events = self.unread_events.saturating_add(1);
         }
         let action = self.apply_inner(event);
+        self.enforce_memory_budget();
         self.dirty.mark();
         action
+    }
+
+    pub(crate) fn enforce_memory_budget(&mut self) {
+        for message in &mut self.messages {
+            normalize_message(message);
+        }
+        truncate_utf8(&mut self.streaming, MAX_MESSAGE_BYTES);
+        truncate_utf8(&mut self.streaming_thinking, MAX_MESSAGE_BYTES);
+
+        let mut pruned = false;
+        if self.messages.len() > MAX_TRANSCRIPT_ENTRIES {
+            let remove = self.messages.len() - MAX_TRANSCRIPT_ENTRIES;
+            self.messages.drain(..remove);
+            pruned = true;
+        }
+        let byte_budget = MAX_TRANSCRIPT_BYTES.saturating_sub(TRANSCRIPT_PRUNED_NOTICE.len());
+        let mut bytes = self.messages.iter().map(message_bytes).sum::<usize>();
+        let mut remove = 0;
+        while bytes > byte_budget && self.messages.len().saturating_sub(remove) > 1 {
+            bytes = bytes.saturating_sub(message_bytes(&self.messages[remove]));
+            remove += 1;
+        }
+        if remove > 0 {
+            self.messages.drain(..remove);
+            pruned = true;
+        }
+        if pruned {
+            if !matches!(self.messages.first(), Some(ChatMessage::Info(text)) if text == TRANSCRIPT_PRUNED_NOTICE)
+            {
+                if self.messages.len() == MAX_TRANSCRIPT_ENTRIES {
+                    self.messages.remove(0);
+                }
+                self.messages
+                    .insert(0, ChatMessage::Info(TRANSCRIPT_PRUNED_NOTICE.into()));
+            }
+            self.chat_scroll = 0;
+            self.unread_events = 0;
+        }
     }
 
     fn has_live_activity(&self) -> bool {
@@ -283,6 +330,7 @@ impl AppState {
             self.chat_scroll = 0;
             self.unread_events = 0;
             self.dirty.mark();
+            self.enforce_memory_budget();
             return None;
         }
         self.messages.push(ChatMessage::User(text.clone()));
@@ -291,6 +339,7 @@ impl AppState {
         self.chat_scroll = 0;
         self.unread_events = 0;
         self.dirty.mark();
+        self.enforce_memory_budget();
         Some(Action::SendChat {
             text,
             attachments,
@@ -1345,6 +1394,122 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
     )
 }
 
+fn normalize_message(message: &mut ChatMessage) {
+    match message {
+        ChatMessage::User(text)
+        | ChatMessage::QueuedUser(text)
+        | ChatMessage::Agent(text)
+        | ChatMessage::Thinking(text)
+        | ChatMessage::Info(text) => truncate_utf8(text, MAX_MESSAGE_BYTES),
+        ChatMessage::ToolCall { name, input, .. } => {
+            truncate_utf8(name, MAX_TOOL_PAYLOAD_BYTES);
+            normalize_json(input);
+        }
+        ChatMessage::ToolResult { name, output, .. } => {
+            truncate_utf8(name, MAX_TOOL_PAYLOAD_BYTES);
+            truncate_utf8(output, MAX_TOOL_PAYLOAD_BYTES);
+        }
+        ChatMessage::ToolStep { name, children, .. } => {
+            truncate_utf8(name, MAX_TOOL_PAYLOAD_BYTES);
+            if children.len() > MAX_GROUP_ITEMS {
+                children.drain(..children.len() - MAX_GROUP_ITEMS);
+            }
+            for child in children {
+                truncate_utf8(&mut child.call_id, MAX_TOOL_PAYLOAD_BYTES);
+                truncate_utf8(&mut child.name, MAX_TOOL_PAYLOAD_BYTES);
+                normalize_json(&mut child.input);
+                if let Some(output) = &mut child.output {
+                    truncate_utf8(output, MAX_TOOL_PAYLOAD_BYTES);
+                }
+            }
+        }
+        ChatMessage::Plan {
+            plan_id,
+            steps,
+            current,
+        } => {
+            truncate_utf8(plan_id, MAX_TOOL_PAYLOAD_BYTES);
+            steps.truncate(MAX_GROUP_ITEMS);
+            for step in steps.iter_mut() {
+                truncate_utf8(step, MAX_TOOL_PAYLOAD_BYTES);
+            }
+            *current = (*current).min(steps.len().saturating_sub(1));
+        }
+        ChatMessage::TaskList { tasks } => {
+            if tasks.len() > MAX_GROUP_ITEMS {
+                tasks.drain(..tasks.len() - MAX_GROUP_ITEMS);
+            }
+            for task in tasks {
+                truncate_utf8(&mut task.task_id, MAX_TOOL_PAYLOAD_BYTES);
+                truncate_utf8(&mut task.owner, MAX_TOOL_PAYLOAD_BYTES);
+                truncate_utf8(&mut task.purpose, MAX_TOOL_PAYLOAD_BYTES);
+                truncate_utf8(&mut task.detail, MAX_TOOL_PAYLOAD_BYTES);
+            }
+        }
+    }
+}
+
+fn normalize_json(value: &mut serde_json::Value) {
+    let oversized = serde_json::to_vec(value)
+        .map(|encoded| encoded.len() > MAX_TOOL_PAYLOAD_BYTES)
+        .unwrap_or(true);
+    if oversized {
+        *value = serde_json::json!({
+            "_sylvander": "tool input omitted from local view because it exceeded 64 KiB"
+        });
+    }
+}
+
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    const MARKER: &str = "\n… local view truncated …";
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut keep = max_bytes.saturating_sub(MARKER.len());
+    while keep > 0 && !value.is_char_boundary(keep) {
+        keep -= 1;
+    }
+    value.truncate(keep);
+    value.push_str(MARKER);
+}
+
+fn message_bytes(message: &ChatMessage) -> usize {
+    match message {
+        ChatMessage::User(text)
+        | ChatMessage::QueuedUser(text)
+        | ChatMessage::Agent(text)
+        | ChatMessage::Thinking(text)
+        | ChatMessage::Info(text) => text.len(),
+        ChatMessage::ToolCall { name, input, .. } => name.len() + json_bytes(input),
+        ChatMessage::ToolResult { name, output, .. } => name.len() + output.len(),
+        ChatMessage::ToolStep { name, children, .. } => {
+            name.len()
+                + children
+                    .iter()
+                    .map(|child| {
+                        child.call_id.len()
+                            + child.name.len()
+                            + json_bytes(&child.input)
+                            + child.output.as_ref().map_or(0, String::len)
+                    })
+                    .sum::<usize>()
+        }
+        ChatMessage::Plan { plan_id, steps, .. } => {
+            plan_id.len() + steps.iter().map(String::len).sum::<usize>()
+        }
+        ChatMessage::TaskList { tasks } => tasks
+            .iter()
+            .map(|task| {
+                task.task_id.len() + task.owner.len() + task.purpose.len() + task.detail.len()
+            })
+            .sum(),
+    }
+}
+
+fn json_bytes(value: &serde_json::Value) -> usize {
+    serde_json::to_vec(value).map_or(0, |encoded| encoded.len())
+}
+
 fn compact_runtime_reason(reason: &str) -> String {
     const LIMIT: usize = 120;
     let one_line = reason.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1419,6 +1584,56 @@ mod tests {
     use super::*;
     use crate::event::DomainEvent;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[test]
+    fn transcript_window_is_bounded_by_entries_and_bytes() {
+        let mut state = AppState::new();
+        for index in 0..(MAX_TRANSCRIPT_ENTRIES + 100) {
+            state.messages.push(ChatMessage::Agent(format!(
+                "{index}:{}",
+                "x".repeat(10 * 1024)
+            )));
+        }
+        state.enforce_memory_budget();
+
+        assert!(state.messages.len() <= MAX_TRANSCRIPT_ENTRIES);
+        assert!(state.messages.iter().map(message_bytes).sum::<usize>() <= MAX_TRANSCRIPT_BYTES);
+        assert!(matches!(
+            state.messages.first(),
+            Some(ChatMessage::Info(text)) if text == TRANSCRIPT_PRUNED_NOTICE
+        ));
+    }
+
+    #[test]
+    fn streaming_and_tool_payloads_are_utf8_safe_and_bounded() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::TextChunk {
+            delta: "蟹".repeat(MAX_MESSAGE_BYTES),
+        });
+        assert!(state.streaming.len() <= MAX_MESSAGE_BYTES);
+        assert!(state.streaming.is_char_boundary(state.streaming.len()));
+
+        state.apply(DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
+            tool_name: "test".into(),
+            input: serde_json::json!({"payload": "x".repeat(MAX_TOOL_PAYLOAD_BYTES)}),
+        });
+        state.apply(DomainEvent::ToolOutputDelta {
+            call_id: "call-1".into(),
+            tool_name: "test".into(),
+            delta: "蟹".repeat(MAX_TOOL_PAYLOAD_BYTES),
+        });
+        let Some(ChatMessage::ToolStep { children, .. }) = state.messages.last() else {
+            panic!("tool step");
+        };
+        assert!(json_bytes(&children[0].input) <= MAX_TOOL_PAYLOAD_BYTES);
+        assert!(
+            children[0]
+                .output
+                .as_ref()
+                .is_some_and(|output| output.len() <= MAX_TOOL_PAYLOAD_BYTES)
+        );
+    }
 
     #[test]
     fn connection_requests_and_applies_runtime_truth() {

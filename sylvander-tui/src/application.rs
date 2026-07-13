@@ -36,6 +36,7 @@ impl Application {
             UserIntent::ScrollTranscript { lines } => self.state.scroll_transcript(lines),
             UserIntent::Redraw => self.state.dirty.mark(),
         }
+        self.state.enforce_memory_budget();
     }
 
     pub fn apply(&mut self, event: DomainEvent) {
