@@ -2474,6 +2474,19 @@ mod tests {
     }
 
     #[test]
+    fn backspace_after_command_trigger_returns_to_the_composer() {
+        let mut state = AppState::new();
+
+        state.handle_key(&KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(state.modals.len(), 1);
+
+        state.handle_key(&KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(state.modals.is_empty());
+        assert!(state.composer.is_empty());
+        assert_eq!(state.mode, AppMode::Normal);
+    }
+
+    #[test]
     fn persisted_session_history_replaces_the_visible_transcript() {
         let mut state = AppState::new();
         state.messages.push(ChatMessage::User("old session".into()));

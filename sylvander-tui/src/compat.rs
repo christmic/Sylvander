@@ -5,17 +5,15 @@
 //!
 //! - **Wide**     ≥ 100 cols : full metadata + descriptions
 //! - **Standard** 80–99 cols  : compact metadata + tool summaries
-//! - **Narrow**   <  80 cols  : single-column regions, minimal status
-//! - **TooSmall** <  50 cols  : show a resize message (do not crash)
-//!
-//! Minimum supported viewport (per spec): 50 columns × 12 rows.
+//! - **Narrow**   50–79 cols  : single-column regions, minimal status
+//! - **Compact**  <  50 cols  : the same core UI, aggressively reflowed
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Breakpoint {
     Wide,
     Standard,
     Narrow,
-    TooSmall,
+    Compact,
 }
 
 impl Breakpoint {
@@ -27,7 +25,7 @@ impl Breakpoint {
         } else if cols >= 50 {
             Self::Narrow
         } else {
-            Self::TooSmall
+            Self::Compact
         }
     }
 
@@ -36,7 +34,7 @@ impl Breakpoint {
         match self {
             Self::Wide | Self::Standard => 12,
             Self::Narrow => 14,
-            Self::TooSmall => 1,
+            Self::Compact => 1,
         }
     }
 
@@ -58,7 +56,7 @@ impl Breakpoint {
             Self::Wide => 60,
             Self::Standard => 75,
             Self::Narrow => 90,
-            Self::TooSmall => 95,
+            Self::Compact => 100,
         }
     }
 
@@ -98,8 +96,8 @@ mod tests {
         assert_eq!(Breakpoint::from_width(80), Breakpoint::Standard);
         assert_eq!(Breakpoint::from_width(79), Breakpoint::Narrow);
         assert_eq!(Breakpoint::from_width(50), Breakpoint::Narrow);
-        assert_eq!(Breakpoint::from_width(49), Breakpoint::TooSmall);
-        assert_eq!(Breakpoint::from_width(20), Breakpoint::TooSmall);
+        assert_eq!(Breakpoint::from_width(49), Breakpoint::Compact);
+        assert_eq!(Breakpoint::from_width(20), Breakpoint::Compact);
     }
 
     #[test]
@@ -130,8 +128,8 @@ mod tests {
     fn compact_help_collapses_at_narrow() {
         // Narrow + below must reduce to `Enter:send  Esc:quit`.
         let narrow = compact_help_for(Breakpoint::Narrow, "Normal");
-        let too_small = compact_help_for(Breakpoint::TooSmall, "Normal");
-        assert_eq!(narrow, too_small);
+        let compact = compact_help_for(Breakpoint::Compact, "Normal");
+        assert_eq!(narrow, compact);
         assert!(narrow.starts_with("Enter:send"));
     }
 

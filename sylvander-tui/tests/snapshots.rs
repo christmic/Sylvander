@@ -634,7 +634,7 @@ fn layout_narrow_breakpoint_drops_meta() {
 }
 
 #[test]
-fn layout_too_small_renders_resize_message() {
+fn layout_compact_width_keeps_primary_interaction() {
     let s = seed_state();
     insta::assert_snapshot!(render_buf(s, 40, 20));
 }

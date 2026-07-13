@@ -106,8 +106,9 @@ presence model.
 - Widening or fullscreening a terminal never recenters this column.
 - Extra fullscreen width remains empty on the right.
 - Composer separators and status span the entire terminal width.
-- Below the minimum supported viewport, show an explicit resize state rather
-  than corrupting layout.
+- There is no minimum supported width gate. Narrow terminals preserve the core
+  transcript, Composer, temporary interaction, and status surfaces while
+  reflowing content and dropping secondary metadata.
 
 ## 5. Welcome as transcript prelude
 
@@ -368,7 +369,7 @@ never the sole carrier of risk, selection, or state.
 | 110+ | Character left, information right | 110-cell max, left anchored | Full detail, left anchored | Full |
 | 88–109 | Character left, information right | Available width | Full detail | Full/compact |
 | 50–87 | Same character, information below | Available width | Wrapped choices, reduced metadata | Compact |
-| <50 | Resize state | Not rendered | Not rendered | Not rendered |
+| <50 | Same character, naturally clipped by cells; information below | Available width | Essential choices reflowed | Essential state only |
 
 ## 12. Prohibited UI
 
