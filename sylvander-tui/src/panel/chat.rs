@@ -562,7 +562,6 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
     let info = vec![
         vec![Span::styled("Sylvander", theme::brand_wordmark())],
         vec![Span::styled("agent workspace", theme::brand_tagline())],
-        vec![],
         welcome_meta("model", model),
         welcome_meta("workspace", workspace_label),
         vec![
@@ -571,6 +570,12 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
             Span::styled(" · session ", theme::text_muted()),
             Span::styled(session, theme::text()),
         ],
+        vec![],
+        vec![Span::styled(
+            "What should we work through?",
+            theme::text_dim(),
+        )],
+        vec![],
     ];
 
     let mut lines = Vec::new();
@@ -584,40 +589,34 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
             spans.extend(right);
             lines.push(Line::from(spans));
         }
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(SEED_CRAB_CELL_WIDTH + WELCOME_GAP)),
-            Span::styled("What should we work through?", theme::text_dim()),
-        ]));
     } else {
         for row in TERMINAL_SEED_CRAB {
             lines.push(Line::from(seed_crab_spans(row)));
         }
         lines.push(Line::from(""));
         lines.extend(info.into_iter().map(Line::from));
-        lines.push(Line::from(Span::styled(
-            "What should we work through?",
-            theme::text_dim(),
-        )));
     }
     lines.push(Line::from(""));
     Some(lines)
 }
 
-const WELCOME_HORIZONTAL_MIN_WIDTH: usize = 68;
-const SEED_CRAB_CELL_WIDTH: usize = 21;
-const WELCOME_GAP: usize = 3;
-const SEED_CRAB_COLOR_SPLIT: usize = 11;
+const WELCOME_HORIZONTAL_MIN_WIDTH: usize = 77;
+const SEED_CRAB_CELL_WIDTH: usize = 31;
+const WELCOME_GAP: usize = 2;
+const SEED_CRAB_COLOR_SPLIT: usize = 16;
 
 // One canonical terminal character. The complete silhouette includes the
 // sprout, both claws, the full shell, both eyes, and the lower walking legs.
 // Narrow viewports reflow this same asset; they never substitute another logo.
-const TERMINAL_SEED_CRAB: [&str; 6] = [
-    "        ⢀⣠⣶⣾⣀",
-    "      ⣠⣴⣶⣾⠿⢿⣷⣶⣤⡀",
-    "⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ ⢀⡙⢻⣟⣿⡆",
-    " ⣩⣶⣆⡀⣿⣿⣯⡘⠿ ⠸⠟⣠⣿⣿⡻⣠⣄⡀",
-    "⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄",
-    " ⠁   ⠋ ⠈      ⠁⠈⠋  ⠘",
+const TERMINAL_SEED_CRAB: [&str; 8] = [
+    "              ⢀⣤⣴⡆",
+    "            ⢀⣚⣿⣿⣿⣿⢓⣀",
+    "         ⢀⣴⣾⢿⣳⡿⠛⠙⢿⣾⣿⣷⣦",
+    "  ⢀ ⣴⠆  ⣰⣿⣿⣵⠟⠉    ⠙⠻⣿⠿⣾⣦",
+    " ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄",
+    " ⢀⣤⣶⣿⡣⣤⢀⢽⠿⣮⢷⣄⣉⠁  ⠉⣁⣤⡎⣵⠟⣭⣁⡔⢿⣄⡀",
+    " ⣾⣿⠛⢹⡇⠈⢨⣶⡶⠎⢛⡿⣿⣳⡆⣶⣿⡿⣟⣋⢷⣶⣮⡅⢸⡜⢿⣿⡄",
+    " ⠈⠻⠁   ⠘⠞⠁ ⠒⠁ ⠉⠁⠉⠉ ⠉⠑ ⠈⣿⠇ ⠁⠈⠿⠁",
 ];
 
 fn seed_crab_spans(row: &str) -> Vec<Span<'static>> {
@@ -741,7 +740,7 @@ mod tests {
     #[test]
     fn welcome_uses_complete_canonical_character_and_horizontal_info() {
         let state = AppState::new();
-        assert_eq!(TERMINAL_SEED_CRAB.len(), 6);
+        assert_eq!(TERMINAL_SEED_CRAB.len(), 8);
         assert!(
             TERMINAL_SEED_CRAB[4..]
                 .iter()
@@ -756,7 +755,7 @@ mod tests {
         );
 
         let wide = build_welcome_lockup(110, &state).expect("wide welcome");
-        assert_eq!(wide.len(), TERMINAL_SEED_CRAB.len() + 2);
+        assert_eq!(wide.len(), TERMINAL_SEED_CRAB.len() + 1);
         assert!(
             wide.iter()
                 .any(|line| line.to_string().contains("Sylvander")),

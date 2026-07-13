@@ -11,13 +11,12 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Clear, Paragraph},
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppMode, AppState};
 pub use crate::command::{COMMANDS, CommandMatch, CommandSpec as Command};
-use crate::modal::{Consumed, Modal, ModalPlacement, surface::focus_picker};
+use crate::modal::{Consumed, Modal, ModalPlacement};
 
 pub struct CommandPalette {
     pub filter: String,
@@ -29,7 +28,7 @@ pub struct CommandPalette {
 impl CommandPalette {
     pub fn new(state: &AppState) -> Self {
         let mut s = Self {
-            filter: String::new(),
+            filter: composer_filter(state),
             cursor: 0,
             filtered: Vec::new(),
             error: None,
@@ -59,6 +58,7 @@ impl CommandPalette {
             .map_or_else(|| format!("{name} "), |suffix| format!("{name} {suffix}"));
         self.error = None;
         self.recompute(state);
+        state.composer.replace_text(&format!("/{}", self.filter));
         state.dirty.mark();
     }
 
@@ -81,7 +81,11 @@ impl CommandPalette {
             return Consumed::Yes { dismiss: false };
         };
         match crate::command::execute_line(&line, state) {
-            Ok(()) => Consumed::Yes { dismiss: true },
+            Ok(()) => {
+                state.composer.clear();
+                state.mode = AppMode::Normal;
+                Consumed::Yes { dismiss: true }
+            }
             Err(error) => {
                 self.error = Some(error);
                 state.dirty.mark();
@@ -103,33 +107,28 @@ impl Modal for CommandPalette {
     fn placement(&self, _state: &AppState, _viewport_width: u16) -> ModalPlacement {
         let results = self.filtered.len().clamp(1, 8) as u16 + u16::from(self.error.is_some());
         ModalPlacement::BelowComposer {
-            rows: results.saturating_add(3),
+            rows: results.saturating_add(1),
         }
     }
 
+    fn uses_composer_input(&self) -> bool {
+        true
+    }
+
     fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
-        let visible_commands = self.filtered.len().clamp(1, 8) as u16;
-        let result_rows = visible_commands + u16::from(self.error.is_some());
-        let areas = focus_picker(frame, parent, result_rows);
+        frame.render_widget(Clear, parent);
+        frame.render_widget(Block::default().style(theme::text_on_canvas()), parent);
         let results_area = Rect {
             x: parent.x,
             width: parent.width,
-            ..areas.results
+            height: parent.height.saturating_sub(1),
+            ..parent
         };
         let mut lines = Vec::new();
         if let Some(error) = self.error.as_deref() {
             lines.push(Line::from(Span::styled(error, theme::warning())));
         }
 
-        let prompt = Line::from(vec![
-            Span::styled("/", theme::brand_violet()),
-            Span::styled(&self.filter, Style::default()),
-        ]);
-        frame.render_widget(Paragraph::new(prompt), areas.query);
-        let cursor_x = areas.query.x + 1 + UnicodeWidthStr::width(self.filter.as_str()) as u16;
-        if cursor_x < areas.query.x + areas.query.width {
-            frame.set_cursor_position((cursor_x, areas.query.y));
-        }
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No commands match",
@@ -204,15 +203,27 @@ impl Modal for CommandPalette {
             }
         }
         frame.render_widget(Paragraph::new(lines), results_area);
+        if parent.height > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from("─".repeat(parent.width as usize)).style(theme::rule())),
+                Rect {
+                    y: parent.y + parent.height - 1,
+                    height: 1,
+                    ..parent
+                },
+            );
+        }
     }
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
             KeyCode::Esc => {
+                state.composer.clear();
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.composer.clear();
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
@@ -231,17 +242,19 @@ impl Modal for CommandPalette {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Backspace => {
-                if self.filter.is_empty() {
+                let _ = state.composer.handle_key(key);
+                self.filter = composer_filter(state);
+                if state.composer.is_empty() {
                     state.mode = AppMode::Normal;
                     return Consumed::Yes { dismiss: true };
                 }
-                self.filter.pop();
                 self.error = None;
                 self.recompute(state);
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Delete if self.filter.is_empty() => {
+                state.composer.clear();
                 state.mode = AppMode::Normal;
                 Consumed::Yes { dismiss: true }
             }
@@ -251,11 +264,12 @@ impl Modal for CommandPalette {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => self.invoke(state),
-            KeyCode::Char(c) => {
+            KeyCode::Char(_) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
                 {
-                    self.filter.push(c);
+                    let _ = state.composer.handle_key(key);
+                    self.filter = composer_filter(state);
                     self.error = None;
                     self.recompute(state);
                     state.dirty.mark();
@@ -265,6 +279,11 @@ impl Modal for CommandPalette {
             _ => Consumed::Ignored,
         }
     }
+}
+
+fn composer_filter(state: &AppState) -> String {
+    let text = state.composer.text();
+    text.strip_prefix('/').unwrap_or(&text).to_string()
 }
 
 use crate::theme;
@@ -391,5 +410,22 @@ mod tests {
             palette.handle_key(&key(KeyCode::Delete, KeyModifiers::NONE), &mut state),
             Consumed::Yes { dismiss: true }
         );
+    }
+
+    #[test]
+    fn app_command_mode_edits_the_persistent_composer() {
+        let mut state = AppState::new();
+        state.handle_key(&key(KeyCode::Char('/'), KeyModifiers::NONE));
+
+        assert_eq!(state.composer.text(), "/");
+        assert!(state.modals.top().is_some_and(Modal::uses_composer_input));
+
+        state.handle_key(&key(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert_eq!(state.composer.text(), "/s");
+
+        state.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+        state.handle_key(&key(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(state.composer.is_empty());
+        assert!(state.modals.is_empty());
     }
 }

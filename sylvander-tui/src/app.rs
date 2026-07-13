@@ -1348,6 +1348,7 @@ impl AppState {
             || self.keymap.matches(KeyAction::Commands, key);
         if opens_commands && self.composer.is_empty() && self.modals.is_empty() {
             use crate::modal::palette::CommandPalette;
+            self.composer.replace_text("/");
             let palette = CommandPalette::new(self);
             self.modals.push(Box::new(palette));
             self.dirty.mark();

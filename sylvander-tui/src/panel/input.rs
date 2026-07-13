@@ -148,7 +148,7 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
         let placeholder = Line::from(Span::styled(prompt, theme::composer_placeholder()));
         let p = Paragraph::new(placeholder).wrap(Wrap { trim: false });
         frame.render_widget(p, area);
-        if state.modals.is_empty() && area.width > 2 {
+        if composer_owns_cursor(state) && area.width > 2 {
             frame.set_cursor_position((area.x + 2, area.y));
         }
         return;
@@ -188,13 +188,20 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(visible), area);
 
-    if let Some((line, cell)) = cursor.filter(|_| state.modals.is_empty()) {
+    if let Some((line, cell)) = cursor.filter(|_| composer_owns_cursor(state)) {
         let cursor_x = area.x.saturating_add(2).saturating_add(cell as u16);
         let cursor_y = area.y.saturating_add(line.saturating_sub(start) as u16);
         if cursor_x < inner.x + inner.width && cursor_y < inner.y + inner.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
+}
+
+fn composer_owns_cursor(state: &AppState) -> bool {
+    state
+        .modals
+        .top()
+        .is_none_or(|modal| modal.uses_composer_input())
 }
 
 fn visual_row_count(state: &AppState, width: usize) -> usize {
