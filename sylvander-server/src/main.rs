@@ -332,6 +332,7 @@ async fn main() {
                 capabilities: model.capabilities.bits(),
                 approval_enabled,
                 max_attachment_bytes: 512 * 1024,
+                platform: sylvander_agent::bus::PlatformSnapshot::default(),
             })
             .with_runtime_control(runtime_control),
     );

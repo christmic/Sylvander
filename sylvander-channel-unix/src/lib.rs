@@ -294,6 +294,7 @@ enum ServerMsg {
         capabilities: u8,
         approval_enabled: bool,
         max_attachment_bytes: usize,
+        platform: sylvander_protocol::PlatformSnapshot,
     },
     ContextReport {
         report: sylvander_protocol::ContextReport,
@@ -387,6 +388,7 @@ pub struct RuntimeInfo {
     pub capabilities: u8,
     pub approval_enabled: bool,
     pub max_attachment_bytes: usize,
+    pub platform: sylvander_protocol::PlatformSnapshot,
 }
 
 impl UnixChannel {
@@ -402,6 +404,7 @@ impl UnixChannel {
                 capabilities: 0,
                 approval_enabled: false,
                 max_attachment_bytes: 512 * 1024,
+                platform: sylvander_protocol::PlatformSnapshot::default(),
             },
             runtime_control: None,
         }
@@ -1401,6 +1404,10 @@ async fn handle_client_msg_for_client(
                 .iter()
                 .find(|model| model.id == model_info.current_model)
                 .map_or(runtime.capabilities, |model| model.capabilities);
+            let platform = runtime_control.map_or_else(
+                || runtime.platform.clone(),
+                sylvander_agent::run::AgentRun::platform_snapshot,
+            );
             let _ = tx.send(ServerMsg::RuntimeInfo {
                 model: model_info.current_model,
                 reasoning_effort: model_info.reasoning_effort,
@@ -1409,6 +1416,7 @@ async fn handle_client_msg_for_client(
                 capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
+                platform,
             });
         }
         ClientMsg::GetContext { session_id } => {
@@ -1532,6 +1540,7 @@ async fn handle_client_msg_for_client(
                         capabilities,
                         approval_enabled: runtime.approval_enabled,
                         max_attachment_bytes: runtime.max_attachment_bytes,
+                        platform: control.platform_snapshot(),
                     });
                 }
                 Err(message) => {
@@ -1566,6 +1575,7 @@ async fn handle_client_msg_for_client(
                         capabilities,
                         approval_enabled: runtime.approval_enabled,
                         max_attachment_bytes: runtime.max_attachment_bytes,
+                        platform: control.platform_snapshot(),
                     });
                 }
                 Err(message) => {
@@ -1666,6 +1676,7 @@ mod tests {
             capabilities: 0b101,
             approval_enabled: true,
             max_attachment_bytes: 1024,
+            platform: sylvander_protocol::PlatformSnapshot::default(),
         }
     }
 
@@ -1751,6 +1762,7 @@ mod tests {
                 capabilities: 0b101,
                 approval_enabled: true,
                 max_attachment_bytes: 1024,
+                ..
             } if model == "test-model" && models.len() == 1
         ));
     }
