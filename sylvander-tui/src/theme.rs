@@ -128,6 +128,22 @@ pub struct Palette {
     pub guide: Color,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThemeOverrides {
+    pub foreground: Option<Color>,
+    pub accent: Option<Color>,
+}
+
+impl ThemeOverrides {
+    pub fn describe_foreground(self) -> String {
+        self.foreground.map_or_else(|| "theme".into(), color_label)
+    }
+
+    pub fn describe_accent(self) -> String {
+        self.accent.map_or_else(|| "theme".into(), color_label)
+    }
+}
+
 pub const SYLVANDER: Palette = Palette {
     canvas: BG,
     text: TEXT,
@@ -195,6 +211,10 @@ const MONOCHROME: Palette = Palette {
 static ACTIVE: RwLock<Palette> = RwLock::new(SYLVANDER);
 static ACTIVE_NAME: RwLock<ThemeName> = RwLock::new(ThemeName::Sylvander);
 static ACTIVE_CAPABILITY: RwLock<ColorCapability> = RwLock::new(ColorCapability::TrueColor);
+static ACTIVE_OVERRIDES: RwLock<ThemeOverrides> = RwLock::new(ThemeOverrides {
+    foreground: None,
+    accent: None,
+});
 static ACCESSIBILITY: RwLock<Accessibility> = RwLock::new(Accessibility {
     reduced_motion: false,
     no_italic: false,
@@ -274,6 +294,59 @@ pub fn palette_for_capability(name: ThemeName, capability: ColorCapability) -> P
     }
 }
 
+pub fn resolved_palette(
+    name: ThemeName,
+    capability: ColorCapability,
+    overrides: ThemeOverrides,
+) -> Palette {
+    let mut palette = palette_for_capability(name, capability);
+    if let Some(foreground) = overrides.foreground {
+        palette.text = map_override(foreground, capability);
+    }
+    if let Some(accent) = overrides.accent {
+        let accent = map_override(accent, capability);
+        palette.identity = accent;
+        palette.brand_violet = accent;
+        palette.active = accent;
+    }
+    palette
+}
+
+pub fn parse_color(value: &str) -> Result<Color, String> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "invalid color {value:?}; expected six-digit RGB such as #9B72FF"
+        ));
+    }
+    let component = |range| {
+        u8::from_str_radix(&hex[range], 16)
+            .map_err(|_| format!("invalid RGB component in {value:?}"))
+    };
+    Ok(Color::Rgb(
+        component(0..2)?,
+        component(2..4)?,
+        component(4..6)?,
+    ))
+}
+
+fn color_label(color: Color) -> String {
+    match color {
+        Color::Rgb(red, green, blue) => format!("#{red:02X}{green:02X}{blue:02X}"),
+        other => format!("{other:?}"),
+    }
+}
+
+fn map_override(color: Color, capability: ColorCapability) -> Color {
+    match capability {
+        ColorCapability::Monochrome => Color::White,
+        ColorCapability::Ansi16 => rgb_to_ansi16(color),
+        ColorCapability::Ansi256 => rgb_to_ansi256(color),
+        ColorCapability::TrueColor => color,
+    }
+}
+
 fn map_palette(palette: Palette, map: impl Fn(Color) -> Color) -> Palette {
     Palette {
         canvas: map(palette.canvas),
@@ -298,6 +371,40 @@ fn rgb_to_ansi256(color: Color) -> Color {
     };
     let level = |channel: u8| ((u16::from(channel) * 5 + 127) / 255) as u8;
     Color::Indexed(16 + 36 * level(red) + 6 * level(green) + level(blue))
+}
+
+fn rgb_to_ansi16(color: Color) -> Color {
+    let Some(rgb) = color_rgb(color) else {
+        return color;
+    };
+    const CANDIDATES: [Color; 16] = [
+        Color::Black,
+        Color::Red,
+        Color::Green,
+        Color::Yellow,
+        Color::Blue,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Gray,
+        Color::DarkGray,
+        Color::LightRed,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightBlue,
+        Color::LightMagenta,
+        Color::LightCyan,
+        Color::White,
+    ];
+    CANDIDATES
+        .into_iter()
+        .min_by_key(|candidate| {
+            let candidate = color_rgb(*candidate).unwrap_or_default();
+            let delta = |left: u8, right: u8| i32::from(left) - i32::from(right);
+            delta(rgb.0, candidate.0).pow(2)
+                + delta(rgb.1, candidate.1).pow(2)
+                + delta(rgb.2, candidate.2).pow(2)
+        })
+        .unwrap_or(color)
 }
 
 pub fn validate_palette(palette: Palette, capability: ColorCapability) -> Result<(), String> {
@@ -380,13 +487,22 @@ fn color_rgb(color: Color) -> Option<(u8, u8, u8)> {
 
 pub fn configure(name: ThemeName) {
     let capability = active_color_capability();
+    let overrides = *ACTIVE_OVERRIDES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     *ACTIVE
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        palette_for_capability(name, capability);
+        resolved_palette(name, capability, overrides);
     *ACTIVE_NAME
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+}
+
+pub fn configure_overrides(overrides: ThemeOverrides) {
+    *ACTIVE_OVERRIDES
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = overrides;
 }
 
 pub fn configure_color_capability(capability: ColorCapability) {
@@ -680,6 +796,34 @@ mod tests {
             palette_for(ThemeName::HighContrast)
         );
         assert_eq!(palette_for(ThemeName::Sylvander).canvas, BG);
+    }
+
+    #[test]
+    fn custom_foreground_and_accent_override_only_semantic_identity_roles() {
+        let foreground = Color::Rgb(0xF1, 0xF2, 0xF3);
+        let accent = Color::Rgb(0xB0, 0x80, 0xFF);
+        let palette = resolved_palette(
+            ThemeName::Sylvander,
+            ColorCapability::TrueColor,
+            ThemeOverrides {
+                foreground: Some(foreground),
+                accent: Some(accent),
+            },
+        );
+        assert_eq!(palette.text, foreground);
+        assert_eq!(palette.identity, accent);
+        assert_eq!(palette.brand_violet, accent);
+        assert_eq!(palette.active, accent);
+        assert_eq!(palette.verified, SYLVANDER.verified);
+        assert_eq!(palette.danger, SYLVANDER.danger);
+    }
+
+    #[test]
+    fn custom_color_parser_requires_six_digit_rgb() {
+        assert_eq!(parse_color("#9B72FF"), Ok(Color::Rgb(0x9B, 0x72, 0xFF)));
+        assert_eq!(parse_color("ece7de"), Ok(Color::Rgb(0xEC, 0xE7, 0xDE)));
+        assert!(parse_color("violet").is_err());
+        assert!(parse_color("#fff").is_err());
     }
 
     #[test]

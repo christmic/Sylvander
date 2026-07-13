@@ -11,6 +11,8 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_HISTORY_PATH` | `$XDG_CACHE_HOME/sylvander-tui/history.json` | path or empty | Composer history; empty disables persistence |
 | `SYLVANDER_MODEL` | `—` | model label | Pre-connection fallback only; server runtime truth replaces it |
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
+| `SYLVANDER_TUI_FOREGROUND` | theme value | six-digit RGB, for example `#ECE7DE` | Override primary message text |
+| `SYLVANDER_TUI_ACCENT` | theme value | six-digit RGB, for example `#9B72FF` | Override identity, active, and Agent accent |
 | `SYLVANDER_TUI_COLOR` | `auto` | `auto`, `none`, `ansi16`, `ansi256`, `truecolor` | Override detected terminal color capability |
 | `SYLVANDER_TUI_EDITING` | `standard` | `standard`, `vim` | Composer editing style |
 | `SYLVANDER_TUI_RENDER_FPS` | `60` | 5–120 | Maximum coalesced service render rate |
@@ -28,6 +30,9 @@ Invalid values fail at startup with a concrete configuration error.
 `auto` respects `NO_COLOR`, then detects truecolor from `COLORTERM`/`TERM`,
 256 colors from `TERM`, and otherwise selects the conservative ANSI-16 palette.
 The selected palette is checked for semantic text/status contrast at startup.
+Foreground and accent overrides are mapped to the detected terminal color
+capability and pass the same contrast validation. They do not replace verified,
+waiting, or danger colors, so operational meaning remains stable.
 Key names are case-insensitive and use `ctrl+`, `alt+`, or `shift+` modifiers.
 Two actions cannot use the same chord. Unmodified printable global keys are
 rejected, and printable chords require Ctrl or Alt, so custom bindings cannot
