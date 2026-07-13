@@ -73,6 +73,10 @@ Prompts submitted during active work use a 100-item FIFO; once full, Enter keeps
 the draft intact and directs the user to remove an item before queuing more.
 The session selector caches the 5000 most recent summaries while the Agent's
 persistent store remains authoritative.
+Decision overlays have a 64-layer hard ceiling. If a malformed or overloaded
+service exceeds it, Approval, AskUser, and Plan requests receive typed terminal
+decisions immediately so no Agent waiter is abandoned; the overflow is also
+visible in the transcript.
 
 ## Dirty rendering
 

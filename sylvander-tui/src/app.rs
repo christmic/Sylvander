@@ -1029,6 +1029,20 @@ impl AppState {
                     ));
                     return None;
                 }
+                if self.modals.is_full() {
+                    for tool in tools {
+                        self.pending_actions.push(Action::SendApprove {
+                            call_id: tool.call_id,
+                            approved: false,
+                            scope: sylvander_protocol::ApprovalScope::Once,
+                            reason: Some("TUI decision queue is full".into()),
+                        });
+                    }
+                    self.messages.push(ChatMessage::Info(
+                        "approval rejected · TUI decision queue is full".into(),
+                    ));
+                    return None;
+                }
                 use crate::modal::approval::ApprovalModal;
                 let mut modal =
                     ApprovalModal::new(batch_id, tools).with_allowed_scopes(allowed_scopes);
@@ -1043,6 +1057,16 @@ impl AppState {
                 options,
                 multi_select,
             } => {
+                if self.modals.is_full() {
+                    self.pending_actions.push(Action::SendAnswer {
+                        call_id,
+                        answer: String::new(),
+                    });
+                    self.messages.push(ChatMessage::Info(
+                        "question skipped · TUI decision queue is full".into(),
+                    ));
+                    return None;
+                }
                 use crate::modal::ask_user::AskUserModal;
                 let modal = AskUserModal::new(call_id, question, options, multi_select);
                 self.modals.push(Box::new(modal));
@@ -1062,6 +1086,18 @@ impl AppState {
                 steps,
                 current,
             } => {
+                if self.modals.is_full() {
+                    self.pending_actions.push(Action::ResolvePlan {
+                        plan_id,
+                        decision: sylvander_protocol::PlanDecision::Rejected {
+                            reason: "TUI decision queue is full".into(),
+                        },
+                    });
+                    self.messages.push(ChatMessage::Info(
+                        "plan rejected · TUI decision queue is full".into(),
+                    ));
+                    return None;
+                }
                 self.messages.push(ChatMessage::Plan {
                     plan_id: plan_id.clone(),
                     steps: steps.clone(),
@@ -2172,6 +2208,36 @@ mod tests {
         });
         assert_eq!(s.modals.len(), 1);
         assert_eq!(s.mode, AppMode::ApprovalPending);
+    }
+
+    #[test]
+    fn full_decision_stack_rejects_approval_and_unblocks_the_agent() {
+        let mut state = AppState::new();
+        for index in 0..64 {
+            assert!(state.modals.push(Box::new(crate::modal::ApprovalModal::new(
+                format!("batch-{index}"),
+                Vec::new(),
+            ))));
+        }
+        state.apply(DomainEvent::ApprovalRequested {
+            batch_id: "overflow".into(),
+            tools: vec![ToolInfo {
+                call_id: "call-1".into(),
+                tool_name: "write".into(),
+                input: serde_json::json!({"path": "notes.md"}),
+            }],
+            allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
+        });
+
+        assert!(matches!(
+            state.pending_actions.last(),
+            Some(Action::SendApprove {
+                call_id,
+                approved: false,
+                reason: Some(reason),
+                ..
+            }) if call_id == "call-1" && reason == "TUI decision queue is full"
+        ));
     }
 
     #[test]
