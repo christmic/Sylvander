@@ -7,25 +7,19 @@
   <rect class="bg" width="1600" height="900"/>
   <g id="transcript-origin" transform="translate(24 28)">
     <g id="seed-crab-terminal" class="mono">
-      <text class="warm" y="22">                     ⢀</text><text class="violet" x="264" y="22">⣠⢠⡖</text>
-      <text class="warm" y="48">                  ⢀⣠⣶⣿</text><text class="violet" x="264" y="48">⡇⣿⣷⣤⣀</text>
-      <text class="warm" y="74">                ⢀⣠⣤⠄⣿⣿</text><text class="violet" x="264" y="74">⡇⣿⣿⡇⣤⣤⡀</text>
-      <text class="warm" y="100">             ⢀⣴⣶⣿⠿⣋⣾⡿⠛</text><text class="violet" x="264" y="100">⠁⠙⢿⣷⣜⢿⣿⣾⣦⠄</text>
-      <text class="warm" y="126">      ⣠⣤    ⣠⣿⣿⠟⣡⡾⠛⠉</text><text class="violet" x="264" y="126">     ⠉⠻⢿⣬⡻⣿⡌⣧⡀</text>
-      <text class="warm" y="152">  ⢠⣴⣄⠸⠛⠉   ⢰⣿⣿⡃⣿⡟  ⣀⡀</text><text class="violet" x="264" y="152">   ⢀⡀  ⢹⣷⠄⣾⣿⣿</text>
-      <text class="warm" y="178">   ⠈⠁⠠⡀⣀   ⢰⣦⡙⠇⣿⠁ ⢸⣿⣿</text><text class="violet" x="264" y="178">   ⣿⣿⡆  ⣿⡦⢏⣵⣶⡆</text>
-      <text class="warm" y="204">   ⣠⣔⣚⠿⠏⣠⣄ ⢈⣙⢿⣦⡩⣷⣀ ⠉⠁</text><text class="violet" x="264" y="204">   ⠈⠉ ⣀⣴⠌⣴⡿⢋⣤⠁⢀⠲⠿⢤⡀</text>
-      <text class="warm" y="230"> ⢀⣼⣿⣿⠟⠼⣷ ⠏⠘⢂⡡⢤⣌⠳⠮⣝⡻⢷⣤⣄</text><text class="violet" x="264" y="230"> ⣠⣴⣾⠿⣛⣥⠞⣫⡤⢌⡑⠛⠉⣶⠸⣿⣿⣷</text>
-      <text class="warm" y="256"> ⠘⢿⡟⡄ ⠸⠃  ⢠⡛⠿⡆⠉ ⡐⠬⠙⠳⠌⣟</text><text class="violet" x="264" y="256"> ⣿⡿⠽⠋⢥⡶⢂⠙⠱⠿⢟⡃ ⠙⡇⠈⢹⣿⡇</text>
-      <text class="warm" y="282">   ⠙       ⠻⠁   ⠉</text><text class="violet" x="264" y="282">            ⠋  ⠈⡿⠃     ⠟</text>
+      <text class="warm" y="22">        ⢀⣠⣶</text><text class="violet" x="132" y="22">⣾⣀</text>
+      <text class="warm" y="48">      ⣠⣴⣶⣾⠿</text><text class="violet" x="132" y="48">⢿⣷⣶⣤⡀</text>
+      <text class="warm" y="74">⢀⣄⡴⠆ ⣴⣿⣿⠋⣁ </text><text class="violet" x="132" y="74">⢀⡙⢻⣟⣿⡆</text>
+      <text class="warm" y="100"> ⣩⣶⣆⡀⣿⣿⣯⡘⠿ </text><text class="violet" x="132" y="100">⠸⠟⣠⣿⣿⡻⣠⣄⡀</text>
+      <text class="warm" y="126">⢾⣟⢻⠇⢋⣿⡾⢻⡿⣷⡆</text><text class="violet" x="132" y="126">⣾⡿⣿⡿⣾⣯⠹⡿⣿⡄</text>
+      <text class="warm" y="152"> ⠁   ⠋ ⠈   </text><text class="violet" x="132" y="152">   ⠁⠈⠋  ⠘</text>
     </g>
-    <g id="welcome-information" transform="translate(570 32)">
+    <g id="welcome-information" transform="translate(300 28)">
       <text class="brand text">Sylvander</text><text class="tag violet" y="30">agent workspace</text>
-      <text class="small muted" y="92">model</text><text class="small text" x="128" y="92">MiniMax-M3</text>
-      <text class="small muted" y="120">workspace</text><text class="small text" x="128" y="120">~/.../Sylvander</text>
-      <text class="small muted" y="148">branch</text><text class="small text" x="128" y="148">master</text>
-      <text class="small muted" y="176">session</text><text class="small text" x="128" y="176">new</text>
-      <text class="mono dim" y="240">What should we work through?</text>
+      <text class="small muted" y="82">model</text><text class="small text" x="108" y="82">MiniMax-M3</text>
+      <text class="small muted" y="108">workspace</text><text class="small text" x="108" y="108">~/.../Sylvander</text>
+      <text class="small muted" y="134">branch</text><text class="small text" x="108" y="134">master</text><text class="small muted" x="190" y="134">· session</text><text class="small text" x="282" y="134">new</text>
+      <text class="mono dim" y="190">What should we work through?</text>
     </g>
   </g>
   <g id="composer">

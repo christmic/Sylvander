@@ -117,7 +117,7 @@ conversation.
 
 ### 5.1 Standard and wide layout
 
-The approved 11-row terminal Seed-Crab appears on the left. On the right:
+The approved compact 6-row terminal Seed-Crab appears on the left. On the right:
 
 ```text
 Sylvander
@@ -125,17 +125,19 @@ agent workspace
 
 model      <model or —>
 workspace  <compact path>
-branch     <branch or —>
-session    <new or short id>
+branch     <branch or —> · session <new or short id>
 
 What should we work through?
 ```
 
-- Character column: 44 cells.
-- Gap: 4 cells.
-- Horizontal layout begins at 88 available cells.
+- Character column: 21 cells.
+- Gap: 3 cells.
+- Horizontal layout begins at 68 available cells.
 - The full character includes sprout, split shell, paired core lights, both
   claws, and lower walking legs.
+- This is an authored half-scale rendering of the approved terminal character,
+  not a different mark or fallback. It reduces the Welcome's visual dominance
+  while retaining the same silhouette and warm/calm split.
 
 ### 5.2 Lifecycle
 
