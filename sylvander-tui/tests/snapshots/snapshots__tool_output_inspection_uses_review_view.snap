@@ -1,8 +1,12 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(state, 100, 28)"
+expression: "render_buf(state, 100, 24)"
 ---
-                                                                                                    
+  bash output · call-123                                                                   3 lines  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+      1  checking workspace                                                                         
+      2  warning: one issue                                                                         
+      3  verification complete                                                                      
                                                                                                     
                                                                                                     
                                                                                                     
@@ -20,13 +24,5 @@ expression: "render_buf(state, 100, 28)"
                                                                                                     
                                                                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
-  Permissions · workspace scoped · applies next turn                                                
-  root  /workspace/sylvander                                                                        
-  › filesystem  workspace write                                                                     
-    network     denied                                                                              
-    approval    ask                                                                                 
-                                                                                                    
-────────────────────────────────────────────────────────────────────────────────────────────────────
-/permissions  ←→ change selected value                                                              
-────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch —                                          connecting…   draft local
+n next match · c copy full output                                                                   
+● reviewing tool output · model — · branch —                        ↑↓ scroll   / search · esc close

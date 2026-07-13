@@ -1,26 +1,26 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 22)"
+expression: "render_buf(state, 90, 22)"
 ---
                                                                                           
                                                                                           
                                                                                           
-              ┌ Sessions ───────────────────────────────────────────────────┐             
-              │Search sessions… _                                           │             
-              │─────────────────────────────────────────────────────────────│             
-              │  (no sessions match)                                        │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │type filter · ↑↓ select · ↵ open · d archive · D delete      │             
-──────────────└─────────────────────────────────────────────────────────────┘─────────────
->                                                                                         
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+──────────────────────────────────────────────────────────────────────────────────────────
+  Resume a session                                                             0 matches  
+  Loading one session replaces the current conversation.                                  
+    No persisted sessions match                                                           
+──────────────────────────────────────────────────────────────────────────────────────────
+/resume                                                                                   
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
