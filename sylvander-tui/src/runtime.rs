@@ -55,6 +55,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
 
     let mut state = AppState::with_metadata(config.history_path.clone(), config.metadata.clone());
     state.keymap = config.keymap.clone();
+    state.composer.set_editing_style(config.editing_style);
     let mut application = Application::new(state);
     let mut input = terminal_input::spawn(config.mouse_scroll_lines);
     let mut service = AgentService::new(&config.socket_path);

@@ -1235,6 +1235,11 @@ impl AppState {
                 self.dirty.mark();
                 return None;
             }
+            if self.composer.handle_escape() {
+                self.status = "Vim NORMAL · i insert · Enter send".into();
+                self.dirty.mark();
+                return None;
+            }
             self.should_quit = true;
             self.dirty.mark();
             return None;
@@ -1242,6 +1247,7 @@ impl AppState {
 
         if key.code == crossterm::event::KeyCode::Char('@')
             && key.modifiers.is_empty()
+            && self.composer.accepts_text_input()
             && self.composer.can_open_file_mention()
         {
             self.modals
@@ -2023,6 +2029,22 @@ mod tests {
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         s.handle_key(&esc);
         assert!(s.should_quit);
+    }
+
+    #[test]
+    fn vim_insert_escape_changes_mode_before_idle_exit() {
+        let mut state = AppState::new();
+        state
+            .composer
+            .set_editing_style(crate::input::EditingStyle::Vim);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+        state.handle_key(&esc);
+        assert!(!state.should_quit);
+        assert_eq!(state.composer.mode_label(), Some("NORMAL"));
+
+        state.handle_key(&esc);
+        assert!(state.should_quit);
     }
 
     #[test]

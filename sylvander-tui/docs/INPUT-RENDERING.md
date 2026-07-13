@@ -21,6 +21,12 @@ expected from a coding Agent TUI.
 Decision overlays own keyboard input while open. Mouse-wheel transcript scrolling
 does not dismiss an overlay or synthesize selection keys.
 
+Set `SYLVANDER_TUI_EDITING=vim` for a modal Composer. It starts in Insert mode;
+`Esc` enters Normal mode while idle, but continues to interrupt active Agent work.
+Normal mode supports `h/j/k/l`, arrows, `w/b`, `0/$`, `i/a/I/A`, `o/O`, `x`,
+and `Enter` to submit. Approval, question, command-palette, and global safety
+bindings are unchanged. The active Vim mode is always visible in the status row.
+
 ## Live-follow behavior
 
 - At `chat_scroll == 0`, the transcript follows live output.

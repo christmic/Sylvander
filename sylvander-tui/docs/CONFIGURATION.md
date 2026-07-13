@@ -12,6 +12,7 @@ and Panels receive resolved values and must not query environment variables.
 | `SYLVANDER_MODEL` | `—` | model label | Pre-connection fallback only; server runtime truth replaces it |
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
 | `SYLVANDER_TUI_COLOR` | `auto` | `auto`, `none`, `ansi16`, `ansi256`, `truecolor` | Override detected terminal color capability |
+| `SYLVANDER_TUI_EDITING` | `standard` | `standard`, `vim` | Composer editing style |
 | `SYLVANDER_TUI_RENDER_FPS` | `30` | 5–120 | Maximum coalesced service render rate |
 | `SYLVANDER_TUI_ANIMATION_MS` | `200` | 50–2000 | Low-frequency animation/status heartbeat |
 | `SYLVANDER_TUI_RECONNECT_MS` | `1500` | 250–30000 | Retry interval after the Agent service disconnects |

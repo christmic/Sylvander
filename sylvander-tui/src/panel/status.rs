@@ -104,6 +104,10 @@ impl Component for StatusPanel {
                 theme::active(),
             )
         };
+        let editing_span = state.composer.mode_label().map_or_else(
+            || Span::raw(""),
+            |mode| Span::styled(format!(" · {mode}"), theme::brand_violet()),
+        );
 
         let session = state
             .session_id
@@ -119,6 +123,7 @@ impl Component for StatusPanel {
                     format!(" · model {model} · branch {branch} · session {session}"),
                     theme::text_dim(),
                 ),
+                editing_span,
             ]);
             frame.render_widget(Paragraph::new(compact), area);
             return;
@@ -148,6 +153,7 @@ impl Component for StatusPanel {
             ),
             task_span,
             queue_span,
+            editing_span,
         ])
         .alignment(Alignment::Left);
 
