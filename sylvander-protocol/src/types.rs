@@ -659,6 +659,9 @@ pub enum SystemMessage {
         approved: bool,
         #[serde(default)]
         scope: ApprovalScope,
+        /// Optional user explanation when rejecting the request.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     AnswerQuestion {
         call_id: String,
@@ -936,6 +939,7 @@ mod tests {
             system,
             SystemMessage::ApproveTool {
                 scope: ApprovalScope::Once,
+                reason: None,
                 ..
             }
         ));
@@ -951,6 +955,19 @@ mod tests {
             StreamEvent::ToolApprovalRequired { allowed_scopes, .. }
                 if allowed_scopes == vec![ApprovalScope::Once]
         ));
+    }
+
+    #[test]
+    fn approval_rejection_reason_round_trips_without_transport_semantics() {
+        let system = SystemMessage::ApproveTool {
+            call_id: "call-1".into(),
+            approved: false,
+            scope: ApprovalScope::Once,
+            reason: Some("unsafe outside workspace".into()),
+        };
+        let json = serde_json::to_value(&system).expect("serialize approval");
+        let decoded: SystemMessage = serde_json::from_value(json).expect("decode approval");
+        assert_eq!(decoded, system);
     }
 
     #[test]

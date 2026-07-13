@@ -67,6 +67,8 @@ enum ClientMsg {
         approved: bool,
         #[serde(default)]
         scope: sylvander_protocol::ApprovalScope,
+        #[serde(default)]
+        reason: Option<String>,
     },
     Answer {
         call_id: String,
@@ -996,6 +998,7 @@ async fn handle_client_msg_for_client(
             call_id,
             approved,
             scope,
+            reason,
         } => {
             // Forward approval to bus for any waiting agent
             let _ = ctx
@@ -1008,6 +1011,7 @@ async fn handle_client_msg_for_client(
                         call_id,
                         approved,
                         scope,
+                        reason,
                     }),
                     payload: String::new(),
                     attachments: Vec::new(),
@@ -2301,7 +2305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_scope_is_forwarded_without_transport_interpretation() {
+    async fn approval_decision_is_forwarded_without_transport_interpretation() {
         let bus = Arc::new(InProcessMessageBus::new());
         let agent_id = AgentId::new("agent-1");
         let mut inbox = bus
@@ -2316,8 +2320,9 @@ mod tests {
         handle_client_msg(
             ClientMsg::Approve {
                 call_id: "call-1".into(),
-                approved: true,
+                approved: false,
                 scope: sylvander_protocol::ApprovalScope::Session,
+                reason: Some("unsafe outside workspace".into()),
             },
             &context,
             &agent_id,
@@ -2332,9 +2337,10 @@ mod tests {
             message.kind,
             MessageKind::System(SystemMessage::ApproveTool {
                 call_id,
-                approved: true,
+                approved: false,
                 scope: sylvander_protocol::ApprovalScope::Session,
-            }) if call_id == "call-1"
+                reason: Some(reason),
+            }) if call_id == "call-1" && reason == "unsafe outside workspace"
         ));
     }
 
