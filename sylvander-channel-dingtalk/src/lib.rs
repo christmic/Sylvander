@@ -219,6 +219,7 @@ impl Channel for DingTalkChannel {
 
         // Incoming loop (blocking — runs until WebSocket closes)
         let handler = Arc::new(ChannelMessageHandler { ctx });
+        handler.ctx.mark_ready();
         self.client.run(handler).await;
     }
 }

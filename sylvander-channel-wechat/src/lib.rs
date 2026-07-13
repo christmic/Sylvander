@@ -74,12 +74,13 @@ impl Channel for WechatChannel {
 
         let app = Router::new()
             .route("/wechat/callback", get(handle_verify).post(handle_callback))
-            .with_state(state);
+            .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.webhook_addr)
             .await
             .unwrap();
         info!(addr = %self.webhook_addr, "wechat channel listening");
+        state.ctx.mark_ready();
         axum::serve(listener, app).await.unwrap();
     }
 }

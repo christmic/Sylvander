@@ -189,6 +189,7 @@ async fn start_runtime(
     let channel_task = tokio::spawn(channel.run(ChannelContext {
         bus: bus.clone(),
         sessions: store,
+        readiness: None,
     }));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while !socket_path.exists() {

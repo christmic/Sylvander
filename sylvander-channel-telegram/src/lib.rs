@@ -137,12 +137,13 @@ impl Channel for TelegramChannel {
 
         let app = Router::new()
             .route("/telegram/webhook", post(handle_webhook))
-            .with_state(state);
+            .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.webhook_addr)
             .await
             .unwrap();
         info!(addr = %self.webhook_addr, "telegram channel listening");
+        state.ctx.mark_ready();
         axum::serve(listener, app).await.unwrap();
     }
 }

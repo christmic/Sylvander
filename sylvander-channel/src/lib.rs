@@ -29,6 +29,7 @@
 //! ```
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
@@ -54,7 +55,7 @@ use sylvander_agent::session_store::SessionStore;
 ///
 /// - The channel MUST NOT call engine or agent methods directly
 /// - All communication flows through the bus
-/// - Session mapping (external ID → SessionId) is the channel's
+/// - Session mapping (external ID → `SessionId`) is the channel's
 ///   responsibility, using the session store's metadata
 #[async_trait]
 pub trait Channel: Send + Sync {
@@ -81,11 +82,72 @@ pub trait Channel: Send + Sync {
 /// Capabilities provided to a channel by the agent system.
 ///
 /// The channel uses these to interact with agents and sessions.
-/// It never accesses AgentRun, Engine, or Runtime directly.
+/// It never accesses `AgentRun`, Engine, or Runtime directly.
 #[derive(Clone)]
 pub struct ChannelContext {
     /// Publish messages to the bus, subscribe to events.
     pub bus: Arc<dyn MessageBus>,
     /// Session persistence and external-ID mapping.
     pub sessions: Arc<dyn SessionStore>,
+    /// Runtime-owned startup handshake. Channel implementations call
+    /// [`ChannelContext::mark_ready`] only after external input can arrive.
+    #[doc(hidden)]
+    pub readiness: Option<ChannelReadiness>,
+}
+
+impl ChannelContext {
+    #[must_use]
+    pub fn new(bus: Arc<dyn MessageBus>, sessions: Arc<dyn SessionStore>) -> Self {
+        Self {
+            bus,
+            sessions,
+            readiness: None,
+        }
+    }
+
+    pub fn mark_ready(&self) {
+        if let Some(readiness) = &self.readiness {
+            readiness.mark_ready();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ChannelReadiness {
+    inner: Arc<ReadinessInner>,
+}
+
+struct ReadinessInner {
+    ready: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ChannelReadiness {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(ReadinessInner {
+                ready: AtomicBool::new(false),
+                notify: tokio::sync::Notify::new(),
+            }),
+        }
+    }
+
+    pub fn mark_ready(&self) {
+        if !self.inner.ready.swap(true, Ordering::SeqCst) {
+            self.inner.notify.notify_one();
+        }
+    }
+
+    pub async fn wait(&self) {
+        if !self.inner.ready.load(Ordering::SeqCst) {
+            self.inner.notify.notified().await;
+        }
+    }
+}
+
+impl Default for ChannelReadiness {
+    fn default() -> Self {
+        Self::new()
+    }
 }
