@@ -2195,11 +2195,16 @@ dependencies = [
  "serde_json",
  "shell-words",
  "similar",
+ "sylvander-agent",
+ "sylvander-channel",
+ "sylvander-channel-unix",
+ "sylvander-llm-anthropic",
  "sylvander-protocol",
  "tempfile",
  "tokio",
  "unicode-segmentation",
  "unicode-width 0.2.0",
+ "wiremock",
 ]
 
 [[package]]

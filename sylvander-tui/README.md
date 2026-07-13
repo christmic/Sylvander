@@ -41,9 +41,10 @@ cargo check -p sylvander-tui --all-targets --locked
 cargo test -p sylvander-tui --locked
 ```
 
-The test suite includes a real pseudo-terminal process test. It starts the
-compiled binary, negotiates the Unix protocol, submits keyboard input, renders
-a streamed reply, rejects approval with a typed reason, answers AskUser,
-interrupts an active turn, resizes the terminal, and verifies clean idle exit.
-It also forces a socket disconnect and verifies protocol renegotiation plus
-typed session reattachment before accepting more input.
+The test suite includes compiled-binary pseudo-terminal process tests. One
+negotiates the Unix protocol, submits keyboard input, renders a streamed reply,
+rejects approval with a typed reason, answers AskUser, interrupts an active
+turn, resizes the terminal, and verifies reconnect plus clean idle exit. A
+second runs the real `AgentRun`, `UnixChannel`, and file-backed SQLite stack
+against a locally controlled model endpoint, then starts a fresh TUI process
+and restores the persisted transcript through `Ctrl+P`.
