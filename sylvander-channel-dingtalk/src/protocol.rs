@@ -318,10 +318,7 @@ impl Client {
         {
             let cache = self.token_cache.lock().await;
             if let Some((token, expires)) = &*cache {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64;
+                let now = unix_timestamp();
                 if now < *expires {
                     return Some(token.clone());
                 }
@@ -334,11 +331,7 @@ impl Client {
         );
         let resp: JsonValue = reqwest::get(&url).await.ok()?.json().await.ok()?;
         let token = resp.get("access_token")?.as_str()?.to_string();
-        let expires = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-            + 7000;
+        let expires = unix_timestamp().saturating_add(7000);
 
         self.token_cache
             .lock()
@@ -346,4 +339,13 @@ impl Client {
             .replace((token.clone(), expires));
         Some(token)
     }
+}
+
+fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }

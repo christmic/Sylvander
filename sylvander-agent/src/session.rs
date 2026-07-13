@@ -7,10 +7,8 @@
 //!
 //! Session persistence (JSONL / SQLite) is deferred to a later phase.
 
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
 use sylvander_llm_anthropic::api::types::{Message, MessageParam};
 
 use crate::spec::SessionId;
@@ -24,7 +22,9 @@ pub fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +115,7 @@ impl SessionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use sylvander_llm_anthropic::api::types::MessageParam;
 
     fn test_metadata() -> SessionMetadata {

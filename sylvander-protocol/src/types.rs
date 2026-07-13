@@ -739,7 +739,9 @@ pub fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
 }
 
 impl BusMessage {
