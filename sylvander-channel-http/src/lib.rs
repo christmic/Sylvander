@@ -62,10 +62,11 @@ impl Channel for HttpChannel {
                 get(|| async { Json(serde_json::json!({"status":"ok"})) }),
             )
             .route("/chat", post(chat))
-            .with_state(state);
+            .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
         tracing::info!(addr = %self.addr, "http channel listening");
+        state.ctx.mark_ready();
         axum::serve(listener, app).await.unwrap();
     }
 }

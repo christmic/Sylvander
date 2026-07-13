@@ -191,10 +191,11 @@ impl Channel for WsChannel {
 
         let app = Router::new()
             .route("/ws", get(ws_handler))
-            .with_state(state);
+            .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
         info!(addr = %self.addr, "ws channel listening");
+        state.ctx.mark_ready();
         axum::serve(listener, app).await.unwrap();
     }
 }

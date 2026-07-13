@@ -40,7 +40,7 @@ use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 use crate::composition::{ConfiguredAgent, build_agents};
@@ -309,16 +309,39 @@ impl Runtime {
             ));
         }
         for ch in channels {
+            let readiness = ChannelReadiness::new();
             let ctx = ChannelContext {
                 bus: self.bus.clone(),
                 sessions: self.session_store.clone(),
+                readiness: Some(readiness.clone()),
             };
             let name = ch.name().to_string();
             let task_name = name.clone();
-            let task = tokio::spawn(async move {
+            let mut task = tokio::spawn(async move {
                 ch.run(ctx).await;
                 warn!(channel = %task_name, "channel task exited");
             });
+            tokio::select! {
+                result = &mut task => {
+                    return Err(RuntimeError::Channel(match result {
+                        Ok(()) => format!("channel {name} exited before becoming ready"),
+                        Err(error) => format!("channel {name} failed during startup: {error}"),
+                    }));
+                }
+                result = tokio::time::timeout(
+                    tokio::time::Duration::from_secs(5),
+                    readiness.wait(),
+                ) => {
+                    if result.is_err() {
+                        task.abort();
+                        let _ = task.await;
+                        return Err(RuntimeError::Channel(format!(
+                            "channel {name} did not become ready within 5 seconds"
+                        )));
+                    }
+                }
+            }
+            info!(channel = %name, "channel ready");
             tasks.push(ChannelTask { name, task });
         }
         Ok(())
@@ -494,6 +517,17 @@ mod tests {
         dropped: Arc<AtomicBool>,
     }
 
+    struct ExitingChannel;
+
+    #[async_trait::async_trait]
+    impl Channel for ExitingChannel {
+        fn name(&self) -> &'static str {
+            "exiting-test"
+        }
+
+        async fn run(self: Arc<Self>, _ctx: ChannelContext) {}
+    }
+
     struct DropSignal(Arc<AtomicBool>);
 
     impl Drop for DropSignal {
@@ -508,8 +542,9 @@ mod tests {
             "blocking-test"
         }
 
-        async fn run(self: Arc<Self>, _ctx: ChannelContext) {
+        async fn run(self: Arc<Self>, ctx: ChannelContext) {
             let _drop_signal = DropSignal(self.dropped.clone());
+            ctx.mark_ready();
             self.started.notify_one();
             std::future::pending::<()>().await;
         }
@@ -577,6 +612,27 @@ mod tests {
 
         runtime.shutdown().await.unwrap();
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn channel_exit_before_readiness_fails_startup() {
+        let runtime = Runtime::boot(
+            SystemConfig {
+                name: "test-runtime".into(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+            },
+            test_client(),
+        )
+        .await
+        .unwrap();
+
+        let error = runtime
+            .start_channels(vec![Arc::new(ExitingChannel)])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("before becoming ready"));
+        runtime.shutdown().await.unwrap();
     }
 
     #[tokio::test]
