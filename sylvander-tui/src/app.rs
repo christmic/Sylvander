@@ -13,7 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::dirty::DirtyFlag;
 use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
-use crate::modal::{ModalStack, SessionEntry, SessionStatus, SessionsOverlay};
+use crate::modal::{
+    ModalStack, SessionEntry, SessionStatus, SessionsOverlay, WorkspaceRollbackModal,
+};
 pub use crate::model::{
     AppMode, ChatMessage, HistoryRole, RuntimeMetadata, TaskEntry, TaskState, ToolInfo, ToolStatus,
     ToolStepChild,
@@ -540,6 +542,30 @@ impl AppState {
                 self.messages.push(ChatMessage::Info(format!(
                     "{} · retry {attempt}/{max_attempts} in {delay_ms}ms · {}",
                     retry_cause_label(cause),
+                    compact_runtime_reason(&reason)
+                )));
+            }
+            DomainEvent::WorkspaceRollbackPreviewed {
+                session_id,
+                preview,
+            } => {
+                self.status = format!("Rollback ready · {} files", preview.files.len());
+                self.modals
+                    .push(Box::new(WorkspaceRollbackModal::new(session_id, preview)));
+            }
+            DomainEvent::WorkspaceRollbackCompleted { report } => {
+                self.status = format!("Files restored · {}", report.restored.len());
+                self.messages.push(ChatMessage::Info(format!(
+                    "workspace rollback complete · {} file{} restored\n{}\nconversation history unchanged",
+                    report.restored.len(),
+                    if report.restored.len() == 1 { "" } else { "s" },
+                    report.restored.join("\n")
+                )));
+            }
+            DomainEvent::WorkspaceRollbackFailed { reason } => {
+                self.status = "Workspace rollback failed".into();
+                self.messages.push(ChatMessage::Info(format!(
+                    "workspace rollback failed · {}",
                     compact_runtime_reason(&reason)
                 )));
             }
@@ -1368,6 +1394,33 @@ mod tests {
         });
         assert_eq!(state.cost_nano_usd, Some(7_500_000));
         assert_eq!(format_cost(7_500_000), "$0.007500");
+    }
+
+    #[test]
+    fn rollback_lifecycle_requires_preview_and_reports_restored_files() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::WorkspaceRollbackPreviewed {
+            session_id: "s1".into(),
+            preview: sylvander_protocol::WorkspaceRollbackPreview {
+                turn_id: "turn-1".into(),
+                files: vec!["src/lib.rs".into()],
+            },
+        });
+        assert_eq!(
+            state.modals.top().map(|modal| modal.title()),
+            Some("Rollback files")
+        );
+        state.apply(DomainEvent::WorkspaceRollbackCompleted {
+            report: sylvander_protocol::WorkspaceRollbackReport {
+                turn_id: "turn-1".into(),
+                restored: vec!["src/lib.rs".into()],
+            },
+        });
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(text))
+                if text.contains("src/lib.rs") && text.contains("conversation history unchanged")
+        ));
     }
 
     #[test]

@@ -44,6 +44,16 @@ pub enum DomainEvent {
         automatic: bool,
         reason: String,
     },
+    WorkspaceRollbackPreviewed {
+        session_id: String,
+        preview: sylvander_protocol::WorkspaceRollbackPreview,
+    },
+    WorkspaceRollbackCompleted {
+        report: sylvander_protocol::WorkspaceRollbackReport,
+    },
+    WorkspaceRollbackFailed {
+        reason: String,
+    },
     /// Socket disconnected (graceful or otherwise).
     Disconnected {
         reason: String,
@@ -246,6 +256,13 @@ pub enum Action {
     },
     CompactSession {
         session_id: String,
+    },
+    PreviewWorkspaceRollback {
+        session_id: String,
+    },
+    ConfirmWorkspaceRollback {
+        session_id: String,
+        expected_turn_id: String,
     },
     SelectModel {
         model: String,

@@ -106,6 +106,7 @@ pub mod model_picker;
 pub mod palette;
 pub mod permissions;
 pub mod plan;
+pub mod rollback;
 pub mod sessions;
 pub mod tool_inspector;
 
@@ -117,5 +118,6 @@ pub use model_picker::ModelPicker;
 pub use palette::{COMMANDS, Command, CommandPalette};
 pub use permissions::PermissionsPicker;
 pub use plan::PlanReviewModal;
+pub use rollback::WorkspaceRollbackModal;
 pub use sessions::{SessionEntry, SessionStatus, SessionsOverlay};
 pub use tool_inspector::ToolInspector;

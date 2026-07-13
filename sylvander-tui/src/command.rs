@@ -29,6 +29,7 @@ pub enum CommandId {
     Permissions,
     Context,
     Compact,
+    Rollback,
     Status,
     Quit,
 }
@@ -203,6 +204,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/compact",
         description: "Summarize older context while preserving recent turns",
         hint: "server-backed",
+    },
+    CommandSpec {
+        id: CommandId::Rollback,
+        name: "rollback",
+        usage: "/rollback",
+        description: "Inspect and restore the latest Agent file turn",
+        hint: "conflict checked",
     },
     CommandSpec {
         id: CommandId::Quit,
@@ -640,6 +648,20 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 .push(crate::event::Action::CompactSession { session_id });
             state.status = "Requesting context compaction…".into();
         }
+        CommandId::Rollback => {
+            require_no_args(&invocation)?;
+            if state.turn_active {
+                return Err("Interrupt active work before rolling back files".into());
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no session to roll back".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::PreviewWorkspaceRollback { session_id });
+            state.status = "Inspecting latest Agent file changes…".into();
+        }
         CommandId::Inspect => {
             let prefix = optional_one_arg(&invocation)?;
             let (call_id, tool_name, output) = find_tool_output(state, prefix)?;
@@ -939,6 +961,18 @@ mod tests {
             [crate::event::Action::LoadSession { session_id }] if session_id == "session-1"
         ));
         assert!(state.status.contains("workspace files unchanged"));
+    }
+
+    #[test]
+    fn rollback_requests_server_preview_before_any_mutation() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
+        execute(parse("rollback").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::PreviewWorkspaceRollback { session_id }]
+                if session_id == "session-1"
+        ));
     }
 
     #[test]
