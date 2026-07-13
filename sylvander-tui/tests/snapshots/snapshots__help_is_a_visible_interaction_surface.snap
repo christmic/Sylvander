@@ -1,7 +1,16 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 110, 30)"
+expression: "render_buf(state, 110, 30)"
 ---
+  Sylvander help · reference                                                                                  
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Tool activity                                                                                               
+                                                                                                              
+  compact             one semantic target and result summary                                                  
+  expanded            structured input plus up to 12 result rows                                              
+  Ctrl+O              toggle compact and expanded modes                                                       
+  call ID             pairs concurrent results with the correct call                                          
+  amber result        tool returned an error                                                                  
                                                                                                               
                                                                                                               
                                                                                                               
@@ -9,26 +18,17 @@ expression: "render_buf(&state, 110, 30)"
                                                                                                               
                                                                                                               
                                                                                                               
-                  ┌ Sylvander help ────────────────────────────────────────────────────────┐                  
-                  │Tool activity                                                           │                  
-                  │                                                                        │                  
-                  │compact             one semantic target and result summary              │                  
-                  │expanded            structured input plus up to 12 result rows          │                  
-                  │Ctrl+O              toggle compact and expanded modes                   │                  
-                  │call ID             pairs concurrent results with the correct call      │                  
-                  │amber result        tool returned an error                              │                  
-                  │                                                                        │                  
-                  │Esc close                                                               │                  
-                  │                                                                        │                  
-                  │                                                                        │                  
-                  │                                                                        │                  
-                  │                                                                        │                  
-                  │                                                                        │                  
-                  └────────────────────────────────────────────────────────────────────────┘                  
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                             
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0 tok                                connecting…   draft local
+Reference for the current interaction mode                                                                    
+◌ connecting · model — · branch —                                                    connecting…   draft local

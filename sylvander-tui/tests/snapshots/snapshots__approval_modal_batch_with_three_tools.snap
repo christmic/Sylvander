@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 90, 28)"
+expression: "render_buf(state, 90, 28)"
 ---
   › run setup                                                                             
   ◌ Run `ls`     00s                                                                      
@@ -12,13 +12,9 @@ expression: "render_buf(&state, 90, 28)"
                                                                                           
                                                                                           
                                                                                           
-                  ┌ Rejection Feedback ────────────────────────────────┐                  
-                  │Optional reason for rejecting this request:         │                  
-                  │                                                    │                  
-                  │> use docker                                        │                  
-                  │                                                    │                  
-                  │enter reject · esc back · 500 character max         │                  
-                  └────────────────────────────────────────────────────┘                  
+                                                                                          
+                                                                                          
+                                                                                          
                                                                                           
                                                                                           
                                                                                           
@@ -27,6 +23,10 @@ expression: "render_buf(&state, 90, 28)"
                                                                                           
                                                                                           
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  ◆ Deny this request                                                                     
+  Add guidance for Sylvander (optional).                                                  
+  > use docker                                                                            
+                                                                                          
+  ↵ reject with guidance   esc back   500 character max                                   
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

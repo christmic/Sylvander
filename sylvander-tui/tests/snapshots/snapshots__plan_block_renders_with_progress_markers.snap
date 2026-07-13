@@ -1,28 +1,28 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&s, 90, 24)"
+expression: "render_buf(s, 90, 24)"
 ---
   › set up auth                                                                           
   Proposed plan                                                                           
     ✓ 1. Inspect the current authentication boundary                                      
     ● 2. Define the JWT verification interface                                            
-    ○ 3. Imple┌ Plan review (5 steps) ──────────────────────────────────────┐             
-    ○ 4. Add u│Review the plan — enter approves, e edits the focused step, a│             
-    ○ 5. Run w│  1. Inspect the current authentication boundary             │             
-              │● 2. Define the JWT verification interface                   │             
-              │  3. Implement verifier and middleware                       │             
-              │  4. Add unit and integration tests                          │             
-              │  5. Run workspace verification                              │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │                                                             │             
-              │enter=approve  e=edit  a=add  d=remove  esc=cancel           │             
-              └─────────────────────────────────────────────────────────────┘             
+    ○ 3. Implement verifier and middleware                                                
+    ○ 4. Add unit and integration tests                                                   
+    ○ 5. Run workspace verification                                                       
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
+                                                                                          
 ──────────────────────────────────────────────────────────────────────────────────────────
->                                                                                         
+  ◆ Ready to proceed?                                                            5 steps  
+                                                                                          
+  › 1. Start implementation                                                               
+    2. Revise the plan                                                                    
+    3. Cancel                                                                             
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —

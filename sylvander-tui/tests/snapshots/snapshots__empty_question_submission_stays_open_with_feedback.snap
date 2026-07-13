@@ -1,6 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
-expression: "render_buf(&state, 110, 30)"
+expression: "render_buf(state, 110, 30)"
 ---
                                                                                                               
                                                                                                               
@@ -12,15 +12,10 @@ expression: "render_buf(&state, 110, 30)"
                                                                                                               
                                                                                                               
                                                                                                               
-                      ┌ Agent asks (free text) ────────────────────────────────────────┐                      
-                      │Describe the desired behavior                                   │                      
-                      │                                                                │                      
-                      │Type your answer:                                               │                      
-                      │>                                                               │                      
-                      │                                                                │                      
-                      │! Choose an option, type an answer, or press Esc to cancel      │                      
-                      │Enter submit   Esc cancel and unblock Agent                     │                      
-                      └────────────────────────────────────────────────────────────────┘                      
+                                                                                                              
+                                                                                                              
+                                                                                                              
+                                                                                                              
                                                                                                               
                                                                                                               
                                                                                                               
@@ -29,6 +24,11 @@ expression: "render_buf(&state, 110, 30)"
                                                                                                               
                                                                                                               
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
->                                                                                                             
+  ◆ Your input is needed                                                                                      
+  Describe the desired behavior                                                                               
+                                                                                                              
+  >                                                                                                           
+  ! Choose an option, type an answer, or press Esc to skip                                                    
+  Type your answer · ↵ submit · esc return                                                                    
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-◌ connecting · model — · branch — · session — · 0 tok                                connecting…   draft local
+◌ connecting · model — · branch —                                                    connecting…   draft local
