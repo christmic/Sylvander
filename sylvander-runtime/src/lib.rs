@@ -524,7 +524,13 @@ impl RuntimeUiService {
             .await
             .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
             .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
-        if session.metadata.user_id != principal.id.0 && !principal.has_role("admin") {
+        let owns_principal = session.metadata.user_id == principal.id.0;
+        let owns_channel = session
+            .external_meta
+            .get("channel_id")
+            .and_then(|value| value.as_str())
+            == Some(boundary.channel_instance_id.as_str());
+        if (!owns_principal || !owns_channel) && !principal.has_role("admin") {
             return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary, operation,
             ));
@@ -1650,6 +1656,28 @@ model_name = "model-a"
         assert_eq!(stored.effective_config, Some(created.effective));
         assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        let other_terminal = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "test-user",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "other-terminal",
+            "unix",
+            "request-cross-instance",
+        );
+        let denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &other_terminal,
+            &sylvander_protocol::UiClientMessage::GetSessionConfig {
+                session_id: created.session_id.0.clone(),
+            },
+        )
+        .await
+        .expect_err("the same principal from another channel instance must be denied");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
         let platform_boundary = sylvander_protocol::BoundaryContext::authenticated(
             sylvander_protocol::AuthenticatedPrincipal::user(
                 "telegram:bot-a:42",
@@ -1668,14 +1696,18 @@ model_name = "model-a"
         let platform_session = sylvander_channel::authorize_external_chat(
             &channel_context,
             &platform_boundary,
-            None,
-            AgentId::new("assistant"),
-            "telegram-42".into(),
-            "hello from Telegram",
-            std::collections::BTreeMap::from([
-                ("channel_instance_id".into(), "bot-a".into()),
-                ("chat_id".into(), "42".into()),
-            ]),
+            sylvander_channel::ExternalChatRequest {
+                existing_session: None,
+                agent_id: AgentId::new("assistant"),
+                label: "telegram-42".into(),
+                overrides: SessionConfigOverrides::default(),
+                text: "hello from Telegram".into(),
+                attachments: Vec::new(),
+                external_meta: std::collections::BTreeMap::from([
+                    ("channel_instance_id".into(), "bot-a".into()),
+                    ("chat_id".into(), "42".into()),
+                ]),
+            },
         )
         .await
         .expect("an allowed platform principal may create and use its session");
@@ -1703,11 +1735,15 @@ model_name = "model-a"
         let denial = sylvander_channel::authorize_external_chat(
             &channel_context,
             &other_bot,
-            Some(platform_session),
-            AgentId::new("assistant"),
-            "telegram-42".into(),
-            "cross-instance attempt",
-            std::collections::BTreeMap::new(),
+            sylvander_channel::ExternalChatRequest {
+                existing_session: Some(platform_session),
+                agent_id: AgentId::new("assistant"),
+                label: "telegram-42".into(),
+                overrides: SessionConfigOverrides::default(),
+                text: "cross-instance attempt".into(),
+                attachments: Vec::new(),
+                external_meta: std::collections::BTreeMap::new(),
+            },
         )
         .await
         .expect_err("another channel instance must not reuse the session");
@@ -1849,7 +1885,7 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 5);
+        assert_eq!(denials.len(), 6);
         assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
             || denial.code == "unauthenticated"));
         assert!(
