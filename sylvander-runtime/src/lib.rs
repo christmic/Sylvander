@@ -37,7 +37,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
-use sylvander_agent::engine::AgentRunEngine;
+use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
@@ -51,7 +51,7 @@ use sylvander_protocol::{
     SessionEffectiveConfig,
 };
 
-use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
+use crate::composition::{ConfiguredAgent, build_agent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 use agent_registry::AgentRegistry;
@@ -85,12 +85,13 @@ pub struct Runtime {
     /// Session persistence backend.
     pub session_store: Arc<dyn SessionStore>,
     /// Ephemeral sessions (tracked in memory, not persisted).
-    ephemeral: RwLock<HashMap<SessionId, StoredSession>>,
+    ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
     agent_registry: Option<AgentRegistry>,
+    revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
@@ -109,8 +110,134 @@ struct RuntimeUiService {
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
     agent_registry: Option<AgentRegistry>,
+    revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     evidence: Option<EvidenceStore>,
     boundary: BoundaryGuard,
+}
+
+struct RuntimeRevisionProvider {
+    config: ServerConfig,
+    registry: AgentRegistry,
+    bus: Arc<dyn MessageBus>,
+    sessions: Arc<dyn SessionStore>,
+    ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
+    configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
+}
+
+impl RuntimeRevisionProvider {
+    async fn configured_revision(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
+        let key = (agent_id.clone(), revision);
+        if let Some(configured) = self.configured.read().await.get(&key).cloned() {
+            return Ok(configured);
+        }
+        let definition = self
+            .registry
+            .load(agent_id, revision)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| {
+                RuntimeError::Config(format!("unknown Agent revision {agent_id}@{revision}"))
+            })?
+            .definition;
+        let configured = build_agent(
+            &self.config,
+            &definition,
+            self.bus.clone(),
+            self.sessions.clone(),
+            &SystemSecretResolver,
+        )
+        .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        let mut cache = self.configured.write().await;
+        Ok(cache
+            .entry(key)
+            .or_insert_with(|| configured.clone())
+            .clone())
+    }
+
+    async fn active_agent(&self, agent_id: &AgentId) -> Result<ConfiguredAgent, RuntimeError> {
+        let active = self
+            .registry
+            .load_active(agent_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Config(format!("unknown Agent {agent_id}")))?;
+        self.configured_revision(agent_id, active.definition.revision)
+            .await
+    }
+
+    async fn bound_revision(
+        &self,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+    ) -> Result<u64, RuntimeError> {
+        if let Some(session) = self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+        {
+            return session.effective_config.map_or_else(
+                || {
+                    Err(RuntimeError::Config(format!(
+                        "durable session {session_id} has no effective Agent revision"
+                    )))
+                },
+                |effective| {
+                    if &effective.agent_id == agent_id {
+                        Ok(effective.agent_revision)
+                    } else {
+                        Err(RuntimeError::Config(format!(
+                            "session {session_id} is bound to Agent {}, not {agent_id}",
+                            effective.agent_id
+                        )))
+                    }
+                },
+            );
+        }
+        let ephemeral = self
+            .ephemeral
+            .read()
+            .await
+            .get(session_id)
+            .and_then(|session| session.effective_config.as_ref())
+            .cloned()
+            .ok_or_else(|| RuntimeError::Config(format!("session {session_id} is not bound")))?;
+        if &ephemeral.agent_id != agent_id {
+            return Err(RuntimeError::Config(format!(
+                "session {session_id} is bound to Agent {}, not {agent_id}",
+                ephemeral.agent_id
+            )));
+        }
+        Ok(ephemeral.agent_revision)
+    }
+}
+
+#[async_trait::async_trait]
+impl RevisionedAgentRunProvider for RuntimeRevisionProvider {
+    async fn revision_for_session(
+        &self,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+    ) -> Result<u64, String> {
+        self.bound_revision(agent_id, session_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn run_for_revision(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+    ) -> Result<sylvander_agent::run::AgentRun, String> {
+        self.configured_revision(agent_id, revision)
+            .await
+            .map(|configured| configured.run)
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[async_trait::async_trait]
@@ -174,13 +301,16 @@ impl sylvander_channel::UiService for RuntimeUiService {
     ) -> Result<Vec<AgentDescriptor>, sylvander_protocol::BoundaryError> {
         require_principal(boundary, "discover_agents")?;
         let mut agents = Vec::new();
-        for agent in self.agents.values() {
+        for agent_id in self.agents.keys() {
             if !self
-                .current_agent_access_allowed(&agent.spec.id, boundary, "discover_agents")
+                .current_agent_access_allowed(agent_id, boundary, "discover_agents")
                 .await?
             {
                 continue;
             }
+            let agent = self
+                .active_agent(agent_id, boundary, "discover_agents")
+                .await?;
             agents.push(AgentDescriptor {
                 id: agent.spec.id.clone(),
                 revision: agent.definition.revision,
@@ -248,13 +378,9 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "create_session",
             ));
         }
-        let agent = self.agents.get(&request.agent_id).ok_or_else(|| {
-            boundary_failure(
-                boundary,
-                "create_session",
-                format!("unknown Agent {}", request.agent_id),
-            )
-        })?;
+        let agent = self
+            .active_agent(&request.agent_id, boundary, "create_session")
+            .await?;
         if !self
             .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
             .await?
@@ -264,7 +390,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "create_session",
             ));
         }
-        let effective = resolve_session_config(agent, &request.overrides, None, None)
+        let effective = resolve_session_config(&agent, &request.overrides, None, None)
             .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
         let workspace = effective
             .user_workspace
@@ -448,6 +574,23 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn active_agent(
+        &self,
+        agent_id: &AgentId,
+        boundary: &sylvander_protocol::BoundaryContext,
+        operation: &str,
+    ) -> Result<ConfiguredAgent, sylvander_protocol::BoundaryError> {
+        if let Some(provider) = &self.revision_provider {
+            return provider
+                .active_agent(agent_id)
+                .await
+                .map_err(|error| boundary_failure(boundary, operation, error.to_string()));
+        }
+        self.agents.get(agent_id).cloned().ok_or_else(|| {
+            boundary_failure(boundary, operation, format!("unknown Agent {agent_id}"))
+        })
+    }
+
     async fn current_agent_access_allowed(
         &self,
         agent_id: &AgentId,
@@ -482,6 +625,12 @@ impl RuntimeUiService {
         let Some(effective) = &session.effective_config else {
             return Ok(agent);
         };
+        if let Some(provider) = &self.revision_provider {
+            return provider
+                .configured_revision(&effective.agent_id, effective.agent_revision)
+                .await
+                .map_err(|error| boundary_failure(boundary, operation, error.to_string()));
+        }
         if effective.agent_revision == agent.definition.revision {
             return Ok(agent);
         }
@@ -512,6 +661,16 @@ impl RuntimeUiService {
         message: &sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
         require_principal(boundary, ui_operation(message))?;
+        if matches!(
+            message,
+            sylvander_protocol::UiClientMessage::AgentAdmin { .. }
+        ) {
+            return Err(boundary_failure(
+                boundary,
+                "agent_admin",
+                "Agent administration is not connected to this runtime",
+            ));
+        }
         if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
             self.agents.get(&request.agent_id).ok_or_else(|| {
                 sylvander_protocol::BoundaryError::forbidden(boundary, "create_session")
@@ -733,6 +892,7 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::GetSessionConfig { .. } => "get_session_config",
         Message::UpdateSessionConfig { .. } => "update_session_config",
         Message::SubmitFeedback { .. } => "submit_feedback",
+        Message::AgentAdmin { .. } => "agent_admin",
         Message::ListSessions => "list_sessions",
         Message::LoadSession { .. } => "load_session",
         Message::ReattachSession { .. } => "reattach_session",
@@ -869,16 +1029,18 @@ impl Runtime {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             agent_registry: None,
+            revision_provider: None,
             evidence: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
         Ok(Self {
             engine,
             session_store,
-            ephemeral: RwLock::new(HashMap::new()),
+            ephemeral: Arc::new(RwLock::new(HashMap::new())),
             bus,
             configured_agents,
             agent_registry: None,
+            revision_provider: None,
             ui_service,
             evidence: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
@@ -928,6 +1090,9 @@ impl Runtime {
             active_definitions.push(active.definition);
         }
         config.agents = active_definitions;
+        config.validate().map_err(|error| {
+            RuntimeError::Config(format!("active Agent registry is incompatible: {error}"))
+        })?;
 
         let session_store: Arc<dyn SessionStore> = Arc::new(
             SqliteSessionStore::open(session_db)
@@ -976,13 +1141,39 @@ impl Runtime {
             &SystemSecretResolver,
         )
         .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        let ephemeral = Arc::new(RwLock::new(HashMap::new()));
         let mut configured_agents = HashMap::new();
         for agent in agents {
+            configured_agents.insert(agent.spec.id.clone(), agent);
+        }
+        let revision_provider = Arc::new(RuntimeRevisionProvider {
+            config: config.clone(),
+            registry: agent_registry.clone(),
+            bus: bus.clone(),
+            sessions: session_store.clone(),
+            ephemeral: ephemeral.clone(),
+            configured: RwLock::new(
+                configured_agents
+                    .values()
+                    .map(|agent| {
+                        (
+                            (agent.spec.id.clone(), agent.definition.revision),
+                            agent.clone(),
+                        )
+                    })
+                    .collect(),
+            ),
+        });
+        for agent in configured_agents.values() {
             engine
-                .spawn_run(agent.spec.clone(), agent.run.clone())
+                .spawn_revisioned_run(
+                    agent.spec.clone(),
+                    agent.definition.revision,
+                    agent.run.clone(),
+                    revision_provider.clone(),
+                )
                 .await
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
-            configured_agents.insert(agent.spec.id.clone(), agent);
         }
 
         for mut session in session_store
@@ -990,6 +1181,12 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
         {
+            if session.agents.len() != 1 {
+                return Err(RuntimeError::Config(format!(
+                    "revisioned session {} requires exactly one Agent",
+                    session.id
+                )));
+            }
             let agent = session
                 .agents
                 .iter()
@@ -998,6 +1195,12 @@ impl Runtime {
                     RuntimeError::Config(format!("session {} has no configured Agent", session.id))
                 })?;
             if let Some(effective) = &session.effective_config {
+                if session.agents.first() != Some(&effective.agent_id) {
+                    return Err(RuntimeError::Config(format!(
+                        "session {} Agent membership does not match effective revision owner {}",
+                        session.id, effective.agent_id
+                    )));
+                }
                 let registered = agent_registry
                     .load(&effective.agent_id, effective.agent_revision)
                     .await
@@ -1054,6 +1257,7 @@ impl Runtime {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             agent_registry: Some(agent_registry.clone()),
+            revision_provider: Some(revision_provider.clone()),
             evidence: Some(security_audit),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
@@ -1061,10 +1265,11 @@ impl Runtime {
         Ok(Self {
             engine,
             session_store,
-            ephemeral: RwLock::new(HashMap::new()),
+            ephemeral,
             bus,
             configured_agents,
             agent_registry: Some(agent_registry),
+            revision_provider: Some(revision_provider),
             ui_service,
             evidence,
             channels: tokio::sync::Mutex::new(Vec::new()),
@@ -1100,33 +1305,22 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Config(format!("unknown session {session_id}")))?;
-        let mut agent = session
-            .agents
-            .iter()
-            .find_map(|id| self.configured_agents.get(id))
-            .cloned()
-            .ok_or_else(|| {
-                RuntimeError::Config(format!("session {session_id} has no configured Agent"))
-            })?;
-        if let Some(effective) = &session.effective_config
-            && effective.agent_revision != agent.definition.revision
+        let agent = if let (Some(provider), Some(effective)) =
+            (&self.revision_provider, &session.effective_config)
         {
-            let registry = self
-                .agent_registry
-                .as_ref()
-                .ok_or_else(|| RuntimeError::Config("Agent registry is unavailable".into()))?;
-            let revision = registry
-                .load(&effective.agent_id, effective.agent_revision)
-                .await
-                .map_err(|error| RuntimeError::Store(error.to_string()))?
+            provider
+                .configured_revision(&effective.agent_id, effective.agent_revision)
+                .await?
+        } else {
+            session
+                .agents
+                .iter()
+                .find_map(|id| self.configured_agents.get(id))
+                .cloned()
                 .ok_or_else(|| {
-                    RuntimeError::Config(format!(
-                        "unknown Agent revision {}@{}",
-                        effective.agent_id, effective.agent_revision
-                    ))
-                })?;
-            agent.definition = revision.definition;
-        }
+                    RuntimeError::Config(format!("session {session_id} has no configured Agent"))
+                })?
+        };
         let effective =
             resolve_session_config(&agent, &overrides, None, Some(&session.metadata.workspace))
                 .map_err(|error| {
@@ -1247,26 +1441,51 @@ impl Runtime {
         agents: &[AgentId],
         external_meta: HashMap<String, serde_json::Value>,
     ) -> Result<SessionId, RuntimeError> {
-        let session_id = self
-            .engine
-            .create_session(name, metadata.clone(), agents)
-            .await
-            .map_err(|e| RuntimeError::Engine(format!("create ephemeral: {e}")))?;
-
+        let name = name.into();
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let session_name = metadata.name.clone();
+        if self.revision_provider.is_some() && agents.len() != 1 {
+            return Err(RuntimeError::Config(
+                "revisioned ephemeral sessions require exactly one Agent".into(),
+            ));
+        }
         let mut stored = StoredSession::new(
             session_id.clone(),
             session_name,
             SessionLifetime::Ephemeral,
-            metadata,
+            metadata.clone(),
             agents.to_vec(),
         );
         stored.external_meta = external_meta;
+        if let Some(provider) = &self.revision_provider {
+            let agent_id = agents.first().ok_or_else(|| {
+                RuntimeError::Config("ephemeral session requires one Agent".into())
+            })?;
+            let agent = provider.active_agent(agent_id).await?;
+            stored.effective_config = Some(
+                resolve_session_config(
+                    &agent,
+                    &stored.config_overrides,
+                    None,
+                    Some(&stored.metadata.workspace),
+                )
+                .map_err(|error| RuntimeError::Composition(error.to_string()))?,
+            );
+        }
 
         self.ephemeral
             .write()
             .await
             .insert(session_id.clone(), stored);
+
+        if let Err(error) = self
+            .engine
+            .attach_session(session_id.clone(), name, metadata, agents)
+            .await
+        {
+            self.ephemeral.write().await.remove(&session_id);
+            return Err(RuntimeError::Engine(format!("create ephemeral: {error}")));
+        }
 
         Ok(session_id)
     }
@@ -1786,6 +2005,16 @@ model_name = "model-a"
         assert_eq!(stored.effective_config, Some(created.effective));
         assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        assert!(
+            runtime
+                .revision_provider
+                .as_ref()
+                .unwrap()
+                .revision_for_session(&AgentId::new("different-agent"), &created.session_id)
+                .await
+                .is_err(),
+            "a session revision binding must never be reused for another Agent"
+        );
         let peer = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
             &owner,
@@ -2116,6 +2345,110 @@ model_name = "model-a"
             .update(&restart_config, original_revision, next_definition.clone())
             .await
             .unwrap();
+        registry
+            .activate(
+                &next_definition.spec.id,
+                next_definition.revision,
+                original_revision,
+            )
+            .await
+            .unwrap();
+        let administrator = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal {
+                id: sylvander_protocol::PrincipalId::new("operator"),
+                kind: sylvander_protocol::PrincipalKind::User,
+                authentication: sylvander_protocol::AuthenticationMethod::Internal,
+                roles: vec!["admin".into()],
+            },
+            "admin-console",
+            "internal",
+            "hot-activate",
+        );
+        let discovered = sylvander_channel::UiService::discover_agents(
+            runtime.ui_service.as_ref(),
+            &administrator,
+        )
+        .await
+        .unwrap();
+        assert_eq!(discovered[0].revision, next_definition.revision);
+        assert_eq!(discovered[0].name, next_definition.spec.name);
+        let activated_session = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            SessionCreateRequest {
+                agent_id: next_definition.spec.id.clone(),
+                label: "hot activated revision".into(),
+                channel_id: Some("admin-console".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            activated_session.effective.agent_revision, next_definition.revision,
+            "new sessions must bind the hot-activated revision"
+        );
+        let provider = runtime.revision_provider.as_ref().unwrap();
+        let original_run = provider
+            .configured_revision(&next_definition.spec.id, original_revision)
+            .await
+            .unwrap()
+            .run;
+        let activated_run = provider
+            .configured_revision(&next_definition.spec.id, next_definition.revision)
+            .await
+            .unwrap()
+            .run;
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if original_run
+                    .get_session(&created.session_id)
+                    .await
+                    .is_some()
+                    && activated_run
+                        .get_session(&activated_session.session_id)
+                        .await
+                        .is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("revision workers must receive only their bound sessions");
+        assert!(
+            activated_run
+                .get_session(&created.session_id)
+                .await
+                .is_none(),
+            "an existing session must not drift to the activated revision"
+        );
+
+        registry
+            .rollback(
+                &next_definition.spec.id,
+                original_revision,
+                next_definition.revision,
+            )
+            .await
+            .unwrap();
+        let rolled_back_session = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            SessionCreateRequest {
+                agent_id: next_definition.spec.id.clone(),
+                label: "hot rolled back revision".into(),
+                channel_id: Some("admin-console".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            rolled_back_session.effective.agent_revision, original_revision,
+            "rollback must affect new sessions without restarting"
+        );
         registry
             .activate(
                 &next_definition.spec.id,

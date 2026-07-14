@@ -51,7 +51,7 @@ pub fn build_agents(
         .collect()
 }
 
-fn build_agent(
+pub(crate) fn build_agent(
     config: &ServerConfig,
     definition: &AgentDefinitionConfig,
     bus: Arc<dyn MessageBus>,
