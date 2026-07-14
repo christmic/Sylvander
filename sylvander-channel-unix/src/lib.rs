@@ -1428,81 +1428,113 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::SelectModel {
+            session_id,
             model,
             reasoning_effort,
         } => {
-            let Some(control) = runtime_control else {
+            let Some(session_id) = session_id else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "select_model".into(),
-                    message: "runtime model control is unavailable".into(),
+                    message: "select_model requires a session_id".into(),
                 });
                 return;
             };
-            match control.select_model(&model, reasoning_effort).await {
-                Ok(model_info) => {
-                    let capabilities = model_info
-                        .models
-                        .iter()
-                        .find(|entry| entry.id == model_info.current_model)
-                        .map_or(0, |entry| entry.capabilities);
-                    let _ = tx.send(ServerMsg::RuntimeInfo {
-                        model: model_info.current_model,
-                        reasoning_effort: model_info.reasoning_effort,
-                        models: model_info.models,
-                        permissions: control.permission_profile().await,
-                        capabilities,
-                        approval_enabled: runtime.approval_enabled,
-                        max_attachment_bytes: runtime.max_attachment_bytes,
-                        platform: control.platform_snapshot(),
-                    });
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_model", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
                 }
-                Err(message) => {
-                    let _ = tx.send(ServerMsg::OperationError {
-                        operation: "select_model".into(),
-                        message,
-                    });
-                }
+            };
+            let mut overrides = state.overrides;
+            overrides.model_id = Some(model);
+            overrides.reasoning_effort = Some(reasoning_effort);
+            match ui
+                .update_session_config(
+                    boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Err(error) => boundary_denied(tx, error),
             }
         }
-        ClientMsg::SelectPermissions { profile } => {
-            let Some(control) = runtime_control else {
+        ClientMsg::SelectPermissions {
+            session_id,
+            profile,
+        } => {
+            let Some(session_id) = session_id else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "select_permissions".into(),
-                    message: "runtime permission control is unavailable".into(),
+                    message: "select_permissions requires a session_id".into(),
                 });
                 return;
             };
-            match control.select_permissions(profile).await {
-                Ok(permissions) => {
-                    let model_info = control.runtime_model_info().await;
-                    let capabilities = model_info
-                        .models
-                        .iter()
-                        .find(|entry| entry.id == model_info.current_model)
-                        .map_or(0, |entry| entry.capabilities);
-                    let _ = tx.send(ServerMsg::RuntimeInfo {
-                        model: model_info.current_model,
-                        reasoning_effort: model_info.reasoning_effort,
-                        models: model_info.models,
-                        permissions,
-                        capabilities,
-                        approval_enabled: runtime.approval_enabled,
-                        max_attachment_bytes: runtime.max_attachment_bytes,
-                        platform: control.platform_snapshot(),
-                    });
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_permissions", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
                 }
-                Err(message) => {
-                    let _ = tx.send(ServerMsg::OperationError {
-                        operation: "select_permissions".into(),
-                        message,
-                    });
-                }
+            };
+            let mut overrides = state.overrides;
+            overrides.permissions = Some(profile);
+            match ui
+                .update_session_config(
+                    boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Err(error) => boundary_denied(tx, error),
             }
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
     }
+}
+
+fn send_session_runtime_info(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    runtime: &RuntimeInfo,
+    effective: &sylvander_protocol::SessionEffectiveConfig,
+) {
+    let capabilities = runtime
+        .models
+        .iter()
+        .find(|entry| entry.id == effective.model_id)
+        .map_or(0, |entry| entry.capabilities);
+    let _ = tx.send(ServerMsg::RuntimeInfo {
+        model: effective.model_id.clone(),
+        reasoning_effort: effective.reasoning_effort,
+        models: runtime.models.clone(),
+        permissions: effective.permissions.clone(),
+        capabilities,
+        approval_enabled: runtime.approval_enabled,
+        max_attachment_bytes: runtime.max_attachment_bytes,
+        platform: runtime.platform.clone(),
+    });
 }
 
 fn unix_session_context(
@@ -1814,7 +1846,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_selection_is_acknowledged_from_agent_runtime_truth() {
+    async fn model_selection_without_session_fails_closed() {
         use sylvander_llm_anthropic::api::client::AnthropicClient;
         use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 
@@ -1850,6 +1882,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::SelectModel {
+                session_id: None,
                 model: "thinking-model".into(),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
             },
@@ -1863,15 +1896,13 @@ mod tests {
 
         assert!(matches!(
             rx.recv().await,
-            Some(ServerMsg::RuntimeInfo {
-                model,
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-                ..
-            }) if model == "thinking-model"
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_model" && message.contains("session_id")
         ));
 
         handle_client_msg(
             ClientMsg::SelectPermissions {
+                session_id: None,
                 profile: sylvander_protocol::PermissionProfile {
                     file_access: sylvander_protocol::FileAccess::ReadOnly,
                     network_access: sylvander_protocol::NetworkAccess::Denied,
@@ -1887,14 +1918,8 @@ mod tests {
         .await;
         assert!(matches!(
             rx.recv().await,
-            Some(ServerMsg::RuntimeInfo {
-                permissions: sylvander_protocol::PermissionProfile {
-                    file_access: sylvander_protocol::FileAccess::ReadOnly,
-                    approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
-                    ..
-                },
-                ..
-            })
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_permissions" && message.contains("session_id")
         ));
 
         handle_client_msg(
