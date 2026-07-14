@@ -36,11 +36,18 @@ async fn main() -> Result<(), ServerError> {
         "sylvander server running"
     );
 
-    tokio::signal::ctrl_c()
-        .await
-        .map_err(|error| ServerError::Signal(error.to_string()))?;
-    info!("shutdown signal received");
+    let channel_failure = tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|error| ServerError::Signal(error.to_string()))?;
+            info!("shutdown signal received");
+            None
+        }
+        channel = runtime.wait_for_channel_exit() => channel,
+    };
     runtime.shutdown().await?;
+    if let Some(channel) = channel_failure {
+        return Err(ServerError::ChannelStopped(channel));
+    }
     Ok(())
 }
 
@@ -225,4 +232,6 @@ enum ServerError {
     Address { value: String, message: String },
     #[error("failed to wait for shutdown signal: {0}")]
     Signal(String),
+    #[error("channel `{0}` exited while the server was running")]
+    ChannelStopped(String),
 }

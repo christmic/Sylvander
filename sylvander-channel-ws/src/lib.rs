@@ -179,7 +179,7 @@ impl Channel for WsChannel {
         // Spawn outgoing loop: bus events → fanout to all clients
         let bus_ctx = ctx.clone();
         let clients_out = clients.clone();
-        tokio::spawn(async move { run_outgoing(bus_ctx, clients_out).await });
+        let outgoing = tokio::spawn(async move { run_outgoing(bus_ctx, clients_out).await });
 
         // HTTP server
         let state = Arc::new(AppState {
@@ -196,7 +196,13 @@ impl Channel for WsChannel {
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
         info!(addr = %self.addr, "ws channel listening");
         state.ctx.mark_ready();
-        axum::serve(listener, app).await.unwrap();
+        let shutdown = state.ctx.clone();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
+            .await
+            .unwrap();
+        outgoing.abort();
+        let _ = outgoing.await;
     }
 }
 

@@ -62,7 +62,7 @@ impl Channel for WechatChannel {
         // Outgoing loop: bus → encrypted XML reply
         let ch = self.clone();
         let ctx_out = ctx.clone();
-        tokio::spawn(async move { run_outgoing(ch.clone(), ctx_out).await });
+        let outgoing = tokio::spawn(async move { run_outgoing(ch.clone(), ctx_out).await });
 
         // HTTP server
         let state = Arc::new(AppState {
@@ -81,7 +81,13 @@ impl Channel for WechatChannel {
             .unwrap();
         info!(addr = %self.webhook_addr, "wechat channel listening");
         state.ctx.mark_ready();
-        axum::serve(listener, app).await.unwrap();
+        let shutdown = state.ctx.clone();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
+            .await
+            .unwrap();
+        outgoing.abort();
+        let _ = outgoing.await;
     }
 }
 

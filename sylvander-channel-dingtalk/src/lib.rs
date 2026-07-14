@@ -215,11 +215,16 @@ impl Channel for DingTalkChannel {
         // Outgoing loop
         let out_ctx = ctx.clone();
         let out_client = self.client.clone();
-        tokio::spawn(async move { run_outgoing(out_ctx, out_client).await });
+        let outgoing = tokio::spawn(async move { run_outgoing(out_ctx, out_client).await });
 
         // Incoming loop (blocking — runs until WebSocket closes)
         let handler = Arc::new(ChannelMessageHandler { ctx });
         handler.ctx.mark_ready();
-        self.client.run(handler).await;
+        tokio::select! {
+            () = self.client.run(handler.clone()) => {}
+            () = handler.ctx.shutdown_requested() => {}
+        }
+        outgoing.abort();
+        let _ = outgoing.await;
     }
 }

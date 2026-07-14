@@ -125,7 +125,7 @@ impl Channel for TelegramChannel {
         // Outgoing loop: subscribe to all events → sendMessage via bot API
         let ch = self.clone();
         let ctx_out = ctx.clone();
-        tokio::spawn(async move { run_outgoing(ch.clone(), ctx_out).await });
+        let outgoing = tokio::spawn(async move { run_outgoing(ch.clone(), ctx_out).await });
 
         // HTTP server for incoming webhooks
         let state = Arc::new(AppState {
@@ -144,7 +144,13 @@ impl Channel for TelegramChannel {
             .unwrap();
         info!(addr = %self.webhook_addr, "telegram channel listening");
         state.ctx.mark_ready();
-        axum::serve(listener, app).await.unwrap();
+        let shutdown = state.ctx.clone();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
+            .await
+            .unwrap();
+        outgoing.abort();
+        let _ = outgoing.await;
     }
 }
 
