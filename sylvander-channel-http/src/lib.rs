@@ -6,6 +6,7 @@
 //!   -d '{"session_id":"test","message":"hello"}'
 //! ```
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ use tokio::sync::Mutex;
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::spec::SessionId;
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -62,7 +63,7 @@ impl HttpChannel {
 
 #[async_trait]
 impl Channel for HttpChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "http"
     }
 
@@ -114,40 +115,34 @@ async fn chat(
     StatusCode,
 > {
     let principal = authenticate(&state, &headers).ok_or(StatusCode::UNAUTHORIZED)?;
-    let existing_session = state.sessions.lock().await.get(&req.session_id).cloned();
+    let mut aliases = state.sessions.lock().await;
+    let existing_session = aliases.get(&req.session_id).cloned();
     let boundary = sylvander_protocol::BoundaryContext::authenticated(
         principal.clone(),
         &state.instance_id,
         "http",
         uuid::Uuid::new_v4().to_string(),
     );
-    let message = sylvander_protocol::UiClientMessage::Chat {
-        text: req.message.clone(),
-        attachments: Vec::new(),
-        session_id: existing_session.as_ref().map(|session| session.0.clone()),
-        workspace: None,
-    };
-    let ui = state
-        .ctx
-        .ui
-        .as_ref()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    if let Err(error) = ui.authorize_message(&boundary, &message).await {
-        return Err(match error.code {
-            sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
-            sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
-            sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
-            sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-            sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
-        });
+    let sid = authorize_external_chat(
+        &state.ctx,
+        &boundary,
+        existing_session.clone(),
+        state.agent_id.clone(),
+        "HTTP session".into(),
+        sylvander_protocol::SessionConfigOverrides::default(),
+        &req.message,
+        &[],
+        BTreeMap::from([
+            ("channel_instance_id".into(), state.instance_id.clone()),
+            ("http_session_key".into(), req.session_id.clone()),
+        ]),
+    )
+    .await
+    .map_err(boundary_status)?;
+    if existing_session.is_none() {
+        aliases.insert(req.session_id.clone(), sid.clone());
     }
-    let sid = {
-        let mut sessions = state.sessions.lock().await;
-        sessions
-            .entry(req.session_id.clone())
-            .or_insert_with(|| SessionId::new(uuid::Uuid::new_v4().to_string()))
-            .clone()
-    };
+    drop(aliases);
 
     let mut event_rx = state
         .ctx
@@ -160,30 +155,21 @@ async fn chat(
         .await
         .unwrap();
 
-    // Ensure agent is in this session before sending message
-    use std::path::PathBuf;
-    use sylvander_agent::bus::SystemMessage;
-    use sylvander_agent::session::SessionMetadata;
+    let session = state
+        .ctx
+        .sessions
+        .get(&sid)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let _ = state
         .ctx
         .bus
-        .publish(sylvander_agent::bus::BusMessage {
-            session_id: sid.clone(),
-            sender: sylvander_agent::bus::Sender::System,
-            recipient: sylvander_agent::bus::Recipient::Agent(state.agent_id.clone()),
-            kind: sylvander_agent::bus::MessageKind::System(SystemMessage::JoinSession {
-                session_id: sid.clone(),
-                metadata: SessionMetadata {
-                    workspace: PathBuf::from("/tmp"),
-                    name: "http".into(),
-                    user_id: principal.id.0.clone(),
-                },
-            }),
-            payload: String::new(),
-            attachments: Vec::new(),
-            timestamp: sylvander_agent::session::now_secs(),
-            id: sylvander_agent::bus::MessageId::new(),
-        })
+        .publish(BusMessage::system_join_session(
+            state.agent_id.clone(),
+            sid.clone(),
+            session.metadata,
+        ))
         .await;
 
     let _ = state
@@ -224,6 +210,16 @@ async fn chat(
     Ok(Sse::new(stream))
 }
 
+fn boundary_status(error: sylvander_protocol::BoundaryError) -> StatusCode {
+    match error.code {
+        sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+    }
+}
+
 fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
@@ -257,12 +253,119 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::*;
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
+    use sylvander_channel::UiService;
+
+    struct DenyAgentAccess;
+
+    #[async_trait]
+    impl UiService for DenyAgentAccess {
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &sylvander_protocol::UiClientMessage,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(
+                message,
+                sylvander_protocol::UiClientMessage::CreateSession { .. }
+            ) {
+                Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "create_session",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            panic!("denied Agent access must stop before session creation")
+        }
+
+        async fn session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn update_session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn bearer_comparison_rejects_wrong_content_and_length() {
         assert!(constant_time_eq(b"secret", b"secret"));
         assert!(!constant_time_eq(b"secret", b"wrong!"));
         assert!(!constant_time_eq(b"secret", b"secret-extra"));
+    }
+
+    #[tokio::test]
+    async fn first_chat_cannot_create_a_session_without_agent_access() {
+        let sessions: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let state = Arc::new(AppState {
+            ctx: Arc::new(ChannelContext {
+                bus: Arc::new(InProcessMessageBus::new()),
+                sessions: sessions.clone(),
+                ui: Some(Arc::new(DenyAgentAccess)),
+                readiness: None,
+            }),
+            agent_id: sylvander_agent::spec::AgentId::new("private-agent"),
+            sessions: Mutex::new(std::collections::HashMap::new()),
+            instance_id: "http-private".into(),
+            principal_id: Some("caller".into()),
+            bearer_token: Some("secret".into()),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer secret".parse().unwrap(),
+        );
+
+        let result = chat(
+            State(state.clone()),
+            headers,
+            Json(ChatRequest {
+                session_id: "client-session".into(),
+                message: "hello".into(),
+            }),
+        )
+        .await;
+
+        assert!(matches!(result, Err(StatusCode::FORBIDDEN)));
+        assert!(state.sessions.lock().await.is_empty());
+        assert!(sessions.list_persistent().await.unwrap().is_empty());
     }
 }
