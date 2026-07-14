@@ -34,7 +34,9 @@ use sylvander_llm_anthropic::api::types::{
     ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
     Usage, UserContentBlock,
 };
-use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
+use sylvander_llm_core::{
+    ModelEventStream, ModelInfo as ProviderModelInfo, ModelProvider, ModelRequest,
+};
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
@@ -46,7 +48,7 @@ use super::tool_context::ToolContext;
 /// [`run_stream`], and [`run_with_events`].
 #[derive(Clone)]
 pub struct AgentLoop {
-    pub(crate) client: AnthropicClient,
+    backend: ModelBackend,
     pub(crate) model: ModelInfo,
     pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub(crate) tools: ToolRegistry,
@@ -77,11 +79,18 @@ pub struct AgentLoop {
 enum ModelBackend {
     LegacyAnthropic {
         client: AnthropicClient,
-        model: ModelInfo,
     },
     Provider {
         provider: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
+    },
+}
+
+enum LoopModelStream {
+    Legacy(sylvander_llm_anthropic::prelude::MessageStream),
+    Provider {
+        stream: ModelEventStream,
+        expected_model: sylvander_llm_core::ModelRef,
     },
 }
 
@@ -303,14 +312,15 @@ impl AgentLoopBuilder {
                 "legacy and provider model backends cannot be mixed".into(),
             ));
         }
-        let backend = if provider_set {
+        let (backend, model) = if provider_set {
             let provider = self
                 .provider
                 .ok_or_else(|| AgentLoopError::Builder("provider is required".into()))?;
             let model = self
                 .provider_model
                 .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
-            ModelBackend::Provider { provider, model }
+            let shadow = crate::provider_compat::model_metadata_from_core(&model);
+            (ModelBackend::Provider { provider, model }, shadow)
         } else {
             let client = self
                 .client
@@ -318,16 +328,7 @@ impl AgentLoopBuilder {
             let model = self
                 .model
                 .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
-            ModelBackend::LegacyAnthropic { client, model }
-        };
-        let (client, model) = match backend {
-            ModelBackend::LegacyAnthropic { client, model } => (client, model),
-            ModelBackend::Provider { provider, model } => {
-                drop((provider, model));
-                return Err(AgentLoopError::Builder(
-                    "provider backend execution is not enabled yet".into(),
-                ));
-            }
+            (ModelBackend::LegacyAnthropic { client }, model)
         };
         // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
         // Opt-in to L0 (disk offload) or L4 (LLM summary) by
@@ -348,7 +349,7 @@ impl AgentLoopBuilder {
         let tool_definitions = self.tools.definitions();
 
         Ok(AgentLoop {
-            client,
+            backend,
             model,
             reasoning_effort: self.reasoning_effort,
             tools: self.tools,
@@ -459,14 +460,16 @@ pub fn run_stream(
                 if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
-                let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
-                    config.client.clone(),
+                let auto_llm = config.legacy_client().map(|client|
+                    super::compress::AgentLoopAutoCompactLlm::new(client.clone())
                 );
                 let mut compress_ctx = super::compress::CompressContext {
                     messages: &mut messages,
                     last_usage: &last_provider_usage,
                     model_info: &config.model,
-                    auto_compact_llm: Some(&auto_llm),
+                    auto_compact_llm: auto_llm
+                        .as_ref()
+                        .map(|llm| llm as &dyn super::compress::AutoCompactLlm),
                 };
                 let reports = config
                     .compression_pipeline
@@ -504,12 +507,19 @@ pub fn run_stream(
                 yield AgentEvent::Error(e);
                 break;
             }
+            let provider_request = match config.build_provider_request(&messages) {
+                Ok(request) => request,
+                Err(error) => {
+                    yield AgentEvent::Error(error);
+                    break;
+                }
+            };
 
             // 4. Open the provider stream. This is the only retry owner;
             //    provider adapters never retry and a failed streaming
             //    request is never replayed as a buffered request.
             let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
-            let call = config.call_llm_with_retry(&request, retry_tx);
+            let call = config.call_model_with_retry(&request, provider_request, retry_tx);
             tokio::pin!(call);
             let call_result = loop {
                 tokio::select! {
@@ -518,7 +528,7 @@ pub fn run_stream(
                     result = &mut call => break result,
                 }
             };
-            let mut llm_stream = match call_result {
+            let llm_stream = match call_result {
                 Ok(stream) => stream,
                 Err(error) => {
                     yield AgentEvent::Error(error);
@@ -537,33 +547,30 @@ pub fn run_stream(
                 tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
 
             let consumer_task = tokio::spawn(async move {
-                let mut stream_err: Option<AgentLoopError> = None;
-                while let Some(event_result) = llm_stream.next().await {
-                    match event_result {
-                        Ok(RawStreamEvent::ContentBlockDelta { delta, .. }) => match delta {
-                            ContentDelta::TextDelta { text } => {
-                                let _ = tx.send(AgentEvent::TextChunk(text));
+                let result = match llm_stream {
+                    LoopModelStream::Legacy(mut stream) => {
+                        let mut stream_err = None;
+                        while let Some(event_result) = stream.next().await {
+                            match event_result {
+                                Ok(RawStreamEvent::ContentBlockDelta { delta, .. }) => match delta {
+                                    ContentDelta::TextDelta { text } => { let _ = tx.send(AgentEvent::TextChunk(text)); }
+                                    ContentDelta::ThinkingDelta { thinking } => { let _ = tx.send(AgentEvent::ThinkingChunk(thinking)); }
+                                    _ => {}
+                                },
+                                Ok(_) => {}
+                                Err(source) => { stream_err = Some(AgentLoopError::Llm { retries: 0, source }); break; }
                             }
-                            ContentDelta::ThinkingDelta { thinking } => {
-                                let _ = tx.send(AgentEvent::ThinkingChunk(thinking));
-                            }
-                            _ => {}
-                        },
-                        Ok(_) => {} // MessageStart, ContentBlockStart/Stop, etc.
-                        Err(e) => {
-                            stream_err = Some(AgentLoopError::Llm { retries: 0, source: e });
-                            break;
+                        }
+                        match stream_err {
+                            Some(error) => Err(error),
+                            None => stream.final_message().ok_or_else(|| AgentLoopError::Validation("stream ended without final message".into())),
                         }
                     }
-                }
-                // Drop tx so the receiver sees end-of-stream.
-                drop(tx);
-                let result = match stream_err {
-                    Some(e) => Err(e),
-                    None => llm_stream.final_message().ok_or_else(|| {
-                        AgentLoopError::Validation("stream ended without final message".into())
-                    }),
+                    LoopModelStream::Provider { stream, expected_model } => {
+                        consume_provider_stream(stream, expected_model, &tx).await
+                    }
                 };
+                drop(tx);
                 let _ = done_tx.send(result);
             }
             .instrument(tracing::Span::current()));
@@ -1273,50 +1280,182 @@ fn retry_cause(error: &AnthropicError) -> sylvander_protocol::RetryCause {
     }
 }
 
+fn provider_retry_cause(
+    error: &sylvander_llm_core::ProviderError,
+) -> sylvander_protocol::RetryCause {
+    use sylvander_llm_core::ProviderErrorKind;
+    match error.kind {
+        ProviderErrorKind::RateLimited => sylvander_protocol::RetryCause::RateLimit,
+        ProviderErrorKind::Unavailable => sylvander_protocol::RetryCause::Server,
+        ProviderErrorKind::Transport | ProviderErrorKind::Timeout => {
+            sylvander_protocol::RetryCause::Network
+        }
+        ProviderErrorKind::Protocol => sylvander_protocol::RetryCause::Stream,
+        _ => sylvander_protocol::RetryCause::Other,
+    }
+}
+
+fn provider_protocol(message: &'static str) -> AgentLoopError {
+    AgentLoopError::Provider {
+        attempts: 1,
+        source: sylvander_llm_core::ProviderError::new(
+            sylvander_llm_core::ProviderErrorKind::Protocol,
+            sylvander_llm_core::ProviderErrorPhase::Stream,
+            message,
+        ),
+    }
+}
+
+async fn consume_provider_stream(
+    mut stream: ModelEventStream,
+    expected_model: sylvander_llm_core::ModelRef,
+    events: &tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+) -> Result<Message, AgentLoopError> {
+    let mut completed = None;
+    while let Some(event) = stream.next().await {
+        let event = event.map_err(|source| AgentLoopError::Provider {
+            attempts: 1,
+            source,
+        })?;
+        if completed.is_some() {
+            return Err(provider_protocol(
+                "provider emitted an event after completion",
+            ));
+        }
+        match event {
+            sylvander_llm_core::ModelStreamEvent::TextDelta(text) => {
+                let _ = events.send(AgentEvent::TextChunk(text));
+            }
+            sylvander_llm_core::ModelStreamEvent::ReasoningDelta(reasoning) => {
+                let _ = events.send(AgentEvent::ThinkingChunk(reasoning));
+            }
+            sylvander_llm_core::ModelStreamEvent::Completed(response) => {
+                if response.model != expected_model {
+                    return Err(provider_protocol(
+                        "provider completed with an unexpected model",
+                    ));
+                }
+                completed = Some(response);
+            }
+        }
+    }
+    let response =
+        completed.ok_or_else(|| provider_protocol("provider stream ended without completion"))?;
+    crate::provider_compat::response_from_core(response)
+        .map_err(|error| AgentLoopError::Validation(error.to_string()))
+}
+
 impl AgentLoop {
+    pub(crate) fn legacy_client(&self) -> Option<&AnthropicClient> {
+        match &self.backend {
+            ModelBackend::LegacyAnthropic { client } => Some(client),
+            ModelBackend::Provider { .. } => None,
+        }
+    }
+
     /// Call the LLM with retry/backoff on transient errors. Returns
     /// a [`MessageStream`]. A provider may normalize a valid buffered
     /// response into a stream, but an error never triggers a second request
     /// using another transport mode.
-    async fn call_llm_with_retry(
+    async fn call_model_with_retry(
         &self,
         request: &CreateMessageRequest,
+        provider_request: Option<ModelRequest>,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
-    ) -> Result<sylvander_llm_anthropic::prelude::MessageStream, AgentLoopError> {
+    ) -> Result<LoopModelStream, AgentLoopError> {
         let max_attempts = self.max_retries + 1;
-
-        let url = self.client.base_url().join("v1/messages").unwrap();
-        tracing::debug!(%url, model=%request.model, max_tokens=request.max_tokens, "calling LLM");
         for attempt in 0..max_attempts {
-            match self.client.messages().stream(request).await {
+            let result = match &self.backend {
+                ModelBackend::LegacyAnthropic { client } => client
+                    .messages()
+                    .stream(request)
+                    .await
+                    .map(LoopModelStream::Legacy)
+                    .map_err(|source| AgentLoopError::Llm {
+                        retries: attempt,
+                        source,
+                    }),
+                ModelBackend::Provider { provider, model } => provider
+                    .complete_stream(provider_request.clone().ok_or_else(|| {
+                        AgentLoopError::Validation("provider request was not built".into())
+                    })?)
+                    .await
+                    .map(|stream| LoopModelStream::Provider {
+                        stream,
+                        expected_model: model.reference.clone(),
+                    })
+                    .map_err(|source| AgentLoopError::Provider {
+                        attempts: attempt + 1,
+                        source,
+                    }),
+            };
+            match result {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
-                    tracing::warn!(%url, status=?e, "streaming attempt failed");
                     if !e.is_retryable() || attempt == max_attempts - 1 {
-                        return Err(AgentLoopError::Llm {
-                            retries: attempt,
-                            source: e,
-                        });
+                        return Err(e);
                     }
-                    let delay = std::time::Duration::from_millis(100 * (1 << attempt));
+                    let delay = std::time::Duration::from_millis(100 * (1_u64 << attempt));
                     warn!(
                         attempt = attempt,
                         delay_ms = delay.as_millis(),
                         error = %e,
                         "LLM stream open failed, retrying"
                     );
+                    let cause = match &e {
+                        AgentLoopError::Llm { source, .. } => retry_cause(source),
+                        AgentLoopError::Provider { source, .. } => provider_retry_cause(source),
+                        _ => sylvander_protocol::RetryCause::Other,
+                    };
                     let _ = retry_events.send(AgentEvent::ModelRetry {
                         attempt: attempt + 1,
                         max_attempts: self.max_retries,
                         delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                         reason: e.to_string(),
-                        cause: retry_cause(&e),
+                        cause,
                     });
                     tokio::time::sleep(delay).await;
                 }
             }
         }
         unreachable!("retry loop always returns success or the final error")
+    }
+
+    fn build_provider_request(
+        &self,
+        messages: &[MessageParam],
+    ) -> Result<Option<ModelRequest>, AgentLoopError> {
+        let ModelBackend::Provider { model, .. } = &self.backend else {
+            return Ok(None);
+        };
+        let messages = messages
+            .iter()
+            .map(crate::provider_compat::message_to_core)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
+        let tools = crate::provider_compat::tools_to_core(&self.tool_definitions)
+            .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
+        Ok(Some(ModelRequest {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            model: model.reference.clone(),
+            system: self
+                .system_prompt
+                .iter()
+                .map(|text| sylvander_llm_core::SystemInstruction {
+                    text: text.clone(),
+                    cache_hint: None,
+                })
+                .collect(),
+            messages,
+            tools,
+            max_output_tokens: model.max_output_tokens,
+            reasoning: self.reasoning_effort.budget_tokens().map(|budget_tokens| {
+                sylvander_llm_core::ReasoningConfig {
+                    budget_tokens: budget_tokens.min(model.max_output_tokens),
+                }
+            }),
+            output_schema: None,
+        }))
     }
 
     /// Validate the request against the model's capabilities.
@@ -1497,8 +1636,36 @@ mod tests {
     use sylvander_llm_anthropic::api::client::AnthropicClient;
     use sylvander_llm_anthropic::api::model::ModelCapabilities;
     use sylvander_llm_core::{
-        ModelCapabilities as ProviderCapabilities, ModelEventStream, ModelRef, ProviderFuture,
+        ContentBlock as ProviderBlock, ModelCapabilities as ProviderCapabilities, ModelEventStream,
+        ModelRef, ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind,
+        ProviderErrorPhase, ProviderFuture, StopReason as ProviderStopReason, TokenUsage,
     };
+
+    type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, ProviderError>;
+
+    struct ScriptedProvider {
+        opens: std::sync::Mutex<std::collections::VecDeque<ProviderOpen>>,
+        requests: std::sync::Mutex<Vec<ModelRequest>>,
+    }
+
+    impl ScriptedProvider {
+        fn new(opens: impl IntoIterator<Item = ProviderOpen>) -> Self {
+            Self {
+                opens: std::sync::Mutex::new(opens.into_iter().collect()),
+                requests: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ModelProvider for ScriptedProvider {
+        fn complete_stream(&self, request: ModelRequest) -> ProviderFuture<'_> {
+            self.requests.lock().unwrap().push(request);
+            let open = self.opens.lock().unwrap().pop_front().unwrap();
+            Box::pin(async move {
+                open.map(|events| Box::pin(futures_util::stream::iter(events)) as ModelEventStream)
+            })
+        }
+    }
 
     struct FakeProvider {
         _secret: &'static str,
@@ -1618,7 +1785,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_builder_is_fail_closed_until_execution_is_connected() {
+    fn provider_builder_preserves_qualified_identity_and_safe_debug() {
         let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider {
             _secret: "secret-provider-state",
         });
@@ -1627,11 +1794,119 @@ mod tests {
             .provider_model(provider_model());
         let debug = format!("{builder:?}");
         assert!(!debug.contains("secret-provider-state"));
+        let loop_ = builder.build().unwrap();
+        assert_eq!(loop_.model.id, "test-model");
         assert!(matches!(
-            builder.build(),
-            Err(AgentLoopError::Builder(message))
-                if message.contains("execution is not enabled")
+            &loop_.backend,
+            ModelBackend::Provider { model, .. }
+                if model.reference == ModelRef::new("local", "test-model")
         ));
+    }
+
+    fn completed_events(
+        content: Vec<ProviderBlock>,
+        stop_reason: ProviderStopReason,
+    ) -> Vec<Result<ModelStreamEvent, ProviderError>> {
+        vec![Ok(ModelStreamEvent::Completed(ModelResponse {
+            id: "response".into(),
+            model: ModelRef::new("local", "test-model"),
+            content,
+            stop_reason,
+            usage: TokenUsage::default(),
+        }))]
+    }
+
+    #[tokio::test]
+    async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
+        let provider = Arc::new(ScriptedProvider::new([
+            Ok(completed_events(
+                vec![ProviderBlock::ToolCall {
+                    id: "call-1".into(),
+                    name: "echo".into(),
+                    arguments: json!({"value": 7}),
+                }],
+                ProviderStopReason::ToolUse,
+            )),
+            Ok(completed_events(
+                vec![ProviderBlock::Text {
+                    text: "done".into(),
+                }],
+                ProviderStopReason::EndTurn,
+            )),
+        ]));
+        let tool =
+            crate::tool::MockTool::new("echo", "echo input", crate::tool::ToolOutput::ok("7"));
+        let loop_ = AgentLoop::builder()
+            .provider(provider.clone())
+            .provider_model(provider_model())
+            .tool(tool.clone())
+            .build()
+            .unwrap();
+        let result = run(&loop_, vec![MessageParam::user("start")])
+            .await
+            .unwrap();
+        assert_eq!(result.iterations, 2);
+        assert_eq!(tool.call_count(), 1);
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.model == ModelRef::new("local", "test-model"))
+        );
+        assert!(requests[1].messages.iter().any(|message| {
+            message.content.iter().any(|block|
+            matches!(block, ProviderBlock::ToolResult { call_id, .. } if call_id == "call-1")
+        )
+        }));
+    }
+
+    #[tokio::test]
+    async fn provider_open_retry_and_stream_protocol_are_typed() {
+        let unavailable = ProviderError::new(
+            ProviderErrorKind::Unavailable,
+            ProviderErrorPhase::Open,
+            "temporarily unavailable",
+        );
+        let provider = Arc::new(ScriptedProvider::new([
+            Err(unavailable),
+            Ok(completed_events(
+                vec![ProviderBlock::Text { text: "ok".into() }],
+                ProviderStopReason::EndTurn,
+            )),
+        ]));
+        let loop_ = AgentLoop::builder()
+            .provider(provider.clone())
+            .provider_model(provider_model())
+            .max_retries(1)
+            .build()
+            .unwrap();
+        assert!(run(&loop_, vec![MessageParam::user("retry")]).await.is_ok());
+        {
+            let requests = provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].request_id, requests[1].request_id);
+        }
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let empty: ModelEventStream = Box::pin(futures_util::stream::empty());
+        let error = consume_provider_stream(empty, ModelRef::new("local", "test-model"), &tx)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AgentLoopError::Provider { source, .. } if source.kind == ProviderErrorKind::Protocol)
+        );
+
+        let events = completed_events(Vec::new(), ProviderStopReason::EndTurn)
+            .into_iter()
+            .chain([Ok(ModelStreamEvent::TextDelta("late".into()))]);
+        let stream: ModelEventStream = Box::pin(futures_util::stream::iter(events));
+        let error = consume_provider_stream(stream, ModelRef::new("local", "test-model"), &tx)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, AgentLoopError::Provider { source, .. } if source.kind == ProviderErrorKind::Protocol)
+        );
     }
 
     #[test]

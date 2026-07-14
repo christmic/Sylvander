@@ -39,13 +39,20 @@ pub fn model_from_core(
     model: &core::ModelInfo,
 ) -> Result<legacy_model::ModelInfo, ProviderCompatError> {
     require_anthropic(&model.reference.provider)?;
-    Ok(legacy_model::ModelInfo {
+    Ok(model_metadata_from_core(model))
+}
+
+/// Build a provider-agnostic legacy metadata shadow for old compression and
+/// tool-context consumers. The qualified identity remains in the backend.
+#[must_use]
+pub fn model_metadata_from_core(model: &core::ModelInfo) -> legacy_model::ModelInfo {
+    legacy_model::ModelInfo {
         id: model.reference.model.clone(),
         context_window: model.context_window,
         max_output_tokens: model.max_output_tokens,
         capabilities: capabilities_from_core(model.capabilities),
         cache_ttl: Vec::new(),
-    })
+    }
 }
 
 pub fn tools_to_core(
