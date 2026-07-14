@@ -40,9 +40,13 @@ that provider's model catalog to compatible clients.
 
 `agents[].revision` identifies the immutable definition revision.
 `default_prompt_profile` replaces the shared persona prompt for the selected
-provider/model profile. Session-level model and prompt overlays are part of
-the platform contract but are not production-complete until P0.3; operators
-must not assume the current server persists such overrides.
+provider/model profile. Durable sessions store sparse overrides separately
+from their fully resolved effective configuration. Every turn atomically
+snapshots the Agent revision, provider/model, reasoning, permissions, prompt
+digest/profile, workspaces, execution target, and per-field provenance before
+provider or tool work begins. Runtime updates require the caller's expected
+configuration revision so concurrent clients cannot silently overwrite each
+other.
 
 ## Secret references
 
@@ -85,6 +89,10 @@ retention, query, and self-improvement boundary.
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
 the future run ledger; replacing it during restore is a correctness defect.
+Legacy sessions are migrated at boot: their prior `metadata.workspace` becomes
+an explicit local user-workspace source, while current Agent defaults are
+resolved and persisted without copying secrets or raw prompts into audit
+fields.
 
 ## Channel instances
 
