@@ -316,11 +316,16 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     fallback, redacted errors, and exactly one terminal completion.
   - [x] Public and durable session selection is provider-qualified; legacy ids
     are accepted only when the visible catalog has one exact match.
-  - [ ] Migrate production `AgentLoop` through a compatibility-preserving dual
-    backend; do not invalidate legacy history, compression, events, or builders.
-  - [ ] Extend the existing `sessions.db` Agent registry SSOT with component
+  - [x] Migrate production `AgentLoop` through a compatibility-preserving dual
+    backend; legacy history, events, tools, and builders remain valid, while
+    provider streams are checked for one terminal completion and exact model
+    identity. Provider-backed compaction remains an explicit follow-up.
+  - [x] Extend the existing `sessions.db` Agent registry SSOT with component
     migrations and immutable Provider/Model/Credential revision tables. Do not
     create a second registry database.
+    Evidence: the component migration ledger plus integrity-checked registry
+    domain loaders in `sylvander-runtime/src/agent_registry.rs` and
+    `sylvander-runtime/src/registry_domain.rs`.
   - [ ] Add true SQL compare-and-swap across multiple registry connections,
     integrity validation, restart migration, lifecycle, pricing, and redacted
     inspection/administration.
