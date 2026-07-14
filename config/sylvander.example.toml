@@ -19,6 +19,10 @@ retention_days = 30
 # metadata_only avoids persisting raw prompts, tool payloads, and responses.
 content = "metadata_only"
 
+[server.boundary]
+max_request_bytes = 1048576
+requests_per_minute = 240
+
 [[model_providers]]
 id = "primary"
 kind = "anthropic_compatible"

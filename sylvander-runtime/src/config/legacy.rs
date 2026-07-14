@@ -148,6 +148,7 @@ impl ServerConfig {
                     persistent_store: values.get("SYLVANDER_APPROVAL_STORE").map(PathBuf::from),
                 },
                 evidence: super::EvidenceSettings::default(),
+                boundary: super::BoundarySettings::default(),
             },
             model_providers: vec![ModelProviderConfig {
                 id: "primary".into(),

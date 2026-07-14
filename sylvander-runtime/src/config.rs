@@ -45,6 +45,8 @@ pub struct ServerSettings {
     pub approval: ApprovalSettings,
     #[serde(default)]
     pub evidence: EvidenceSettings,
+    #[serde(default)]
+    pub boundary: BoundarySettings,
 }
 
 impl Default for ServerSettings {
@@ -56,8 +58,35 @@ impl Default for ServerSettings {
             workspace_journal: None,
             approval: ApprovalSettings::default(),
             evidence: EvidenceSettings::default(),
+            boundary: BoundarySettings::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BoundarySettings {
+    #[serde(default = "default_max_request_bytes")]
+    pub max_request_bytes: usize,
+    #[serde(default = "default_requests_per_minute")]
+    pub requests_per_minute: u32,
+}
+
+impl Default for BoundarySettings {
+    fn default() -> Self {
+        Self {
+            max_request_bytes: default_max_request_bytes(),
+            requests_per_minute: default_requests_per_minute(),
+        }
+    }
+}
+
+const fn default_max_request_bytes() -> usize {
+    1024 * 1024
+}
+
+const fn default_requests_per_minute() -> u32 {
+    240
 }
 
 /// Durable runtime evidence used for recovery, audit, evaluation, and
@@ -336,6 +365,13 @@ impl ServerConfig {
             && !(1..=3650).contains(&self.server.evidence.retention_days)
         {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
+        }
+        if !(1024..=16 * 1024 * 1024).contains(&self.server.boundary.max_request_bytes) {
+            errors
+                .push("server boundary max_request_bytes must be between 1024 and 16777216".into());
+        }
+        if !(1..=100_000).contains(&self.server.boundary.requests_per_minute) {
+            errors.push("server boundary requests_per_minute must be between 1 and 100000".into());
         }
 
         unique_ids(

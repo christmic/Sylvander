@@ -164,6 +164,13 @@ fn evidence_capture_is_bounded_and_metadata_only_by_default() {
             .iter()
             .any(|message| message.contains("retention_days"))
     );
+    config.server.evidence.retention_days = 30;
+    config.server.boundary.max_request_bytes = 100;
+    config.server.boundary.requests_per_minute = 0;
+    let error = config.validate().unwrap_err();
+    let joined = error.errors.join("\n");
+    assert!(joined.contains("max_request_bytes"));
+    assert!(joined.contains("requests_per_minute"));
 }
 
 #[test]

@@ -22,6 +22,7 @@
 //! └──────────────────┘
 //! ```
 
+mod boundary;
 pub mod composition;
 pub mod config;
 pub mod evidence;
@@ -52,6 +53,7 @@ use sylvander_protocol::{
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use boundary::BoundaryGuard;
 
 // ---------------------------------------------------------------------------
 // SystemConfig
@@ -104,6 +106,7 @@ struct RuntimeUiService {
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
     evidence: Option<EvidenceStore>,
+    boundary: BoundaryGuard,
 }
 
 #[async_trait::async_trait]
@@ -113,7 +116,13 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         message: &sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
-        let result = self.authorize_message_inner(boundary, message).await;
+        let result = async {
+            self.boundary
+                .check(boundary, message, ui_operation(message))
+                .await?;
+            self.authorize_message_inner(boundary, message).await
+        }
+        .await;
         if let Err(error) = &result
             && let Err(audit_error) = self.record_denial(boundary, message, error).await
         {
@@ -620,6 +629,7 @@ impl Runtime {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             evidence: None,
+            boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
         Ok(Self {
             engine,
@@ -768,6 +778,7 @@ impl Runtime {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             evidence: Some(security_audit),
+            boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
