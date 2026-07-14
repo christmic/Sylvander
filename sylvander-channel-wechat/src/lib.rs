@@ -30,6 +30,7 @@ pub struct WechatChannel {
     crypto: Arc<WechatCrypto>,
     webhook_addr: SocketAddr,
     agent_id: AgentId,
+    instance_id: String,
 }
 
 impl WechatChannel {
@@ -46,7 +47,15 @@ impl WechatChannel {
             crypto: Arc::new(crypto),
             webhook_addr,
             agent_id: agent_id.into(),
+            instance_id: "wechat".into(),
         })
+    }
+
+    /// Identify this configured application for session and principal isolation.
+    #[must_use]
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
+        self
     }
 }
 
@@ -70,6 +79,7 @@ impl Channel for WechatChannel {
             ctx,
             crypto: self.crypto.clone(),
             agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
         });
 
         let app = Router::new()
@@ -97,6 +107,7 @@ impl Clone for WechatChannel {
             crypto: self.crypto.clone(),
             webhook_addr: self.webhook_addr,
             agent_id: self.agent_id.clone(),
+            instance_id: self.instance_id.clone(),
         }
     }
 }
@@ -110,6 +121,7 @@ struct AppState {
     crypto: Arc<WechatCrypto>,
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
+    instance_id: String,
 }
 
 // ===========================================================================
@@ -187,7 +199,13 @@ async fn handle_callback(
     info!(from = %msg.from_user_name, msg_type = %msg.msg_type, "wechat: message");
 
     // Session mapping
-    let session_id = resolve_session(&state.sessions, &msg.from_user_name, &state.agent_id).await;
+    let session_id = resolve_session(
+        &state.sessions,
+        &state.instance_id,
+        &msg.from_user_name,
+        &state.agent_id,
+    )
+    .await;
     if let Ok(Some(session)) = state.sessions.get(&session_id).await {
         let _ = state
             .ctx
@@ -216,17 +234,18 @@ async fn handle_callback(
 
 async fn resolve_session(
     store: &Arc<dyn SessionStore>,
+    instance_id: &str,
     user_name: &str,
     agent_id: &AgentId,
 ) -> SessionId {
-    if let Some(sid) = find_by_user(store, user_name).await {
+    if let Some(sid) = find_by_user(store, instance_id, user_name).await {
         return sid;
     }
     let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
     let meta = SessionMetadata {
         workspace: "/tmp".into(),
         name: format!("wechat-{user_name}"),
-        user_id: user_name.into(),
+        user_id: format!("wechat:{instance_id}:{user_name}"),
     };
     let session_name = meta.name.clone();
     let stored = StoredSession::new(
@@ -236,18 +255,27 @@ async fn resolve_session(
         meta,
         vec![agent_id.clone()],
     )
+    .with_external_meta("channel_instance_id", instance_id)
     .with_external_meta("from_user_name", user_name);
     let _ = store.save(&stored).await;
     sid
 }
 
-async fn find_by_user(store: &Arc<dyn SessionStore>, user: &str) -> Option<SessionId> {
+async fn find_by_user(
+    store: &Arc<dyn SessionStore>,
+    instance_id: &str,
+    user: &str,
+) -> Option<SessionId> {
     let list = store.list_persistent().await.ok()?;
     for s in &list {
         if s.external_meta
-            .get("from_user_name")
+            .get("channel_instance_id")
             .and_then(|v| v.as_str())
-            == Some(user)
+            == Some(instance_id)
+            && s.external_meta
+                .get("from_user_name")
+                .and_then(|v| v.as_str())
+                == Some(user)
         {
             return Some(s.id.clone());
         }
@@ -272,7 +300,8 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
         };
 
         // Find from_user_name for this session
-        let Some(user_name) = get_user_name(&ctx.sessions, &msg.session_id).await else {
+        let Some(user_name) = get_user_name(&ctx.sessions, &msg.session_id, &ch.instance_id).await
+        else {
             continue;
         };
 
@@ -313,8 +342,20 @@ fn truncate_chars(value: &str, limit: usize) -> &str {
         .map_or(value, |(index, _)| &value[..index])
 }
 
-async fn get_user_name(store: &Arc<dyn SessionStore>, sid: &SessionId) -> Option<String> {
+async fn get_user_name(
+    store: &Arc<dyn SessionStore>,
+    sid: &SessionId,
+    instance_id: &str,
+) -> Option<String> {
     let session = store.get(sid).await.ok()??;
+    if session
+        .external_meta
+        .get("channel_instance_id")
+        .and_then(|value| value.as_str())
+        != Some(instance_id)
+    {
+        return None;
+    }
     session
         .external_meta
         .get("from_user_name")
@@ -361,9 +402,10 @@ mod tests {
         let store: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
         let agent = AgentId::new("agent-1");
-        let session = resolve_session(&store, "user-1", &agent).await;
+        let session = resolve_session(&store, "wechat-a", "user-1", &agent).await;
         let persisted = store.get(&session).await.unwrap().unwrap();
         assert_eq!(persisted.agents, vec![agent]);
+        assert_eq!(persisted.metadata.user_id, "wechat:wechat-a:user-1");
     }
 
     #[test]

@@ -300,10 +300,10 @@ mod tests {
 
     #[test]
     fn parse_xml_extracts_fields() {
-        let xml = r#"<xml><ToUserName><![CDATA[bot]]></ToUserName><FromUserName><![CDATA[alice]]></FromUserName><CreateTime>1700000000</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[hello world]]></Content><MsgId>123456</MsgId></xml>"#;
+        let xml = r"<xml><ToUserName><![CDATA[bot]]></ToUserName><FromUserName><![CDATA[alice]]></FromUserName><CreateTime>1700000000</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[hello world]]></Content><MsgId>123456</MsgId></xml>";
         let msg = parse_message_xml(xml).unwrap();
         assert_eq!(msg.from_user_name, "alice");
-        assert_eq!(msg.create_time, 1700000000);
+        assert_eq!(msg.create_time, 1_700_000_000);
         assert_eq!(msg.msg_type, "text");
         assert_eq!(msg.content, "hello world");
         assert_eq!(msg.msg_id, "123456");
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn parse_xml_unescapes_text_entities() {
-        let xml = r#"<xml><Content>one &amp; two &#x1F980;</Content></xml>"#;
+        let xml = r"<xml><Content>one &amp; two &#x1F980;</Content></xml>";
         assert_eq!(parse_message_xml(xml).unwrap().content, "one & two 🦀");
     }
 }

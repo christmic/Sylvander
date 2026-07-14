@@ -1,4 +1,4 @@
-//! DingTalk Stream protocol — pure SDK, no Sylvander dependencies.
+//! `DingTalk` Stream protocol — pure SDK, no Sylvander dependencies.
 //!
 //! Implements the protocol from `dingtalk-stream-sdk-nodejs`:
 //! 1. `POST /gateway/connections/open` → WebSocket endpoint + ticket
@@ -82,7 +82,7 @@ struct UpStreamAck {
 // Robot message (parsed from frame.data)
 // ===========================================================================
 
-/// Incoming robot message from DingTalk.
+/// Incoming robot message from `DingTalk`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RobotMessage {
     #[serde(rename = "conversationId")]
@@ -155,7 +155,7 @@ pub trait MessageHandler: Send + Sync {
 // Client
 // ===========================================================================
 
-/// DingTalk Stream client — manages WebSocket connection + token + replies.
+/// `DingTalk` Stream client — manages WebSocket connection + token + replies.
 #[derive(Clone)]
 pub struct Client {
     app_key: String,
@@ -174,7 +174,7 @@ impl Client {
         }
     }
 
-    /// Connect to DingTalk Stream and process messages.
+    /// Connect to `DingTalk` Stream and process messages.
     /// Blocks until the connection is closed.
     pub async fn run(&self, handler: Arc<dyn MessageHandler>) {
         // 1. Get WebSocket endpoint

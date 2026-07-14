@@ -165,7 +165,8 @@ fn build_channels(
                 } => Arc::new(sylvander_channel_dingtalk::DingTalkChannel::new(
                     resolve_text(&secrets, app_key, &channel.id)?,
                     resolve_text(&secrets, app_secret, &channel.id)?,
-                )),
+                )
+                .with_identity(&channel.id, agent_id)),
                 ChannelTransportConfig::Telegram {
                     token,
                     bind,
@@ -180,7 +181,8 @@ fn build_channels(
                         &secrets,
                         webhook_secret,
                         &channel.id,
-                    )?),
+                    )?)
+                    .with_instance_id(&channel.id),
                 ),
                 ChannelTransportConfig::Wechat {
                     bind,
@@ -204,7 +206,8 @@ fn build_channels(
                         .map_err(|message| ServerError::Channel {
                             id: channel.id.clone(),
                             message,
-                        })?,
+                        })?
+                        .with_instance_id(&channel.id),
                     )
                 }
             };
