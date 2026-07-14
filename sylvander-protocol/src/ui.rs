@@ -53,6 +53,13 @@ pub enum UiClientMessage {
         session_id: String,
         task_id: String,
     },
+    DiscoverAgents,
+    GetSessionConfig {
+        session_id: String,
+    },
+    UpdateSessionConfig {
+        request: crate::SessionConfigUpdateRequest,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -272,6 +279,12 @@ pub enum UiServerMessage {
     },
     SessionDeleted {
         session_id: String,
+    },
+    AgentsDiscovered {
+        agents: Vec<crate::AgentDescriptor>,
+    },
+    SessionConfig {
+        state: crate::SessionConfigState,
     },
     RuntimeInfo {
         model: String,
