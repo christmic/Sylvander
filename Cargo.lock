@@ -2887,6 +2887,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "sylvander-llm-anthropic",
  "sylvander-protocol",
  "tempfile",

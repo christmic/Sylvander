@@ -7,7 +7,7 @@ Agent to edit or deploy itself.
 
 ## Data model
 
-The SQLite evidence store normalizes five layers:
+The SQLite evidence store normalizes six layers:
 
 - **run** — one server process lifetime, including clean or interrupted end;
 - **turn** — one user request in a session, with Agent identity, timing, sizes,
@@ -17,6 +17,8 @@ The SQLite evidence store normalizes five layers:
 - **outcome** — a terminal completion or interruption attached to a turn;
 - **event** — the append-only bus observation used to reconstruct ordering and
   diagnose normalization defects.
+- **feedback** — an explicit positive/negative user assessment bound to a real
+  run and optionally to a turn from that same run, with a bounded note and tags.
 
 Run, session, turn, step, bus-message, and tool-call identities provide
 correlation without depending on log text. Query APIs return bounded turn
@@ -48,7 +50,7 @@ step is marked `interrupted`. Evidence therefore never converts an unknown
 result into success.
 
 At startup the store deletes completed runs older than `retention_days`,
-including their turns, steps, outcomes, and events. Active and crash-recovery
+including their turns, steps, outcomes, events, and feedback. Active and crash-recovery
 records are retained. Backup and legal-hold exceptions require a future
 operator policy rather than silently overriding retention.
 
@@ -72,7 +74,7 @@ deployment merely because it appears in the ledger.
 ## Current boundary
 
 The durable store, bus recorder, crash recovery, content policies, retention,
-and Rust query surface are implemented. Feedback APIs, evaluation datasets,
-proposal records, worktree experiments, signing, and deployment observation
-remain the P5 backlog and must be completed before claiming autonomous
-self-improvement.
+Rust query surface, and evidence-linked feedback API are implemented.
+Evaluation datasets, proposal records, worktree experiments, signing, and
+deployment observation remain the P5 backlog and must be completed before
+claiming autonomous self-improvement.

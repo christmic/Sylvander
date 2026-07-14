@@ -223,7 +223,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A13 | Skills | missing | Protocol/UI placeholders can display Skills, but the Agent has no Skill discovery, trust, activation, or instruction loading runtime. |
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
 | A15 | Agent memory | defect | The server injects `InMemoryMemoryStore`; `MemoryStoreConfig` says SQLite is planned and rejects it. Agent memory is lost on restart. |
-| A16 | Public service protocol | defect | UI hello/version types live in `sylvander-protocol`, but the actual Unix `ClientMsg`/`ServerMsg` contract is private to the Unix crate. Schema/code generation described by the protocol crate is disabled. |
+| A16 | Public service protocol | complete | UI v2 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested with v1 negotiation and message defaults. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive, fork, and compaction. It does not persist effective runtime overrides, Agent revision, executor, mounts, worktree, or channel instance binding. |
 | A18 | Identity and authorization | partial | Session context carries user/Agent/session identity and store queries support scoping, but client/channel authentication and an authorization policy are not consistently enforced at the service boundary. |
 | A19 | DingTalk instances | defect | One optional environment-configured DingTalk bot is started. Session keys use conversation id without a channel-instance namespace. |
@@ -231,7 +231,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A21 | Other channels | partial | HTTP, Unix, WebSocket, Telegram, and WeChat crates exist, but the production server starts only HTTP, Unix, and at most one DingTalk instance. |
 | A22 | Channel supervision | partial | DingTalk reconnects internally, but runtime-wide instance health, restart backoff, readiness, drain, and failure isolation are not modeled. Some channel startup paths unwrap. |
 | A23 | Run evidence | partial | Tracing spans, persisted messages, aggregate usage, tool stream events, and workspace journal records exist. There is no durable correlated run/turn/step ledger or outcome model. |
-| A24 | Feedback | partial | Approval rejection text exists, but no general feedback protocol/store ties user assessment to a completed run or artifact. |
+| A24 | Feedback | complete | Typed positive/negative feedback is accepted through the public UI service and persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
 | A25 | Self-improvement | missing | There is no evidence selection, evaluation corpus, proposal, experiment, comparison, or human merge gate. |
 | A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
 | A27 | Secrets | partial | Core credentials come from environment variables and debug formatting avoids the API key. There is no secret-reference abstraction, rotation, or per-channel isolation. |
@@ -272,10 +272,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   model/prompt/permission selection is used before the provider or tools run.
   The configured execution-target identity is durable here; backend-neutral
   filesystem/process execution remains deliberately tracked by P3.1/P3.2.
-- [ ] **P0.4 Public protocol v2:** move service messages into
+- [x] **P0.4 Public protocol v2:** move service messages into
   `sylvander-protocol`; add Agent discovery, session create/update/effective
   state, feedback, and optimistic concurrency; generate and compatibility-test
-  the schema.
+  the schema. Evidence: one shared `UiClientMessage`/`UiServerMessage` contract
+  across Unix, WebSocket, and TUI; runtime-owned `UiService`; durable configured
+  session creation and optimistic updates; evidence-linked feedback; Schemars
+  v2 generation; and v1/v2 negotiation plus schema compatibility tests.
 - [ ] **P0.5 Boundary authorization:** authenticated principals, Agent/session
   ownership, channel-instance identity, policy checks, safe defaults, rate and
   payload limits, and auditable denials.
