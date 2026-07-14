@@ -48,6 +48,26 @@ provider or tool work begins. Runtime updates require the caller's expected
 configuration revision so concurrent clients cannot silently overwrite each
 other.
 
+## Agent revision administration
+
+Agent definitions are administered through the public UI service protocol.
+`UpdateDefinition` validates and fully composes a candidate before it creates
+an immutable, inactive revision. `ActivateRevision` and `RollbackRevision`
+move the active head separately, so storing a candidate never changes live
+behavior. Every mutation includes `expected_active_revision`; a stale caller
+receives a typed conflict and the active head remains unchanged.
+
+Inspection is deliberately redacted. It exposes digests and safe metadata, not
+raw prompts, workspace paths, command arguments, or secret references. Stored
+identity or digest corruption fails closed. Administration requires an admin
+or system principal, and every attempted mutation produces content-free audit
+evidence with a success or failure outcome.
+
+New sessions bind the active revision's execution composition. Existing
+sessions keep their historical model, prompt, tools, and runtime worker across
+activation and restart. The current active safety/access policy remains a live
+server floor and may revoke access to an older session immediately.
+
 ## Secret references
 
 Credentials cannot be embedded as TOML literals. A secret is either:
