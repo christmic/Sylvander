@@ -122,6 +122,9 @@ pub enum AgentEvent {
         iteration: u32,
         /// Cumulative usage so far.
         usage: Usage,
+        /// Usage reported by this provider request only. Consumers use this
+        /// for context-window tracking and incremental durable accounting.
+        provider_usage: Usage,
     },
 
     /// The loop has terminated successfully (model emitted `end_turn`

@@ -2097,26 +2097,30 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::IterationEnd { iteration, usage } => {
+                crate::event::AgentEvent::IterationEnd {
+                    iteration,
+                    usage,
+                    provider_usage,
+                } => {
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
-                            used: usage.total_input_tokens(),
-                            cache_read: usage.cache_read_input_tokens.unwrap_or(0),
-                            cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
+                            used: provider_usage.total_input_tokens(),
+                            cache_read: provider_usage.cache_read_input_tokens.unwrap_or(0),
+                            cache_write: provider_usage.cache_creation_input_tokens.unwrap_or(0),
                         },
                     );
                     let mut input_tokens = u64::from(usage.input_tokens);
                     let mut output_tokens = u64::from(usage.output_tokens);
-                    let iteration_cost =
-                        selected_pricing.and_then(|pricing| usage_cost_nano_usd(pricing, &usage));
+                    let iteration_cost = selected_pricing
+                        .and_then(|pricing| usage_cost_nano_usd(pricing, &provider_usage));
                     let mut cost_nano_usd = iteration_cost;
                     if let Some(store) = &self.session_store {
                         match store
                             .record_usage(
                                 &session_id,
-                                usage.input_tokens,
-                                usage.output_tokens,
+                                provider_usage.input_tokens,
+                                provider_usage.output_tokens,
                                 iteration_cost,
                             )
                             .await
