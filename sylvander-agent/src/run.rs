@@ -32,6 +32,7 @@ use tracing::{Instrument as _, info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::ask_user_gate::AskUserGate;
@@ -256,6 +257,7 @@ struct ActiveTurn {
 
 struct RuntimeModels {
     available: HashMap<String, ModelInfo>,
+    provider_id: String,
     lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     current_model: String,
@@ -290,7 +292,7 @@ impl RuntimeModels {
                 };
                 sylvander_protocol::ModelDescriptor {
                     id: model.id.clone(),
-                    provider: "anthropic-compatible".into(),
+                    provider: self.provider_id.clone(),
                     capabilities: model.capabilities.bits(),
                     reasoning_efforts,
                     lifecycle: self.lifecycles.get(&model.id).cloned().unwrap_or_default(),
@@ -342,6 +344,17 @@ impl AgentRun {
         AgentRunBuilder::new(spec, client)
     }
 
+    /// Build a run around a provider-neutral backend. Alternate qualified
+    /// models remain fail-closed until the runtime catalog is provider-aware.
+    #[must_use]
+    pub fn provider_builder(
+        spec: AgentSpec,
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> AgentRunBuilder {
+        AgentRunBuilder::new_provider(spec, provider, model)
+    }
+
     /// Unique agent identifier.
     #[must_use]
     pub fn id(&self) -> &AgentId {
@@ -373,6 +386,9 @@ impl AgentRun {
             .available
             .get(model_id)
             .ok_or_else(|| format!("model `{model_id}` is not available"))?;
+        self.inner
+            .validate_selected_model(&self.inner.spec.model.provider, model)
+            .map_err(|error| error.to_string())?;
         if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
             && !model
                 .capabilities
@@ -1492,6 +1508,16 @@ impl TaskGate for BusTaskGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    fn validate_selected_model(
+        &self,
+        provider_id: &str,
+        model: &ModelInfo,
+    ) -> Result<(), AgentRunError> {
+        self.loop_config
+            .validate_runtime_model(provider_id, model)
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))
+    }
+
     async fn apply_compacted_history(
         &self,
         session_id: &SessionId,
@@ -1820,6 +1846,12 @@ impl AgentRunInner {
                 runtime.pricing.get(model_id).copied(),
             )
         };
+        let selected_provider = effective_config
+            .as_ref()
+            .map_or(self.spec.model.provider.as_str(), |config| {
+                config.provider_id.as_str()
+            });
+        self.validate_selected_model(selected_provider, &selected_model)?;
 
         // 1. Persist the immutable turn boundary before provider or tool work.
         let session_metadata = {
@@ -2386,7 +2418,7 @@ fn tool_context_for_permissions(
 /// Builder for [`AgentRun`].
 pub struct AgentRunBuilder {
     spec: AgentSpec,
-    client: AnthropicClient,
+    backend: AgentRunModelBackend,
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
@@ -2403,11 +2435,31 @@ pub struct AgentRunBuilder {
     workspace_journal_path: Option<PathBuf>,
 }
 
+enum AgentRunModelBackend {
+    Legacy(AnthropicClient),
+    Provider {
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    },
+}
+
 impl AgentRunBuilder {
     fn new(spec: AgentSpec, client: AnthropicClient) -> Self {
+        Self::with_backend(spec, AgentRunModelBackend::Legacy(client))
+    }
+
+    fn new_provider(
+        spec: AgentSpec,
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> Self {
+        Self::with_backend(spec, AgentRunModelBackend::Provider { provider, model })
+    }
+
+    fn with_backend(spec: AgentSpec, backend: AgentRunModelBackend) -> Self {
         Self {
             spec,
-            client,
+            backend,
             bus: None,
             tool_overrides: None,
             compression_overrides: None,
@@ -2549,8 +2601,31 @@ impl AgentRunBuilder {
                 .and_then(|cfg| cfg.build().ok())
         };
 
-        let mut model_info = self.spec.to_model_info();
+        let provider_backend = matches!(&self.backend, AgentRunModelBackend::Provider { .. });
+        let (mut model_info, runtime_provider) = match &self.backend {
+            AgentRunModelBackend::Legacy(_) => {
+                (self.spec.to_model_info(), "anthropic-compatible".into())
+            }
+            AgentRunModelBackend::Provider { model, .. } => {
+                if model.reference.provider != self.spec.model.provider
+                    || model.reference.model != self.spec.model.model_name
+                {
+                    return Err(AgentRunError::Build(
+                        "provider model does not match the Agent specification".into(),
+                    ));
+                }
+                (
+                    crate::provider_compat::model_metadata_from_core(model),
+                    model.reference.provider.clone(),
+                )
+            }
+        };
         if let Some(caps) = self.model_capabilities {
+            if provider_backend {
+                return Err(AgentRunError::Build(
+                    "legacy capability overrides are unavailable for provider models".into(),
+                ));
+            }
             model_info.capabilities = caps;
         }
         let mut available_models = self
@@ -2558,11 +2633,16 @@ impl AgentRunBuilder {
             .into_iter()
             .map(|model| (model.id.clone(), model))
             .collect::<HashMap<_, _>>();
-        available_models
-            .entry(model_info.id.clone())
-            .or_insert_with(|| model_info.clone());
+        if provider_backend {
+            available_models.insert(model_info.id.clone(), model_info.clone());
+        } else {
+            available_models
+                .entry(model_info.id.clone())
+                .or_insert_with(|| model_info.clone());
+        }
         let runtime_models = RuntimeModels {
             available: available_models,
+            provider_id: runtime_provider,
             lifecycles: self.model_lifecycles,
             pricing: self.model_pricing,
             current_model: model_info.id.clone(),
@@ -2578,11 +2658,16 @@ impl AgentRunBuilder {
             },
         };
 
-        let mut loop_builder = AgentLoop::builder()
-            .client(self.client)
-            .model(model_info)
-            .max_iterations(self.spec.behavior.max_iterations)
-            .max_retries(self.spec.behavior.max_retries);
+        let mut loop_builder = match self.backend {
+            AgentRunModelBackend::Legacy(client) => {
+                AgentLoop::builder().client(client).model(model_info)
+            }
+            AgentRunModelBackend::Provider { provider, model } => AgentLoop::builder()
+                .provider(provider)
+                .provider_model(model),
+        }
+        .max_iterations(self.spec.behavior.max_iterations)
+        .max_retries(self.spec.behavior.max_retries);
 
         if !self.spec.persona.system_prompt.is_empty() {
             loop_builder = loop_builder.system_prompt(&self.spec.persona.system_prompt);
@@ -2709,6 +2794,97 @@ mod tests {
             .build()
             .expect("client");
         (spec, client)
+    }
+
+    #[derive(Default)]
+    struct RecordingProvider {
+        requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
+    }
+
+    impl sylvander_llm_core::ModelProvider for RecordingProvider {
+        fn complete_stream(
+            &self,
+            request: sylvander_llm_core::ModelRequest,
+        ) -> sylvander_llm_core::ProviderFuture<'_> {
+            self.requests.lock().unwrap().push(request.clone());
+            Box::pin(async move {
+                let response = sylvander_llm_core::ModelResponse {
+                    id: request.request_id,
+                    model: request.model,
+                    content: vec![sylvander_llm_core::ContentBlock::Text { text: "ok".into() }],
+                    stop_reason: sylvander_llm_core::StopReason::EndTurn,
+                    usage: sylvander_llm_core::TokenUsage::default(),
+                };
+                Ok(Box::pin(futures_util::stream::iter([Ok(
+                    sylvander_llm_core::ModelStreamEvent::Completed(response),
+                )])) as sylvander_llm_core::ModelEventStream)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_model_selection_fails_before_ui_and_request_identity_diverge() {
+        let mut spec = AgentSpec::builder()
+            .id("provider-agent")
+            .name("Provider")
+            .model_name("model-a")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let provider = Arc::new(RecordingProvider::default());
+        let provider_model = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "model-a"),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let alternate = ModelInfo::builder()
+            .id("model-b")
+            .context_window(100_000)
+            .max_output_tokens(4096)
+            .build()
+            .unwrap();
+        let run = AgentRun::provider_builder(spec, provider.clone(), provider_model)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .available_models(vec![alternate.clone()])
+            .build()
+            .unwrap();
+
+        let before = run.runtime_model_info().await;
+        assert_eq!(before.models[0].provider, "local");
+        assert!(
+            run.select_model("model-b", sylvander_protocol::ReasoningEffort::Off)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            run.runtime_model_info().await.current_model,
+            before.current_model
+        );
+        assert!(matches!(
+            run.inner.validate_selected_model("local", &alternate),
+            Err(AgentRunError::Configuration(_))
+        ));
+        assert!(matches!(
+            run.inner
+                .validate_selected_model("remote", run.inner.loop_config.model()),
+            Err(AgentRunError::Configuration(_))
+        ));
+
+        crate::loop_::run(
+            &run.inner.loop_config,
+            vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+                "hello",
+            )],
+        )
+        .await
+        .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].model,
+            sylvander_llm_core::ModelRef::new("local", "model-a")
+        );
     }
 
     #[test]
