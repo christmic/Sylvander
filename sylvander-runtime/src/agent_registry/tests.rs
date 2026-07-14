@@ -1,10 +1,87 @@
 use tempfile::tempdir;
 
-use super::{AgentRegistry, AgentRegistryError, hex_digest};
+use super::{
+    AgentRegistry, AgentRegistryError, REGISTRY_COMPONENT, REGISTRY_SCHEMA_VERSION, SCHEMA,
+    hex_digest,
+};
 use crate::config::ServerConfig;
 
 fn catalog() -> ServerConfig {
     ServerConfig::from_toml(include_str!("../../../config/sylvander.example.toml")).unwrap()
+}
+
+#[tokio::test]
+async fn legacy_file_migrates_once_and_enforces_registry_foreign_keys() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("legacy.db");
+    let legacy = rusqlite::Connection::open(&path).unwrap();
+    legacy.execute_batch(SCHEMA).unwrap();
+    drop(legacy);
+
+    let registry = AgentRegistry::open(&path).await.unwrap();
+    let state = registry
+        .run(|connection| {
+            let foreign_keys: i64 = connection
+                .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                .map_err(AgentRegistryError::sqlite)?;
+            let busy_timeout: i64 = connection
+                .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+                .map_err(AgentRegistryError::sqlite)?;
+            let version: i64 = connection
+                .query_row(
+                    "SELECT MAX(version) FROM schema_migrations WHERE component=?1",
+                    [REGISTRY_COMPONENT],
+                    |row| row.get(0),
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            let tables: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (\
+                     'credential_binding_revisions','credential_binding_heads',\
+                     'provider_definitions','provider_registry_heads',\
+                     'model_definitions','model_registry_heads')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok((foreign_keys, busy_timeout, version, tables))
+        })
+        .await
+        .unwrap();
+    assert_eq!(state, (1, 5_000, REGISTRY_SCHEMA_VERSION, 6));
+
+    let foreign_key_error = registry
+        .run(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO provider_registry_heads(provider_id,active_revision,updated_at) \
+                     VALUES ('missing',1,0)",
+                    [],
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(())
+        })
+        .await;
+    assert!(matches!(
+        foreign_key_error,
+        Err(AgentRegistryError::Storage(_))
+    ));
+    drop(registry);
+
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    let migration_rows: i64 = reopened
+        .run(|connection| {
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM schema_migrations WHERE component=?1",
+                    [REGISTRY_COMPONENT],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert_eq!(migration_rows, 1);
 }
 
 #[tokio::test]
