@@ -8,6 +8,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::Mutex;
 use tokio::task;
 
+use sylvander_protocol::{FeedbackRating, RunFeedback};
+
 mod recorder;
 
 pub use recorder::EvidenceRecorder;
@@ -273,6 +275,72 @@ impl EvidenceStore {
         .await
     }
 
+    /// Persist explicit user feedback only when it can be traced to a real
+    /// run and, when supplied, a turn belonging to that run.
+    pub async fn record_feedback(
+        &self,
+        feedback: RunFeedback,
+        recorded_at: i64,
+    ) -> Result<String, EvidenceError> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let stored_id = id.clone();
+        self.run(move |connection| {
+            let target_exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM evidence_runs r
+                       WHERE r.id=?1
+                         AND (?2 IS NULL OR EXISTS(
+                           SELECT 1 FROM evidence_turns t
+                           WHERE t.id=?2 AND t.run_id=r.id
+                         ))
+                     )",
+                    params![feedback.run_id, feedback.turn_id],
+                    |row| row.get(0),
+                )
+                .map_err(EvidenceError::sqlite)?;
+            if !target_exists {
+                return Err(EvidenceError::InvalidFeedbackTarget);
+            }
+            let rating = match feedback.rating {
+                FeedbackRating::Positive => "positive",
+                FeedbackRating::Negative => "negative",
+            };
+            let tags_json = serde_json::to_string(&feedback.tags)
+                .map_err(|error| EvidenceError::Serialize(error.to_string()))?;
+            connection
+                .execute(
+                    "INSERT INTO evidence_feedback(id, run_id, turn_id, rating, note, tags_json, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        stored_id,
+                        feedback.run_id,
+                        feedback.turn_id,
+                        rating,
+                        feedback.note,
+                        tags_json,
+                        recorded_at
+                    ],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await?;
+        Ok(id)
+    }
+
+    pub async fn feedback_count(&self) -> Result<u64, EvidenceError> {
+        self.run(|connection| {
+            let value: i64 = connection
+                .query_row("SELECT COUNT(*) FROM evidence_feedback", [], |row| {
+                    row.get(0)
+                })
+                .map_err(EvidenceError::sqlite)?;
+            u64::try_from(value).map_err(|_| EvidenceError::InvalidCount(value))
+        })
+        .await
+    }
+
     /// Delete completed runs older than `cutoff` and all normalized evidence
     /// that belongs to them. Active and interrupted recovery records remain.
     pub async fn prune_before(&self, cutoff: i64) -> Result<u64, EvidenceError> {
@@ -282,6 +350,7 @@ impl EvidenceStore {
                     .execute(sql, [cutoff])
                     .map_err(EvidenceError::sqlite)
             };
+            delete("DELETE FROM evidence_feedback WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)")?;
             delete("DELETE FROM evidence_events WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)")?;
             delete("DELETE FROM evidence_outcomes WHERE turn_id IN (SELECT id FROM evidence_turns WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1))")?;
             delete("DELETE FROM evidence_steps WHERE turn_id IN (SELECT id FROM evidence_turns WHERE run_id IN (SELECT id FROM evidence_runs WHERE ended_at IS NOT NULL AND ended_at < ?1))")?;
@@ -412,6 +481,8 @@ pub enum EvidenceError {
     Subscribe(String),
     #[error("failed to serialize evidence event: {0}")]
     Serialize(String),
+    #[error("feedback must reference an existing run and a turn from that run")]
+    InvalidFeedbackTarget,
 }
 
 impl EvidenceError {
@@ -449,8 +520,15 @@ CREATE TABLE IF NOT EXISTS evidence_events (
   observed_at INTEGER NOT NULL, payload_bytes INTEGER NOT NULL,
   payload_digest TEXT, payload_json TEXT, privacy_class TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evidence_feedback (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES evidence_runs(id),
+  turn_id TEXT REFERENCES evidence_turns(id), rating TEXT NOT NULL,
+  note TEXT, tags_json TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+  CHECK (rating IN ('positive', 'negative'))
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
 ";
 
 #[cfg(test)]
@@ -549,6 +627,59 @@ mod tests {
         assert_eq!(turns[0].step_count, 1);
         assert_eq!(turns[0].failed_step_count, 0);
         assert_eq!(turns[0].successful_outcome, Some(true));
+    }
+
+    #[tokio::test]
+    async fn feedback_requires_traceable_run_and_turn_evidence() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        store
+            .start_run("run-1".into(), "test".into(), 1)
+            .await
+            .unwrap();
+        store
+            .start_turn(TurnStart {
+                id: "turn-1".into(),
+                run_id: "run-1".into(),
+                session_id: "session-1".into(),
+                agent_id: Some("agent-1".into()),
+                started_at: 2,
+                input_bytes: 0,
+                input_digest: None,
+            })
+            .await
+            .unwrap();
+
+        let feedback_id = store
+            .record_feedback(
+                RunFeedback {
+                    run_id: "run-1".into(),
+                    turn_id: Some("turn-1".into()),
+                    rating: FeedbackRating::Positive,
+                    note: Some("useful".into()),
+                    tags: vec!["correct".into()],
+                },
+                3,
+            )
+            .await
+            .unwrap();
+        assert!(!feedback_id.is_empty());
+        assert_eq!(store.feedback_count().await.unwrap(), 1);
+
+        let error = store
+            .record_feedback(
+                RunFeedback {
+                    run_id: "run-1".into(),
+                    turn_id: Some("unknown-turn".into()),
+                    rating: FeedbackRating::Negative,
+                    note: None,
+                    tags: Vec::new(),
+                },
+                4,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, EvidenceError::InvalidFeedbackTarget));
+        assert_eq!(store.feedback_count().await.unwrap(), 1);
     }
 
     #[tokio::test]
