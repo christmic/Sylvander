@@ -40,7 +40,7 @@ use crate::types::{AgentId, SessionId, UserId};
 /// One user owns many agents; one agent participates in many sessions;
 /// one session is bound to exactly one user and one agent (for the
 /// request lifetime).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Identity {
     pub user_id: UserId,
     pub agent_id: AgentId,
@@ -66,7 +66,7 @@ impl Identity {
 // ===========================================================================
 
 /// Where the request originated: which workspace, which channel.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Origin {
     /// Working directory for file operations. May be unset for
     /// system-originated requests.
@@ -85,7 +85,7 @@ pub struct Origin {
 /// Mostly for observability and routing. Tools and stores should
 /// generally not branch on these — read `Identity` for
 /// access-control decisions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RequestMeta {
     /// Unix epoch seconds when the request was created.
     pub created_at: i64,
@@ -105,7 +105,9 @@ impl Default for RequestMeta {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
     Low,
@@ -125,7 +127,7 @@ pub enum Priority {
 /// New experimental or cross-cutting fields land here first; once
 /// they prove stable they migrate to typed fields. This way adding
 /// a new field never breaks call sites.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AttributeBag {
     inner: HashMap<String, AttributeValue>,
 }
@@ -186,7 +188,7 @@ impl AttributeBag {
 }
 
 /// Typed value for an attribute entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum AttributeValue {
     String(String),
@@ -253,7 +255,7 @@ impl From<bool> for AttributeValue {
 /// Every API that needs to know "who, where, when, why" takes this
 /// as its first argument. To add a new field, extend the relevant
 /// sub-struct — call sites don't change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionContext {
     pub identity: Identity,
     pub origin: Origin,

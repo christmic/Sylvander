@@ -6,14 +6,13 @@
 
 use std::path::PathBuf;
 
-// use schemars::JsonSchema; // uncomment for multi-language schema gen
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const UI_PROTOCOL_MIN_VERSION: u16 = 1;
-pub const UI_PROTOCOL_MAX_VERSION: u16 = 1;
+pub const UI_PROTOCOL_MAX_VERSION: u16 = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolHello {
     pub client_name: String,
     pub min_version: u16,
@@ -22,7 +21,7 @@ pub struct UiProtocolHello {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolWelcome {
     pub server_name: String,
     pub version: u16,
@@ -30,7 +29,7 @@ pub struct UiProtocolWelcome {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolError {
     pub code: String,
     pub message: String,
@@ -57,7 +56,9 @@ pub fn negotiate_ui_protocol(hello: &UiProtocolHello) -> Result<u16, UiProtocolE
 
 /// User-facing reasoning intensity. The runtime maps these stable semantic
 /// levels to provider-specific token budgets.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     #[default]
@@ -79,7 +80,7 @@ impl ReasoningEffort {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelDescriptor {
     pub id: String,
     pub provider: String,
@@ -93,7 +94,7 @@ pub struct ModelDescriptor {
 
 /// Operator-supplied API prices in micro-US-dollars per million tokens.
 /// `1_000_000` therefore means `$1.00 / 1M tokens`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelPricing {
     pub input_usd_micros_per_million: u64,
     pub output_usd_micros_per_million: u64,
@@ -103,7 +104,7 @@ pub struct ModelPricing {
     pub cache_read_usd_micros_per_million: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ModelLifecycle {
     #[default]
@@ -114,7 +115,7 @@ pub enum ModelLifecycle {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RuntimeModelInfo {
     pub current_model: String,
     pub reasoning_effort: ReasoningEffort,
@@ -122,7 +123,7 @@ pub struct RuntimeModelInfo {
 }
 
 /// UI-oriented classification for optional Agent platform facilities.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformFeatureKind {
     Mcp,
@@ -132,7 +133,9 @@ pub enum PlatformFeatureKind {
     Extension,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformFeatureStatus {
     Active,
@@ -142,7 +145,9 @@ pub enum PlatformFeatureStatus {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformAuthStatus {
     NotRequired,
@@ -152,7 +157,7 @@ pub enum PlatformAuthStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformTrust {
     BuiltIn,
@@ -164,7 +169,7 @@ pub enum PlatformTrust {
 
 /// Redacted platform truth intended for status and inspection surfaces. It
 /// deliberately excludes credentials, command arguments, and filesystem paths.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PlatformFeature {
     pub kind: PlatformFeatureKind,
     pub name: String,
@@ -186,7 +191,7 @@ pub struct PlatformFeature {
 /// A transport-neutral effect contributed by an optional platform facility.
 /// The TUI remains responsible for applying the effect through its normal
 /// application boundary; extensions never receive presentation callbacks.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiCommandEffect {
     /// Expand a trusted template and submit it through the ordinary chat path.
@@ -196,7 +201,7 @@ pub enum UiCommandEffect {
 
 /// Redacted command metadata advertised to UI clients. Names and trust are
 /// validated again by the client because built-in command sets can differ.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiCommandDescriptor {
     pub id: String,
     pub name: String,
@@ -209,7 +214,7 @@ pub struct UiCommandDescriptor {
     pub effect: UiCommandEffect,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PlatformSnapshot {
     #[serde(default)]
     pub features: Vec<PlatformFeature>,
@@ -217,7 +222,7 @@ pub struct PlatformSnapshot {
     pub commands: Vec<UiCommandDescriptor>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextSourceKind {
     SystemPrompt,
@@ -225,7 +230,7 @@ pub enum ContextSourceKind {
     Tools,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContextSource {
     pub kind: ContextSourceKind,
     pub label: String,
@@ -233,7 +238,7 @@ pub struct ContextSource {
 }
 
 /// Last provider-confirmed context usage plus its structural contributors.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ContextReport {
     pub model: String,
     pub context_window: u32,
@@ -244,7 +249,7 @@ pub struct ContextReport {
     pub sources: Vec<ContextSource>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompactionReport {
     pub automatic: bool,
     pub removed_messages: usize,
@@ -253,19 +258,21 @@ pub struct CompactionReport {
     pub summary: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceRollbackPreview {
     pub turn_id: String,
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceRollbackReport {
     pub turn_id: String,
     pub restored: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryCause {
     RateLimit,
@@ -276,7 +283,7 @@ pub enum RetryCause {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionTimeoutKind {
     Approval,
@@ -286,7 +293,7 @@ pub enum InteractionTimeoutKind {
     Task,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeoutRecovery {
     RetryRequest,
@@ -294,7 +301,9 @@ pub enum TimeoutRecovery {
     ContinueWithout,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FileAccess {
     None,
@@ -303,7 +312,9 @@ pub enum FileAccess {
     WorkspaceWrite,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkAccess {
     #[default]
@@ -311,7 +322,9 @@ pub enum NetworkAccess {
     Allowed,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalPolicy {
     Ask,
@@ -324,7 +337,9 @@ pub enum ApprovalPolicy {
 ///
 /// Transports must forward this value unchanged. The Agent remains the
 /// authority that decides which scopes are allowed for a request.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalScope {
     #[default]
@@ -333,7 +348,7 @@ pub enum ApprovalScope {
     Persistent,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PermissionProfile {
     pub file_access: FileAccess,
     pub network_access: NetworkAccess,
@@ -345,7 +360,7 @@ pub struct PermissionProfile {
 // ===========================================================================
 
 /// Unique identifier for an agent.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentId(pub String);
 
 impl AgentId {
@@ -372,7 +387,7 @@ impl From<String> for AgentId {
 }
 
 /// Unique identifier for a session.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionId(pub String);
 
 impl SessionId {
@@ -399,7 +414,7 @@ impl From<&str> for SessionId {
 /// (a single conversation). One user may own many agents and run many
 /// sessions; one session is bound to exactly one user; one agent is
 /// owned by exactly one user.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UserId(pub String);
 
 impl UserId {
@@ -433,7 +448,7 @@ impl From<String> for UserId {
 }
 
 /// Static metadata shared by all agents in a session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionMetadata {
     pub workspace: PathBuf,
     pub name: String,
@@ -441,7 +456,7 @@ pub struct SessionMetadata {
 }
 
 /// A workspace exposed to an Agent through a named execution target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionWorkspaceBinding {
     pub execution_target: String,
     pub path: PathBuf,
@@ -450,7 +465,7 @@ pub struct SessionWorkspaceBinding {
 }
 
 /// The configuration layer that supplied one effective session field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionConfigSourceKind {
     AgentDefault,
@@ -460,7 +475,7 @@ pub enum SessionConfigSourceKind {
     LegacyMigration,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionConfigSource {
     pub kind: SessionConfigSourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -469,7 +484,7 @@ pub struct SessionConfigSource {
 
 /// Durable, user-controlled session overrides. Missing fields inherit from
 /// the Agent and channel definitions instead of copying their current values.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionConfigOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -490,7 +505,7 @@ pub struct SessionConfigOverrides {
 
 /// Per-field origin information for the resolved configuration. This keeps UI
 /// inspection and audit output honest when a session overrides Agent defaults.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionConfigProvenance {
     pub model: SessionConfigSource,
     pub reasoning_effort: SessionConfigSource,
@@ -505,7 +520,7 @@ pub struct SessionConfigProvenance {
 /// Fully resolved configuration used to start a turn. The runtime persists
 /// this value before provider or tool work begins, so later configuration
 /// changes cannot rewrite the historical execution context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionEffectiveConfig {
     pub agent_id: AgentId,
     pub agent_revision: u64,
@@ -526,7 +541,7 @@ pub struct SessionEffectiveConfig {
 }
 
 /// Redacted Agent definition exposed to UI clients during discovery.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct AgentDescriptor {
     pub id: AgentId,
     pub revision: u64,
@@ -542,7 +557,7 @@ pub struct AgentDescriptor {
 }
 
 /// UI-facing request to create a durable session from layered defaults.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionCreateRequest {
     pub agent_id: AgentId,
     pub label: String,
@@ -553,7 +568,7 @@ pub struct SessionCreateRequest {
 }
 
 /// Optimistic UI request to replace one session's sparse overrides.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionConfigUpdateRequest {
     pub session_id: SessionId,
     pub expected_revision: u64,
@@ -561,7 +576,7 @@ pub struct SessionConfigUpdateRequest {
 }
 
 /// Complete session configuration state returned after create, read, or update.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SessionConfigState {
     pub session_id: SessionId,
     pub revision: u64,
@@ -571,14 +586,14 @@ pub struct SessionConfigState {
 
 /// A user assessment tied to durable execution evidence, never free-floating
 /// training data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FeedbackRating {
     Positive,
     Negative,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RunFeedback {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -595,7 +610,7 @@ pub struct RunFeedback {
 // ===========================================================================
 
 /// Unique identifier for a bus message.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageId(pub Uuid);
 
 impl MessageId {
@@ -611,7 +626,7 @@ impl Default for MessageId {
 }
 
 /// Who sent the message.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Sender {
     User(String),
     Agent(AgentId),
@@ -619,14 +634,14 @@ pub enum Sender {
 }
 
 /// Who should receive the message.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Recipient {
     Agent(AgentId),
     Broadcast,
 }
 
 /// Agent lifecycle status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum AgentStatus {
     Starting,
     Running,
@@ -642,7 +657,7 @@ pub enum AgentStatus {
 ///
 /// These are transient — not stored in session history.
 /// Only `Done` triggers a history write.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     TextDelta {
@@ -760,7 +775,7 @@ pub enum StreamEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 pub enum PlanDecision {
     Approved,
@@ -769,7 +784,7 @@ pub enum PlanDecision {
 }
 
 /// Info about a single tool call.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCallInfo {
     pub call_id: String,
     pub tool_name: String,
@@ -781,7 +796,7 @@ pub struct ToolCallInfo {
 // ===========================================================================
 
 /// What kind of message this is.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessageKind {
     Chat,
@@ -790,7 +805,7 @@ pub enum MessageKind {
 }
 
 /// System-level messages for agent lifecycle and coordination.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SystemMessage {
     Stop,
@@ -842,7 +857,7 @@ fn default_approval_scopes() -> Vec<ApprovalScope> {
 // BusMessage
 // ===========================================================================
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AttachmentKind {
     Paste,
@@ -853,14 +868,14 @@ pub enum AttachmentKind {
     TerminalOutput,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "encoding", rename_all = "snake_case")]
 pub enum AttachmentContent {
     Text { text: String },
     Base64 { data: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MessageAttachment {
     pub id: String,
     pub kind: AttachmentKind,
@@ -871,7 +886,7 @@ pub struct MessageAttachment {
 }
 
 /// A message on the bus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BusMessage {
     pub session_id: SessionId,
     pub sender: Sender,
@@ -1188,18 +1203,24 @@ mod tests {
 
     #[test]
     fn ui_protocol_selects_overlap_and_rejects_incompatible_ranges() {
-        let compatible = UiProtocolHello {
+        let legacy = UiProtocolHello {
             client_name: "test".into(),
             min_version: 1,
-            max_version: 2,
+            max_version: 1,
             capabilities: vec!["diagnostics".into()],
         };
-        assert_eq!(negotiate_ui_protocol(&compatible), Ok(1));
+        assert_eq!(negotiate_ui_protocol(&legacy), Ok(1));
+
+        let current = UiProtocolHello {
+            max_version: 2,
+            ..legacy.clone()
+        };
+        assert_eq!(negotiate_ui_protocol(&current), Ok(2));
 
         let incompatible = UiProtocolHello {
-            min_version: 2,
-            max_version: 3,
-            ..compatible
+            min_version: 3,
+            max_version: 4,
+            ..legacy
         };
         let error = negotiate_ui_protocol(&incompatible).expect_err("must reject");
         assert_eq!(error.code, "incompatible_protocol");
