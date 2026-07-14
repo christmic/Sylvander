@@ -10,6 +10,7 @@ license.workspace = true
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-protocol = { path = "../sylvander-protocol" }
 tokio = { workspace = true }
 async-trait = "0.1"
 serde = { workspace = true }

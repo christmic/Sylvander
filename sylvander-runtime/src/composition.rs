@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::run::AgentRun;
 use sylvander_agent::session_store::SessionStore;
@@ -14,6 +15,11 @@ use sylvander_agent::tools::{
 };
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_protocol::{
+    ApprovalPolicy, FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort,
+    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionEffectiveConfig, SessionWorkspaceBinding,
+};
 
 use crate::config::{
     AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
@@ -26,6 +32,7 @@ pub struct ConfiguredAgent {
     pub run: AgentRun,
     pub models: Vec<ModelInfo>,
     pub approval_enabled: bool,
+    pub definition: AgentDefinitionConfig,
 }
 
 /// Build every configured Agent without starting background tasks.
@@ -113,7 +120,195 @@ fn build_agent(
         run,
         models,
         approval_enabled: config.server.approval.enabled,
+        definition: definition.clone(),
     })
+}
+
+/// Resolve sparse session overrides against one immutable Agent definition.
+pub fn resolve_session_config(
+    agent: &ConfiguredAgent,
+    overrides: &SessionConfigOverrides,
+    legacy_workspace: Option<&std::path::Path>,
+) -> Result<SessionEffectiveConfig, CompositionError> {
+    let definition = &agent.definition;
+    let provider_id = definition.spec.model.provider.clone();
+    let model_id = overrides
+        .model_id
+        .clone()
+        .unwrap_or_else(|| definition.spec.model.model_name.clone());
+    let model = agent
+        .models
+        .iter()
+        .find(|candidate| candidate.id == model_id)
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: provider_id.clone(),
+            model: model_id.clone(),
+        })?;
+    let reasoning_effort = overrides.reasoning_effort.unwrap_or_default();
+    if reasoning_effort != ReasoningEffort::Off
+        && !model
+            .capabilities
+            .contains(ModelCapabilities::EXTENDED_THINKING)
+    {
+        return Err(CompositionError::UnsupportedReasoning(model_id));
+    }
+
+    let permissions = overrides.permissions.clone().unwrap_or(PermissionProfile {
+        file_access: FileAccess::WorkspaceWrite,
+        network_access: NetworkAccess::Denied,
+        approval_policy: if agent.approval_enabled {
+            ApprovalPolicy::Ask
+        } else {
+            ApprovalPolicy::Allow
+        },
+    });
+    if permissions.approval_policy == ApprovalPolicy::Ask && !agent.approval_enabled {
+        return Err(CompositionError::ApprovalDisabled);
+    }
+
+    let prompt_profile = overrides
+        .prompt_profile
+        .clone()
+        .or_else(|| definition.default_prompt_profile.clone());
+    let mut system_prompt = definition.spec.persona.system_prompt.clone();
+    if let Some(profile_id) = &prompt_profile {
+        let profile = definition
+            .prompt_profiles
+            .iter()
+            .find(|profile| &profile.id == profile_id)
+            .ok_or_else(|| CompositionError::MissingPromptProfile {
+                agent: definition.spec.id.to_string(),
+                profile: profile_id.clone(),
+            })?;
+        if (!profile.providers.is_empty() && !profile.providers.contains(&provider_id))
+            || (!profile.models.is_empty() && !profile.models.contains(&model_id))
+        {
+            return Err(CompositionError::IncompatiblePromptProfile {
+                profile: profile_id.clone(),
+                provider: provider_id.clone(),
+                model: model_id.clone(),
+            });
+        }
+        system_prompt.clone_from(&profile.system_prompt);
+    }
+    if let Some(prompt) = &overrides.system_prompt {
+        if !definition.allow_session_prompt {
+            return Err(CompositionError::SessionPromptDisabled);
+        }
+        system_prompt.clone_from(prompt);
+    }
+
+    let agent_workspace = definition.agent_workspace.as_ref().map(workspace_binding);
+    let user_workspace = overrides.user_workspace.clone().or_else(|| {
+        legacy_workspace.map(|path| SessionWorkspaceBinding {
+            execution_target: "local".into(),
+            path: path.to_path_buf(),
+            read_only: false,
+        })
+    });
+    let execution_target = overrides
+        .execution_target
+        .clone()
+        .or_else(|| {
+            user_workspace
+                .as_ref()
+                .map(|workspace| workspace.execution_target.clone())
+        })
+        .or_else(|| {
+            agent_workspace
+                .as_ref()
+                .map(|workspace| workspace.execution_target.clone())
+        })
+        .unwrap_or_else(|| "local".into());
+    let agent_default = source(SessionConfigSourceKind::AgentDefault, &definition.spec.id.0);
+    let session_override = source(SessionConfigSourceKind::SessionOverride, "session");
+    let legacy = source(
+        SessionConfigSourceKind::LegacyMigration,
+        "metadata.workspace",
+    );
+
+    Ok(SessionEffectiveConfig {
+        agent_id: definition.spec.id.clone(),
+        agent_revision: definition.revision,
+        provider_id,
+        model_id,
+        reasoning_effort,
+        permissions,
+        prompt_profile,
+        system_prompt_sha256: format!("{:x}", Sha256::digest(system_prompt.as_bytes())),
+        agent_workspace,
+        user_workspace,
+        execution_target,
+        provenance: SessionConfigProvenance {
+            model: choose(
+                overrides.model_id.is_some(),
+                &session_override,
+                &agent_default,
+            ),
+            reasoning_effort: choose(
+                overrides.reasoning_effort.is_some(),
+                &session_override,
+                &agent_default,
+            ),
+            permissions: choose(
+                overrides.permissions.is_some(),
+                &session_override,
+                &agent_default,
+            ),
+            prompt_profile: choose(
+                overrides.prompt_profile.is_some(),
+                &session_override,
+                &agent_default,
+            ),
+            system_prompt: choose(
+                overrides.system_prompt.is_some(),
+                &session_override,
+                &agent_default,
+            ),
+            agent_workspace: agent_default.clone(),
+            user_workspace: if overrides.user_workspace.is_some() {
+                session_override.clone()
+            } else if legacy_workspace.is_some() {
+                legacy.clone()
+            } else {
+                agent_default.clone()
+            },
+            execution_target: if overrides.execution_target.is_some() {
+                session_override
+            } else if overrides.user_workspace.is_none() && legacy_workspace.is_some() {
+                legacy
+            } else {
+                agent_default
+            },
+        },
+    })
+}
+
+fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> SessionWorkspaceBinding {
+    SessionWorkspaceBinding {
+        execution_target: workspace.execution_target.clone(),
+        path: workspace.path.clone().into(),
+        read_only: workspace.read_only,
+    }
+}
+
+fn source(kind: SessionConfigSourceKind, reference: &str) -> SessionConfigSource {
+    SessionConfigSource {
+        kind,
+        reference: Some(reference.into()),
+    }
+}
+
+fn choose(
+    overridden: bool,
+    override_source: &SessionConfigSource,
+    default_source: &SessionConfigSource,
+) -> SessionConfigSource {
+    if overridden {
+        override_source.clone()
+    } else {
+        default_source.clone()
+    }
 }
 
 fn apply_default_prompt(
@@ -182,6 +377,18 @@ pub enum CompositionError {
     MissingProvider(String),
     #[error("model `{model}` is unavailable from provider `{provider}`")]
     MissingModel { provider: String, model: String },
+    #[error("model `{0}` does not support reasoning")]
+    UnsupportedReasoning(String),
+    #[error("approval policy `ask` requires approvals to be enabled")]
+    ApprovalDisabled,
+    #[error("session system prompt overrides are disabled")]
+    SessionPromptDisabled,
+    #[error("prompt profile `{profile}` does not support {provider}/{model}")]
+    IncompatiblePromptProfile {
+        profile: String,
+        provider: String,
+        model: String,
+    },
     #[error("failed to resolve secret for provider `{0}`: {1}")]
     Secret(String, String),
     #[error("failed to create client for provider `{0}`: {1}")]
@@ -277,5 +484,35 @@ path = "/tmp/sylvander-test.sock"
                 .capabilities
                 .contains(ModelCapabilities::TOOL_USE | ModelCapabilities::VISION)
         );
+
+        let effective = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides::default(),
+            Some(std::path::Path::new("/work/project")),
+        )
+        .unwrap();
+        assert_eq!(effective.model_id, "model-a");
+        assert_eq!(effective.prompt_profile.as_deref(), Some("optimized"));
+        assert_eq!(effective.execution_target, "local");
+        assert_eq!(
+            effective.user_workspace.unwrap().path,
+            std::path::PathBuf::from("/work/project")
+        );
+        assert_eq!(
+            effective.provenance.user_workspace.kind,
+            SessionConfigSourceKind::LegacyMigration
+        );
+        assert_eq!(effective.system_prompt_sha256.len(), 64);
+
+        let error = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides {
+                system_prompt: Some("session prompt".into()),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CompositionError::SessionPromptDisabled));
     }
 }

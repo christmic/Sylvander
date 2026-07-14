@@ -278,13 +278,16 @@ impl SessionStore for SqliteSessionStore {
         // per-user filtering happens in `list` at request time.
         self.run(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta, \
-                        config_revision, config_overrides, effective_config \
-                 FROM sessions \
-                 WHERE lifetime = 'persistent' AND is_archived = 0 \
-                 ORDER BY updated_at DESC",
+                "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, s.created_at, \
+                        s.updated_at, s.external_meta, s.config_revision, s.config_overrides, \
+                        s.effective_config, GROUP_CONCAT(sa.agent_id, ',') AS agents \
+                 FROM sessions s \
+                 LEFT JOIN session_agents sa ON sa.session_id = s.id \
+                 WHERE s.lifetime = 'persistent' AND s.is_archived = 0 \
+                 GROUP BY s.id \
+                 ORDER BY s.updated_at DESC",
             )?;
-            let rows = stmt.query_map([], row_to_session_no_agents)?;
+            let rows = stmt.query_map([], row_to_session_with_agents)?;
             let mut out = Vec::new();
             for row in rows {
                 let s = row?;
@@ -1363,6 +1366,7 @@ mod tests {
         let persistent = store.list_persistent().await.unwrap();
         assert_eq!(persistent.len(), 1);
         assert_eq!(persistent[0].id, SessionId::new("s1"));
+        assert_eq!(persistent[0].agents, vec![AgentId::new("agent-1")]);
     }
 
     #[tokio::test]
