@@ -90,7 +90,7 @@ impl ModalStack {
     }
 
     pub fn top(&self) -> Option<&dyn Modal> {
-        self.stack.last().map(|b| b.as_ref())
+        self.stack.last().map(std::convert::AsRef::as_ref)
     }
 
     pub fn top_mut(&mut self) -> Option<&mut Box<dyn Modal>> {
@@ -112,7 +112,7 @@ impl ModalStack {
     /// Iterate all modals (used by dispatcher to render Toasts that can
     /// stack alongside a main modal).
     pub fn iter(&self) -> impl Iterator<Item = &dyn Modal> {
-        self.stack.iter().map(|b| b.as_ref())
+        self.stack.iter().map(std::convert::AsRef::as_ref)
     }
 
     /// Remove any modals whose `active()` returns false.

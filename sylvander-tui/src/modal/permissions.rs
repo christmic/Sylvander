@@ -75,7 +75,7 @@ impl Modal for PermissionsPicker {
     fn active(&self) -> bool {
         true
     }
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Permissions"
     }
 
