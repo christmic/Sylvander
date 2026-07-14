@@ -343,6 +343,9 @@ pub enum UiServerMessage {
         operation: String,
         message: String,
     },
+    BoundaryDenied {
+        error: crate::BoundaryError,
+    },
     Pong,
 }
 

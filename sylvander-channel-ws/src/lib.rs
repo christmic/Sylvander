@@ -266,7 +266,7 @@ async fn handle_client_msg(
         && let Some(ui) = &ctx.ui
         && let Err(error) = ui.authorize_message(&boundary, &msg).await
     {
-        operation_error(tx, &error.operation, error.to_string());
+        boundary_denied(tx, error);
         return;
     }
     match msg {
@@ -492,7 +492,7 @@ async fn handle_client_msg(
                     Ok(agents) => {
                         let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
                     }
-                    Err(error) => operation_error(tx, "discover_agents", error.to_string()),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
@@ -507,7 +507,7 @@ async fn handle_client_msg(
                             config: Some(config),
                         });
                     }
-                    Err(error) => operation_error(tx, "create_session", error.to_string()),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "create_session", "UI service is unavailable");
@@ -522,7 +522,7 @@ async fn handle_client_msg(
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "get_session_config", error.to_string()),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
@@ -534,7 +534,7 @@ async fn handle_client_msg(
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "update_session_config", error.to_string()),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "update_session_config", "UI service is unavailable");
@@ -546,7 +546,7 @@ async fn handle_client_msg(
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
-                    Err(error) => operation_error(tx, "submit_feedback", error.to_string()),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
@@ -576,6 +576,13 @@ fn operation_error(
         operation: operation.into(),
         message: message.into(),
     });
+}
+
+fn boundary_denied(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    error: sylvander_protocol::BoundaryError,
+) {
+    let _ = tx.send(ServerMsg::BoundaryDenied { error });
 }
 
 #[cfg(test)]
