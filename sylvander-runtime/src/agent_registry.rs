@@ -59,7 +59,7 @@ impl AgentRegistry {
         .map_err(|error| AgentRegistryError::Task(error.to_string()))?
     }
 
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Connection) -> Result<T, AgentRegistryError> + Send + 'static,
     ) -> Result<T, AgentRegistryError> {
@@ -472,11 +472,11 @@ pub enum AgentRegistryError {
 }
 
 impl AgentRegistryError {
-    fn sqlite(error: rusqlite::Error) -> Self {
+    pub(crate) fn sqlite(error: rusqlite::Error) -> Self {
         Self::Storage(error.to_string())
     }
 
-    fn serde(error: serde_json::Error) -> Self {
+    pub(crate) fn serde(error: serde_json::Error) -> Self {
         Self::Serialization(error.to_string())
     }
 }
