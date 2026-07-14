@@ -102,9 +102,12 @@ IDs and credential references. Telegram webhooks require
 `X-Telegram-Bot-Api-Secret-Token` to match `webhook_secret`.
 
 The current server can construct Unix, HTTP, WebSocket, DingTalk, Telegram,
-and WeChat adapters. Instance-scoped routing, supervised restart/drain, and
-complete external identity isolation remain tracked in P4; enabling an
-adapter does not waive those production-closure requirements.
+and WeChat adapters. External principals, session mappings, and outbound
+routing are scoped to the configured instance. Full route policy, interactive
+channel decisions, retry/backoff, and per-instance operational health remain
+tracked in P4. See
+[`boundary-authorization.md`](boundary-authorization.md) for authentication,
+Agent access policy, limits, audit, and migration requirements.
 
 ## Capability names
 

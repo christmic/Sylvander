@@ -208,14 +208,14 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 
 | ID | Area | Status | Evidence and gap |
 |---|---|---:|---|
-| A01 | Agent specification | partial | `AgentSpec` serializes identity, one prompt, one model, memory declarations, tools, and MCP declarations. The production server does not load it from configuration. |
-| A02 | Agent registry | missing | The server constructs one hard-coded `assistant`; there is no durable definition registry, revision, validation command, or reload path. |
-| A03 | Runtime composition | defect | `sylvander-server` bypasses `sylvander-runtime` and builds `AgentRun` directly. The runtime itself opens an in-memory SQLite store, so it is not the production composition root it claims to be. |
-| A04 | Session model override | defect | `AgentRun::select_model` mutates one `RuntimeModels.current_model`; all sessions share it and the selection is not stored with the session. |
-| A05 | Session permission override | defect | Runtime permissions are also Agent-global rather than session-scoped. One client can change later turns in other sessions. |
+| A01 | Agent specification | partial | The production runtime loads validated configured Agent definitions, including access, model, prompt, workspace, tools, and MCP declarations. The definition surface still needs the P1/P2 prompt, memory, Skill, and MCP runtimes. |
+| A02 | Agent registry | partial | SQLite persists immutable Agent revisions and supports validated seed, inspect, optimistic update, activate, and rollback. Public administration and hot runtime recomposition remain in P1.1. |
+| A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
+| A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. TUI, Unix, and WebSocket selection require a session ID and use optimistic updates; legacy unscoped requests fail closed. |
+| A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
 | A06 | Model providers | partial | A catalog of model ids exists, but all selections use one `AnthropicClient`; `ModelConfig.provider` does not resolve a provider implementation. |
 | A07 | Model-specific prompts | missing | One `persona.system_prompt` is copied into every loop. There is no provider/model profile, prompt provenance, or safe session override. |
-| A08 | Agent workspace | missing | Only `SessionMetadata.workspace` exists. Agent home, multiple mounts, roles, and workspace composition are absent. |
+| A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
 | A10 | Command/Git tools | missing | The Agent has no production spawn/shell/Git tool surface. `Cap::Spawn` and `Cap::Git` are declarations without executor-backed tools. |
 | A11 | Worktree isolation | missing | No worktree lease, branch lifecycle, merge gate, ownership, or cleanup service exists. |
@@ -224,11 +224,11 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
 | A15 | Agent memory | defect | The server injects `InMemoryMemoryStore`; `MemoryStoreConfig` says SQLite is planned and rejects it. Agent memory is lost on restart. |
 | A16 | Public service protocol | complete | UI v2 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested with v1 negotiation and message defaults. |
-| A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive, fork, and compaction. It does not persist effective runtime overrides, Agent revision, executor, mounts, worktree, or channel instance binding. |
-| A18 | Identity and authorization | partial | Session context carries user/Agent/session identity and store queries support scoping, but client/channel authentication and an authorization policy are not consistently enforced at the service boundary. |
-| A19 | DingTalk instances | defect | One optional environment-configured DingTalk bot is started. Session keys use conversation id without a channel-instance namespace. |
-| A20 | Telegram instances | defect | The server does not start Telegram. The channel creates a private in-memory session store for inbound mapping instead of using `ChannelContext.sessions`; chat ids are not instance-namespaced. |
-| A21 | Other channels | partial | HTTP, Unix, WebSocket, Telegram, and WeChat crates exist, but the production server starts only HTTP, Unix, and at most one DingTalk instance. |
+| A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, Agent revision, effective model/prompt/permissions/workspaces/executor, and channel ownership metadata. General mount sets and worktree leases remain P2/P3. |
+| A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
+| A19 | DingTalk instances | partial | Configuration supports multiple credential-isolated bots; sender/conversation mappings, ownership, authorization, and outbound webhooks are instance-scoped. Interactive decisions, retry policy, and operational health remain in P4.2. |
+| A20 | Telegram instances | partial | The server constructs configured bots using the shared durable store, required webhook authentication, instance-scoped principals/chat mappings, authorization, and Unicode-safe chunking. Interactive decisions, retries, and operational health remain in P4.3. |
+| A21 | Other channels | partial | The production server constructs configured Unix, HTTP, WebSocket, DingTalk, Telegram, and WeChat instances. Uniform supervision, interactive operations, retries, and health remain in P4. |
 | A22 | Channel supervision | partial | DingTalk reconnects internally, but runtime-wide instance health, restart backoff, readiness, drain, and failure isolation are not modeled. Some channel startup paths unwrap. |
 | A23 | Run evidence | partial | Tracing spans, persisted messages, aggregate usage, tool stream events, and workspace journal records exist. There is no durable correlated run/turn/step ledger or outcome model. |
 | A24 | Feedback | complete | Typed positive/negative feedback is accepted through the public UI service and persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
@@ -279,9 +279,16 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   across Unix, WebSocket, and TUI; runtime-owned `UiService`; durable configured
   session creation and optimistic updates; evidence-linked feedback; Schemars
   v2 generation; and v1/v2 negotiation plus schema compatibility tests.
-- [ ] **P0.5 Boundary authorization:** authenticated principals, Agent/session
+- [x] **P0.5 Boundary authorization:** authenticated principals, Agent/session
   ownership, channel-instance identity, policy checks, safe defaults, rate and
-  payload limits, and auditable denials.
+  payload limits, and auditable denials. Evidence: protocol-owned boundary
+  types; Unix peer, HTTP/WebSocket bearer, and signed platform authentication;
+  runtime-owned authorization before dispatch; default-private Agent policy;
+  instance-scoped platform identities, replay suppression, and outbound
+  routing; typed client denials; authentication-failure rate limiting; durable
+  content-free audit; transport payload limits; session-scoped model and
+  permission controls; cross-principal/instance integration tests; and
+  [`boundary-authorization.md`](boundary-authorization.md).
 - [x] **P0.6 Run ledger foundation:** durable run/turn/step/outcome records,
   correlation, crash recovery, redaction, retention, and query APIs before new
   execution backends multiply evidence sources.
