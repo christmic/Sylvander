@@ -393,12 +393,11 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .write_all(b"persist this turn\r")
             .expect("submit real Agent turn");
         writer.flush().expect("flush real Agent turn");
-        if !wait_for_output(captured, "AgentRun.", Duration::from_secs(5)) {
-            panic!(
-                "real Agent response was not rendered; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-            );
-        }
+        assert!(
+            wait_for_output(captured, "AgentRun.", Duration::from_secs(5)),
+            "real Agent response was not rendered; output={}",
+            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+        );
         writer.write_all(b"ask me\r").expect("submit AskUser turn");
         writer.flush().expect("flush AskUser turn");
         assert!(
@@ -410,12 +409,11 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .write_all(b"use the safe path\r")
             .expect("answer real Agent AskUser");
         writer.flush().expect("flush real Agent answer");
-        if !wait_for_output(captured, "Real", Duration::from_secs(4)) {
-            panic!(
-                "real Agent did not continue after AskUser answer; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-            );
-        }
+        assert!(
+            wait_for_output(captured, "Real", Duration::from_secs(4)),
+            "real Agent did not continue after AskUser answer; output={}",
+            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+        );
         let deadline = Instant::now() + Duration::from_secs(3);
         while completed_for_tui.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -432,12 +430,11 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
             .write_all(b"interrupt the real turn\r")
             .expect("submit interruptible real Agent turn");
         writer.flush().expect("flush interruptible turn");
-        if !wait_for_output(captured, "esc interrupt", Duration::from_secs(3)) {
-            panic!(
-                "real Agent turn did not enter interruptible state; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-            );
-        }
+        assert!(
+            wait_for_output(captured, "esc interrupt", Duration::from_secs(3)),
+            "real Agent turn did not enter interruptible state; output={}",
+            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+        );
         writer
             .write_all(b"\x1b")
             .expect("interrupt real Agent turn");
@@ -465,12 +462,11 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
         std::thread::sleep(Duration::from_millis(150));
         writer.write_all(b"\r").expect("resume selected session");
         writer.flush().expect("flush session selection");
-        if !wait_for_output(captured, "accepted.", Duration::from_secs(4)) {
-            panic!(
-                "persisted SQLite transcript was not restored; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-            );
-        }
+        assert!(
+            wait_for_output(captured, "accepted.", Duration::from_secs(4)),
+            "persisted SQLite transcript was not restored; output={}",
+            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+        );
     });
     assert!(second.contains("persist") && second.contains("turn"));
 
@@ -639,12 +635,11 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
                 Duration::from_secs(3)
             ));
             beta_barrier.wait();
-            if !wait_for_output(captured, "active.", Duration::from_secs(3)) {
-                panic!(
-                    "client B did not complete after client A interrupt; output={}",
-                    String::from_utf8_lossy(&captured.lock().expect("inspect beta failure"))
-                );
-            }
+            assert!(
+                wait_for_output(captured, "active.", Duration::from_secs(3)),
+                "client B did not complete after client A interrupt; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect beta failure"))
+            );
         })
     });
 
@@ -682,12 +677,11 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
         }
         std::thread::sleep(Duration::from_millis(150));
         submit(writer, b"\r");
-        if !wait_for_output(captured, "completed.", Duration::from_secs(4)) {
-            panic!(
-                "reattached TUI did not receive buffered live events; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("inspect replay failure"))
-            );
-        }
+        assert!(
+            wait_for_output(captured, "completed.", Duration::from_secs(4)),
+            "reattached TUI did not receive buffered live events; output={}",
+            String::from_utf8_lossy(&captured.lock().expect("inspect replay failure"))
+        );
     });
     assert!(replayed.contains("completed."));
 
@@ -697,7 +691,10 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
         "__multi_client_audit__",
     );
     let sessions = store
-        .list(&caller, Default::default())
+        .list(
+            &caller,
+            sylvander_agent::session_store::SessionFilter::default(),
+        )
         .await
         .expect("list isolated sessions");
     assert_eq!(sessions.len(), 3);

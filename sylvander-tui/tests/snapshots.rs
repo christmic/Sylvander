@@ -13,7 +13,7 @@ use ratatui::backend::TestBackend;
 use sylvander_tui::app::{AppMode, AppState, ChatMessage, ToolInfo};
 use sylvander_tui::event::DomainEvent;
 
-/// Render `state` into a `(width, height)` TestBackend and return the
+/// Render `state` into a `(width, height)` `TestBackend` and return the
 /// resulting buffer as a human-friendly string (one cell per char, joined
 /// with newlines per row).
 fn render_buf(mut state: AppState, width: u16, height: u16) -> String {
