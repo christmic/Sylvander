@@ -525,6 +525,71 @@ pub struct SessionEffectiveConfig {
     pub provenance: SessionConfigProvenance,
 }
 
+/// Redacted Agent definition exposed to UI clients during discovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDescriptor {
+    pub id: AgentId,
+    pub revision: u64,
+    pub name: String,
+    pub provider_id: String,
+    pub default_model_id: String,
+    #[serde(default)]
+    pub models: Vec<ModelDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_prompt_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_workspace: Option<SessionWorkspaceBinding>,
+}
+
+/// UI-facing request to create a durable session from layered defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCreateRequest {
+    pub agent_id: AgentId,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub overrides: SessionConfigOverrides,
+}
+
+/// Optimistic UI request to replace one session's sparse overrides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfigUpdateRequest {
+    pub session_id: SessionId,
+    pub expected_revision: u64,
+    pub overrides: SessionConfigOverrides,
+}
+
+/// Complete session configuration state returned after create, read, or update.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfigState {
+    pub session_id: SessionId,
+    pub revision: u64,
+    pub overrides: SessionConfigOverrides,
+    pub effective: SessionEffectiveConfig,
+}
+
+/// A user assessment tied to durable execution evidence, never free-floating
+/// training data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackRating {
+    Positive,
+    Negative,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunFeedback {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    pub rating: FeedbackRating,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
 // ===========================================================================
 // Message envelope types
 // ===========================================================================
@@ -1139,5 +1204,43 @@ mod tests {
         let error = negotiate_ui_protocol(&incompatible).expect_err("must reject");
         assert_eq!(error.code, "incompatible_protocol");
         assert_eq!(error.server_max_version, UI_PROTOCOL_MAX_VERSION);
+    }
+
+    #[test]
+    fn session_config_update_contract_preserves_optimistic_revision() {
+        let request = SessionConfigUpdateRequest {
+            session_id: SessionId::new("session-1"),
+            expected_revision: 7,
+            overrides: SessionConfigOverrides {
+                model_id: Some("model-b".into()),
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..SessionConfigOverrides::default()
+            },
+        };
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["expected_revision"], 7);
+        assert_eq!(json["overrides"]["model_id"], "model-b");
+        assert_eq!(
+            serde_json::from_value::<SessionConfigUpdateRequest>(json).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn feedback_requires_a_run_identity_and_has_stable_wire_values() {
+        let feedback = RunFeedback {
+            run_id: "run-1".into(),
+            turn_id: Some("turn-2".into()),
+            rating: FeedbackRating::Negative,
+            note: Some("tool changed the wrong file".into()),
+            tags: vec!["correctness".into()],
+        };
+        let json = serde_json::to_value(&feedback).unwrap();
+        assert_eq!(json["rating"], "negative");
+        assert_eq!(json["run_id"], "run-1");
+        assert_eq!(
+            serde_json::from_value::<RunFeedback>(json).unwrap(),
+            feedback
+        );
     }
 }
