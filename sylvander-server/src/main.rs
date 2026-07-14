@@ -138,8 +138,17 @@ fn build_channels(
                 ChannelTransportConfig::Http { bind } => Arc::new(
                     sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id),
                 ),
-                ChannelTransportConfig::Websocket { bind } => Arc::new(
-                    sylvander_channel_ws::WsChannel::new(parse_addr(bind)?, agent_id),
+                ChannelTransportConfig::Websocket {
+                    bind,
+                    principal_id,
+                    bearer_token,
+                } => Arc::new(
+                    sylvander_channel_ws::WsChannel::new(parse_addr(bind)?, agent_id)
+                        .with_bearer_auth(
+                            &channel.id,
+                            principal_id,
+                            resolve_text(&secrets, bearer_token, &channel.id)?,
+                        ),
                 ),
                 ChannelTransportConfig::DingTalk {
                     app_key,
