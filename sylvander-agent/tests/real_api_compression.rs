@@ -113,7 +113,7 @@ async fn real_api_l1_drops_prepopulated_orphan() {
         .expect("build");
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");
@@ -248,7 +248,7 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
         .expect("build");
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");
@@ -329,7 +329,7 @@ async fn real_api_l2_condenses_old_tool_results() {
         .expect("build");
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");
@@ -398,7 +398,7 @@ async fn real_api_l3_trims_old_thinking_block() {
         .expect("build");
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");
