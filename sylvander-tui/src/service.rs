@@ -43,7 +43,7 @@ impl AgentService {
                     });
                 }
                 ClientEvent::Message(message) => {
-                    if let Some(event) = parse_server_msg(message) {
+                    if let Some(event) = parse_server_msg(*message) {
                         return Some(event);
                     }
                 }
@@ -63,7 +63,7 @@ impl AgentService {
                     });
                 }
                 ClientEvent::Message(message) => {
-                    if let Some(event) = parse_server_msg(message) {
+                    if let Some(event) = parse_server_msg(*message) {
                         return Some(event);
                     }
                 }
