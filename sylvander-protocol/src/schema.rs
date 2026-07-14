@@ -2,7 +2,20 @@
 
 use serde_json::{Value, json};
 
-use crate::{UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION, UiClientMessage, UiServerMessage};
+use crate::{
+    AgentAdminRequest, AgentAdminResponse, UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION,
+    UiClientMessage, UiServerMessage,
+};
+
+#[must_use]
+pub fn agent_admin_protocol_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Sylvander Agent Administration Protocol",
+        "request": schemars::schema_for!(AgentAdminRequest),
+        "response": schemars::schema_for!(AgentAdminResponse)
+    })
+}
 
 #[must_use]
 pub fn ui_protocol_schema() -> Value {
@@ -14,7 +27,8 @@ pub fn ui_protocol_schema() -> Value {
             "max_version": UI_PROTOCOL_MAX_VERSION
         },
         "client_message": schemars::schema_for!(UiClientMessage),
-        "server_message": schemars::schema_for!(UiServerMessage)
+        "server_message": schemars::schema_for!(UiServerMessage),
+        "agent_administration": agent_admin_protocol_schema()
     })
 }
 
@@ -36,8 +50,26 @@ mod tests {
             "create_session",
             "update_session_config",
             "submit_feedback",
+            "agent_admin",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }
+    }
+
+    #[test]
+    fn agent_administration_schema_exposes_lifecycle_without_secret_values() {
+        let encoded = serde_json::to_string(&agent_admin_protocol_schema()).unwrap();
+        for operation in [
+            "inspect_revision",
+            "list_revisions",
+            "update_definition",
+            "activate_revision",
+            "rollback_revision",
+        ] {
+            assert!(encoded.contains(operation), "schema omitted {operation}");
+        }
+        assert!(encoded.contains("AgentSecretReference"));
+        assert!(!encoded.contains("secret_value"));
+        assert!(!encoded.contains("api_key"));
     }
 }

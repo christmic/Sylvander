@@ -66,6 +66,9 @@ pub enum UiClientMessage {
     SubmitFeedback {
         feedback: crate::RunFeedback,
     },
+    AgentAdmin {
+        request: crate::AgentAdminRequest,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -301,6 +304,9 @@ pub enum UiServerMessage {
     FeedbackRecorded {
         feedback_id: String,
     },
+    AgentAdmin {
+        response: crate::AgentAdminResponse,
+    },
     RuntimeInfo {
         model: String,
         #[serde(default)]
@@ -380,7 +386,7 @@ fn default_approval_scopes() -> Vec<ApprovalScope> {
 
 #[cfg(test)]
 mod tests {
-    use super::UiClientMessage;
+    use super::{UiClientMessage, UiServerMessage};
 
     #[test]
     fn legacy_chat_defaults_remain_compatible() {
@@ -416,5 +422,45 @@ mod tests {
         })
         .unwrap();
         assert_eq!(value["session_id"], "session-1");
+    }
+
+    #[test]
+    fn agent_administration_uses_one_transport_envelope() {
+        let client: UiClientMessage = serde_json::from_value(serde_json::json!({
+            "type": "agent_admin",
+            "request": {
+                "operation": "activate_revision",
+                "agent_id": "oraculo",
+                "revision": 5,
+                "expected_active_revision": 4
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            client,
+            UiClientMessage::AgentAdmin {
+                request: crate::AgentAdminRequest::ActivateRevision {
+                    revision: 5,
+                    expected_active_revision: 4,
+                    ..
+                }
+            }
+        ));
+
+        let server = UiServerMessage::AgentAdmin {
+            response: crate::AgentAdminResponse::Error {
+                error: crate::AgentAdminError {
+                    code: crate::AgentAdminErrorCode::RevisionConflict,
+                    message: "active revision changed".into(),
+                    agent_id: Some(crate::AgentId::new("oraculo")),
+                    revision: Some(5),
+                    expected_active_revision: Some(4),
+                    actual_active_revision: Some(6),
+                },
+            },
+        };
+        let json = serde_json::to_value(server).unwrap();
+        assert_eq!(json["type"], "agent_admin");
+        assert_eq!(json["response"]["error"]["code"], "revision_conflict");
     }
 }

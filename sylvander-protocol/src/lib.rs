@@ -16,6 +16,7 @@
 //! cargo run -p sylvander-protocol --example generate_ui_schema
 //! ```
 
+pub mod agent_admin;
 pub mod boundary;
 pub mod bus_trait;
 pub mod in_process;
@@ -24,6 +25,7 @@ pub mod session_context;
 pub mod types;
 pub mod ui;
 
+pub use agent_admin::*;
 pub use boundary::*;
 pub use bus_trait::{BusError, MessageBus, SubscriptionFilter};
 pub use in_process::InProcessMessageBus;
