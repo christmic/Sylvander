@@ -33,6 +33,7 @@ mod tests {
             "approve",
             "list_sessions",
             "discover_agents",
+            "create_session",
             "update_session_config",
             "submit_feedback",
         ] {

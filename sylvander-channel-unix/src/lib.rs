@@ -477,6 +477,7 @@ async fn handle_client_msg_for_client(
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
                 session_id: sid.0.clone(),
+                config: None,
             });
 
             // Stream events back to client until Done
@@ -813,6 +814,21 @@ async fn handle_client_msg_for_client(
                 });
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
+            }
+        }
+        ClientMsg::CreateSession { request } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.create_session(request).await {
+                    Ok(config) => {
+                        let _ = tx.send(ServerMsg::SessionCreated {
+                            session_id: config.session_id.0.clone(),
+                            config: Some(config),
+                        });
+                    }
+                    Err(error) => operation_error(tx, "create_session", error),
+                }
+            } else {
+                operation_error(tx, "create_session", "UI service is unavailable");
             }
         }
         ClientMsg::GetSessionConfig { session_id } => {
@@ -1430,6 +1446,13 @@ mod tests {
     impl sylvander_channel::UiService for EmptyUiService {
         async fn discover_agents(&self) -> Vec<sylvander_protocol::AgentDescriptor> {
             Vec::new()
+        }
+
+        async fn create_session(
+            &self,
+            _request: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, String> {
+            Err("unknown Agent".into())
         }
 
         async fn session_config(

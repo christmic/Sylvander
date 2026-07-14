@@ -36,13 +36,18 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, RunFeedback, SessionConfigState, SessionConfigUpdateRequest, SessionId,
+    AgentDescriptor, RunFeedback, SessionConfigState, SessionConfigUpdateRequest,
+    SessionCreateRequest, SessionId,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait UiService: Send + Sync {
     async fn discover_agents(&self) -> Vec<AgentDescriptor>;
+    async fn create_session(
+        &self,
+        request: SessionCreateRequest,
+    ) -> Result<SessionConfigState, String>;
     async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String>;
     async fn update_session_config(
         &self,
