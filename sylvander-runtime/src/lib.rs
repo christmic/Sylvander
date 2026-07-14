@@ -1845,9 +1845,12 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Notify;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     struct BlockingChannel {
         started: Arc<Notify>,
@@ -2074,6 +2077,20 @@ mod tests {
 
     #[tokio::test]
     async fn configured_boot_restores_database_session_after_agent_spawn() {
+        let model_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_revision_probe",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "configured revision"}],
+                "model": "model-a",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 4, "output_tokens": 2}
+            })))
+            .mount(&model_server)
+            .await;
         let directory = tempfile::TempDir::new().unwrap();
         let database = directory.path().join("sessions.db");
         let secret = directory.path().join("provider.key");
@@ -2101,7 +2118,7 @@ session_db = "{}"
 
 [[model_providers]]
 id = "primary"
-base_url = "https://models.example.test"
+base_url = "{}"
 
 [model_providers.api_key]
 source = "file"
@@ -2109,6 +2126,10 @@ path = "{}"
 
 [[model_providers.models]]
 id = "model-a"
+capabilities = ["tool_use"]
+
+[[model_providers.models]]
+id = "model-b"
 capabilities = ["tool_use"]
 
 [[agents]]
@@ -2127,9 +2148,11 @@ model_name = "model-a"
 "#,
             directory.path().display(),
             database.display(),
+            model_server.uri(),
             secret.display()
         );
-        let config = ServerConfig::from_toml(&input).unwrap();
+        let mut config = ServerConfig::from_toml(&input).unwrap();
+        config.agents[0].spec.persona.system_prompt = "revision one prompt".into();
         let restart_config = config.clone();
         let runtime = Runtime::boot_config(config).await.unwrap();
 
@@ -2554,6 +2577,8 @@ model_name = "model-a"
         let mut next_definition = restart_config.agents[0].clone();
         next_definition.revision += 1;
         next_definition.spec.name = "Sylvander revised".into();
+        next_definition.spec.model.model_name = "model-b".into();
+        next_definition.spec.persona.system_prompt = "revision two prompt".into();
         next_definition.access = crate::config::AgentAccessConfig::default();
         let administrator = sylvander_protocol::BoundaryContext::authenticated(
             sylvander_protocol::AuthenticatedPrincipal {
@@ -2751,6 +2776,94 @@ model_name = "model-a"
                 .is_none(),
             "an existing session must not drift to the activated revision"
         );
+        let mut original_probe = sylvander_protocol::BusMessage::user_chat(
+            created.session_id.clone(),
+            "operator",
+            "revision-one-probe",
+        );
+        original_probe.recipient =
+            sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
+        runtime.bus().publish(original_probe).await.unwrap();
+        let mut activated_probe = sylvander_protocol::BusMessage::user_chat(
+            activated_session.session_id.clone(),
+            "operator",
+            "revision-two-probe",
+        );
+        activated_probe.recipient =
+            sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
+        runtime.bus().publish(activated_probe).await.unwrap();
+        let revision_requests = tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
+            loop {
+                let observed = model_server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|request| {
+                        let body: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
+                        let encoded = body.to_string();
+                        let probe = ["revision-one-probe", "revision-two-probe"]
+                            .into_iter()
+                            .find(|probe| encoded.contains(probe))?;
+                        let model = body.get("model")?.as_str()?.to_owned();
+                        let prompt = body
+                            .get("system")?
+                            .as_array()?
+                            .first()?
+                            .get("text")?
+                            .as_str()?
+                            .to_owned();
+                        Some((probe.to_owned(), model, prompt))
+                    })
+                    .collect::<Vec<_>>();
+                if observed.len() == 2 {
+                    break observed;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both revision-bound requests must reach the model provider");
+        assert!(revision_requests.contains(&(
+            "revision-one-probe".into(),
+            "model-a".into(),
+            "revision one prompt".into(),
+        )));
+        assert!(revision_requests.contains(&(
+            "revision-two-probe".into(),
+            "model-b".into(),
+            "revision two prompt".into(),
+        )));
+
+        let stale_activation = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                agent_id: next_definition.spec.id.clone(),
+                revision: original_revision,
+                expected_active_revision: original_revision,
+            },
+        )
+        .await;
+        assert!(matches!(
+            stale_activation,
+            sylvander_protocol::AgentAdminResponse::Error {
+                error: sylvander_protocol::AgentAdminError {
+                    code: sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
+                    ..
+                }
+            }
+        ));
+        let after_conflict = sylvander_channel::UiService::discover_agents(
+            runtime.ui_service.as_ref(),
+            &administrator,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            after_conflict[0].revision, next_definition.revision,
+            "an optimistic conflict must not move the active revision"
+        );
 
         let rolled_back = sylvander_channel::UiService::agent_admin(
             runtime.ui_service.as_ref(),
@@ -2811,7 +2924,7 @@ model_name = "model-a"
                 )
         ));
         let administration_audits = evidence.agent_administration_audits(10).await.unwrap();
-        assert_eq!(administration_audits.len(), 5);
+        assert_eq!(administration_audits.len(), 6);
         assert!(
             administration_audits
                 .iter()
@@ -2830,8 +2943,21 @@ model_name = "model-a"
                 .iter()
                 .filter(|audit| audit.outcome == "failed")
                 .count(),
-            1
+            2
         );
+        assert!(administration_audits.iter().any(|audit| {
+            audit.operation == "activate_revision"
+                && audit.revision == original_revision
+                && audit.expected_active_revision == original_revision
+                && audit.outcome == "failed"
+                && audit.error_code.as_deref()
+                    == Some(
+                        agent_admin_error_code(
+                            sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
+                        )
+                        .as_str(),
+                    )
+        }));
         let owner_denial = sylvander_channel::UiService::authorize_message(
             runtime.ui_service.as_ref(),
             &owner,
