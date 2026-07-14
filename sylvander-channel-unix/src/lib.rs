@@ -13,7 +13,7 @@
 //! {"type":"ping"}
 //! ```
 //!
-//! ## Server → Client (pushed as StreamEvent)
+//! ## Server → Client (pushed as `StreamEvent`)
 //! ```json
 //! {"type":"text_delta","session_id":"...","delta":"..."}
 //! {"type":"tool_call","session_id":"...","tool_name":"..."}
@@ -33,8 +33,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, mpsc};
+use tokio_util::codec::{FramedRead, LinesCodec};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{
@@ -78,6 +80,7 @@ pub struct UnixChannel {
     agent_id: AgentId,
     runtime: RuntimeInfo,
     runtime_control: Option<sylvander_agent::run::AgentRun>,
+    max_request_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -109,6 +112,7 @@ impl UnixChannel {
                 platform: sylvander_protocol::PlatformSnapshot::default(),
             },
             runtime_control: None,
+            max_request_bytes: 1024 * 1024,
         }
     }
 
@@ -126,11 +130,17 @@ impl UnixChannel {
         self.runtime_control = Some(run);
         self
     }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
 }
 
 #[async_trait]
 impl Channel for UnixChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "unix"
     }
 
@@ -193,7 +203,10 @@ impl Channel for UnixChannel {
             info!(uid = peer.uid(), "unix: authenticated local socket owner");
 
             let (read, mut write) = stream.into_split();
-            let mut reader = BufReader::new(read).lines();
+            let mut reader = FramedRead::new(
+                read,
+                LinesCodec::new_with_max_length(self.max_request_bytes),
+            );
 
             let client_id = {
                 let mut id = next_id.lock().await;
@@ -208,12 +221,11 @@ impl Channel for UnixChannel {
             let writer_hub = hub.clone();
             client_tasks.spawn(async move {
                 while let Some(msg) = rx.recv().await {
-                    if let Ok(s) = serde_json::to_string(&msg) {
-                        if write.write_all(s.as_bytes()).await.is_err()
-                            || write.write_all(b"\n").await.is_err()
-                        {
-                            break;
-                        }
+                    if let Ok(s) = serde_json::to_string(&msg)
+                        && (write.write_all(s.as_bytes()).await.is_err()
+                            || write.write_all(b"\n").await.is_err())
+                    {
+                        break;
                     }
                 }
                 detach_client(&writer_hub, client_id).await;
@@ -229,7 +241,20 @@ impl Channel for UnixChannel {
             let instance_id = self.instance_id.clone();
             client_tasks.spawn(async move {
                 let mut negotiated = false;
-                while let Ok(Some(line)) = reader.next_line().await {
+                while let Some(result) = reader.next().await {
+                    let line = match result {
+                        Ok(line) => line,
+                        Err(error) => {
+                            warn!(%error, "unix: rejected oversized or invalid frame");
+                            let _ = tx.send(ServerMsg::ProtocolError {
+                                error: protocol_error(
+                                    "frame_too_large",
+                                    "request exceeds the configured frame limit",
+                                ),
+                            });
+                            break;
+                        }
+                    };
                     let msg: ClientMsg = match serde_json::from_str(&line) {
                         Ok(m) => m,
                         Err(e) => {
@@ -288,14 +313,16 @@ impl Channel for UnixChannel {
                     );
                     handle_client_msg_for_client(
                         msg,
-                        &boundary,
-                        &ctx_clone,
-                        &agent_id_clone,
-                        &tx,
-                        &runtime,
-                        runtime_control.as_ref(),
-                        &reader_hub,
-                        client_id,
+                        ClientHandler {
+                            boundary: &boundary,
+                            ctx: &ctx_clone,
+                            agent_id: &agent_id_clone,
+                            tx: &tx,
+                            runtime: &runtime,
+                            runtime_control: runtime_control.as_ref(),
+                            hub: &reader_hub,
+                            client_id,
+                        },
                     )
                     .await;
                 }
@@ -413,29 +440,42 @@ async fn handle_client_msg(
     );
     handle_client_msg_for_client(
         msg,
-        &boundary,
+        ClientHandler {
+            boundary: &boundary,
+            ctx,
+            agent_id,
+            tx,
+            runtime,
+            runtime_control,
+            hub: &hub,
+            client_id: 0,
+        },
+    )
+    .await;
+}
+
+struct ClientHandler<'a> {
+    boundary: &'a sylvander_protocol::BoundaryContext,
+    ctx: &'a ChannelContext,
+    agent_id: &'a AgentId,
+    tx: &'a mpsc::UnboundedSender<ServerMsg>,
+    runtime: &'a RuntimeInfo,
+    runtime_control: Option<&'a sylvander_agent::run::AgentRun>,
+    hub: &'a Arc<Mutex<RelayHub>>,
+    client_id: u64,
+}
+
+async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>) {
+    let ClientHandler {
+        boundary,
         ctx,
         agent_id,
         tx,
         runtime,
         runtime_control,
-        &hub,
-        0,
-    )
-    .await;
-}
-
-async fn handle_client_msg_for_client(
-    msg: ClientMsg,
-    boundary: &sylvander_protocol::BoundaryContext,
-    ctx: &ChannelContext,
-    agent_id: &AgentId,
-    tx: &mpsc::UnboundedSender<ServerMsg>,
-    runtime: &RuntimeInfo,
-    runtime_control: Option<&sylvander_agent::run::AgentRun>,
-    hub: &Arc<Mutex<RelayHub>>,
-    client_id: u64,
-) {
+        hub,
+        client_id,
+    } = handler;
     if !matches!(&msg, ClientMsg::Chat { .. })
         && let Some(ui) = &ctx.ui
         && let Err(error) = ui.authorize_message(boundary, &msg).await
@@ -446,8 +486,7 @@ async fn handle_client_msg_for_client(
     let principal_id = boundary
         .principal
         .as_ref()
-        .map(|principal| principal.id.0.as_str())
-        .unwrap_or("__unauthenticated__");
+        .map_or("__unauthenticated__", |principal| principal.id.0.as_str());
     match msg {
         ClientMsg::Hello { .. } => {}
         ClientMsg::Chat {
@@ -756,7 +795,7 @@ async fn handle_client_msg_for_client(
                                     session_id: s.0.clone(),
                                     text,
                                 }),
-                                _ => None,
+                                StreamEvent::UserAnswer { .. } => None,
                             };
                             if let Some(m) = out {
                                 let terminal = matches!(
@@ -976,10 +1015,10 @@ async fn handle_client_msg_for_client(
         }
         request @ (ClientMsg::LoadSession { .. } | ClientMsg::ReattachSession { .. }) => {
             let recovery = matches!(&request, ClientMsg::ReattachSession { .. });
-            let session_id = match request {
-                ClientMsg::LoadSession { session_id }
-                | ClientMsg::ReattachSession { session_id } => session_id,
-                _ => unreachable!(),
+            let (ClientMsg::LoadSession { session_id } | ClientMsg::ReattachSession { session_id }) =
+                request
+            else {
+                unreachable!()
             };
             let session_id = SessionId::new(session_id);
             let caller = unix_session_context(principal_id, agent_id, session_id.clone());
@@ -1521,6 +1560,15 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     struct EmptyUiService;
+
+    #[tokio::test]
+    async fn oversized_frame_is_rejected_before_deserialization() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let mut reader = FramedRead::new(server, LinesCodec::new_with_max_length(4));
+        client.write_all(b"12345\n").await.unwrap();
+
+        assert!(reader.next().await.unwrap().is_err());
+    }
 
     #[async_trait]
     impl sylvander_channel::UiService for EmptyUiService {

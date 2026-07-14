@@ -60,6 +60,7 @@ pub struct WsChannel {
     agent_id: AgentId,
     instance_id: String,
     auth: Option<WsAuth>,
+    max_request_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -75,7 +76,14 @@ impl WsChannel {
             agent_id: agent_id.into(),
             instance_id: "websocket".into(),
             auth: None,
+            max_request_bytes: 1024 * 1024,
         }
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
     }
 
     pub fn with_bearer_auth(
@@ -115,6 +123,7 @@ impl Channel for WsChannel {
             next_id: next_id.clone(),
             instance_id: self.instance_id.clone(),
             auth: self.auth.clone(),
+            max_request_bytes: self.max_request_bytes,
         });
 
         let app = Router::new()
@@ -143,6 +152,7 @@ struct AppState {
     next_id: Arc<Mutex<u64>>,
     instance_id: String,
     auth: Option<WsAuth>,
+    max_request_bytes: usize,
 }
 
 // ===========================================================================
@@ -158,7 +168,9 @@ async fn ws_handler(
         warn!(instance = %state.instance_id, "ws: rejected unauthenticated upgrade");
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, state, principal))
+    ws.max_frame_size(state.max_request_bytes)
+        .max_message_size(state.max_request_bytes)
+        .on_upgrade(move |socket| handle_socket(socket, state, principal))
         .into_response()
 }
 
@@ -601,6 +613,13 @@ mod tests {
     use sylvander_channel::UiService;
 
     struct DenyAgentAccess;
+
+    #[test]
+    fn message_limit_is_configurable() {
+        let channel =
+            WsChannel::new("127.0.0.1:0".parse().unwrap(), "agent").with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
 
     #[async_trait]
     impl UiService for DenyAgentAccess {
