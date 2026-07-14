@@ -192,7 +192,7 @@ async fn handle_callback(
     let msg = match parse_message_xml(&xml) {
         Ok(m) => m,
         Err(e) => {
-            warn!(error = %e, xml = %xml, "wechat: xml parse failed");
+            warn!(error = %e, "wechat: xml parse failed");
             return "success".into();
         }
     };
@@ -201,11 +201,9 @@ async fn handle_callback(
 
     // Session mapping
     let existing = find_by_user(&state.sessions, &state.instance_id, &msg.from_user_name).await;
+    let principal_id = platform_principal_id(&state.instance_id, &msg.from_user_name);
     let boundary = BoundaryContext::authenticated(
-        AuthenticatedPrincipal::user(
-            format!("wechat:{}:{}", state.instance_id, msg.from_user_name),
-            AuthenticationMethod::PlatformIdentity,
-        ),
+        AuthenticatedPrincipal::user(principal_id.clone(), AuthenticationMethod::PlatformIdentity),
         &state.instance_id,
         "wechat",
         format!("wechat-message-{}", msg.msg_id),
@@ -253,12 +251,16 @@ async fn handle_callback(
         .bus
         .publish(BusMessage::user_chat(
             session_id.clone(),
-            &msg.from_user_name,
+            &principal_id,
             &msg.content,
         ))
         .await;
 
     "success".into()
+}
+
+fn platform_principal_id(instance_id: &str, user_name: &str) -> String {
+    format!("wechat:{instance_id}:{user_name}")
 }
 
 async fn find_by_user(
@@ -398,5 +400,13 @@ mod tests {
     #[test]
     fn tool_output_truncation_is_unicode_safe() {
         assert_eq!(truncate_chars("中文消息", 2), "中文");
+    }
+
+    #[test]
+    fn principal_identity_includes_instance_and_user() {
+        assert_eq!(
+            platform_principal_id("app-a", "user-a"),
+            "wechat:app-a:user-a"
+        );
     }
 }

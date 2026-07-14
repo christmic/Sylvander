@@ -69,9 +69,10 @@ impl MessageHandler for ChannelMessageHandler {
             &msg.sender_staff_id,
         )
         .await;
+        let principal_id = platform_principal_id(&self.instance_id, &msg.sender_staff_id);
         let boundary = BoundaryContext::authenticated(
             AuthenticatedPrincipal::user(
-                format!("dingtalk:{}:{}", self.instance_id, msg.sender_staff_id),
+                principal_id.clone(),
                 AuthenticationMethod::PlatformIdentity,
             ),
             &self.instance_id,
@@ -121,7 +122,7 @@ impl MessageHandler for ChannelMessageHandler {
                 .await;
         }
 
-        let bus_msg = BusMessage::user_chat(session_id.clone(), &msg.sender_staff_id, text);
+        let bus_msg = BusMessage::user_chat(session_id.clone(), &principal_id, text);
 
         if let Err(e) = self.ctx.bus.publish(bus_msg).await {
             warn!(error = %e, "dingtalk: bus publish failed");
@@ -130,6 +131,10 @@ impl MessageHandler for ChannelMessageHandler {
 
         info!(%session_id, sender = %msg.sender_staff_id, text, "dingtalk: message");
     }
+}
+
+fn platform_principal_id(instance_id: &str, sender_staff_id: &str) -> String {
+    format!("dingtalk:{instance_id}:{sender_staff_id}")
 }
 
 // ===========================================================================
@@ -346,6 +351,14 @@ mod tests {
             get_webhook_url(&store, &session_id, "bot-b")
                 .await
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn principal_identity_includes_instance_and_sender() {
+        assert_eq!(
+            platform_principal_id("bot-a", "user-a"),
+            "dingtalk:bot-a:user-a"
         );
     }
 }
