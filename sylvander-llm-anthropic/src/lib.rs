@@ -77,6 +77,7 @@
 #![doc(html_root_url = "https://docs.rs/sylvander-llm-anthropic/0.1.0")]
 
 pub mod api;
+pub(crate) mod convert;
 
 /// Convenient re-exports for the most commonly used types.
 pub mod prelude {
