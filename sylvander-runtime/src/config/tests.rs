@@ -165,3 +165,40 @@ fn evidence_capture_is_bounded_and_metadata_only_by_default() {
             .any(|message| message.contains("retention_days"))
     );
 }
+
+#[test]
+fn websocket_requires_a_principal_and_secret_reference() {
+    let websocket = r#"
+
+[[channels]]
+id = "desktop-primary"
+enabled = true
+default_agent = "assistant"
+
+[channels.transport]
+kind = "websocket"
+bind = "127.0.0.1:9080"
+principal_id = "desktop-owner"
+
+[channels.transport.bearer_token]
+source = "env"
+name = "SYLVANDER_DESKTOP_TOKEN"
+"#;
+    let config = ServerConfig::from_toml(&(valid_toml() + websocket))
+        .expect("authenticated WebSocket configuration");
+    assert!(matches!(
+        &config.channels[1].transport,
+        ChannelTransportConfig::Websocket {
+            principal_id,
+            bearer_token: SecretRef::Env { name },
+            ..
+        } if principal_id == "desktop-owner" && name == "SYLVANDER_DESKTOP_TOKEN"
+    ));
+
+    let missing_token = websocket.replace(
+        "\n[channels.transport.bearer_token]\nsource = \"env\"\nname = \"SYLVANDER_DESKTOP_TOKEN\"",
+        "",
+    );
+    let error = ServerConfig::from_toml(&(valid_toml() + &missing_token)).unwrap_err();
+    assert!(error.errors[0].contains("missing field `bearer_token`"));
+}

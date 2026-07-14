@@ -268,6 +268,8 @@ pub enum ChannelTransportConfig {
     },
     Websocket {
         bind: String,
+        principal_id: String,
+        bearer_token: SecretRef,
     },
     DingTalk {
         app_key: SecretRef,
@@ -527,8 +529,17 @@ fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
                 errors.push(format!("channel {} Unix path is empty", channel.id));
             }
         }
-        ChannelTransportConfig::Http { bind } | ChannelTransportConfig::Websocket { bind } => {
+        ChannelTransportConfig::Http { bind } => {
             require_text("channel bind", bind, errors);
+        }
+        ChannelTransportConfig::Websocket {
+            bind,
+            principal_id,
+            bearer_token,
+        } => {
+            require_text("WebSocket bind", bind, errors);
+            require_text("WebSocket principal_id", principal_id, errors);
+            bearer_token.validate("WebSocket bearer_token", errors);
         }
         ChannelTransportConfig::DingTalk {
             app_key,

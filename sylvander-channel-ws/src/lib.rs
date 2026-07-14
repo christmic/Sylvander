@@ -34,7 +34,8 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
@@ -56,6 +57,14 @@ use sylvander_protocol::{
 pub struct WsChannel {
     addr: SocketAddr,
     agent_id: AgentId,
+    instance_id: String,
+    auth: Option<WsAuth>,
+}
+
+#[derive(Clone)]
+struct WsAuth {
+    principal_id: String,
+    bearer_token: String,
 }
 
 impl WsChannel {
@@ -63,7 +72,23 @@ impl WsChannel {
         Self {
             addr,
             agent_id: agent_id.into(),
+            instance_id: "websocket".into(),
+            auth: None,
         }
+    }
+
+    pub fn with_bearer_auth(
+        mut self,
+        instance_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Self {
+        self.instance_id = instance_id.into();
+        self.auth = Some(WsAuth {
+            principal_id: principal_id.into(),
+            bearer_token: bearer_token.into(),
+        });
+        self
     }
 }
 
@@ -87,6 +112,8 @@ impl Channel for WsChannel {
             agent_id: self.agent_id.clone(),
             clients: clients.clone(),
             next_id: next_id.clone(),
+            instance_id: self.instance_id.clone(),
+            auth: self.auth.clone(),
         });
 
         let app = Router::new()
@@ -113,17 +140,62 @@ struct AppState {
     agent_id: AgentId,
     clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
     next_id: Arc<Mutex<u64>>,
+    instance_id: String,
+    auth: Option<WsAuth>,
 }
 
 // ===========================================================================
 // WebSocket upgrade
 // ===========================================================================
 
-async fn ws_handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+async fn ws_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(principal) = authenticate(&state, &headers) else {
+        warn!(instance = %state.instance_id, "ws: rejected unauthenticated upgrade");
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    ws.on_upgrade(move |socket| handle_socket(socket, state, principal))
+        .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
+    let auth = state.auth.as_ref()?;
+    let supplied = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    constant_time_eq(supplied.as_bytes(), auth.bearer_token.as_bytes()).then(|| {
+        sylvander_protocol::AuthenticatedPrincipal::user(
+            auth.principal_id.clone(),
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        )
+    })
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut different = left.len() ^ right.len();
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        different |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    different == 0
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    principal: sylvander_protocol::AuthenticatedPrincipal,
+) {
     let client_id = {
         let mut id = state.next_id.lock().await;
         *id += 1;
@@ -167,7 +239,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 continue;
             }
         };
-        handle_client_msg(parsed, &ctx, &agent_id, &tx).await;
+        handle_client_msg(parsed, &ctx, &agent_id, &tx, &principal, &state.instance_id).await;
     }
 
     // Cleanup
@@ -181,11 +253,12 @@ async fn handle_client_msg(
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
+    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    instance_id: &str,
 ) {
-    // WebSocket authentication is fail-closed until the configured bearer
-    // credential is established during the HTTP upgrade.
-    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
-        "websocket",
+    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+        principal.clone(),
+        instance_id,
         "websocket",
         uuid::Uuid::new_v4().to_string(),
     );
@@ -531,5 +604,12 @@ mod tests {
             ClientMsg::Approve { reason: Some(reason), .. }
                 if reason == "unsafe outside workspace"
         ));
+    }
+
+    #[test]
+    fn bearer_comparison_checks_content_and_length() {
+        assert!(constant_time_eq(b"correct-token", b"correct-token"));
+        assert!(!constant_time_eq(b"correct-token", b"wrong-token"));
+        assert!(!constant_time_eq(b"token", b"token-extra"));
     }
 }
