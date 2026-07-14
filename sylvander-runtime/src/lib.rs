@@ -107,7 +107,11 @@ struct RuntimeUiService {
 
 #[async_trait::async_trait]
 impl sylvander_channel::UiService for RuntimeUiService {
-    async fn discover_agents(&self) -> Vec<AgentDescriptor> {
+    async fn discover_agents(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+    ) -> Result<Vec<AgentDescriptor>, sylvander_protocol::BoundaryError> {
+        require_principal(boundary, "discover_agents")?;
         let mut agents = self
             .agents
             .values()
@@ -151,23 +155,42 @@ impl sylvander_channel::UiService for RuntimeUiService {
             })
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.id.0.cmp(&right.id.0));
-        agents
+        Ok(agents)
     }
 
     async fn create_session(
         &self,
+        boundary: &sylvander_protocol::BoundaryContext,
         request: SessionCreateRequest,
-    ) -> Result<SessionConfigState, String> {
+    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+        let principal = require_principal(boundary, "create_session")?;
         let label = request.label.trim().to_string();
         if label.is_empty() || label.len() > 200 {
-            return Err("session label must contain 1..=200 bytes".into());
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                "session label must contain 1..=200 bytes",
+            ));
         }
-        let agent = self
-            .agents
-            .get(&request.agent_id)
-            .ok_or_else(|| format!("unknown Agent {}", request.agent_id))?;
+        if request
+            .channel_id
+            .as_deref()
+            .is_some_and(|id| id != boundary.channel_instance_id)
+        {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ));
+        }
+        let agent = self.agents.get(&request.agent_id).ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "create_session",
+                format!("unknown Agent {}", request.agent_id),
+            )
+        })?;
         let effective = resolve_session_config(agent, &request.overrides, None, None)
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
         let workspace = effective
             .user_workspace
             .as_ref()
@@ -180,7 +203,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let metadata = SessionMetadata {
             workspace,
             name: label.clone(),
-            user_id: "anonymous-ui".into(),
+            user_id: principal.id.0.clone(),
         };
         let mut session = StoredSession::new(
             session_id.clone(),
@@ -191,15 +214,14 @@ impl sylvander_channel::UiService for RuntimeUiService {
         );
         session.config_overrides = request.overrides.clone();
         session.effective_config = Some(effective.clone());
-        if let Some(channel_id) = request.channel_id {
-            session
-                .external_meta
-                .insert("channel_id".into(), serde_json::Value::String(channel_id));
-        }
+        session.external_meta.insert(
+            "channel_id".into(),
+            serde_json::Value::String(boundary.channel_instance_id.clone()),
+        );
         self.sessions
             .save(&session)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
         if let Err(error) = self
             .engine
             .attach_session(
@@ -211,7 +233,11 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .await
         {
             let _ = self.sessions.delete(&session_id).await;
-            return Err(error.to_string());
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
         }
         Ok(SessionConfigState {
             session_id,
@@ -221,16 +247,21 @@ impl sylvander_channel::UiService for RuntimeUiService {
         })
     }
 
-    async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String> {
+    async fn session_config(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
         let session = self
-            .sessions
-            .get(session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("unknown session {session_id}"))?;
-        let effective = session
-            .effective_config
-            .ok_or_else(|| format!("session {session_id} has no effective configuration"))?;
+            .owned_session(boundary, session_id, "get_session_config")
+            .await?;
+        let effective = session.effective_config.ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "get_session_config",
+                format!("session {session_id} has no effective configuration"),
+            )
+        })?;
         Ok(SessionConfigState {
             session_id: session.id,
             revision: session.config_revision,
@@ -241,26 +272,30 @@ impl sylvander_channel::UiService for RuntimeUiService {
 
     async fn update_session_config(
         &self,
+        boundary: &sylvander_protocol::BoundaryContext,
         request: SessionConfigUpdateRequest,
-    ) -> Result<SessionConfigState, String> {
+    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
         let session = self
-            .sessions
-            .get(&request.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("unknown session {}", request.session_id))?;
+            .owned_session(boundary, &request.session_id, "update_session_config")
+            .await?;
         let agent = session
             .agents
             .iter()
             .find_map(|id| self.agents.get(id))
-            .ok_or_else(|| format!("session {} has no configured Agent", request.session_id))?;
+            .ok_or_else(|| {
+                boundary_failure(
+                    boundary,
+                    "update_session_config",
+                    format!("session {} has no configured Agent", request.session_id),
+                )
+            })?;
         let effective = resolve_session_config(
             agent,
             &request.overrides,
             None,
             Some(&session.metadata.workspace),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| boundary_failure(boundary, "update_session_config", error.to_string()))?;
         let revision = self
             .sessions
             .update_config(
@@ -270,7 +305,9 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 effective.clone(),
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                boundary_failure(boundary, "update_session_config", error.to_string())
+            })?;
         Ok(SessionConfigState {
             session_id: request.session_id,
             revision,
@@ -279,9 +316,18 @@ impl sylvander_channel::UiService for RuntimeUiService {
         })
     }
 
-    async fn submit_feedback(&self, feedback: RunFeedback) -> Result<String, String> {
+    async fn submit_feedback(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        feedback: RunFeedback,
+    ) -> Result<String, sylvander_protocol::BoundaryError> {
+        require_principal(boundary, "submit_feedback")?;
         if feedback.note.as_ref().is_some_and(|note| note.len() > 4096) {
-            return Err("feedback note exceeds 4096 bytes".into());
+            return Err(boundary_failure(
+                boundary,
+                "submit_feedback",
+                "feedback note exceeds 4096 bytes",
+            ));
         }
         if feedback.tags.len() > 16
             || feedback
@@ -289,16 +335,70 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 .iter()
                 .any(|tag| tag.is_empty() || tag.len() > 64)
         {
-            return Err("feedback supports at most 16 non-empty tags of 64 bytes each".into());
+            return Err(boundary_failure(
+                boundary,
+                "submit_feedback",
+                "feedback supports at most 16 non-empty tags of 64 bytes each",
+            ));
         }
-        let store = self
-            .evidence
-            .as_ref()
-            .ok_or_else(|| "runtime evidence capture is disabled".to_string())?;
+        let store = self.evidence.as_ref().ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "submit_feedback",
+                "runtime evidence capture is disabled",
+            )
+        })?;
         store
             .record_feedback(feedback, sylvander_agent::session::now_secs())
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
+    }
+}
+
+impl RuntimeUiService {
+    async fn owned_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        operation: &str,
+    ) -> Result<StoredSession, sylvander_protocol::BoundaryError> {
+        let principal = require_principal(boundary, operation)?;
+        let session = self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
+            .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
+        if session.metadata.user_id != principal.id.0 && !principal.has_role("admin") {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary, operation,
+            ));
+        }
+        Ok(session)
+    }
+}
+
+fn require_principal<'a>(
+    boundary: &'a sylvander_protocol::BoundaryContext,
+    operation: &str,
+) -> Result<&'a sylvander_protocol::AuthenticatedPrincipal, sylvander_protocol::BoundaryError> {
+    boundary
+        .principal
+        .as_ref()
+        .ok_or_else(|| sylvander_protocol::BoundaryError::unauthenticated(boundary, operation))
+}
+
+fn boundary_failure(
+    boundary: &sylvander_protocol::BoundaryContext,
+    operation: &str,
+    message: impl Into<String>,
+) -> sylvander_protocol::BoundaryError {
+    sylvander_protocol::BoundaryError {
+        code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+        operation: operation.into(),
+        request_id: boundary.request_id.clone(),
+        message: message.into(),
+        retry_after_ms: None,
     }
 }
 
@@ -1206,8 +1306,18 @@ model_name = "model-a"
                 .is_err(),
             "a stale client must not overwrite a newer configuration"
         );
+        let owner = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "test-user",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "tui-local",
+            "unix",
+            "request-create",
+        );
         let created = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
+            &owner,
             SessionCreateRequest {
                 agent_id: AgentId::new("assistant"),
                 label: "created through UI service".into(),
@@ -1227,7 +1337,28 @@ model_name = "model-a"
             .unwrap()
             .expect("created session must be durable");
         assert_eq!(stored.effective_config, Some(created.effective));
+        assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        let stranger = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "other-user",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "tui-local",
+            "unix",
+            "request-read",
+        );
+        let denial = sylvander_channel::UiService::session_config(
+            runtime.ui_service.as_ref(),
+            &stranger,
+            &created.session_id,
+        )
+        .await
+        .expect_err("a different principal must not read the session");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
         assert!(
             runtime
                 .engine

@@ -36,24 +36,37 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, RunFeedback, SessionConfigState, SessionConfigUpdateRequest,
-    SessionCreateRequest, SessionId,
+    AgentDescriptor, BoundaryContext, BoundaryError, RunFeedback, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait UiService: Send + Sync {
-    async fn discover_agents(&self) -> Vec<AgentDescriptor>;
+    async fn discover_agents(
+        &self,
+        boundary: &BoundaryContext,
+    ) -> Result<Vec<AgentDescriptor>, BoundaryError>;
     async fn create_session(
         &self,
+        boundary: &BoundaryContext,
         request: SessionCreateRequest,
-    ) -> Result<SessionConfigState, String>;
-    async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String>;
+    ) -> Result<SessionConfigState, BoundaryError>;
+    async fn session_config(
+        &self,
+        boundary: &BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<SessionConfigState, BoundaryError>;
     async fn update_session_config(
         &self,
+        boundary: &BoundaryContext,
         request: SessionConfigUpdateRequest,
-    ) -> Result<SessionConfigState, String>;
-    async fn submit_feedback(&self, feedback: RunFeedback) -> Result<String, String>;
+    ) -> Result<SessionConfigState, BoundaryError>;
+    async fn submit_feedback(
+        &self,
+        boundary: &BoundaryContext,
+        feedback: RunFeedback,
+    ) -> Result<String, BoundaryError>;
 }
 
 // ---------------------------------------------------------------------------

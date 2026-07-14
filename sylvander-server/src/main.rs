@@ -113,6 +113,7 @@ fn build_channels(
                         .collect();
                     Arc::new(
                         sylvander_channel_unix::UnixChannel::new(path, agent_id)
+                            .with_instance_id(&channel.id)
                             .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
                                 model: primary.id.clone(),
                                 reasoning_effort: ReasoningEffort::Off,

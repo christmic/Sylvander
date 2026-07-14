@@ -73,6 +73,7 @@ struct RelayHub {
 
 pub struct UnixChannel {
     socket_path: PathBuf,
+    instance_id: String,
     agent_id: AgentId,
     runtime: RuntimeInfo,
     runtime_control: Option<sylvander_agent::run::AgentRun>,
@@ -94,6 +95,7 @@ impl UnixChannel {
     pub fn new(socket_path: impl Into<PathBuf>, agent_id: impl Into<AgentId>) -> Self {
         Self {
             socket_path: socket_path.into(),
+            instance_id: "unix".into(),
             agent_id: agent_id.into(),
             runtime: RuntimeInfo {
                 model: "unknown".into(),
@@ -107,6 +109,11 @@ impl UnixChannel {
             },
             runtime_control: None,
         }
+    }
+
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
+        self
     }
 
     pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
@@ -171,6 +178,18 @@ impl Channel for UnixChannel {
                 }
             };
 
+            let peer = match stream.peer_cred() {
+                Ok(peer) => peer,
+                Err(error) => {
+                    warn!(%error, "unix: could not authenticate peer credentials");
+                    continue;
+                }
+            };
+            let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+                format!("unix:uid:{}", peer.uid()),
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            );
+
             let (read, mut write) = stream.into_split();
             let mut reader = BufReader::new(read).lines();
 
@@ -205,6 +224,7 @@ impl Channel for UnixChannel {
             let runtime_control = self.runtime_control.clone();
             let reader_hub = hub.clone();
             let client_id_clone = client_id;
+            let instance_id = self.instance_id.clone();
             client_tasks.spawn(async move {
                 let mut negotiated = false;
                 while let Ok(Some(line)) = reader.next_line().await {
@@ -258,8 +278,15 @@ impl Channel for UnixChannel {
                         });
                         continue;
                     }
+                    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+                        principal.clone(),
+                        &instance_id,
+                        "unix",
+                        uuid::Uuid::new_v4().to_string(),
+                    );
                     handle_client_msg_for_client(
                         msg,
+                        &boundary,
                         &ctx_clone,
                         &agent_id_clone,
                         &tx,
@@ -373,11 +400,32 @@ async fn handle_client_msg(
 ) {
     let hub = Arc::new(Mutex::new(RelayHub::default()));
     hub.lock().await.clients.insert(0, tx.clone());
-    handle_client_msg_for_client(msg, ctx, agent_id, tx, runtime, runtime_control, &hub, 0).await;
+    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+        sylvander_protocol::AuthenticatedPrincipal::user(
+            "unix-client",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        ),
+        "unix",
+        "unix",
+        "test-request",
+    );
+    handle_client_msg_for_client(
+        msg,
+        &boundary,
+        ctx,
+        agent_id,
+        tx,
+        runtime,
+        runtime_control,
+        &hub,
+        0,
+    )
+    .await;
 }
 
 async fn handle_client_msg_for_client(
     msg: ClientMsg,
+    boundary: &sylvander_protocol::BoundaryContext,
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
@@ -809,23 +857,26 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::DiscoverAgents => {
             if let Some(ui) = &ctx.ui {
-                let _ = tx.send(ServerMsg::AgentsDiscovered {
-                    agents: ui.discover_agents().await,
-                });
+                match ui.discover_agents(boundary).await {
+                    Ok(agents) => {
+                        let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
+                    }
+                    Err(error) => operation_error(tx, "discover_agents", error.to_string()),
+                }
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
             }
         }
         ClientMsg::CreateSession { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.create_session(request).await {
+                match ui.create_session(boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
                             config: Some(config),
                         });
                     }
-                    Err(error) => operation_error(tx, "create_session", error),
+                    Err(error) => operation_error(tx, "create_session", error.to_string()),
                 }
             } else {
                 operation_error(tx, "create_session", "UI service is unavailable");
@@ -833,11 +884,14 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::GetSessionConfig { session_id } => {
             if let Some(ui) = &ctx.ui {
-                match ui.session_config(&SessionId::new(session_id)).await {
+                match ui
+                    .session_config(boundary, &SessionId::new(session_id))
+                    .await
+                {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "get_session_config", error),
+                    Err(error) => operation_error(tx, "get_session_config", error.to_string()),
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
@@ -845,11 +899,11 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::UpdateSessionConfig { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(request).await {
+                match ui.update_session_config(boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "update_session_config", error),
+                    Err(error) => operation_error(tx, "update_session_config", error.to_string()),
                 }
             } else {
                 operation_error(tx, "update_session_config", "UI service is unavailable");
@@ -857,11 +911,11 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::SubmitFeedback { feedback } => {
             if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(feedback).await {
+                match ui.submit_feedback(boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
-                    Err(error) => operation_error(tx, "submit_feedback", error),
+                    Err(error) => operation_error(tx, "submit_feedback", error.to_string()),
                 }
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
@@ -1444,35 +1498,55 @@ mod tests {
 
     #[async_trait]
     impl sylvander_channel::UiService for EmptyUiService {
-        async fn discover_agents(&self) -> Vec<sylvander_protocol::AgentDescriptor> {
-            Vec::new()
+        async fn discover_agents(
+            &self,
+            _boundary: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            Ok(Vec::new())
         }
 
         async fn create_session(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _request: sylvander_protocol::SessionCreateRequest,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("unknown Agent".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ))
         }
 
         async fn session_config(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _session_id: &SessionId,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("missing session".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "get_session_config",
+            ))
         }
 
         async fn update_session_config(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _request: sylvander_protocol::SessionConfigUpdateRequest,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("missing session".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "update_session_config",
+            ))
         }
 
         async fn submit_feedback(
             &self,
+            _boundary: &sylvander_protocol::BoundaryContext,
             _feedback: sylvander_protocol::RunFeedback,
-        ) -> Result<String, String> {
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
             Ok("feedback-1".into())
         }
     }
