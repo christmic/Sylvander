@@ -209,14 +209,12 @@ async fn handle_webhook(
 
     let chat_id = msg.chat.id;
     let chat_id_str = chat_id.to_string();
+    let principal_id = platform_principal_id(&state.instance_id, &chat_id_str);
 
     // Find or create session
     let existing = find_by_chat_id(&state.sessions, &state.instance_id, &chat_id_str).await;
     let boundary = BoundaryContext::authenticated(
-        AuthenticatedPrincipal::user(
-            format!("telegram:{}:{chat_id_str}", state.instance_id),
-            AuthenticationMethod::PlatformIdentity,
-        ),
+        AuthenticatedPrincipal::user(principal_id.clone(), AuthenticationMethod::PlatformIdentity),
         &state.instance_id,
         "telegram",
         format!("telegram-update-{}", update.update_id),
@@ -263,7 +261,7 @@ async fn handle_webhook(
             .await;
     }
 
-    let bus_msg = BusMessage::user_chat(session_id.clone(), &sender_name, &text);
+    let bus_msg = BusMessage::user_chat(session_id.clone(), &principal_id, &text);
     if let Err(e) = state.ctx.bus.publish(bus_msg).await {
         warn!(error = %e, "telegram: bus publish failed");
         return Ok("error");
@@ -274,12 +272,17 @@ async fn handle_webhook(
 }
 
 fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
-    expected.is_none_or(|expected| {
-        headers
-            .get("x-telegram-bot-api-secret-token")
-            .and_then(|value| value.to_str().ok())
-            == Some(expected)
-    })
+    let Some(expected) = expected.filter(|secret| !secret.is_empty()) else {
+        return false;
+    };
+    headers
+        .get("x-telegram-bot-api-secret-token")
+        .and_then(|value| value.to_str().ok())
+        == Some(expected)
+}
+
+fn platform_principal_id(instance_id: &str, chat_id: &str) -> String {
+    format!("telegram:{instance_id}:{chat_id}")
 }
 
 async fn find_by_chat_id(
@@ -411,9 +414,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn webhook_secret_is_required_when_configured() {
+    fn webhook_secret_is_required_by_default() {
         let mut headers = HeaderMap::new();
-        assert!(valid_webhook_secret(&headers, None));
+        assert!(!valid_webhook_secret(&headers, None));
+        assert!(!valid_webhook_secret(&headers, Some("")));
         assert!(!valid_webhook_secret(&headers, Some("secret")));
         headers.insert("x-telegram-bot-api-secret-token", "secret".parse().unwrap());
         assert!(valid_webhook_secret(&headers, Some("secret")));
@@ -423,5 +427,10 @@ mod tests {
     #[test]
     fn message_split_respects_unicode_character_boundaries() {
         assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
+    }
+
+    #[test]
+    fn principal_identity_includes_instance_and_chat() {
+        assert_eq!(platform_principal_id("bot-a", "42"), "telegram:bot-a:42");
     }
 }
