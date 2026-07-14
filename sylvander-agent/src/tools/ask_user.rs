@@ -1,7 +1,7 @@
 //! `ask_user` tool — marker tool the model invokes to ask the user a question.
 //!
 //! Never actually executed: the loop intercepts this tool name and
-//! triggers the AskUserGate instead, which pauses the loop until
+//! triggers the `AskUserGate` instead, which pauses the loop until
 //! the user responds via the bus.
 
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
+#[derive(Default)]
 pub struct AskUserTool;
 
 impl AskUserTool {
@@ -22,11 +23,11 @@ impl AskUserTool {
 
 #[async_trait]
 impl Tool for AskUserTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ask_user"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Pause and ask the user a clarifying question. Use this when you need \
          a decision, confirmation, or additional information. \
          Set `options` to constrain answers to a fixed set. Omit `options` \

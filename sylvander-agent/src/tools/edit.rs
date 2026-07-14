@@ -402,7 +402,7 @@ mod tests {
     fn name_description_schema() {
         let dir = setup_workspace();
         let tool = EditTool::new(dir.path());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "Edit");
         assert!(tool.description().contains("replace"));
         let json = serde_json::to_value(tool.input_schema()).unwrap();

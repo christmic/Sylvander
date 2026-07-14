@@ -7,6 +7,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
+#[derive(Default)]
 pub struct PresentPlanTool;
 
 impl PresentPlanTool {
@@ -18,11 +19,11 @@ impl PresentPlanTool {
 
 #[async_trait]
 impl Tool for PresentPlanTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "present_plan"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Present an ordered implementation plan for explicit user review before proceeding."
     }
 

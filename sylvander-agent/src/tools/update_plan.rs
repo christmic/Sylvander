@@ -7,6 +7,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
+#[derive(Default)]
 pub struct UpdatePlanTool;
 
 impl UpdatePlanTool {
@@ -18,11 +19,11 @@ impl UpdatePlanTool {
 
 #[async_trait]
 impl Tool for UpdatePlanTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "update_plan"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Update the visible approved plan and its zero-based current step as work progresses."
     }
 

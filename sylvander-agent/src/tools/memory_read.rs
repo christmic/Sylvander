@@ -34,11 +34,11 @@ impl MemoryReadTool {
 
 #[async_trait]
 impl Tool for MemoryReadTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "read_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search your long-term memory for relevant information. \
          Use this when you need to recall user preferences, \
          project-specific context, or past decisions that are not \
@@ -120,6 +120,31 @@ impl Tool for MemoryReadTool {
     }
 }
 
+// Parse a string from the model's input into a `MemoryKind`. Unknown
+// values map to `None` (no filter) so the model can probe without
+// hard-failing.
+fn parse_kind(s: Option<&str>) -> Option<super::memory::MemoryKind> {
+    let s = s?;
+    Some(match s {
+        "preference" => super::memory::MemoryKind::Preference,
+        "project_fact" => super::memory::MemoryKind::ProjectFact,
+        "decision" => super::memory::MemoryKind::Decision,
+        "agent_note" => super::memory::MemoryKind::AgentNote,
+        _ => return None,
+    })
+}
+
+fn parse_importance(s: Option<&str>) -> Option<super::memory::Importance> {
+    let s = s?;
+    Some(match s {
+        "low" => super::memory::Importance::Low,
+        "medium" => super::memory::Importance::Medium,
+        "high" => super::memory::Importance::High,
+        "critical" => super::memory::Importance::Critical,
+        _ => return None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -145,7 +170,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryReadTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "read_memory");
         assert!(!tool.description().is_empty());
     }
@@ -153,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_query_field() {
         let tool = MemoryReadTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("query").is_some());
@@ -226,29 +251,4 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("[]"));
     }
-}
-
-// Parse a string from the model's input into a `MemoryKind`. Unknown
-// values map to `None` (no filter) so the model can probe without
-// hard-failing.
-fn parse_kind(s: Option<&str>) -> Option<super::memory::MemoryKind> {
-    let s = s?;
-    Some(match s {
-        "preference" => super::memory::MemoryKind::Preference,
-        "project_fact" => super::memory::MemoryKind::ProjectFact,
-        "decision" => super::memory::MemoryKind::Decision,
-        "agent_note" => super::memory::MemoryKind::AgentNote,
-        _ => return None,
-    })
-}
-
-fn parse_importance(s: Option<&str>) -> Option<super::memory::Importance> {
-    let s = s?;
-    Some(match s {
-        "low" => super::memory::Importance::Low,
-        "medium" => super::memory::Importance::Medium,
-        "high" => super::memory::Importance::High,
-        "critical" => super::memory::Importance::Critical,
-        _ => return None,
-    })
 }
