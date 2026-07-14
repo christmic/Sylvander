@@ -21,7 +21,7 @@ use tokio::sync::Mutex;
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::spec::SessionId;
-use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -126,16 +126,18 @@ async fn chat(
     let sid = authorize_external_chat(
         &state.ctx,
         &boundary,
-        existing_session.clone(),
-        state.agent_id.clone(),
-        "HTTP session".into(),
-        sylvander_protocol::SessionConfigOverrides::default(),
-        &req.message,
-        &[],
-        BTreeMap::from([
-            ("channel_instance_id".into(), state.instance_id.clone()),
-            ("http_session_key".into(), req.session_id.clone()),
-        ]),
+        ExternalChatRequest {
+            existing_session: existing_session.clone(),
+            agent_id: state.agent_id.clone(),
+            label: "HTTP session".into(),
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            text: req.message.clone(),
+            attachments: Vec::new(),
+            external_meta: BTreeMap::from([
+                ("channel_instance_id".into(), state.instance_id.clone()),
+                ("http_session_key".into(), req.session_id.clone()),
+            ]),
+        },
     )
     .await
     .map_err(boundary_status)?;

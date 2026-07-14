@@ -43,7 +43,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{BusMessage, MessageKind, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::Client;
@@ -87,16 +87,18 @@ impl MessageHandler for ChannelMessageHandler {
         let session_id = match authorize_external_chat(
             &self.ctx,
             &boundary,
-            existing,
-            self.agent_id.clone(),
-            format!(
-                "dt-{}",
-                &msg.conversation_id[..8.min(msg.conversation_id.len())]
-            ),
-            sylvander_protocol::SessionConfigOverrides::default(),
-            text,
-            &[],
-            external_meta,
+            ExternalChatRequest {
+                existing_session: existing,
+                agent_id: self.agent_id.clone(),
+                label: format!(
+                    "dt-{}",
+                    &msg.conversation_id[..8.min(msg.conversation_id.len())]
+                ),
+                overrides: sylvander_protocol::SessionConfigOverrides::default(),
+                text: text.into(),
+                attachments: Vec::new(),
+                external_meta,
+            },
         )
         .await
         {

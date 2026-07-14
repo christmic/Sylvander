@@ -41,10 +41,11 @@ use sylvander_agent::bus::{
     BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
 };
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 use sylvander_protocol::{
-    UiClientMessage as ClientMsg, UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg,
-    UiSessionInfo as SessionInfo, UiToolInfo as ToolInfo,
+    SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,
+    UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg, UiSessionInfo as SessionInfo,
+    UiToolInfo as ToolInfo,
 };
 
 // ===========================================================================
@@ -186,7 +187,7 @@ impl Channel for UnixChannel {
                 }
             };
             let principal = sylvander_protocol::AuthenticatedPrincipal::user(
-                "unix-client",
+                format!("unix:{}:uid:{}", self.instance_id, peer.uid()),
                 sylvander_protocol::AuthenticationMethod::UnixPeer,
             );
             info!(uid = peer.uid(), "unix: authenticated local socket owner");
@@ -435,7 +436,8 @@ async fn handle_client_msg_for_client(
     hub: &Arc<Mutex<RelayHub>>,
     client_id: u64,
 ) {
-    if let Some(ui) = &ctx.ui
+    if !matches!(&msg, ClientMsg::Chat { .. })
+        && let Some(ui) = &ctx.ui
         && let Err(error) = ui.authorize_message(boundary, &msg).await
     {
         boundary_denied(tx, error);
@@ -454,9 +456,43 @@ async fn handle_client_msg_for_client(
             session_id,
             workspace,
         } => {
-            let sid = match session_id {
-                Some(s) => SessionId::new(s),
-                None => SessionId::new(uuid::Uuid::new_v4().to_string()),
+            let existing_session = session_id.map(SessionId::new);
+            let workspace = workspace.map(PathBuf::from);
+            let session_name = workspace
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Sylvander session")
+                .to_string();
+            let overrides = SessionConfigOverrides {
+                user_workspace: workspace.map(|path| SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path,
+                    read_only: false,
+                }),
+                ..SessionConfigOverrides::default()
+            };
+            let sid = match authorize_external_chat(
+                ctx,
+                boundary,
+                ExternalChatRequest {
+                    existing_session,
+                    agent_id: agent_id.clone(),
+                    label: session_name,
+                    overrides,
+                    text: text.clone(),
+                    attachments: attachments.clone(),
+                    external_meta: std::collections::BTreeMap::new(),
+                },
+            )
+            .await
+            {
+                Ok(session_id) => session_id,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
             };
 
             let start_relay = {
@@ -492,37 +528,6 @@ async fn handle_client_msg_for_client(
             } else {
                 None
             };
-            // Send JoinSession for the agent
-            let workspace = workspace
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/tmp"));
-            let session_name = workspace
-                .file_name()
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty())
-                .unwrap_or("Sylvander session")
-                .to_string();
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: sid.clone(),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::JoinSession {
-                        session_id: sid.clone(),
-                        metadata: sylvander_agent::session::SessionMetadata {
-                            workspace,
-                            name: session_name,
-                            user_id: principal_id.into(),
-                        },
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
-
             // Send user message
             let _ = ctx
                 .bus
@@ -1508,6 +1513,7 @@ fn history_text(value: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
     use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
     use sylvander_agent::session_store::{
         MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
@@ -1943,10 +1949,19 @@ mod tests {
         let store: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
         let session_id = SessionId::new("session-1");
+        let credential_probe = tempfile::NamedTempFile::new().expect("credential probe");
+        let principal_id = format!(
+            "unix:unix:uid:{}",
+            credential_probe
+                .as_file()
+                .metadata()
+                .expect("credential metadata")
+                .uid()
+        );
         let metadata = sylvander_agent::session::SessionMetadata {
             workspace: "/workspace/project".into(),
             name: "Original".into(),
-            user_id: "unix-client".into(),
+            user_id: principal_id.clone(),
         };
         store
             .save(&StoredSession::new(
@@ -1958,7 +1973,7 @@ mod tests {
             ))
             .await
             .expect("save");
-        let caller = unix_session_context("unix-client", &agent_id, session_id.clone());
+        let caller = unix_session_context(&principal_id, &agent_id, session_id.clone());
         store
             .append_message(
                 &caller,
@@ -1998,7 +2013,7 @@ mod tests {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
             sessions: store.clone(),
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         };
         let task = tokio::spawn(channel.run(context));
@@ -2172,7 +2187,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         }));
 
@@ -2257,7 +2272,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         }));
 
@@ -2359,7 +2374,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2402,7 +2417,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2482,7 +2497,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
+            ui: Some(Arc::new(EmptyUiService)),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();

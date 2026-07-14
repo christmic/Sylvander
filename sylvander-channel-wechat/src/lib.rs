@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::{WechatCrypto, parse_message_xml};
@@ -217,13 +217,15 @@ async fn handle_callback(
     let session_id = match authorize_external_chat(
         &state.ctx,
         &boundary,
-        existing,
-        state.agent_id.clone(),
-        format!("wechat-{}", msg.from_user_name),
-        sylvander_protocol::SessionConfigOverrides::default(),
-        &msg.content,
-        &[],
-        external_meta,
+        ExternalChatRequest {
+            existing_session: existing,
+            agent_id: state.agent_id.clone(),
+            label: format!("wechat-{}", msg.from_user_name),
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            text: msg.content.clone(),
+            attachments: Vec::new(),
+            external_meta,
+        },
     )
     .await
     {

@@ -165,6 +165,17 @@ impl ChannelContext {
     }
 }
 
+/// Complete normalized input required to authorize one external chat.
+pub struct ExternalChatRequest {
+    pub existing_session: Option<SessionId>,
+    pub agent_id: AgentId,
+    pub label: String,
+    pub overrides: SessionConfigOverrides,
+    pub text: String,
+    pub attachments: Vec<sylvander_protocol::MessageAttachment>,
+    pub external_meta: BTreeMap<String, String>,
+}
+
 /// Resolve or create a platform-owned session through the runtime boundary.
 ///
 /// External adapters use this instead of writing a session and publishing a
@@ -173,14 +184,17 @@ impl ChannelContext {
 pub async fn authorize_external_chat(
     context: &ChannelContext,
     boundary: &BoundaryContext,
-    existing_session: Option<SessionId>,
-    agent_id: AgentId,
-    label: String,
-    overrides: SessionConfigOverrides,
-    text: &str,
-    attachments: &[sylvander_protocol::MessageAttachment],
-    external_meta: BTreeMap<String, String>,
+    request: ExternalChatRequest,
 ) -> Result<SessionId, BoundaryError> {
+    let ExternalChatRequest {
+        existing_session,
+        agent_id,
+        label,
+        overrides,
+        text,
+        attachments,
+        external_meta,
+    } = request;
     let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
         code: BoundaryErrorCode::InvalidScope,
         operation: "external_chat".into(),
@@ -192,7 +206,7 @@ pub async fn authorize_external_chat(
     let session_id = if let Some(session_id) = existing_session {
         session_id
     } else {
-        let request = SessionCreateRequest {
+        let create_request = SessionCreateRequest {
             agent_id,
             label,
             channel_id: Some(boundary.channel_instance_id.clone()),
@@ -201,11 +215,11 @@ pub async fn authorize_external_chat(
         ui.authorize_message(
             boundary,
             &UiClientMessage::CreateSession {
-                request: request.clone(),
+                request: create_request.clone(),
             },
         )
         .await?;
-        let state = ui.create_session(boundary, request).await?;
+        let state = ui.create_session(boundary, create_request).await?;
         let mut session = context
             .sessions
             .get(&state.session_id)
@@ -228,8 +242,8 @@ pub async fn authorize_external_chat(
     ui.authorize_message(
         boundary,
         &UiClientMessage::Chat {
-            text: text.into(),
-            attachments: attachments.to_vec(),
+            text,
+            attachments,
             session_id: Some(session_id.0.clone()),
             workspace: None,
         },
@@ -332,13 +346,15 @@ mod tests {
         let error = authorize_external_chat(
             &context,
             &boundary,
-            None,
-            AgentId::new("assistant"),
-            "telegram-42".into(),
-            SessionConfigOverrides::default(),
-            "hello",
-            &[],
-            BTreeMap::new(),
+            ExternalChatRequest {
+                existing_session: None,
+                agent_id: AgentId::new("assistant"),
+                label: "telegram-42".into(),
+                overrides: SessionConfigOverrides::default(),
+                text: "hello".into(),
+                attachments: Vec::new(),
+                external_meta: BTreeMap::new(),
+            },
         )
         .await
         .unwrap_err();

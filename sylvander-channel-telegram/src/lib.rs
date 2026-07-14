@@ -28,7 +28,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 // ===========================================================================
@@ -228,13 +228,15 @@ async fn handle_webhook(
     let session_id = match authorize_external_chat(
         &state.ctx,
         &boundary,
-        existing,
-        state.agent_id.clone(),
-        format!("telegram-{chat_id}"),
-        sylvander_protocol::SessionConfigOverrides::default(),
-        &text,
-        &[],
-        external_meta,
+        ExternalChatRequest {
+            existing_session: existing,
+            agent_id: state.agent_id.clone(),
+            label: format!("telegram-{chat_id}"),
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            text: text.clone(),
+            attachments: Vec::new(),
+            external_meta,
+        },
     )
     .await
     {
