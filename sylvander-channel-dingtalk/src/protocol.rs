@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 // ===========================================================================
 // Constants
@@ -162,6 +163,7 @@ pub struct Client {
     app_secret: String,
     http: reqwest::Client,
     token_cache: Arc<Mutex<Option<(String, i64)>>>,
+    max_message_bytes: usize,
 }
 
 impl Client {
@@ -171,7 +173,19 @@ impl Client {
             app_secret: app_secret.into(),
             http: reqwest::Client::new(),
             token_cache: Arc::new(Mutex::new(None)),
+            max_message_bytes: 1024 * 1024,
         }
+    }
+
+    #[must_use]
+    pub const fn with_message_limit(mut self, max_message_bytes: usize) -> Self {
+        self.max_message_bytes = max_message_bytes;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn max_message_bytes(&self) -> usize {
+        self.max_message_bytes
     }
 
     /// Connect to `DingTalk` Stream and process messages.
@@ -190,7 +204,16 @@ impl Client {
         tracing::info!(%ws_url, "dingtalk: connecting");
 
         // 2. Connect WebSocket
-        let (ws, _) = match tokio_tungstenite::connect_async(&ws_url).await {
+        let websocket_config = WebSocketConfig::default()
+            .max_frame_size(Some(self.max_message_bytes))
+            .max_message_size(Some(self.max_message_bytes));
+        let (ws, _) = match tokio_tungstenite::connect_async_with_config(
+            &ws_url,
+            Some(websocket_config),
+            false,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "dingtalk: ws connect failed");

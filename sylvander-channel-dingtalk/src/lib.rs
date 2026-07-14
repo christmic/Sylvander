@@ -316,6 +316,12 @@ impl DingTalkChannel {
         self.agent_id = agent_id.into();
         self
     }
+
+    #[must_use]
+    pub fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.client = self.client.with_message_limit(max_request_bytes);
+        self
+    }
 }
 
 #[async_trait]
@@ -358,6 +364,12 @@ mod tests {
     use sylvander_agent::session::SessionMetadata;
     use sylvander_agent::session_store::SqliteSessionStore;
     use sylvander_agent::session_store::{SessionLifetime, StoredSession};
+
+    #[test]
+    fn request_limit_is_configurable() {
+        let channel = DingTalkChannel::new("key", "secret").with_request_limit(4096);
+        assert_eq!(channel.client.max_message_bytes(), 4096);
+    }
 
     #[tokio::test]
     async fn conversation_lookup_requires_instance_and_sender() {
