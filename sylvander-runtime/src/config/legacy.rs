@@ -21,6 +21,7 @@ const LEGACY_KEYS: &[&str] = &[
     "SYLVANDER_WORKSPACE_JOURNAL",
     "SYLVANDER_AGENT_WORKSPACE",
     "SYLVANDER_SOCKET",
+    "SYLVANDER_UNIX_UID",
     "HTTP_ADDR",
     "SYLVANDER_HTTP_TOKEN",
     "SYLVANDER_APPROVAL",
@@ -181,16 +182,39 @@ impl ServerConfig {
                 prompt_profiles: Vec::new(),
                 default_prompt_profile: None,
                 allow_session_prompt: false,
-                access: super::AgentAccessConfig {
-                    allow_authenticated: true,
-                    ..super::AgentAccessConfig::default()
-                },
+                access: legacy_agent_access(values)?,
             }],
             channels,
         };
         config.validate()?;
         Ok(config)
     }
+}
+
+fn legacy_agent_access(
+    values: &HashMap<String, String>,
+) -> Result<super::AgentAccessConfig, ConfigError> {
+    let allowed_principals = values
+        .get("SYLVANDER_UNIX_UID")
+        .map(|value| {
+            value.trim().parse::<u32>().map_or_else(
+                |_| {
+                    Err(ConfigError {
+                        errors: vec![
+                            "legacy SYLVANDER_UNIX_UID must be a non-negative numeric uid".into(),
+                        ],
+                    })
+                },
+                |uid| Ok(vec![format!("unix:terminal:uid:{uid}")]),
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(super::AgentAccessConfig {
+        allow_authenticated: false,
+        allowed_principals,
+        allowed_roles: Vec::new(),
+    })
 }
 
 fn comma_values(value: Option<&String>) -> Vec<String> {
@@ -308,6 +332,24 @@ mod tests {
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(!encoded.contains("must-not-be-stored"));
         assert_eq!(config.agents[0].spec.model.provider, "primary");
+        assert!(!config.agents[0].access.allow_authenticated);
+        assert!(config.agents[0].access.allowed_principals.is_empty());
+    }
+
+    #[test]
+    fn local_unix_access_requires_an_explicit_numeric_uid() {
+        let mut values = required_values();
+        values.insert("SYLVANDER_UNIX_UID".into(), "501".into());
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+        assert!(!config.agents[0].access.allow_authenticated);
+        assert_eq!(
+            config.agents[0].access.allowed_principals,
+            ["unix:terminal:uid:501"]
+        );
+
+        values.insert("SYLVANDER_UNIX_UID".into(), "current-user".into());
+        let error = ServerConfig::from_legacy_values(&values).unwrap_err();
+        assert!(error.errors[0].contains("non-negative numeric uid"));
     }
 
     #[test]
