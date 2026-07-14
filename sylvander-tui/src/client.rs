@@ -547,6 +547,13 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::OperationError { operation, message } => {
             DomainEvent::OperationFailed { operation, message }
         }
+        ServerMsg::BoundaryDenied { error } => DomainEvent::OperationFailed {
+            operation: error.operation,
+            message: match error.retry_after_ms {
+                Some(delay) => format!("{} (retry after {delay} ms)", error.message),
+                None => error.message,
+            },
+        },
         ServerMsg::IterationEnd {
             iteration,
             input_tokens,
@@ -778,6 +785,24 @@ mod tests {
             event,
             Some(DomainEvent::OperationFailed { operation, message })
                 if operation == "load_session" && message == "not found"
+        ));
+    }
+
+    #[test]
+    fn boundary_denials_preserve_operation_and_retry_guidance() {
+        let event = parse_server_msg(ServerMsg::BoundaryDenied {
+            error: sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+                operation: "chat".into(),
+                request_id: "request-1".into(),
+                message: "request rate limit exceeded".into(),
+                retry_after_ms: Some(1_500),
+            },
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::OperationFailed { operation, message })
+                if operation == "chat" && message.contains("1500 ms")
         ));
     }
 
