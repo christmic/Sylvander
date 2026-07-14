@@ -4,6 +4,10 @@ use sylvander_llm_anthropic::api::{model as legacy_model, types as legacy};
 use sylvander_llm_core as core;
 use thiserror::Error;
 
+mod content;
+
+pub use content::{message_from_core, message_to_core, response_from_core};
+
 const ANTHROPIC: &str = "anthropic";
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -12,6 +16,8 @@ pub enum ProviderCompatError {
     Unsupported(&'static str),
     #[error("expected provider {expected}, got {actual}")]
     ProviderMismatch { expected: String, actual: String },
+    #[error("{field} value {value} exceeds the legacy u32 limit")]
+    NumericOverflow { field: &'static str, value: u64 },
 }
 
 pub fn model_to_core(
