@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
@@ -15,6 +14,10 @@ use crate::app::ToolInfo;
 use crate::event::DomainEvent;
 
 pub use sylvander_protocol::UiClientMessage as ClientMsg;
+pub use sylvander_protocol::{
+    UiHistoryMessage as HistoryMessageMsg, UiServerMessage as ServerMsg,
+    UiSessionInfo as SessionInfoMsg, UiToolInfo as ToolInfoMsg,
+};
 
 const CLIENT_EVENT_CAPACITY: usize = 1_024;
 const MAX_SERVER_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -22,250 +25,6 @@ const MAX_SERVER_LINE_BYTES: usize = 8 * 1024 * 1024;
 // ===========================================================================
 // Wire protocol (mirror of sylvander-channel-unix ServerMsg)
 // ===========================================================================
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerMsg {
-    Welcome {
-        protocol: sylvander_protocol::UiProtocolWelcome,
-    },
-    ProtocolError {
-        error: sylvander_protocol::UiProtocolError,
-    },
-    SessionCreated {
-        session_id: String,
-    },
-    TextDelta {
-        session_id: String,
-        delta: String,
-    },
-    ThinkingDelta {
-        session_id: String,
-        delta: String,
-    },
-    ModelRetry {
-        session_id: String,
-        attempt: u32,
-        max_attempts: u32,
-        delay_ms: u64,
-        reason: String,
-        #[serde(default)]
-        cause: sylvander_protocol::RetryCause,
-    },
-    InteractionTimeout {
-        session_id: String,
-        kind: sylvander_protocol::InteractionTimeoutKind,
-        subject_id: String,
-        timeout_secs: u64,
-        recovery: sylvander_protocol::TimeoutRecovery,
-    },
-    ToolCall {
-        session_id: String,
-        #[serde(default)]
-        call_id: String,
-        tool_name: String,
-        #[serde(default)]
-        input: serde_json::Value,
-    },
-    ToolOutputDelta {
-        session_id: String,
-        #[serde(default)]
-        call_id: String,
-        tool_name: String,
-        delta: String,
-    },
-    ToolResult {
-        session_id: String,
-        #[serde(default)]
-        call_id: String,
-        tool_name: String,
-        output: String,
-        is_error: bool,
-    },
-    IterationStart {
-        session_id: String,
-        iteration: u32,
-    },
-    IterationEnd {
-        session_id: String,
-        iteration: u32,
-        input_tokens: u32,
-        output_tokens: u32,
-        #[serde(default)]
-        cost_nano_usd: Option<u64>,
-    },
-    Done {
-        session_id: String,
-        text: String,
-    },
-    Error {
-        session_id: String,
-        message: String,
-    },
-    ApprovalRequest {
-        session_id: String,
-        batch_id: String,
-        tools: Vec<ToolInfoMsg>,
-        #[serde(default = "default_approval_scopes")]
-        allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
-    },
-    /// Agent forcefully rejected a tool (server-side policy) — surface
-    /// the reason in the transcript so the user understands the failure.
-    ToolRejected {
-        session_id: String,
-        tool_name: String,
-        reason: String,
-    },
-    /// Agent asks the user a clarifying question. UX §12.1:
-    /// multi_select=false → single choice + free-text fallback;
-    /// multi_select=true → multi-select checkboxes + free-text fallback.
-    AskUser {
-        session_id: String,
-        call_id: String,
-        question: String,
-        options: Vec<String>,
-        multi_select: bool,
-    },
-    TurnInterrupted {
-        session_id: String,
-        reason: String,
-    },
-    PlanProposed {
-        session_id: String,
-        plan_id: String,
-        steps: Vec<String>,
-        current: usize,
-    },
-    PlanUpdated {
-        session_id: String,
-        plan_id: String,
-        steps: Vec<String>,
-        current: usize,
-    },
-    TaskStarted {
-        session_id: String,
-        task_id: String,
-        owner: String,
-        purpose: String,
-    },
-    TaskProgress {
-        session_id: String,
-        task_id: String,
-        message: String,
-    },
-    TaskCompleted {
-        session_id: String,
-        task_id: String,
-        summary: String,
-    },
-    TaskFailed {
-        session_id: String,
-        task_id: String,
-        error: String,
-    },
-    TaskCancelled {
-        session_id: String,
-        task_id: String,
-        reason: String,
-    },
-    SessionsList {
-        sessions: Vec<SessionInfoMsg>,
-    },
-    SessionHistory {
-        session: SessionInfoMsg,
-        messages: Vec<HistoryMessageMsg>,
-        iterations: u32,
-        input_tokens: u64,
-        output_tokens: u64,
-        #[serde(default)]
-        cost_nano_usd: Option<u64>,
-        #[serde(default)]
-        notice: Option<String>,
-        #[serde(default)]
-        source_session_id: Option<String>,
-        #[serde(default)]
-        recovery: bool,
-        #[serde(default)]
-        replay_truncated: bool,
-    },
-    SessionUpdated {
-        session_id: String,
-        label: Option<String>,
-        archived: bool,
-    },
-    SessionDeleted {
-        session_id: String,
-    },
-    RuntimeInfo {
-        model: String,
-        #[serde(default)]
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-        #[serde(default)]
-        models: Vec<sylvander_protocol::ModelDescriptor>,
-        #[serde(default)]
-        permissions: sylvander_protocol::PermissionProfile,
-        capabilities: u8,
-        approval_enabled: bool,
-        max_attachment_bytes: usize,
-        #[serde(default)]
-        platform: sylvander_protocol::PlatformSnapshot,
-    },
-    ContextReport {
-        report: sylvander_protocol::ContextReport,
-    },
-    CompactionStarted {
-        session_id: String,
-        automatic: bool,
-    },
-    CompactionCompleted {
-        session_id: String,
-        report: sylvander_protocol::CompactionReport,
-    },
-    CompactionFailed {
-        session_id: String,
-        automatic: bool,
-        reason: String,
-    },
-    WorkspaceRollbackPreview {
-        session_id: String,
-        preview: sylvander_protocol::WorkspaceRollbackPreview,
-    },
-    WorkspaceRollbackCompleted {
-        session_id: String,
-        report: sylvander_protocol::WorkspaceRollbackReport,
-    },
-    WorkspaceRollbackFailed {
-        session_id: String,
-        reason: String,
-    },
-    OperationError {
-        operation: String,
-        message: String,
-    },
-    Pong,
-}
-
-/// Tools in an ApprovalRequest carry call_id + input (matches `ToolInfo`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ToolInfoMsg {
-    pub call_id: String,
-    pub tool_name: String,
-    pub input: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SessionInfoMsg {
-    pub id: String,
-    pub label: String,
-    pub workspace: String,
-    pub last_seen_secs: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct HistoryMessageMsg {
-    pub role: String,
-    pub text: String,
-}
 
 impl From<ToolInfoMsg> for ToolInfo {
     fn from(t: ToolInfoMsg) -> Self {
@@ -803,10 +562,6 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
     })
-}
-
-fn default_approval_scopes() -> Vec<sylvander_protocol::ApprovalScope> {
-    vec![sylvander_protocol::ApprovalScope::Once]
 }
 
 #[cfg(test)]
