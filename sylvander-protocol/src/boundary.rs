@@ -35,6 +35,34 @@ pub enum AuthenticationMethod {
     Internal,
 }
 
+/// Content-free fact that an ingress authentication attempt failed.
+///
+/// Credentials, request bodies, platform payloads, and provider error text are
+/// deliberately absent so this value is safe to rate-limit and audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AuthenticationFailure {
+    pub attempted_method: AuthenticationMethod,
+}
+
+impl AuthenticationFailure {
+    #[must_use]
+    pub const fn new(attempted_method: AuthenticationMethod) -> Self {
+        Self { attempted_method }
+    }
+
+    #[must_use]
+    pub const fn operation(self) -> &'static str {
+        match self.attempted_method {
+            AuthenticationMethod::UnixPeer => "authenticate_unix_peer",
+            AuthenticationMethod::BearerToken => "authenticate_bearer_token",
+            AuthenticationMethod::WebhookSignature => "authenticate_webhook_signature",
+            AuthenticationMethod::PlatformIdentity => "authenticate_platform_identity",
+            AuthenticationMethod::Internal => "authenticate_internal",
+        }
+    }
+}
+
 /// The kind of actor represented by a principal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -197,5 +225,14 @@ mod tests {
         let context = BoundaryContext::unauthenticated("terminal", "unix", "request-2");
         assert!(context.principal.is_none());
         assert_eq!(context.channel_instance_id, "terminal");
+    }
+
+    #[test]
+    fn authentication_failure_cannot_carry_sensitive_content() {
+        let failure = AuthenticationFailure::new(AuthenticationMethod::BearerToken);
+        let json = serde_json::to_value(failure).unwrap();
+        assert_eq!(json["attempted_method"], "bearer_token");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+        assert_eq!(failure.operation(), "authenticate_bearer_token");
     }
 }

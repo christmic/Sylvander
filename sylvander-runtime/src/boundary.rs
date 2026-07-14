@@ -66,6 +66,22 @@ impl BoundaryGuard {
             });
         }
 
+        self.check_rate(boundary, operation).await
+    }
+
+    pub(crate) async fn check_authentication_failure(
+        &self,
+        boundary: &BoundaryContext,
+        operation: &str,
+    ) -> Result<(), BoundaryError> {
+        self.check_rate(boundary, operation).await
+    }
+
+    async fn check_rate(
+        &self,
+        boundary: &BoundaryContext,
+        operation: &str,
+    ) -> Result<(), BoundaryError> {
         let principal = boundary
             .principal
             .as_ref()
@@ -182,5 +198,25 @@ mod tests {
         assert!(!state.windows.contains_key("expired"));
         assert!(state.windows.contains_key("fresh"));
         assert_eq!(state.windows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn authentication_failures_share_the_anonymous_rate_window() {
+        let guard = BoundaryGuard::new(BoundarySettings {
+            max_request_bytes: 1024,
+            requests_per_minute: 1,
+        });
+        let first = BoundaryContext::unauthenticated("desktop", "websocket", "auth-one");
+        guard
+            .check_authentication_failure(&first, "authenticate_bearer_token")
+            .await
+            .unwrap();
+        let second = BoundaryContext::unauthenticated("desktop", "websocket", "auth-two");
+        let error = guard
+            .check_authentication_failure(&second, "authenticate_bearer_token")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, BoundaryErrorCode::RateLimited);
+        assert_eq!(error.operation, "authenticate_bearer_token");
     }
 }
