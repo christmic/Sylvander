@@ -13,5 +13,9 @@ pub mod usage;
 pub use error::{ProviderError, ProviderErrorKind, ProviderErrorPhase};
 pub use model::{ModelCapabilities, ModelInfo, ModelRef};
 pub use provider::{ModelEventStream, ModelProvider, ProviderFuture};
-pub use types::{ModelRequest, ModelResponse, ModelStreamEvent};
+pub use types::{
+    CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, MediaSource,
+    ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState, ReasoningConfig,
+    StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
+};
 pub use usage::TokenUsage;
