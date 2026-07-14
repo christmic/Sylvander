@@ -80,9 +80,10 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
         );
     }
     match normalized_name(tool_name).as_str() {
-        "bash" | "shell" | "exec" => string_field(input, &["command", "cmd"])
-            .map(|command| format!("$ {}", one_line(command)))
-            .unwrap_or_else(|| tool_name.to_string()),
+        "bash" | "shell" | "exec" => string_field(input, &["command", "cmd"]).map_or_else(
+            || tool_name.to_string(),
+            |command| format!("$ {}", one_line(command)),
+        ),
         "read" | "read_file" => path_with_range(input, "Read"),
         "write" | "write_file" => mutation_target(input, "Write"),
         "edit" | "edit_file" => mutation_target(input, "Edit"),
@@ -91,21 +92,23 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
             let path = string_field(input, &["path", "directory"]).unwrap_or(".");
             format!("Search {query:?} in {path}")
         }
-        "ask_user" => string_field(input, &["question"])
-            .map(|question| format!("Ask {}", one_line(question)))
-            .unwrap_or_else(|| "Ask user".into()),
+        "ask_user" => string_field(input, &["question"]).map_or_else(
+            || "Ask user".into(),
+            |question| format!("Ask {}", one_line(question)),
+        ),
         "read_memory" | "memory_read" => string_field(input, &["query", "key"])
-            .map(|query| format!("Recall {query}"))
-            .unwrap_or_else(|| "Read memory".into()),
+            .map_or_else(|| "Read memory".into(), |query| format!("Recall {query}")),
         "write_memory" | "memory_write" => string_field(input, &["key", "title"])
-            .map(|key| format!("Remember {key}"))
-            .unwrap_or_else(|| "Write memory".into()),
-        "web_search" | "search_web" => string_field(input, &["query"])
-            .map(|query| format!("Search web for {query:?}"))
-            .unwrap_or_else(|| "Search web".into()),
+            .map_or_else(|| "Write memory".into(), |key| format!("Remember {key}")),
+        "web_search" | "search_web" => string_field(input, &["query"]).map_or_else(
+            || "Search web".into(),
+            |query| format!("Search web for {query:?}"),
+        ),
         "web_fetch" | "fetch_url" | "read_resource" => string_field(input, &["url", "uri"])
-            .map(|target| format!("Fetch {target}"))
-            .unwrap_or_else(|| tool_name.replace('_', " ")),
+            .map_or_else(
+                || tool_name.replace('_', " "),
+                |target| format!("Fetch {target}"),
+            ),
         _ => generic_target(tool_name, input),
     }
 }
@@ -130,8 +133,8 @@ pub fn inline_mutation_rows(
     let rows = input_rows(tool_name, input, width)
         .into_iter()
         .filter(|row| {
-            !(row.kind == DetailKind::Label && row.text.starts_with("file  "))
-                && !(row.kind == DetailKind::Meta && row.text.starts_with("language  "))
+            !(row.kind == DetailKind::Label && row.text.starts_with("file  ")
+                || row.kind == DetailKind::Meta && row.text.starts_with("language  "))
         })
         .collect::<Vec<_>>();
     if rows.len() <= limit {
@@ -722,8 +725,7 @@ fn mutation_target(input: &Value, verb: &str) -> String {
     let count = input
         .get(if verb == "Edit" { "edits" } else { "files" })
         .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
+        .map_or(0, Vec::len);
     if count > 1 {
         format!("{verb} {count} files")
     } else {
@@ -916,7 +918,7 @@ mod tests {
             80,
         );
         assert!(rows.iter().any(|row| row.text == "src/a.rs · 2 matches"));
-        assert!(rows.iter().all(|row| !row.text.contains("\u{1b}")));
+        assert!(rows.iter().all(|row| !row.text.contains('\u{1b}')));
         assert!(rows.iter().all(|row| !row.text.contains("secret")));
     }
 
