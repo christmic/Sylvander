@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 sylvander-channel = { path = "../sylvander-channel" }
+sylvander-protocol = { path = "../sylvander-protocol" }
 sylvander-agent = { path = "../sylvander-agent" }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }

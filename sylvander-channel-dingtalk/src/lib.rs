@@ -34,16 +34,17 @@ pub struct DingTalkOutgoing {
 /// Plain-text content.
 pub type DingTalkTextContent = protocol::TextContent;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, SubscriptionFilter};
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
+use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::Client;
 
@@ -60,7 +61,49 @@ struct ChannelMessageHandler {
 #[async_trait]
 impl MessageHandler for ChannelMessageHandler {
     async fn on_message(&self, msg: &RobotMessage, _headers: &FrameHeaders) {
-        let session_id = resolve_session(&self.ctx, &self.instance_id, &self.agent_id, msg).await;
+        let text = msg.text.as_ref().map_or("", |t| t.content.as_str());
+        let existing = find_by_conversation_id(
+            &self.ctx.sessions,
+            &self.instance_id,
+            &msg.conversation_id,
+            &msg.sender_staff_id,
+        )
+        .await;
+        let boundary = BoundaryContext::authenticated(
+            AuthenticatedPrincipal::user(
+                format!("dingtalk:{}:{}", self.instance_id, msg.sender_staff_id),
+                AuthenticationMethod::PlatformIdentity,
+            ),
+            &self.instance_id,
+            "dingtalk",
+            format!("dingtalk-message-{}", msg.msg_id),
+        );
+        let external_meta = BTreeMap::from([
+            ("channel_instance_id".into(), self.instance_id.clone()),
+            ("conversation_id".into(), msg.conversation_id.clone()),
+            ("sender_staff_id".into(), msg.sender_staff_id.clone()),
+            ("session_webhook".into(), msg.session_webhook.clone()),
+        ]);
+        let session_id = match authorize_external_chat(
+            &self.ctx,
+            &boundary,
+            existing,
+            self.agent_id.clone(),
+            format!(
+                "dt-{}",
+                &msg.conversation_id[..8.min(msg.conversation_id.len())]
+            ),
+            text,
+            external_meta,
+        )
+        .await
+        {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                warn!(code = ?error.code, request_id = %error.request_id, "dingtalk: message denied");
+                return;
+            }
+        };
 
         if let Ok(Some(session)) = self.ctx.sessions.get(&session_id).await {
             let _ = self
@@ -73,8 +116,6 @@ impl MessageHandler for ChannelMessageHandler {
                 ))
                 .await;
         }
-
-        let text = msg.text.as_ref().map_or("", |t| t.content.as_str());
 
         let bus_msg = BusMessage::user_chat(session_id.clone(), &msg.sender_staff_id, text);
 
@@ -90,54 +131,6 @@ impl MessageHandler for ChannelMessageHandler {
 // ===========================================================================
 // Session mapping
 // ===========================================================================
-
-async fn resolve_session(
-    ctx: &ChannelContext,
-    instance_id: &str,
-    agent_id: &AgentId,
-    msg: &RobotMessage,
-) -> SessionId {
-    if let Some(sid) = find_by_conversation_id(
-        &ctx.sessions,
-        instance_id,
-        &msg.conversation_id,
-        &msg.sender_staff_id,
-    )
-    .await
-    {
-        return sid;
-    }
-
-    let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-    let meta = SessionMetadata {
-        workspace: "/tmp".into(),
-        name: format!(
-            "dt-{}",
-            &msg.conversation_id[..8.min(msg.conversation_id.len())]
-        ),
-        user_id: format!("dingtalk:{instance_id}:{}", msg.sender_staff_id),
-    };
-    let session_name = meta.name.clone();
-
-    let stored = StoredSession::new(
-        session_id.clone(),
-        session_name,
-        SessionLifetime::Persistent,
-        meta,
-        vec![agent_id.clone()],
-    )
-    .with_external_meta("channel_instance_id", instance_id)
-    .with_external_meta("conversation_id", msg.conversation_id.clone())
-    .with_external_meta("sender_staff_id", msg.sender_staff_id.clone())
-    .with_external_meta("session_webhook", msg.session_webhook.clone());
-
-    if let Err(e) = ctx.sessions.save(&stored).await {
-        warn!(error = %e, "dingtalk: save session failed");
-    }
-
-    info!(%session_id, conv_id = %msg.conversation_id, "dingtalk: session created");
-    session_id
-}
 
 async fn find_by_conversation_id(
     store: &Arc<dyn SessionStore>,
@@ -305,7 +298,9 @@ impl Channel for DingTalkChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sylvander_agent::session::SessionMetadata;
     use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_agent::session_store::{SessionLifetime, StoredSession};
 
     #[tokio::test]
     async fn conversation_lookup_requires_instance_and_sender() {
