@@ -1332,8 +1332,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 || runtime.platform.clone(),
                 sylvander_agent::run::AgentRun::platform_snapshot,
             );
+            let model_selection =
+                unique_model_selection(&model_info.models, &model_info.current_model);
             let _ = tx.send(ServerMsg::RuntimeInfo {
                 model: model_info.current_model,
+                model_selection,
                 reasoning_effort: model_info.reasoning_effort,
                 models: model_info.models,
                 permissions,
@@ -1463,7 +1466,23 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             };
             let mut overrides = state.overrides;
-            overrides.model_id = Some(model);
+            let agents = match ui.discover_agents(boundary).await {
+                Ok(agents) => agents,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
+            let selection = match model.resolve(&catalog) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    operation_error(tx, "select_model", error.to_string());
+                    return;
+                }
+            };
+            overrides.model = Some(selection);
+            overrides.model_id = None;
             overrides.reasoning_effort = Some(reasoning_effort);
             match ui
                 .update_session_config(
@@ -1526,6 +1545,21 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
     }
 }
 
+fn unique_model_selection(
+    models: &[sylvander_protocol::ModelDescriptor],
+    model_id: &str,
+) -> Option<sylvander_protocol::ModelSelection> {
+    let mut matches = models.iter().filter(|model| model.id == model_id);
+    let model = matches.next()?;
+    matches
+        .next()
+        .is_none()
+        .then(|| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+}
+
 fn send_session_runtime_info(
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
@@ -1534,10 +1568,11 @@ fn send_session_runtime_info(
     let capabilities = runtime
         .models
         .iter()
-        .find(|entry| entry.id == effective.model_id)
+        .find(|entry| entry.id == effective.model_id && entry.provider == effective.provider_id)
         .map_or(0, |entry| entry.capabilities);
     let _ = tx.send(ServerMsg::RuntimeInfo {
         model: effective.model_id.clone(),
+        model_selection: Some(effective.model_selection()),
         reasoning_effort: effective.reasoning_effort,
         models: runtime.models.clone(),
         permissions: effective.permissions.clone(),
@@ -1546,6 +1581,23 @@ fn send_session_runtime_info(
         max_attachment_bytes: runtime.max_attachment_bytes,
         platform: runtime.platform.clone(),
     });
+}
+
+fn visible_model_catalog(
+    agents: &[sylvander_protocol::AgentDescriptor],
+    agent_id: &AgentId,
+) -> Vec<sylvander_protocol::ModelSelection> {
+    let Some(agent) = agents.iter().find(|agent| agent.id == *agent_id) else {
+        return Vec::new();
+    };
+    agent
+        .models
+        .iter()
+        .map(|model| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+        .collect()
 }
 
 fn unix_session_context(
@@ -1793,6 +1845,7 @@ mod tests {
             response,
             ServerMsg::RuntimeInfo {
                 model,
+                model_selection: Some(selection),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models,
                 permissions: sylvander_protocol::PermissionProfile {
@@ -1804,7 +1857,10 @@ mod tests {
                 approval_enabled: true,
                 max_attachment_bytes: 1024,
                 ..
-            } if model == "test-model" && models.len() == 1
+            } if model == "test-model"
+                && selection.provider_id == "test"
+                && selection.model_id == "test-model"
+                && models.len() == 1
         ));
     }
 
@@ -1938,7 +1994,7 @@ mod tests {
         handle_client_msg(
             ClientMsg::SelectModel {
                 session_id: None,
-                model: "thinking-model".into(),
+                model: sylvander_protocol::ModelSelectionInput::Legacy("thinking-model".into()),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
             },
             &context,

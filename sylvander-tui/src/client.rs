@@ -319,6 +319,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             approval_enabled,
             max_attachment_bytes,
             platform,
+            ..
         } => DomainEvent::RuntimeInfo {
             model,
             reasoning_effort,
@@ -644,6 +645,7 @@ mod tests {
     fn runtime_wire_event_preserves_server_capabilities() {
         let event = parse_server_msg(ServerMsg::RuntimeInfo {
             model: "claude-test".into(),
+            model_selection: None,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
             models: vec![sylvander_protocol::ModelDescriptor {
                 id: "claude-test".into(),

@@ -636,7 +636,23 @@ async fn handle_client_msg(
                 }
             };
             let mut overrides = state.overrides;
-            overrides.model_id = Some(model);
+            let agents = match ui.discover_agents(&boundary).await {
+                Ok(agents) => agents,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
+            let selection = match model.resolve(&catalog) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    operation_error(tx, "select_model", error.to_string());
+                    return;
+                }
+            };
+            overrides.model = Some(selection);
+            overrides.model_id = None;
             overrides.reasoning_effort = Some(reasoning_effort);
             match ui
                 .update_session_config(
@@ -711,6 +727,23 @@ async fn handle_client_msg(
             });
         }
     }
+}
+
+fn visible_model_catalog(
+    agents: &[sylvander_protocol::AgentDescriptor],
+    agent_id: &AgentId,
+) -> Vec<sylvander_protocol::ModelSelection> {
+    let Some(agent) = agents.iter().find(|agent| agent.id == *agent_id) else {
+        return Vec::new();
+    };
+    agent
+        .models
+        .iter()
+        .map(|model| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+        .collect()
 }
 
 fn operation_error(
@@ -798,7 +831,29 @@ mod tests {
             _: &sylvander_protocol::BoundaryContext,
         ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
         {
-            unreachable!()
+            let model = |provider: &str, id: &str| sylvander_protocol::ModelDescriptor {
+                id: id.into(),
+                provider: provider.into(),
+                capabilities: 0,
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
+            };
+            Ok(vec![sylvander_protocol::AgentDescriptor {
+                id: AgentId::new("agent-1"),
+                revision: 1,
+                name: "Agent".into(),
+                provider_id: "test".into(),
+                default_model_id: "default-model".into(),
+                models: vec![
+                    model("test", "default-model"),
+                    model("test", "thinking-model"),
+                    model("provider-a", "shared"),
+                    model("provider-b", "shared"),
+                ],
+                default_prompt_profile: None,
+                agent_workspace: None,
+            }])
         }
 
         async fn create_session(
@@ -839,8 +894,9 @@ mod tests {
             assert_eq!(request.expected_revision, state.revision);
             state.revision += 1;
             state.overrides = request.overrides;
-            if let Some(model) = &state.overrides.model_id {
-                state.effective.model_id = model.clone();
+            if let Some(model) = &state.overrides.model {
+                state.effective.provider_id = model.provider_id.clone();
+                state.effective.model_id = model.model_id.clone();
             }
             if let Some(effort) = state.overrides.reasoning_effort {
                 state.effective.reasoning_effort = effort;
@@ -1127,7 +1183,12 @@ mod tests {
         handle_client_msg(
             ClientMsg::SelectModel {
                 session_id: Some("session-a".into()),
-                model: "thinking-model".into(),
+                model: sylvander_protocol::ModelSelectionInput::Qualified(
+                    sylvander_protocol::ModelSelection {
+                        provider_id: "test".into(),
+                        model_id: "thinking-model".into(),
+                    },
+                ),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::High,
             },
             &context,
@@ -1148,6 +1209,59 @@ mod tests {
         ));
         let states = ui.states.lock().await;
         assert_eq!(states["session-a"].revision, 2);
+        assert_eq!(
+            states["session-a"].overrides.model,
+            Some(sylvander_protocol::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "thinking-model".into(),
+            })
+        );
+        assert!(states["session-a"].overrides.model_id.is_none());
         assert_eq!(states["session-b"], config_state("session-b"));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_legacy_selection_fails_without_mutating_session() {
+        let ui = Arc::new(SessionConfigUi {
+            states: Mutex::new(HashMap::from([(
+                "session-a".into(),
+                config_state("session-a"),
+            )])),
+        });
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            ui: Some(ui.clone()),
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::SelectModel {
+                session_id: Some("session-a".into()),
+                model: sylvander_protocol::ModelSelectionInput::Legacy("shared".into()),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_model" && message.contains("ambiguous")
+        ));
+        assert_eq!(
+            ui.states.lock().await["session-a"],
+            config_state("session-a")
+        );
     }
 }

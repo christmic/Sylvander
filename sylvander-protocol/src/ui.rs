@@ -114,7 +114,7 @@ pub enum UiClientMessage {
     SelectModel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        model: String,
+        model: crate::ModelSelectionInput,
         reasoning_effort: ReasoningEffort,
     },
     SelectPermissions {
@@ -308,7 +308,11 @@ pub enum UiServerMessage {
         response: crate::AgentAdminResponse,
     },
     RuntimeInfo {
+        /// Legacy model-only identity retained for older clients.
         model: String,
+        /// Provider-qualified identity used by current clients.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_selection: Option<crate::ModelSelection>,
         #[serde(default)]
         reasoning_effort: ReasoningEffort,
         #[serde(default)]
@@ -387,6 +391,7 @@ fn default_approval_scopes() -> Vec<ApprovalScope> {
 #[cfg(test)]
 mod tests {
     use super::{UiClientMessage, UiServerMessage};
+    use crate::{PermissionProfile, ReasoningEffort};
 
     #[test]
     fn legacy_chat_defaults_remain_compatible() {
@@ -404,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_selection_decodes_without_session_but_new_wire_carries_it() {
+    fn model_selection_accepts_legacy_and_qualified_wire_shapes() {
         let legacy: UiClientMessage =
             serde_json::from_str(r#"{"type":"select_model","model":"m","reasoning_effort":"off"}"#)
                 .unwrap();
@@ -412,10 +417,77 @@ mod tests {
             legacy,
             UiClientMessage::SelectModel {
                 session_id: None,
+                model: crate::ModelSelectionInput::Legacy(model),
+                ..
+            } if model == "m"
+        ));
+
+        let qualified = UiClientMessage::SelectModel {
+            session_id: Some("session-1".into()),
+            model: crate::ModelSelectionInput::Qualified(crate::ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "gpt-5".into(),
+            }),
+            reasoning_effort: ReasoningEffort::High,
+        };
+        let value = serde_json::to_value(&qualified).unwrap();
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["model"]["provider_id"], "openai");
+        assert_eq!(value["model"]["model_id"], "gpt-5");
+        assert_eq!(
+            serde_json::from_value::<UiClientMessage>(value).unwrap(),
+            qualified
+        );
+    }
+
+    #[test]
+    fn runtime_info_adds_qualified_identity_without_breaking_legacy_payloads() {
+        let legacy: UiServerMessage = serde_json::from_value(serde_json::json!({
+            "type": "runtime_info",
+            "model": "shared",
+            "capabilities": 0,
+            "approval_enabled": false,
+            "max_attachment_bytes": 1024
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            UiServerMessage::RuntimeInfo {
+                model_selection: None,
                 ..
             }
         ));
 
+        let qualified = UiServerMessage::RuntimeInfo {
+            model: "shared".into(),
+            model_selection: Some(crate::ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "shared".into(),
+            }),
+            reasoning_effort: ReasoningEffort::Off,
+            models: Vec::new(),
+            permissions: PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: false,
+            max_attachment_bytes: 1024,
+            platform: crate::PlatformSnapshot::default(),
+        };
+        let value = serde_json::to_value(qualified).unwrap();
+        assert_eq!(value["model"], "shared");
+        assert_eq!(value["model_selection"]["provider_id"], "openai");
+        assert_eq!(value["model_selection"]["model_id"], "shared");
+    }
+
+    #[test]
+    fn model_selection_schema_exposes_legacy_and_qualified_inputs() {
+        let schema = serde_json::to_string(&crate::schema::ui_protocol_schema()).unwrap();
+        assert!(schema.contains("ModelSelectionInput"));
+        assert!(schema.contains("ModelSelection"));
+        assert!(schema.contains("model_selection"));
+    }
+
+    #[test]
+    fn selection_permissions_wire_keeps_session_identity() {
         let value = serde_json::to_value(UiClientMessage::SelectPermissions {
             session_id: Some("session-1".into()),
             profile: crate::PermissionProfile::default(),
