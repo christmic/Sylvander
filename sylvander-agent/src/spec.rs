@@ -28,7 +28,7 @@ pub use sylvander_protocol::{AgentId, SessionId};
 // ---------------------------------------------------------------------------
 
 /// Agent personality — the "soul" of an agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PersonaConfig {
     /// System prompt injected at the start of every conversation.
     #[serde(default)]
@@ -36,15 +36,6 @@ pub struct PersonaConfig {
     /// Human-readable description of the agent's role.
     #[serde(default)]
     pub description: String,
-}
-
-impl Default for PersonaConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: String::new(),
-            description: String::new(),
-        }
-    }
 }
 
 /// Model selection and tuning parameters.

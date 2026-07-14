@@ -60,7 +60,7 @@ pub struct AgentLoop {
     pub(crate) system_prompt: Option<String>,
     /// Optional approval gate — called before tool execution (M12).
     pub(crate) approval_gate: Option<Arc<dyn crate::approval::ApprovalGate>>,
-    /// Optional AskUser gate — called for `ask_user` tool (M18).
+    /// Optional `AskUser` gate — called for `ask_user` tool (M18).
     pub(crate) ask_user_gate: Option<Arc<dyn crate::ask_user_gate::AskUserGate>>,
     /// Optional plan gate — called for the `present_plan` marker tool.
     pub(crate) plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
@@ -236,7 +236,7 @@ impl AgentLoopBuilder {
         self
     }
 
-    /// Set the AskUser gate (M18). If set, the loop intercepts
+    /// Set the `AskUser` gate (M18). If set, the loop intercepts
     /// `ask_user` tool calls and routes through the gate.
     #[must_use]
     pub fn ask_user_gate(mut self, gate: Arc<dyn crate::ask_user_gate::AskUserGate>) -> Self {
@@ -659,112 +659,7 @@ pub fn run_stream(
                         "ask_user" | "present_plan" | "start_background_task" | "update_plan"
                     )
                 });
-                if !has_control_tool {
-                    // Ordinary tools are independent within one model batch. Emit every
-                    // start first, execute concurrently, then publish results in model order.
-                    for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
-                        if matches!(decision, crate::approval::ApprovalDecision::Approved) {
-                            yield AgentEvent::ToolCallStart {
-                                id: tool_use.id.clone(),
-                                name: tool_use.name.clone(),
-                                input: tool_use.input.clone(),
-                            };
-                        }
-                    }
-                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-                    let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
-                        let id = tool_use.id.clone();
-                        let name = tool_use.name.clone();
-                        let input = tool_use.input.clone();
-                        let decision = decision.clone();
-                        let tool = config.tools.get(&name).cloned();
-                        let context = config.tool_context.clone();
-                        let progress_id = id.clone();
-                        let progress_name = name.clone();
-                        let progress_tx = progress_tx.clone();
-                        let progress = crate::tool::ToolProgressSink::new(move |delta| {
-                            let _ = progress_tx.send((
-                                progress_id.clone(),
-                                progress_name.clone(),
-                                delta,
-                            ));
-                        });
-                        async move {
-                            let outcome = match decision {
-                                crate::approval::ApprovalDecision::Approved => {
-                                    ParallelToolOutcome::Executed(
-                                        execute_registered_tool(
-                                            tool,
-                                            &context,
-                                            input,
-                                            &id,
-                                            &name,
-                                            tool_timeout,
-                                            progress,
-                                        ).await,
-                                    )
-                                }
-                                crate::approval::ApprovalDecision::Rejected { reason } => {
-                                    ParallelToolOutcome::Rejected(reason)
-                                }
-                            };
-                            (id, name, outcome)
-                        }
-                    });
-                    let executions = futures_util::future::join_all(executions);
-                    tokio::pin!(executions);
-                    let outcomes = loop {
-                        tokio::select! {
-                            biased;
-                            Some((id, name, delta)) = progress_rx.recv() => {
-                                yield AgentEvent::ToolCallOutputDelta { id, name, delta };
-                            }
-                            outcomes = &mut executions => break outcomes,
-                        }
-                    };
-                    while let Ok((id, name, delta)) = progress_rx.try_recv() {
-                        yield AgentEvent::ToolCallOutputDelta { id, name, delta };
-                    }
-                    let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
-                    for (id, name, outcome) in outcomes {
-                        match outcome {
-                            ParallelToolOutcome::Executed(execution) => {
-                                let ToolExecutionOutcome {
-                                    output,
-                                    is_error,
-                                    timed_out_after,
-                                } = execution;
-                                if let Some(timeout) = timed_out_after {
-                                    yield AgentEvent::ToolTimedOut {
-                                        id: id.clone(),
-                                        name: name.clone(),
-                                        timeout_secs: timeout.as_secs(),
-                                    };
-                                }
-                                yield AgentEvent::ToolCallEnd {
-                                    id: id.clone(),
-                                    name,
-                                    output: output.clone(),
-                                    is_error,
-                                };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(id, output).with_error(is_error),
-                                ));
-                            }
-                            ParallelToolOutcome::Rejected(reason) => {
-                                yield AgentEvent::ToolRejected {
-                                    id: id.clone(),
-                                    name,
-                                    reason: reason.clone(),
-                                };
-                                tool_result_blocks.push(UserContentBlock::ToolResult(
-                                    ToolResultBlock::new(id, reason).with_error(true),
-                                ));
-                            }
-                        }
-                    }
-                    messages.push(MessageParam::user_blocks(tool_result_blocks));
-                } else {
+                if has_control_tool {
                 // Control tools own interactive gates and remain ordered.
                 let mut tool_result_blocks = Vec::with_capacity(tool_blocks.len());
                 for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
@@ -1041,6 +936,111 @@ pub fn run_stream(
                     }
                 }
                 messages.push(MessageParam::user_blocks(tool_result_blocks));
+                } else {
+                    // Ordinary tools are independent within one model batch. Emit every
+                    // start first, execute concurrently, then publish results in model order.
+                    for (tool_use, decision) in tool_blocks.iter().zip(decisions.iter()) {
+                        if matches!(decision, crate::approval::ApprovalDecision::Approved) {
+                            yield AgentEvent::ToolCallStart {
+                                id: tool_use.id.clone(),
+                                name: tool_use.name.clone(),
+                                input: tool_use.input.clone(),
+                            };
+                        }
+                    }
+                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
+                        let id = tool_use.id.clone();
+                        let name = tool_use.name.clone();
+                        let input = tool_use.input.clone();
+                        let decision = decision.clone();
+                        let tool = config.tools.get(&name).cloned();
+                        let context = config.tool_context.clone();
+                        let progress_id = id.clone();
+                        let progress_name = name.clone();
+                        let progress_tx = progress_tx.clone();
+                        let progress = crate::tool::ToolProgressSink::new(move |delta| {
+                            let _ = progress_tx.send((
+                                progress_id.clone(),
+                                progress_name.clone(),
+                                delta,
+                            ));
+                        });
+                        async move {
+                            let outcome = match decision {
+                                crate::approval::ApprovalDecision::Approved => {
+                                    ParallelToolOutcome::Executed(
+                                        execute_registered_tool(
+                                            tool,
+                                            &context,
+                                            input,
+                                            &id,
+                                            &name,
+                                            tool_timeout,
+                                            progress,
+                                        ).await,
+                                    )
+                                }
+                                crate::approval::ApprovalDecision::Rejected { reason } => {
+                                    ParallelToolOutcome::Rejected(reason)
+                                }
+                            };
+                            (id, name, outcome)
+                        }
+                    });
+                    let executions = futures_util::future::join_all(executions);
+                    tokio::pin!(executions);
+                    let outcomes = loop {
+                        tokio::select! {
+                            biased;
+                            Some((id, name, delta)) = progress_rx.recv() => {
+                                yield AgentEvent::ToolCallOutputDelta { id, name, delta };
+                            }
+                            outcomes = &mut executions => break outcomes,
+                        }
+                    };
+                    while let Ok((id, name, delta)) = progress_rx.try_recv() {
+                        yield AgentEvent::ToolCallOutputDelta { id, name, delta };
+                    }
+                    let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
+                    for (id, name, outcome) in outcomes {
+                        match outcome {
+                            ParallelToolOutcome::Executed(execution) => {
+                                let ToolExecutionOutcome {
+                                    output,
+                                    is_error,
+                                    timed_out_after,
+                                } = execution;
+                                if let Some(timeout) = timed_out_after {
+                                    yield AgentEvent::ToolTimedOut {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        timeout_secs: timeout.as_secs(),
+                                    };
+                                }
+                                yield AgentEvent::ToolCallEnd {
+                                    id: id.clone(),
+                                    name,
+                                    output: output.clone(),
+                                    is_error,
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(id, output).with_error(is_error),
+                                ));
+                            }
+                            ParallelToolOutcome::Rejected(reason) => {
+                                yield AgentEvent::ToolRejected {
+                                    id: id.clone(),
+                                    name,
+                                    reason: reason.clone(),
+                                };
+                                tool_result_blocks.push(UserContentBlock::ToolResult(
+                                    ToolResultBlock::new(id, reason).with_error(true),
+                                ));
+                            }
+                        }
+                    }
+                    messages.push(MessageParam::user_blocks(tool_result_blocks));
                 }
             }
 
@@ -1201,17 +1201,17 @@ async fn execute_registered_tool(
         };
     };
     let result = if let Some(timeout) = timeout {
-        match tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await
+        if let Ok(result) =
+            tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await
         {
-            Ok(result) => result,
-            Err(_) => {
-                warn!(%session_id, %trace_id, %call_id, tool = %name, "tool execution timed out");
-                return ToolExecutionOutcome {
-                    output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
-                    is_error: true,
-                    timed_out_after: Some(timeout),
-                };
-            }
+            result
+        } else {
+            warn!(%session_id, %trace_id, %call_id, tool = %name, "tool execution timed out");
+            return ToolExecutionOutcome {
+                output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
+                is_error: true,
+                timed_out_after: Some(timeout),
+            };
         }
     } else {
         tool.execute_streaming(context, input, progress).await
@@ -1502,11 +1502,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::tool::Tool for SlowTool {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "slow"
         }
 
-        fn description(&self) -> &str {
+        fn description(&self) -> &'static str {
             "waits beyond its deadline"
         }
 

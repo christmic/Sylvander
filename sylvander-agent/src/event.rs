@@ -110,7 +110,7 @@ pub enum AgentEvent {
     /// `Compressed`; consumers that only need telemetry can ignore it.
     HistoryCompacted {
         /// Exact history that the next provider request will receive.
-        /// AgentRun uses this to keep subsequent turns in sync.
+        /// `AgentRun` uses this to keep subsequent turns in sync.
         history: Vec<MessageParam>,
         layers: Vec<LayerReport>,
     },
@@ -139,7 +139,7 @@ pub enum AgentEvent {
         multi_select: bool,
     },
 
-    /// User answered an AskUser question (M18).
+    /// User answered an `AskUser` question (M18).
     UserAnswer {
         call_id: String,
         answer: Vec<String>,

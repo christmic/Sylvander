@@ -150,7 +150,7 @@ impl Default for ExecutionBudget {
     fn default() -> Self {
         // Matches the upstream loop's TOOL_TIMEOUT default.
         Self {
-            timeout: Some(Duration::from_secs(120)),
+            timeout: Some(Duration::from_mins(2)),
             max_retries: 0,
         }
     }
@@ -163,7 +163,7 @@ impl Default for ExecutionBudget {
 /// What the tool is allowed to do / see in this invocation.
 ///
 /// Tools should check `capabilities` before performing the operation
-/// (e.g. WriteTool should refuse if `Cap::Write` is absent).
+/// (e.g. `WriteTool` should refuse if `Cap::Write` is absent).
 #[derive(Debug, Clone, Default)]
 pub struct SurfaceView {
     /// File-system root for this invocation. Tools that touch the
@@ -234,7 +234,7 @@ impl ToolContext {
 /// caller has not supplied one. Kept in their own module so callers
 /// don't have to scroll past struct definitions.
 pub mod defaults {
-    use super::*;
+    use super::{ModelInfo, SessionContext, ToolContext};
     use sylvander_protocol::types::SessionId;
 
     /// Build a placeholder `ToolContext` for system-originated

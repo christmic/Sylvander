@@ -1,4 +1,4 @@
-//! Agent runtime — the bridge between AgentLoop and the outside world.
+//! Agent runtime — the bridge between `AgentLoop` and the outside world.
 //!
 //! [`AgentRun`] is a running agent instance. It is a cheap `Clone` handle
 //! to shared state ([`AgentRunInner`]).
@@ -89,14 +89,14 @@ pub(crate) struct AgentRunInner {
     approval_enabled: bool,
     /// Static approval rules (auto-approve/auto-reject).
     approval_rules: Vec<crate::approval::ApprovalRule>,
-    /// Pending approval requests (shared with BusApprovalGate).
+    /// Pending approval requests (shared with `BusApprovalGate`).
     pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     /// Agent-owned approval memory. Session grants are isolated by session;
     /// persistent grants exist only when the operator configured a store.
     approval_memory: Arc<Mutex<ApprovalMemory>>,
-    /// Pending AskUser answers (shared with BusAskUserGate).
+    /// Pending `AskUser` answers (shared with `BusAskUserGate`).
     pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
-    /// Pending typed plan decisions (shared with BusPlanGate).
+    /// Pending typed plan decisions (shared with `BusPlanGate`).
     pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
     /// Independently cancellable read-only background runs.
     background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
@@ -264,9 +264,9 @@ struct RuntimeModels {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ContextUsage {
-    used_tokens: u32,
-    cache_read_tokens: u32,
-    cache_write_tokens: u32,
+    used: u32,
+    cache_read: u32,
+    cache_write: u32,
 }
 
 impl RuntimeModels {
@@ -549,10 +549,10 @@ impl AgentRun {
         sylvander_protocol::ContextReport {
             model: model.id.clone(),
             context_window: model.context_window,
-            used_tokens: usage.used_tokens,
-            remaining_tokens: model.context_window.saturating_sub(usage.used_tokens),
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_write_tokens,
+            used_tokens: usage.used,
+            remaining_tokens: model.context_window.saturating_sub(usage.used),
+            cache_read_tokens: usage.cache_read,
+            cache_write_tokens: usage.cache_write,
             sources,
         }
     }
@@ -828,13 +828,7 @@ impl AgentRun {
                             .remove(&(msg.session_id.clone(), call_id.clone()));
                         if let Some(request) = request {
                             let decision = if *approved {
-                                if !request.allowed_scopes.contains(scope) {
-                                    crate::approval::ApprovalDecision::Rejected {
-                                        reason: format!(
-                                            "approval scope `{scope:?}` is not permitted"
-                                        ),
-                                    }
-                                } else {
+                                if request.allowed_scopes.contains(scope) {
                                     match self
                                         .inner
                                         .approval_memory
@@ -847,6 +841,12 @@ impl AgentRun {
                                         Err(reason) => {
                                             crate::approval::ApprovalDecision::Rejected { reason }
                                         }
+                                    }
+                                } else {
+                                    crate::approval::ApprovalDecision::Rejected {
+                                        reason: format!(
+                                            "approval scope `{scope:?}` is not permitted"
+                                        ),
                                     }
                                 }
                             } else {
@@ -887,10 +887,9 @@ impl AgentRun {
                         if tasks
                             .get(task_id)
                             .is_some_and(|task| &task.session_id == session_id)
+                            && let Some(task) = tasks.remove(task_id)
                         {
-                            if let Some(task) = tasks.remove(task_id) {
-                                let _ = task.cancel.send(());
-                            }
+                            let _ = task.cancel.send(());
                         }
                     }
                 },
@@ -1083,23 +1082,23 @@ impl ApprovalGate for BusApprovalGate {
 
         // Wait for all decisions (120s timeout each)
         for (index, call_id, rx) in receivers {
-            let decision = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await
+            let decision = if let Ok(Ok(decision)) =
+                tokio::time::timeout(std::time::Duration::from_mins(2), rx).await
             {
-                Ok(Ok(decision)) => decision,
-                _ => {
-                    publish_interaction_timeout(
-                        &self.bus,
-                        &self.session_id,
-                        &self.agent_id,
-                        sylvander_protocol::InteractionTimeoutKind::Approval,
-                        &call_id,
-                        120,
-                        sylvander_protocol::TimeoutRecovery::RetryRequest,
-                    )
-                    .await;
-                    ApprovalDecision::Rejected {
-                        reason: "approval timeout".into(),
-                    }
+                decision
+            } else {
+                publish_interaction_timeout(
+                    &self.bus,
+                    &self.session_id,
+                    &self.agent_id,
+                    sylvander_protocol::InteractionTimeoutKind::Approval,
+                    &call_id,
+                    120,
+                    sylvander_protocol::TimeoutRecovery::RetryRequest,
+                )
+                .await;
+                ApprovalDecision::Rejected {
+                    reason: "approval timeout".into(),
                 }
             };
             decisions[index] = Some(decision);
@@ -1152,8 +1151,10 @@ fn normalize_rejection_reason(reason: Option<&str>) -> String {
     reason
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .map(|reason| reason.chars().take(500).collect())
-        .unwrap_or_else(|| "rejected by user".into())
+        .map_or_else(
+            || "rejected by user".into(),
+            |reason| reason.chars().take(500).collect(),
+        )
 }
 
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
@@ -1243,21 +1244,22 @@ impl AskUserGate for BusAskUserGate {
             .await;
 
         // Wait up to 5 minutes for user reply
-        let answer = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
-            Ok(Ok(answer)) => answer,
-            _ => {
-                publish_interaction_timeout(
-                    &self.bus,
-                    &self.session_id,
-                    &self.agent_id,
-                    sylvander_protocol::InteractionTimeoutKind::Question,
-                    call_id,
-                    300,
-                    sylvander_protocol::TimeoutRecovery::RetryRequest,
-                )
-                .await;
-                Vec::new()
-            }
+        let answer = if let Ok(Ok(answer)) =
+            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+        {
+            answer
+        } else {
+            publish_interaction_timeout(
+                &self.bus,
+                &self.session_id,
+                &self.agent_id,
+                sylvander_protocol::InteractionTimeoutKind::Question,
+                call_id,
+                300,
+                sylvander_protocol::TimeoutRecovery::RetryRequest,
+            )
+            .await;
+            Vec::new()
         };
         self.pending_answers
             .lock()
@@ -1302,22 +1304,23 @@ impl PlanGate for BusPlanGate {
             ))
             .await;
 
-        let decision = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
-            Ok(Ok(decision)) => decision,
-            _ => {
-                publish_interaction_timeout(
-                    &self.bus,
-                    &self.session_id,
-                    &self.agent_id,
-                    sylvander_protocol::InteractionTimeoutKind::Plan,
-                    plan_id,
-                    300,
-                    sylvander_protocol::TimeoutRecovery::RetryRequest,
-                )
-                .await;
-                crate::bus::PlanDecision::Rejected {
-                    reason: "plan review timed out".into(),
-                }
+        let decision = if let Ok(Ok(decision)) =
+            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+        {
+            decision
+        } else {
+            publish_interaction_timeout(
+                &self.bus,
+                &self.session_id,
+                &self.agent_id,
+                sylvander_protocol::InteractionTimeoutKind::Plan,
+                plan_id,
+                300,
+                sylvander_protocol::TimeoutRecovery::RetryRequest,
+            )
+            .await;
+            crate::bus::PlanDecision::Rejected {
+                reason: "plan review timed out".into(),
             }
         };
         self.pending_plans
@@ -1395,7 +1398,7 @@ impl TaskGate for BusTaskGate {
                 prompt,
             )];
             let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
-            let deadline = tokio::time::sleep(std::time::Duration::from_secs(600));
+            let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
             tokio::pin!(deadline);
             loop {
                 let event = tokio::select! {
@@ -1411,7 +1414,7 @@ impl TaskGate for BusTaskGate {
                         )).await;
                         break;
                     }
-                    _ = &mut deadline => {
+                    () = &mut deadline => {
                         publish_interaction_timeout(
                             &bus,
                             &session_id,
@@ -1736,14 +1739,14 @@ impl AgentRunInner {
             "agent_turn",
             agent_id = %self.id,
             session_id = %msg.session_id,
-            turn_id = %correlation.turn_id,
-            request_id = %correlation.request_id,
-            trace_id = %correlation.trace_id,
+            turn_id = %correlation.turn,
+            request_id = %correlation.request,
+            trace_id = %correlation.trace,
         );
         async {
             info!("turn started");
             let result = self
-                .handle_message_with_interrupt(msg, interrupted, &correlation.turn_id)
+                .handle_message_with_interrupt(msg, interrupted, &correlation.turn)
                 .await;
             info!(succeeded = result.is_ok(), "turn finished");
             result
@@ -1762,7 +1765,7 @@ impl AgentRunInner {
         F: std::future::Future,
     {
         let session_id = msg.session_id.clone();
-        let user_message = self.message_to_param(&msg);
+        let user_message = Self::message_to_param(&msg);
         let stored_session = if let Some(store) = &self.session_store {
             store
                 .get(&session_id)
@@ -2098,9 +2101,9 @@ impl AgentRunInner {
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
-                            used_tokens: usage.total_input_tokens(),
-                            cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-                            cache_write_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
+                            used: usage.total_input_tokens(),
+                            cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+                            cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
                         },
                     );
                     let mut input_tokens = u64::from(usage.input_tokens);
@@ -2146,7 +2149,13 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::Compressed { .. } => {}
+                // `BusAskUserGate` publishes the request when it installs the
+                // pending answer. Forwarding the loop event too would stack
+                // two identical TUI modals for one question.
+                crate::event::AgentEvent::Compressed { .. }
+                | crate::event::AgentEvent::AskUser { .. }
+                | crate::event::AgentEvent::PlanProposed { .. }
+                | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::HistoryCompacted { layers, history } => {
                     let persisted = self
                         .apply_compacted_history(&session_id, &history, &layers)
@@ -2179,10 +2188,6 @@ impl AgentRunInner {
                         .await;
                     }
                 }
-                // `BusAskUserGate` publishes the request when it installs the
-                // pending answer. Forwarding the loop event too would stack
-                // two identical TUI modals for one question.
-                crate::event::AgentEvent::AskUser { .. } => {}
                 crate::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
@@ -2190,8 +2195,6 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::PlanProposed { .. }
-                | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::Done(msg) => {
                     final_message = Some(msg);
                 }
@@ -2206,13 +2209,10 @@ impl AgentRunInner {
         if let Some(msg) = final_message {
             let text = msg.text();
             if let Some(store) = &self.session_store {
-                let user_id = self
-                    .sessions
-                    .read()
-                    .await
-                    .get(&session_id)
-                    .map(|context| context.metadata.user_id.clone())
-                    .unwrap_or_else(|| "unix-client".into());
+                let user_id = self.sessions.read().await.get(&session_id).map_or_else(
+                    || "unix-client".into(),
+                    |context| context.metadata.user_id.clone(),
+                );
                 let caller = sylvander_protocol::SessionContext::new(
                     user_id,
                     self.id.clone(),
@@ -2221,8 +2221,8 @@ impl AgentRunInner {
                 let message = sylvander_llm_anthropic::api::types::MessageParam::assistant_blocks(
                     msg.content.clone(),
                 );
-                if let Ok(content) = serde_json::to_value(message) {
-                    if let Err(error) = store
+                if let Ok(content) = serde_json::to_value(message)
+                    && let Err(error) = store
                         .append_message(
                             &caller,
                             &session_id,
@@ -2233,9 +2233,8 @@ impl AgentRunInner {
                             None,
                         )
                         .await
-                    {
-                        warn!(%session_id, %error, "failed to persist assistant message");
-                    }
+                {
+                    warn!(%session_id, %error, "failed to persist assistant message");
                 }
             }
             let mut sessions = self.sessions.write().await;
@@ -2273,10 +2272,7 @@ impl AgentRunInner {
             .await;
     }
 
-    fn message_to_param(
-        &self,
-        msg: &BusMessage,
-    ) -> sylvander_llm_anthropic::api::types::MessageParam {
+    fn message_to_param(msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
         use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
         if msg.attachments.is_empty() {
             return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
@@ -2315,18 +2311,18 @@ impl AgentRunInner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TurnCorrelation {
-    turn_id: String,
-    request_id: String,
-    trace_id: String,
+    turn: String,
+    request: String,
+    trace: String,
 }
 
 impl TurnCorrelation {
     fn new(message: &BusMessage, turn_id: uuid::Uuid) -> Self {
         let turn_id = turn_id.to_string();
         Self {
-            request_id: message.id.0.to_string(),
-            trace_id: turn_id.clone(),
-            turn_id,
+            request: message.id.0.to_string(),
+            trace: turn_id.clone(),
+            turn: turn_id,
         }
     }
 }
@@ -2715,9 +2711,9 @@ mod tests {
 
         let correlation = TurnCorrelation::new(&message, turn_id);
 
-        assert_eq!(correlation.request_id, request_id);
-        assert_eq!(correlation.turn_id, turn_id.to_string());
-        assert_eq!(correlation.trace_id, correlation.turn_id);
+        assert_eq!(correlation.request, request_id);
+        assert_eq!(correlation.turn, turn_id.to_string());
+        assert_eq!(correlation.trace, correlation.turn);
     }
 
     #[test]
@@ -3044,9 +3040,9 @@ mod tests {
         run.inner.context_usage.write().await.insert(
             session_id.clone(),
             ContextUsage {
-                used_tokens: 1_250,
-                cache_read_tokens: 900,
-                cache_write_tokens: 120,
+                used: 1_250,
+                cache_read: 900,
+                cache_write: 120,
             },
         );
 
@@ -3500,12 +3496,6 @@ mod tests {
 
     #[test]
     fn typed_attachments_become_provider_content_blocks() {
-        let bus = Arc::new(InProcessMessageBus::new());
-        let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client)
-            .bus(bus)
-            .build()
-            .expect("build");
         let message = BusMessage::user_chat_with_attachments(
             SessionId::new("s1"),
             "u1",
@@ -3521,7 +3511,7 @@ mod tests {
                 byte_count: 12,
             }],
         );
-        let value = serde_json::to_value(run.inner.message_to_param(&message)).expect("json");
+        let value = serde_json::to_value(AgentRunInner::message_to_param(&message)).expect("json");
         let content = value["content"].as_array().expect("content blocks");
         assert_eq!(content.len(), 2);
         assert!(content[1]["text"].as_str().unwrap().contains("src/main.rs"));
