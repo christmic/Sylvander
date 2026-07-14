@@ -83,6 +83,7 @@ pub struct TelegramChannel {
     last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
     http: reqwest::Client,
     webhook_secret: Option<String>,
+    instance_id: String,
 }
 
 impl TelegramChannel {
@@ -98,6 +99,7 @@ impl TelegramChannel {
             last_bot_msg: Arc::new(RwLock::new(HashMap::new())),
             http: reqwest::Client::new(),
             webhook_secret: None,
+            instance_id: "telegram".into(),
         }
     }
 
@@ -105,6 +107,13 @@ impl TelegramChannel {
     #[must_use]
     pub fn with_webhook_secret(mut self, secret: impl Into<String>) -> Self {
         self.webhook_secret = Some(secret.into());
+        self
+    }
+
+    /// Identify this configured bot instance for session and principal isolation.
+    #[must_use]
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
         self
     }
 
@@ -133,6 +142,7 @@ impl Channel for TelegramChannel {
             ctx,
             agent_id: self.agent_id.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            instance_id: self.instance_id.clone(),
         });
 
         let app = Router::new()
@@ -164,6 +174,7 @@ impl Clone for TelegramChannel {
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            instance_id: self.instance_id.clone(),
         }
     }
 }
@@ -177,6 +188,7 @@ struct AppState {
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
     webhook_secret: Option<String>,
+    instance_id: String,
 }
 
 async fn handle_webhook(
@@ -199,43 +211,35 @@ async fn handle_webhook(
     let chat_id_str = chat_id.to_string();
 
     // Find or create session
-    let session_id = resolve_session(&state.sessions, &chat_id_str, &state.agent_id).await;
+    let session_id = resolve_session(
+        &state.sessions,
+        &state.instance_id,
+        &chat_id_str,
+        &state.agent_id,
+    )
+    .await;
     let sender_name = msg
         .from
         .as_ref()
         .map_or_else(|| "user".into(), |user| user.first_name.clone());
 
-    // Send user message
+    if let Ok(Some(session)) = state.sessions.get(&session_id).await {
+        let _ = state
+            .ctx
+            .bus
+            .publish(BusMessage::system_join_session(
+                state.agent_id.clone(),
+                session_id.clone(),
+                session.metadata,
+            ))
+            .await;
+    }
+
     let bus_msg = BusMessage::user_chat(session_id.clone(), &sender_name, &text);
     if let Err(e) = state.ctx.bus.publish(bus_msg).await {
         warn!(error = %e, "telegram: bus publish failed");
         return Ok("error");
     }
-
-    // Send JoinSession for agent (only first time)
-    let _ = state
-        .ctx
-        .bus
-        .publish(BusMessage {
-            session_id: session_id.clone(),
-            sender: sylvander_agent::bus::Sender::System,
-            recipient: sylvander_agent::bus::Recipient::Agent(state.agent_id.clone()),
-            kind: sylvander_agent::bus::MessageKind::System(
-                sylvander_agent::bus::SystemMessage::JoinSession {
-                    session_id: session_id.clone(),
-                    metadata: SessionMetadata {
-                        workspace: "/tmp".into(),
-                        name: format!("telegram-{chat_id}"),
-                        user_id: sender_name.clone(),
-                    },
-                },
-            ),
-            payload: String::new(),
-            attachments: Vec::new(),
-            timestamp: sylvander_agent::session::now_secs(),
-            id: sylvander_agent::bus::MessageId::new(),
-        })
-        .await;
 
     info!(%chat_id, sender = %sender_name, text, "telegram: message received");
     Ok("ok")
@@ -252,17 +256,18 @@ fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
 
 async fn resolve_session(
     store: &Arc<dyn SessionStore>,
+    instance_id: &str,
     chat_id: &str,
     agent_id: &AgentId,
 ) -> SessionId {
-    if let Some(sid) = find_by_chat_id(store, chat_id).await {
+    if let Some(sid) = find_by_chat_id(store, instance_id, chat_id).await {
         return sid;
     }
     let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
     let meta = SessionMetadata {
         workspace: "/tmp".into(),
         name: format!("telegram-{chat_id}"),
-        user_id: chat_id.into(),
+        user_id: format!("telegram:{instance_id}:{chat_id}"),
     };
     let session_name = meta.name.clone();
     let stored = StoredSession::new(
@@ -272,15 +277,25 @@ async fn resolve_session(
         meta,
         vec![agent_id.clone()],
     )
+    .with_external_meta("channel_instance_id", instance_id)
     .with_external_meta("chat_id", chat_id);
     let _ = store.save(&stored).await;
     sid
 }
 
-async fn find_by_chat_id(store: &Arc<dyn SessionStore>, chat_id: &str) -> Option<SessionId> {
+async fn find_by_chat_id(
+    store: &Arc<dyn SessionStore>,
+    instance_id: &str,
+    chat_id: &str,
+) -> Option<SessionId> {
     let list = store.list_persistent().await.ok()?;
     for s in &list {
-        if s.external_meta.get("chat_id").and_then(|v| v.as_str()) == Some(chat_id) {
+        if s.external_meta
+            .get("channel_instance_id")
+            .and_then(|v| v.as_str())
+            == Some(instance_id)
+            && s.external_meta.get("chat_id").and_then(|v| v.as_str()) == Some(chat_id)
+        {
             return Some(s.id.clone());
         }
     }
@@ -303,7 +318,8 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
             continue;
         };
 
-        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id).await else {
+        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id, &ch.instance_id).await
+        else {
             continue;
         };
 
@@ -343,8 +359,20 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
     }
 }
 
-async fn get_chat_id(store: &Arc<dyn SessionStore>, sid: &SessionId) -> Option<i64> {
+async fn get_chat_id(
+    store: &Arc<dyn SessionStore>,
+    sid: &SessionId,
+    instance_id: &str,
+) -> Option<i64> {
     let session = store.get(sid).await.ok()??;
+    if session
+        .external_meta
+        .get("channel_instance_id")
+        .and_then(|value| value.as_str())
+        != Some(instance_id)
+    {
+        return None;
+    }
     let v = session.external_meta.get("chat_id")?.as_str()?;
     v.parse().ok()
 }
@@ -382,6 +410,7 @@ fn _unused_json(_v: JsonValue) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sylvander_agent::session_store::SqliteSessionStore;
 
     #[test]
     fn webhook_secret_is_required_when_configured() {
@@ -396,5 +425,16 @@ mod tests {
     #[test]
     fn message_split_respects_unicode_character_boundaries() {
         assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
+    }
+
+    #[tokio::test]
+    async fn same_chat_is_isolated_between_bot_instances() {
+        let store: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let agent = AgentId::new("agent-1");
+        let first = resolve_session(&store, "bot-a", "42", &agent).await;
+        let second = resolve_session(&store, "bot-b", "42", &agent).await;
+        assert_ne!(first, second);
+        assert_eq!(find_by_chat_id(&store, "bot-a", "42").await, Some(first));
     }
 }
