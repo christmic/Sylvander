@@ -140,11 +140,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
     ) -> Result<Vec<AgentDescriptor>, sylvander_protocol::BoundaryError> {
         require_principal(boundary, "discover_agents")?;
-        let mut agents = self
-            .agents
-            .values()
-            .filter(|agent| agent_access_allowed(agent, boundary))
-            .map(|agent| AgentDescriptor {
+        let mut agents = Vec::new();
+        for agent in self.agents.values() {
+            if !self
+                .current_agent_access_allowed(&agent.spec.id, boundary, "discover_agents")
+                .await?
+            {
+                continue;
+            }
+            agents.push(AgentDescriptor {
                 id: agent.spec.id.clone(),
                 revision: agent.definition.revision,
                 name: agent.spec.name.clone(),
@@ -181,8 +185,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
                         read_only: workspace.read_only,
                     }
                 }),
-            })
-            .collect::<Vec<_>>();
+            });
+        }
         agents.sort_by(|left, right| left.id.0.cmp(&right.id.0));
         Ok(agents)
     }
@@ -218,7 +222,10 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 format!("unknown Agent {}", request.agent_id),
             )
         })?;
-        if !agent_access_allowed(agent, boundary) {
+        if !self
+            .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
+            .await?
+        {
             return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary,
                 "create_session",
@@ -387,6 +394,19 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "runtime evidence capture is disabled",
             )
         })?;
+        let session_id = store
+            .feedback_session(feedback.run_id.clone(), feedback.turn_id.clone())
+            .await
+            .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?
+            .ok_or_else(|| {
+                boundary_failure(
+                    boundary,
+                    "submit_feedback",
+                    "feedback must identify one attributable session",
+                )
+            })?;
+        self.owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
+            .await?;
         store
             .record_feedback(feedback, sylvander_agent::session::now_secs())
             .await
@@ -395,6 +415,30 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn current_agent_access_allowed(
+        &self,
+        agent_id: &AgentId,
+        boundary: &sylvander_protocol::BoundaryContext,
+        operation: &str,
+    ) -> Result<bool, sylvander_protocol::BoundaryError> {
+        if privileged_principal(boundary) {
+            return Ok(true);
+        }
+        if let Some(registry) = &self.agent_registry {
+            let active = registry
+                .load_active(agent_id)
+                .await
+                .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?;
+            return Ok(active.is_some_and(|revision| {
+                agent_access_allowed(&revision.definition.access, boundary)
+            }));
+        }
+        Ok(self
+            .agents
+            .get(agent_id)
+            .is_some_and(|agent| agent_access_allowed(&agent.definition.access, boundary)))
+    }
+
     async fn bind_session_revision(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -436,10 +480,13 @@ impl RuntimeUiService {
     ) -> Result<(), sylvander_protocol::BoundaryError> {
         require_principal(boundary, ui_operation(message))?;
         if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
-            let agent = self.agents.get(&request.agent_id).ok_or_else(|| {
+            self.agents.get(&request.agent_id).ok_or_else(|| {
                 sylvander_protocol::BoundaryError::forbidden(boundary, "create_session")
             })?;
-            if !agent_access_allowed(agent, boundary) {
+            if !self
+                .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
+                .await?
+            {
                 return Err(sylvander_protocol::BoundaryError::forbidden(
                     boundary,
                     "create_session",
@@ -530,10 +577,25 @@ impl RuntimeUiService {
             .get("channel_id")
             .and_then(|value| value.as_str())
             == Some(boundary.channel_instance_id.as_str());
-        if (!owns_principal || !owns_channel) && !principal.has_role("admin") {
+        if (!owns_principal || !owns_channel) && !privileged_principal(boundary) {
             return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary, operation,
             ));
+        }
+        if session.agents.is_empty() {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary, operation,
+            ));
+        }
+        for agent_id in &session.agents {
+            if !self
+                .current_agent_access_allowed(agent_id, boundary, operation)
+                .await?
+            {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary, operation,
+                ));
+            }
         }
         Ok(session)
     }
@@ -543,26 +605,29 @@ fn sha256_text(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
+fn privileged_principal(boundary: &sylvander_protocol::BoundaryContext) -> bool {
+    boundary.principal.as_ref().is_some_and(|principal| {
+        principal.kind == sylvander_protocol::PrincipalKind::System || principal.has_role("admin")
+    })
+}
+
 fn agent_access_allowed(
-    agent: &ConfiguredAgent,
+    access: &crate::config::AgentAccessConfig,
     boundary: &sylvander_protocol::BoundaryContext,
 ) -> bool {
     let Some(principal) = &boundary.principal else {
         return false;
     };
-    principal.kind == sylvander_protocol::PrincipalKind::System
-        || principal.has_role("admin")
-        || agent.definition.access.allow_authenticated
-        || agent
-            .definition
-            .access
+    privileged_principal(boundary)
+        || access.allow_authenticated
+        || access
             .allowed_principals
             .iter()
             .any(|allowed| allowed == &principal.id.0)
         || principal
             .roles
             .iter()
-            .any(|role| agent.definition.access.allowed_roles.contains(role))
+            .any(|role| access.allowed_roles.contains(role))
 }
 
 fn require_principal<'a>(
@@ -1899,6 +1964,7 @@ model_name = "model-a"
         let mut next_definition = restart_config.agents[0].clone();
         next_definition.revision += 1;
         next_definition.spec.name = "Sylvander revised".into();
+        next_definition.access = crate::config::AgentAccessConfig::default();
         registry
             .update(&restart_config, original_revision, next_definition.clone())
             .await
@@ -1911,6 +1977,84 @@ model_name = "model-a"
             )
             .await
             .unwrap();
+        let owner_denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &sylvander_protocol::UiClientMessage::GetSessionConfig {
+                session_id: created.session_id.0.clone(),
+            },
+        )
+        .await
+        .expect_err("activating a restrictive Agent policy must revoke existing access");
+        assert_eq!(
+            owner_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        assert!(
+            sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &owner)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let direct_denial = sylvander_channel::UiService::session_config(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &created.session_id,
+        )
+        .await
+        .expect_err("direct session reads must enforce the active Agent policy");
+        assert_eq!(
+            direct_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let feedback_denial = sylvander_channel::UiService::submit_feedback(
+            runtime.ui_service.as_ref(),
+            &owner,
+            RunFeedback {
+                run_id: "feedback-auth-run".into(),
+                turn_id: Some("feedback-auth-turn".into()),
+                rating: sylvander_protocol::FeedbackRating::Positive,
+                note: None,
+                tags: Vec::new(),
+            },
+        )
+        .await
+        .expect_err("direct feedback writes must enforce the active Agent policy");
+        assert_eq!(
+            feedback_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+
+        for principal in [
+            sylvander_protocol::AuthenticatedPrincipal {
+                id: sylvander_protocol::PrincipalId::new("operator"),
+                kind: sylvander_protocol::PrincipalKind::User,
+                authentication: sylvander_protocol::AuthenticationMethod::Internal,
+                roles: vec!["admin".into()],
+            },
+            sylvander_protocol::AuthenticatedPrincipal {
+                id: sylvander_protocol::PrincipalId::new("runtime"),
+                kind: sylvander_protocol::PrincipalKind::System,
+                authentication: sylvander_protocol::AuthenticationMethod::Internal,
+                roles: Vec::new(),
+            },
+        ] {
+            let privileged = sylvander_protocol::BoundaryContext::authenticated(
+                principal,
+                "internal-control",
+                "internal",
+                uuid::Uuid::new_v4().to_string(),
+            );
+            sylvander_channel::UiService::authorize_message(
+                runtime.ui_service.as_ref(),
+                &privileged,
+                &sylvander_protocol::UiClientMessage::GetSessionConfig {
+                    session_id: created.session_id.0.clone(),
+                },
+            )
+            .await
+            .expect("admin and system principals retain emergency access");
+        }
         runtime.shutdown().await.unwrap();
         let counts = evidence.counts().await.unwrap();
         assert_eq!(counts.runs, 2);
