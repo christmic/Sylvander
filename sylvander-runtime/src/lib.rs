@@ -603,7 +603,45 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "Agent administration service is unavailable",
             );
         };
-        match AgentAdminService::new(registry, &provider.config)
+        let audit_id = match agent_admin_mutation(&request) {
+            Some((operation, agent_id, revision, expected_active_revision))
+                if is_agent_administrator(boundary.principal.as_ref()) =>
+            {
+                let Some(store) = &self.evidence else {
+                    return agent_admin_error(
+                        AgentAdminErrorCode::StorageUnavailable,
+                        "Agent administration audit is unavailable",
+                    );
+                };
+                let principal = boundary.principal.as_ref().expect("administrator checked");
+                let id = uuid::Uuid::new_v4().to_string();
+                if store
+                    .begin_agent_administration(crate::evidence::AgentAdministrationAudit {
+                        id: id.clone(),
+                        occurred_at: sylvander_agent::session::now_secs(),
+                        request_id: boundary.request_id.clone(),
+                        principal_digest: sha256_text(&principal.id.0),
+                        channel_instance_id: boundary.channel_instance_id.clone(),
+                        operation: operation.into(),
+                        agent_digest: sha256_text(&agent_id.0),
+                        revision,
+                        expected_active_revision,
+                        outcome: "pending".into(),
+                        error_code: None,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return agent_admin_error(
+                        AgentAdminErrorCode::StorageUnavailable,
+                        "Agent administration audit is unavailable",
+                    );
+                }
+                Some(id)
+            }
+            _ => None,
+        };
+        let response = match AgentAdminService::new(registry, &provider.config)
             .dispatch(boundary.principal.as_ref(), request)
             .await
         {
@@ -611,14 +649,12 @@ impl sylvander_channel::UiService for RuntimeUiService {
             AgentAdminDispatch::Update {
                 expected_active_revision,
                 definition,
-            } => {
-                let Ok(configured) = provider.compose_definition(&definition) else {
-                    return agent_admin_error(
-                        AgentAdminErrorCode::InvalidDefinition,
-                        "Agent revision could not be composed",
-                    );
-                };
-                match registry
+            } => match provider.compose_definition(&definition) {
+                Err(_) => agent_admin_error(
+                    AgentAdminErrorCode::InvalidDefinition,
+                    "Agent revision could not be composed",
+                ),
+                Ok(configured) => match registry
                     .update(&provider.config, expected_active_revision, *definition)
                     .await
                 {
@@ -633,24 +669,18 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     Err(error) => AgentAdminResponse::Error {
                         error: map_registry_error(error),
                     },
-                }
-            }
+                },
+            },
             AgentAdminDispatch::Activate {
                 agent_id,
                 revision,
                 expected_active_revision,
-            } => {
-                if provider
-                    .configured_revision(&agent_id, revision)
-                    .await
-                    .is_err()
-                {
-                    return agent_admin_error(
-                        AgentAdminErrorCode::InvalidDefinition,
-                        "Agent revision could not be composed",
-                    );
-                }
-                match registry
+            } => match provider.configured_revision(&agent_id, revision).await {
+                Err(_) => agent_admin_error(
+                    AgentAdminErrorCode::InvalidDefinition,
+                    "Agent revision could not be composed",
+                ),
+                Ok(_) => match registry
                     .activate(&agent_id, revision, expected_active_revision)
                     .await
                 {
@@ -663,24 +693,21 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     Err(error) => AgentAdminResponse::Error {
                         error: map_registry_error(error),
                     },
-                }
-            }
+                },
+            },
             AgentAdminDispatch::Rollback {
                 agent_id,
                 target_revision,
                 expected_active_revision,
-            } => {
-                if provider
-                    .configured_revision(&agent_id, target_revision)
-                    .await
-                    .is_err()
-                {
-                    return agent_admin_error(
-                        AgentAdminErrorCode::InvalidDefinition,
-                        "Agent revision could not be composed",
-                    );
-                }
-                match registry
+            } => match provider
+                .configured_revision(&agent_id, target_revision)
+                .await
+            {
+                Err(_) => agent_admin_error(
+                    AgentAdminErrorCode::InvalidDefinition,
+                    "Agent revision could not be composed",
+                ),
+                Ok(_) => match registry
                     .rollback(&agent_id, target_revision, expected_active_revision)
                     .await
                 {
@@ -693,9 +720,24 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     Err(error) => AgentAdminResponse::Error {
                         error: map_registry_error(error),
                     },
+                },
+            },
+        };
+        if let (Some(id), Some(store)) = (audit_id, self.evidence.as_ref()) {
+            let (outcome, error_code) = match &response {
+                AgentAdminResponse::Success { .. } => ("succeeded", None),
+                AgentAdminResponse::Error { error } => {
+                    ("failed", Some(agent_admin_error_code(error.code)))
                 }
+            };
+            if let Err(error) = store
+                .finish_agent_administration(id, outcome, error_code)
+                .await
+            {
+                warn!(%error, "failed to finish Agent administration audit");
             }
         }
+        response
     }
 }
 
@@ -1014,6 +1056,48 @@ fn agent_admin_error(code: AgentAdminErrorCode, message: impl Into<String>) -> A
             actual_active_revision: None,
         },
     }
+}
+
+fn agent_admin_mutation(request: &AgentAdminRequest) -> Option<(&'static str, &AgentId, u64, u64)> {
+    match request {
+        AgentAdminRequest::UpdateDefinition {
+            expected_active_revision,
+            definition,
+        } => Some((
+            "update_definition",
+            &definition.agent_id,
+            definition.revision,
+            *expected_active_revision,
+        )),
+        AgentAdminRequest::ActivateRevision {
+            agent_id,
+            revision,
+            expected_active_revision,
+        } => Some((
+            "activate_revision",
+            agent_id,
+            *revision,
+            *expected_active_revision,
+        )),
+        AgentAdminRequest::RollbackRevision {
+            agent_id,
+            target_revision,
+            expected_active_revision,
+        } => Some((
+            "rollback_revision",
+            agent_id,
+            *target_revision,
+            *expected_active_revision,
+        )),
+        AgentAdminRequest::InspectRevision { .. } | AgentAdminRequest::ListRevisions { .. } => None,
+    }
+}
+
+fn agent_admin_error_code(code: AgentAdminErrorCode) -> String {
+    serde_json::to_value(code)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "internal".into())
 }
 
 fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
@@ -2673,6 +2757,15 @@ model_name = "model-a"
                     } if *active_revision == next_definition.revision
                 )
         ));
+        let administration_audits = evidence.agent_administration_audits(10).await.unwrap();
+        assert_eq!(administration_audits.len(), 4);
+        assert!(
+            administration_audits
+                .iter()
+                .all(|audit| audit.outcome == "succeeded"
+                    && audit.principal_digest != "operator"
+                    && audit.agent_digest != "assistant")
+        );
         let owner_denial = sylvander_channel::UiService::authorize_message(
             runtime.ui_service.as_ref(),
             &owner,
