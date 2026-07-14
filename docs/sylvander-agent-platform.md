@@ -213,9 +213,9 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A01 | Agent specification | partial | The production runtime loads validated configured Agent definitions, including access, model, prompt, workspace, tools, and MCP declarations. The definition surface still needs the P1/P2 prompt, memory, Skill, and MCP runtimes. |
 | A02 | Agent registry | implemented | SQLite persists immutable, integrity-checked Agent revisions and an optimistic active head. Redacted public administration supports inspect, update, activate, and rollback; the runtime precomposes candidates, hot-loads active revisions, preserves historical execution workers, restores them after restart, and audits mutations. |
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
-| A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. TUI, Unix, and WebSocket selection require a session ID and use optimistic updates; legacy unscoped requests fail closed. |
+| A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | A catalog of model ids exists, but all selections use one `AnthropicClient`; `ModelConfig.provider` does not resolve a provider implementation. |
+| A06 | Model providers | partial | `sylvander-llm-core` defines the provider-neutral request, stream, response, error, usage, capability, and qualified identity contracts. `AnthropicProvider` implements the contract with one-request streaming and redacted failures. Production `AgentLoop` composition still uses its legacy Anthropic backend until the compatibility migration and registry router below are complete. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -310,6 +310,26 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P1.2 Provider and model registry:** provider-neutral client factory,
   capability discovery/validation, per-Agent default, per-session override,
   lifecycle, pricing, and credential references.
+  - [x] Provider-neutral model, conversation, tool/media, stream, error, usage,
+    and capability contracts are independent from public UI protocol types.
+  - [x] Anthropic implements the neutral adapter with no internal retry or
+    fallback, redacted errors, and exactly one terminal completion.
+  - [x] Public and durable session selection is provider-qualified; legacy ids
+    are accepted only when the visible catalog has one exact match.
+  - [ ] Migrate production `AgentLoop` through a compatibility-preserving dual
+    backend; do not invalidate legacy history, compression, events, or builders.
+  - [ ] Extend the existing `sessions.db` Agent registry SSOT with component
+    migrations and immutable Provider/Model/Credential revision tables. Do not
+    create a second registry database.
+  - [ ] Add true SQL compare-and-swap across multiple registry connections,
+    integrity validation, restart migration, lifecycle, pricing, and redacted
+    inspection/administration.
+  - [ ] Route active Provider/Model revisions dynamically while sessions pin
+    definition revisions; credential bindings rotate live by generation and
+    never persist resolved secret values.
+  - [ ] Enable validated cross-provider session overrides and prove same model
+    ids across providers, historical sessions, restart, rotation, and failure
+    isolation with deterministic local providers.
 - [ ] **P1.3 Prompt resolver:** shared safety layers, model/provider profiles,
   Agent prompt, allowed session input, provenance/digests, limits, and tests.
 - [ ] **P1.4 Durable memory:** Agent-namespaced SQLite memory, retrieval/write
