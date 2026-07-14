@@ -93,7 +93,9 @@ impl MessageHandler for ChannelMessageHandler {
                 "dt-{}",
                 &msg.conversation_id[..8.min(msg.conversation_id.len())]
             ),
+            sylvander_protocol::SessionConfigOverrides::default(),
             text,
+            &[],
             external_meta,
         )
         .await

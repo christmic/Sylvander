@@ -231,7 +231,9 @@ async fn handle_webhook(
         existing,
         state.agent_id.clone(),
         format!("telegram-{chat_id}"),
+        sylvander_protocol::SessionConfigOverrides::default(),
         &text,
+        &[],
         external_meta,
     )
     .await

@@ -220,7 +220,9 @@ async fn handle_callback(
         existing,
         state.agent_id.clone(),
         format!("wechat-{}", msg.from_user_name),
+        sylvander_protocol::SessionConfigOverrides::default(),
         &msg.content,
+        &[],
         external_meta,
     )
     .await

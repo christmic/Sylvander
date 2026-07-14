@@ -176,7 +176,9 @@ pub async fn authorize_external_chat(
     existing_session: Option<SessionId>,
     agent_id: AgentId,
     label: String,
+    overrides: SessionConfigOverrides,
     text: &str,
+    attachments: &[sylvander_protocol::MessageAttachment],
     external_meta: BTreeMap<String, String>,
 ) -> Result<SessionId, BoundaryError> {
     let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
@@ -194,7 +196,7 @@ pub async fn authorize_external_chat(
             agent_id,
             label,
             channel_id: Some(boundary.channel_instance_id.clone()),
-            overrides: SessionConfigOverrides::default(),
+            overrides,
         };
         ui.authorize_message(
             boundary,
@@ -227,7 +229,7 @@ pub async fn authorize_external_chat(
         boundary,
         &UiClientMessage::Chat {
             text: text.into(),
-            attachments: Vec::new(),
+            attachments: attachments.to_vec(),
             session_id: Some(session_id.0.clone()),
             workspace: None,
         },
@@ -333,7 +335,9 @@ mod tests {
             None,
             AgentId::new("assistant"),
             "telegram-42".into(),
+            SessionConfigOverrides::default(),
             "hello",
+            &[],
             BTreeMap::new(),
         )
         .await
