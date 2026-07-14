@@ -65,6 +65,20 @@ pub struct EvidenceCounts {
     pub events: u64,
 }
 
+/// A durable, content-free record of a rejected boundary operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationDenial {
+    pub id: String,
+    pub occurred_at: i64,
+    pub request_id: String,
+    pub principal_digest: Option<String>,
+    pub channel_instance_id: String,
+    pub transport: String,
+    pub operation: String,
+    pub code: String,
+    pub resource_digest: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TurnQuery {
     pub session_id: Option<String>,
@@ -271,6 +285,53 @@ impl EvidenceStore {
                 outcomes: count("evidence_outcomes")?,
                 events: count("evidence_events")?,
             })
+        })
+        .await
+    }
+
+    pub async fn record_authorization_denial(
+        &self,
+        denial: AuthorizationDenial,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO authorization_denials(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, code, resource_digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![denial.id, denial.occurred_at, denial.request_id, denial.principal_digest, denial.channel_instance_id, denial.transport, denial.operation, denial.code, denial.resource_digest],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn authorization_denials(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<AuthorizationDenial>, EvidenceError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, code, resource_digest FROM authorization_denials ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map([i64::from(limit.clamp(1, 1000))], |row| {
+                    Ok(AuthorizationDenial {
+                        id: row.get(0)?,
+                        occurred_at: row.get(1)?,
+                        request_id: row.get(2)?,
+                        principal_digest: row.get(3)?,
+                        channel_instance_id: row.get(4)?,
+                        transport: row.get(5)?,
+                        operation: row.get(6)?,
+                        code: row.get(7)?,
+                        resource_digest: row.get(8)?,
+                    })
+                })
+                .map_err(EvidenceError::sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)
         })
         .await
     }
@@ -526,9 +587,16 @@ CREATE TABLE IF NOT EXISTS evidence_feedback (
   note TEXT, tags_json TEXT NOT NULL, recorded_at INTEGER NOT NULL,
   CHECK (rating IN ('positive', 'negative'))
 );
+CREATE TABLE IF NOT EXISTS authorization_denials (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, code TEXT NOT NULL,
+  resource_digest TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_authorization_denials_time ON authorization_denials(occurred_at DESC);
 ";
 
 #[cfg(test)]
@@ -627,6 +695,27 @@ mod tests {
         assert_eq!(turns[0].step_count, 1);
         assert_eq!(turns[0].failed_step_count, 0);
         assert_eq!(turns[0].successful_outcome, Some(true));
+    }
+
+    #[tokio::test]
+    async fn authorization_denials_are_durable_and_content_free() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        let denial = AuthorizationDenial {
+            id: "denial-1".into(),
+            occurred_at: 42,
+            request_id: "request-1".into(),
+            principal_digest: Some("principal-digest".into()),
+            channel_instance_id: "desktop-primary".into(),
+            transport: "websocket".into(),
+            operation: "load_session".into(),
+            code: "forbidden".into(),
+            resource_digest: Some("resource-digest".into()),
+        };
+        store
+            .record_authorization_denial(denial.clone())
+            .await
+            .unwrap();
+        assert_eq!(store.authorization_denials(10).await.unwrap(), vec![denial]);
     }
 
     #[tokio::test]
