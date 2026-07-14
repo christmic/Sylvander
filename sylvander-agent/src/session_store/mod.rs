@@ -194,6 +194,27 @@ pub struct ReplacementMessage {
     pub tool_name: Option<String>,
 }
 
+/// Immutable configuration snapshot associated with one durable turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnConfigSnapshot {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub config_revision: u64,
+    pub effective_config: SessionEffectiveConfig,
+    pub created_at: i64,
+}
+
+/// Inputs atomically persisted when a user turn begins.
+#[derive(Debug, Clone)]
+pub struct TurnStart {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub config_revision: u64,
+    pub effective_config: SessionEffectiveConfig,
+    pub user_content: JsonValue,
+    pub model_id: String,
+}
+
 // ---------------------------------------------------------------------------
 // SessionFilter
 // ---------------------------------------------------------------------------
@@ -233,6 +254,30 @@ pub trait SessionStore: Send + Sync {
 
     /// Save or update a session record (upsert).
     async fn save(&self, session: &StoredSession) -> Result<(), SessionStoreError>;
+
+    /// Replace sparse overrides and their resolved value when the caller's
+    /// revision still matches. Returns the new monotonic revision.
+    async fn update_config(
+        &self,
+        id: &SessionId,
+        expected_revision: u64,
+        overrides: SessionConfigOverrides,
+        effective: SessionEffectiveConfig,
+    ) -> Result<u64, SessionStoreError>;
+
+    /// Persist the user message and immutable effective configuration in one
+    /// transaction before any provider or tool work starts.
+    async fn begin_turn(
+        &self,
+        ctx: &sylvander_protocol::SessionContext,
+        start: TurnStart,
+    ) -> Result<StoredMessage, SessionStoreError>;
+
+    async fn turn_config(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Option<TurnConfigSnapshot>, SessionStoreError>;
 
     /// Soft-delete (sets `is_archived=1`). The row and its messages
     /// remain on disk for audit / undo; `get` returns `None`.
@@ -357,6 +402,8 @@ pub enum SessionStoreError {
     NotFound(SessionId),
     #[error("invalid argument: {0}")]
     Invalid(String),
+    #[error("session configuration revision conflict: expected {expected}, actual {actual}")]
+    ConfigConflict { expected: u64, actual: u64 },
 }
 
 impl From<rusqlite::Error> for SessionStoreError {

@@ -31,7 +31,7 @@ use crate::spec::{AgentId, SessionId};
 
 use super::{
     MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionStore,
-    SessionStoreError, SessionUsage, StoredMessage, StoredSession,
+    SessionStoreError, SessionUsage, StoredMessage, StoredSession, TurnConfigSnapshot, TurnStart,
 };
 
 /// SQLite-backed session store.
@@ -180,6 +180,15 @@ CREATE TABLE IF NOT EXISTS session_usage (
     output_tokens   INTEGER NOT NULL DEFAULT 0,
     cost_nano_usd   INTEGER NOT NULL DEFAULT 0,
     cost_complete   INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS session_turn_configs (
+    session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    turn_id         TEXT NOT NULL,
+    config_revision INTEGER NOT NULL,
+    effective_config TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    PRIMARY KEY (session_id, turn_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_user
@@ -356,6 +365,230 @@ impl SessionStore for SqliteSessionStore {
                 )?;
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn update_config(
+        &self,
+        id: &SessionId,
+        expected_revision: u64,
+        overrides: sylvander_protocol::SessionConfigOverrides,
+        effective: sylvander_protocol::SessionEffectiveConfig,
+    ) -> Result<u64, SessionStoreError> {
+        let id = id.clone();
+        let expected = i64::try_from(expected_revision).map_err(|_| {
+            SessionStoreError::Invalid("expected config revision exceeds SQLite range".into())
+        })?;
+        let next = expected_revision
+            .checked_add(1)
+            .ok_or_else(|| SessionStoreError::Invalid("session config revision overflow".into()))?;
+        let next_sql = i64::try_from(next).map_err(|_| {
+            SessionStoreError::Invalid("new config revision exceeds SQLite range".into())
+        })?;
+        let overrides = serde_json::to_string(&overrides).map_err(|error| {
+            SessionStoreError::Store(format!("serialize session config overrides: {error}"))
+        })?;
+        let effective = serde_json::to_string(&effective).map_err(|error| {
+            SessionStoreError::Store(format!("serialize effective config: {error}"))
+        })?;
+        self.run(move |connection| {
+            let updated = connection.execute(
+                "UPDATE sessions SET config_revision = ?1, config_overrides = ?2, \
+                                     effective_config = ?3, updated_at = ?4 \
+                 WHERE id = ?5 AND is_archived = 0 AND config_revision = ?6",
+                params![
+                    next_sql,
+                    overrides,
+                    effective,
+                    crate::session::now_secs(),
+                    id.0,
+                    expected,
+                ],
+            )?;
+            if updated == 1 {
+                return Ok(next);
+            }
+            let actual: Option<i64> = connection
+                .query_row(
+                    "SELECT config_revision FROM sessions WHERE id = ?1 AND is_archived = 0",
+                    params![id.0],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(actual) = actual else {
+                return Err(SessionStoreError::NotFound(id));
+            };
+            let actual = actual
+                .try_into()
+                .map_err(|_| SessionStoreError::Store("negative session config revision".into()))?;
+            Err(SessionStoreError::ConfigConflict {
+                expected: expected_revision,
+                actual,
+            })
+        })
+        .await
+    }
+
+    async fn begin_turn(
+        &self,
+        ctx: &sylvander_protocol::SessionContext,
+        start: TurnStart,
+    ) -> Result<StoredMessage, SessionStoreError> {
+        if start.turn_id.trim().is_empty() {
+            return Err(SessionStoreError::Invalid("turn id cannot be empty".into()));
+        }
+        let config_revision = i64::try_from(start.config_revision).map_err(|_| {
+            SessionStoreError::Invalid("turn config revision exceeds SQLite range".into())
+        })?;
+        let effective_json = serde_json::to_string(&start.effective_config).map_err(|error| {
+            SessionStoreError::Store(format!("serialize effective config: {error}"))
+        })?;
+        let content_json = serde_json::to_string(&start.user_content)
+            .map_err(|error| SessionStoreError::Store(format!("serialize content: {error}")))?;
+        let user_id = ctx.identity.user_id.0.clone();
+        let agent_id = ctx.identity.agent_id.0.clone();
+        let trace_id = ctx.request.trace_id.clone();
+        let priority = Some(priority_str(&ctx.request.priority));
+        let stored_priority = Some(ctx.request.priority);
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let stored: Option<(i64, Option<String>)> = transaction
+                .query_row(
+                    "SELECT config_revision, effective_config FROM sessions \
+                     WHERE id = ?1 AND is_archived = 0",
+                    params![start.session_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let Some((actual_revision, stored_effective)) = stored else {
+                return Err(SessionStoreError::NotFound(start.session_id));
+            };
+            if actual_revision != config_revision {
+                return Err(SessionStoreError::ConfigConflict {
+                    expected: start.config_revision,
+                    actual: actual_revision.try_into().map_err(|_| {
+                        SessionStoreError::Store("negative session config revision".into())
+                    })?,
+                });
+            }
+            let stored_effective = stored_effective.ok_or_else(|| {
+                SessionStoreError::Invalid("session effective configuration is unresolved".into())
+            })?;
+            let persisted: sylvander_protocol::SessionEffectiveConfig =
+                decode_json(1, &stored_effective).map_err(sqlite_err)?;
+            if persisted != start.effective_config {
+                return Err(SessionStoreError::Invalid(
+                    "turn configuration does not match the persisted session revision".into(),
+                ));
+            }
+
+            let now = crate::session::now_secs();
+            transaction
+                .execute(
+                    "INSERT INTO session_turn_configs \
+                     (session_id, turn_id, config_revision, effective_config, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        start.session_id.0,
+                        start.turn_id,
+                        config_revision,
+                        effective_json,
+                        now,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            let next_seq: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
+                     WHERE session_id = ?1",
+                    params![start.session_id.0],
+                    |row| row.get(0),
+                )
+                .map_err(sqlite_err)?;
+            transaction
+                .execute(
+                    "INSERT INTO session_messages \
+                     (session_id, seq, role, content_json, user_id, agent_id, trace_id, priority, \
+                      model_id, is_summarized, created_at) \
+                     VALUES (?1, ?2, 'user', ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+                    params![
+                        start.session_id.0,
+                        next_seq,
+                        content_json,
+                        user_id,
+                        agent_id,
+                        trace_id,
+                        priority,
+                        start.model_id,
+                        now,
+                    ],
+                )
+                .map_err(sqlite_err)?;
+            let message_id = transaction.last_insert_rowid();
+            transaction
+                .execute(
+                    "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                    params![now, start.session_id.0],
+                )
+                .map_err(sqlite_err)?;
+            transaction.commit().map_err(sqlite_err)?;
+            Ok(StoredMessage {
+                id: message_id,
+                session_id: start.session_id,
+                user_id: user_id.into(),
+                agent_id: AgentId::new(agent_id),
+                trace_id,
+                priority: stored_priority,
+                seq: next_seq.try_into().map_err(|_| {
+                    SessionStoreError::Store("message sequence exceeds u32 range".into())
+                })?,
+                role: MessageRole::User,
+                content: start.user_content,
+                model_id: Some(start.model_id),
+                tool_name: None,
+                parent_msg_id: None,
+                is_summarized: false,
+                created_at: now,
+            })
+        })
+        .await
+    }
+
+    async fn turn_config(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<Option<TurnConfigSnapshot>, SessionStoreError> {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.to_string();
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT config_revision, effective_config, created_at \
+                     FROM session_turn_configs WHERE session_id = ?1 AND turn_id = ?2",
+                    params![session_id.0, turn_id],
+                    |row| {
+                        let config_revision: i64 = row.get(0)?;
+                        let effective: String = row.get(1)?;
+                        Ok(TurnConfigSnapshot {
+                            session_id: session_id.clone(),
+                            turn_id: turn_id.clone(),
+                            config_revision: config_revision.try_into().map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    0,
+                                    Type::Integer,
+                                    Box::new(error),
+                                )
+                            })?,
+                            effective_config: decode_json(1, &effective)?,
+                            created_at: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sqlite_err)
         })
         .await
     }
@@ -1177,6 +1410,80 @@ mod tests {
         assert_eq!(loaded.config_revision, 0);
         assert_eq!(loaded.config_overrides, Default::default());
         assert!(loaded.effective_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let session = make_session("s1", SessionLifetime::Persistent);
+        store.save(&session).await.unwrap();
+        let effective = effective_config();
+        let mut overrides = sylvander_protocol::SessionConfigOverrides::default();
+        overrides.model_id = Some("model-a".into());
+
+        let revision = store
+            .update_config(&session.id, 0, overrides.clone(), effective.clone())
+            .await
+            .unwrap();
+        assert_eq!(revision, 1);
+        let conflict = store
+            .update_config(&session.id, 0, overrides, effective.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            conflict,
+            SessionStoreError::ConfigConflict {
+                expected: 0,
+                actual: 1
+            }
+        ));
+
+        let start = TurnStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-1".into(),
+            config_revision: 1,
+            effective_config: effective.clone(),
+            user_content: serde_json::json!({"role": "user", "content": "hello"}),
+            model_id: "model-a".into(),
+        };
+        let message = store.begin_turn(&ctx(), start.clone()).await.unwrap();
+        assert_eq!(message.seq, 0);
+        let snapshot = store
+            .turn_config(&session.id, "turn-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.config_revision, 1);
+        assert_eq!(snapshot.effective_config, effective);
+
+        assert!(store.begin_turn(&ctx(), start).await.is_err());
+        let stale = TurnStart {
+            session_id: session.id.clone(),
+            turn_id: "turn-stale".into(),
+            config_revision: 0,
+            effective_config: effective_config(),
+            user_content: serde_json::json!({"role": "user", "content": "stale"}),
+            model_id: "model-a".into(),
+        };
+        assert!(matches!(
+            store.begin_turn(&ctx(), stale).await,
+            Err(SessionStoreError::ConfigConflict { .. })
+        ));
+        assert!(
+            store
+                .turn_config(&session.id, "turn-stale")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .read_history(&ctx(), &session.id, false, None)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
