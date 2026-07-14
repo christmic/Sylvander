@@ -34,10 +34,12 @@ pub struct DingTalkOutgoing {
 /// Plain-text content.
 pub type DingTalkTextContent = protocol::TextContent;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, SubscriptionFilter};
@@ -56,11 +58,20 @@ struct ChannelMessageHandler {
     ctx: Arc<ChannelContext>,
     instance_id: String,
     agent_id: AgentId,
+    replay: Arc<ReplayCache>,
 }
 
 #[async_trait]
 impl MessageHandler for ChannelMessageHandler {
     async fn on_message(&self, msg: &RobotMessage, _headers: &FrameHeaders) {
+        if msg.msg_id.is_empty() {
+            warn!("dingtalk: ignored message without a stable id");
+            return;
+        }
+        if !self.replay.claim(&msg.msg_id).await {
+            info!(message_id = %msg.msg_id, "dingtalk: ignored duplicate message");
+            return;
+        }
         let text = msg.text.as_ref().map_or("", |t| t.content.as_str());
         let existing = find_by_conversation_id(
             &self.ctx.sessions,
@@ -130,6 +141,42 @@ impl MessageHandler for ChannelMessageHandler {
         }
 
         info!(%session_id, sender = %msg.sender_staff_id, text, "dingtalk: message");
+    }
+}
+
+struct ReplayCache {
+    entries: Mutex<VecDeque<(String, Instant)>>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl ReplayCache {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            capacity: capacity.max(1),
+            ttl,
+        }
+    }
+
+    async fn claim(&self, message_id: &str) -> bool {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().await;
+        entries.retain(|(_, seen)| now.saturating_duration_since(*seen) < self.ttl);
+        if entries.iter().any(|(existing, _)| existing == message_id) {
+            return false;
+        }
+        while entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back((message_id.into(), now));
+        true
+    }
+}
+
+impl Default for ReplayCache {
+    fn default() -> Self {
+        Self::new(4096, Duration::from_mins(10))
     }
 }
 
@@ -293,6 +340,7 @@ impl Channel for DingTalkChannel {
             ctx,
             instance_id: self.instance_id.clone(),
             agent_id: self.agent_id.clone(),
+            replay: Arc::new(ReplayCache::default()),
         });
         handler.ctx.mark_ready();
         tokio::select! {
@@ -359,6 +407,23 @@ mod tests {
         assert_eq!(
             platform_principal_id("bot-a", "user-a"),
             "dingtalk:bot-a:user-a"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_cache_rejects_duplicates_and_is_bounded_and_expiring() {
+        let cache = ReplayCache::new(2, Duration::from_mins(1));
+        assert!(cache.claim("one").await);
+        assert!(!cache.claim("one").await);
+        assert!(cache.claim("two").await);
+        assert!(cache.claim("three").await);
+        assert!(cache.claim("one").await, "oldest entry must be evicted");
+
+        let expiring = ReplayCache::new(2, Duration::ZERO);
+        assert!(expiring.claim("one").await);
+        assert!(
+            expiring.claim("one").await,
+            "expired entry must be reusable"
         );
     }
 }

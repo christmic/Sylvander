@@ -9,9 +9,10 @@
 //!   -d "url=https://your-host/telegram/webhook"
 //! ```
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::{
@@ -22,7 +23,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
@@ -143,6 +144,7 @@ impl Channel for TelegramChannel {
             agent_id: self.agent_id.clone(),
             webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
+            replay: ReplayCache::default(),
         });
 
         let app = Router::new()
@@ -189,6 +191,43 @@ struct AppState {
     sessions: Arc<dyn SessionStore>,
     webhook_secret: Option<String>,
     instance_id: String,
+    replay: ReplayCache,
+}
+
+struct ReplayCache {
+    entries: Mutex<VecDeque<(String, Instant)>>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl ReplayCache {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            capacity: capacity.max(1),
+            ttl,
+        }
+    }
+
+    async fn claim(&self, message_id: &str) -> bool {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().await;
+        entries.retain(|(_, seen)| now.saturating_duration_since(*seen) < self.ttl);
+        if entries.iter().any(|(existing, _)| existing == message_id) {
+            return false;
+        }
+        while entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back((message_id.into(), now));
+        true
+    }
+}
+
+impl Default for ReplayCache {
+    fn default() -> Self {
+        Self::new(4096, Duration::from_mins(10))
+    }
 }
 
 async fn handle_webhook(
@@ -206,6 +245,11 @@ async fn handle_webhook(
     let Some(text) = msg.text else {
         return Ok("ok");
     };
+    let update_id = update.update_id.to_string();
+    if !state.replay.claim(&update_id).await {
+        info!(%update_id, "telegram: ignored duplicate update");
+        return Ok("ok");
+    }
 
     let chat_id = msg.chat.id;
     let chat_id_str = chat_id.to_string();
@@ -432,5 +476,22 @@ mod tests {
     #[test]
     fn principal_identity_includes_instance_and_chat() {
         assert_eq!(platform_principal_id("bot-a", "42"), "telegram:bot-a:42");
+    }
+
+    #[tokio::test]
+    async fn replay_cache_rejects_duplicates_and_is_bounded_and_expiring() {
+        let cache = ReplayCache::new(2, Duration::from_mins(1));
+        assert!(cache.claim("one").await);
+        assert!(!cache.claim("one").await);
+        assert!(cache.claim("two").await);
+        assert!(cache.claim("three").await);
+        assert!(cache.claim("one").await, "oldest entry must be evicted");
+
+        let expiring = ReplayCache::new(2, Duration::ZERO);
+        assert!(expiring.claim("one").await);
+        assert!(
+            expiring.claim("one").await,
+            "expired entry must be reusable"
+        );
     }
 }
