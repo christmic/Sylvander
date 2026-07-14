@@ -1,8 +1,9 @@
 //! `WeChat` enterprise bot channel — encrypted XML callbacks.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::{
@@ -11,6 +12,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
@@ -81,6 +83,7 @@ impl Channel for WechatChannel {
             crypto: self.crypto.clone(),
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
+            replay: ReplayCache::default(),
         });
 
         let app = Router::new()
@@ -123,6 +126,43 @@ struct AppState {
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
     instance_id: String,
+    replay: ReplayCache,
+}
+
+struct ReplayCache {
+    entries: Mutex<VecDeque<(String, Instant)>>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl ReplayCache {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            capacity: capacity.max(1),
+            ttl,
+        }
+    }
+
+    async fn claim(&self, message_id: &str) -> bool {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().await;
+        entries.retain(|(_, seen)| now.saturating_duration_since(*seen) < self.ttl);
+        if entries.iter().any(|(existing, _)| existing == message_id) {
+            return false;
+        }
+        while entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back((message_id.into(), now));
+        true
+    }
+}
+
+impl Default for ReplayCache {
+    fn default() -> Self {
+        Self::new(4096, Duration::from_mins(10))
+    }
 }
 
 // ===========================================================================
@@ -196,6 +236,14 @@ async fn handle_callback(
             return "success".into();
         }
     };
+    if msg.msg_id.is_empty() {
+        warn!("wechat: ignored message without a stable id");
+        return "success".into();
+    }
+    if !state.replay.claim(&msg.msg_id).await {
+        info!(message_id = %msg.msg_id, "wechat: ignored duplicate message");
+        return "success".into();
+    }
 
     info!(from = %msg.from_user_name, msg_type = %msg.msg_type, "wechat: message");
 
@@ -407,6 +455,23 @@ mod tests {
         assert_eq!(
             platform_principal_id("app-a", "user-a"),
             "wechat:app-a:user-a"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_cache_rejects_duplicates_and_is_bounded_and_expiring() {
+        let cache = ReplayCache::new(2, Duration::from_mins(1));
+        assert!(cache.claim("one").await);
+        assert!(!cache.claim("one").await);
+        assert!(cache.claim("two").await);
+        assert!(cache.claim("three").await);
+        assert!(cache.claim("one").await, "oldest entry must be evicted");
+
+        let expiring = ReplayCache::new(2, Duration::ZERO);
+        assert!(expiring.claim("one").await);
+        assert!(
+            expiring.claim("one").await,
+            "expired entry must be reusable"
         );
     }
 }
