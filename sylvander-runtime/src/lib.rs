@@ -548,6 +548,21 @@ impl RuntimeUiService {
             self.owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
                 .await?;
         }
+        if matches!(
+            message,
+            sylvander_protocol::UiClientMessage::SelectModel {
+                session_id: None,
+                ..
+            } | sylvander_protocol::UiClientMessage::SelectPermissions {
+                session_id: None,
+                ..
+            }
+        ) {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                ui_operation(message),
+            ));
+        }
         if let Some(session_id) = ui_session_id(message) {
             self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
                 .await?;
@@ -740,9 +755,10 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
 fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> {
     use sylvander_protocol::UiClientMessage as Message;
     match message {
-        Message::Chat { session_id, .. } | Message::GetContext { session_id } => {
-            session_id.as_deref()
-        }
+        Message::Chat { session_id, .. }
+        | Message::GetContext { session_id }
+        | Message::SelectModel { session_id, .. }
+        | Message::SelectPermissions { session_id, .. } => session_id.as_deref(),
         Message::Approve { session_id, .. }
         | Message::Answer { session_id, .. }
         | Message::Interrupt { session_id }
@@ -1770,6 +1786,65 @@ model_name = "model-a"
         assert_eq!(stored.effective_config, Some(created.effective));
         assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        let peer = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &owner,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "unmodified peer session".into(),
+                channel_id: Some("tui-local".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let restricted = sylvander_protocol::PermissionProfile {
+            file_access: sylvander_protocol::FileAccess::ReadOnly,
+            network_access: sylvander_protocol::NetworkAccess::Denied,
+            approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+        };
+        let selected = sylvander_channel::UiService::update_session_config(
+            runtime.ui_service.as_ref(),
+            &owner,
+            SessionConfigUpdateRequest {
+                session_id: created.session_id.clone(),
+                expected_revision: created.revision,
+                overrides: SessionConfigOverrides {
+                    model_id: Some("model-a".into()),
+                    permissions: Some(restricted.clone()),
+                    ..SessionConfigOverrides::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(selected.effective.permissions, restricted);
+        let peer_after = sylvander_channel::UiService::session_config(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &peer.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            peer_after, peer,
+            "one session override must not leak to another"
+        );
+        let missing_session = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &sylvander_protocol::UiClientMessage::SelectModel {
+                session_id: None,
+                model: "model-a".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            },
+        )
+        .await
+        .expect_err("legacy selection without session identity must fail closed");
+        assert_eq!(
+            missing_session.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
         let other_terminal = sylvander_protocol::BoundaryContext::authenticated(
             sylvander_protocol::AuthenticatedPrincipal::user(
                 "test-user",
@@ -2016,7 +2091,7 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 7);
+        assert_eq!(denials.len(), 8);
         let authentication_audit = denials
             .iter()
             .find(|denial| denial.operation == "authenticate_bearer_token")

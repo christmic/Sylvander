@@ -109,10 +109,14 @@ pub enum UiClientMessage {
         expected_turn_id: String,
     },
     SelectModel {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         model: String,
         reasoning_effort: ReasoningEffort,
     },
     SelectPermissions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         profile: PermissionProfile,
     },
     Ping,
@@ -391,5 +395,26 @@ mod tests {
                 ..
             } if attachments.is_empty()
         ));
+    }
+
+    #[test]
+    fn legacy_selection_decodes_without_session_but_new_wire_carries_it() {
+        let legacy: UiClientMessage =
+            serde_json::from_str(r#"{"type":"select_model","model":"m","reasoning_effort":"off"}"#)
+                .unwrap();
+        assert!(matches!(
+            legacy,
+            UiClientMessage::SelectModel {
+                session_id: None,
+                ..
+            }
+        ));
+
+        let value = serde_json::to_value(UiClientMessage::SelectPermissions {
+            session_id: Some("session-1".into()),
+            profile: crate::PermissionProfile::default(),
+        })
+        .unwrap();
+        assert_eq!(value["session_id"], "session-1");
     }
 }
