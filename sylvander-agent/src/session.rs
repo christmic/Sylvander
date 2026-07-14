@@ -5,7 +5,7 @@
 //! own isolated history — tool calls from agent A never pollute agent
 //! B's conversation.
 //!
-//! Session persistence (JSONL / SQLite) is deferred to a later phase.
+//! Session persistence (JSONL / `SQLite`) is deferred to a later phase.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
