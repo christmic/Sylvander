@@ -60,6 +60,9 @@ pub enum UiClientMessage {
     UpdateSessionConfig {
         request: crate::SessionConfigUpdateRequest,
     },
+    SubmitFeedback {
+        feedback: crate::RunFeedback,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -285,6 +288,9 @@ pub enum UiServerMessage {
     },
     SessionConfig {
         state: crate::SessionConfigState,
+    },
+    FeedbackRecorded {
+        feedback_id: String,
     },
     RuntimeInfo {
         model: String,

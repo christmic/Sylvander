@@ -839,6 +839,18 @@ async fn handle_client_msg_for_client(
                 operation_error(tx, "update_session_config", "UI service is unavailable");
             }
         }
+        ClientMsg::SubmitFeedback { feedback } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.submit_feedback(feedback).await {
+                    Ok(feedback_id) => {
+                        let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
+                    }
+                    Err(error) => operation_error(tx, "submit_feedback", error),
+                }
+            } else {
+                operation_error(tx, "submit_feedback", "UI service is unavailable");
+            }
+        }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
                 "unix-client",
@@ -1433,6 +1445,13 @@ mod tests {
         ) -> Result<sylvander_protocol::SessionConfigState, String> {
             Err("missing session".into())
         }
+
+        async fn submit_feedback(
+            &self,
+            _feedback: sylvander_protocol::RunFeedback,
+        ) -> Result<String, String> {
+            Ok("feedback-1".into())
+        }
     }
 
     fn socket_path() -> PathBuf {
@@ -1575,6 +1594,28 @@ mod tests {
         assert!(matches!(
             rx.recv().await.expect("discovery response"),
             ServerMsg::AgentsDiscovered { agents } if agents.is_empty()
+        ));
+
+        handle_client_msg(
+            ClientMsg::SubmitFeedback {
+                feedback: sylvander_protocol::RunFeedback {
+                    run_id: "run-1".into(),
+                    turn_id: None,
+                    rating: sylvander_protocol::FeedbackRating::Positive,
+                    note: None,
+                    tags: Vec::new(),
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            rx.recv().await.expect("feedback response"),
+            ServerMsg::FeedbackRecorded { feedback_id } if feedback_id == "feedback-1"
         ));
     }
 

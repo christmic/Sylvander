@@ -563,6 +563,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::IterationStart { .. }
         | ServerMsg::AgentsDiscovered { .. }
         | ServerMsg::SessionConfig { .. }
+        | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::Pong => return None,
     })
 }
