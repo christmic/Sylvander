@@ -189,6 +189,13 @@ async fn handle_client_msg(
         "websocket",
         uuid::Uuid::new_v4().to_string(),
     );
+    if !matches!(msg, ClientMsg::Hello { .. })
+        && let Some(ui) = &ctx.ui
+        && let Err(error) = ui.authorize_message(&boundary, &msg).await
+    {
+        operation_error(tx, &error.operation, error.to_string());
+        return;
+    }
     match msg {
         ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
         {

@@ -186,9 +186,10 @@ impl Channel for UnixChannel {
                 }
             };
             let principal = sylvander_protocol::AuthenticatedPrincipal::user(
-                format!("unix:uid:{}", peer.uid()),
+                "unix-client",
                 sylvander_protocol::AuthenticationMethod::UnixPeer,
             );
+            info!(uid = peer.uid(), "unix: authenticated local socket owner");
 
             let (read, mut write) = stream.into_split();
             let mut reader = BufReader::new(read).lines();
@@ -434,6 +435,17 @@ async fn handle_client_msg_for_client(
     hub: &Arc<Mutex<RelayHub>>,
     client_id: u64,
 ) {
+    if let Some(ui) = &ctx.ui
+        && let Err(error) = ui.authorize_message(boundary, &msg).await
+    {
+        operation_error(tx, &error.operation, error.to_string());
+        return;
+    }
+    let principal_id = boundary
+        .principal
+        .as_ref()
+        .map(|principal| principal.id.0.as_str())
+        .unwrap_or("__unauthenticated__");
     match msg {
         ClientMsg::Hello { .. } => {}
         ClientMsg::Chat {
@@ -501,7 +513,7 @@ async fn handle_client_msg_for_client(
                         metadata: sylvander_agent::session::SessionMetadata {
                             workspace,
                             name: session_name,
-                            user_id: "unix-client".into(),
+                            user_id: principal_id.into(),
                         },
                     }),
                     payload: String::new(),
@@ -516,7 +528,7 @@ async fn handle_client_msg_for_client(
                 .bus
                 .publish(BusMessage::user_chat_with_attachments(
                     sid.clone(),
-                    "unix-client",
+                    principal_id,
                     &text,
                     attachments,
                 ))
@@ -923,7 +935,7 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
-                "unix-client",
+                principal_id,
                 agent_id.clone(),
                 "__session_list__",
             );
@@ -965,7 +977,7 @@ async fn handle_client_msg_for_client(
                 _ => unreachable!(),
             };
             let session_id = SessionId::new(session_id);
-            let caller = unix_session_context(agent_id, session_id.clone());
+            let caller = unix_session_context(principal_id, agent_id, session_id.clone());
             match ctx.sessions.get(&session_id).await {
                 Ok(Some(session)) => match ctx
                     .sessions
@@ -1112,7 +1124,7 @@ async fn handle_client_msg_for_client(
                 return;
             }
             let source_id = SessionId::new(session_id);
-            let caller = unix_session_context(agent_id, source_id.clone());
+            let caller = unix_session_context(principal_id, agent_id, source_id.clone());
             match ctx.sessions.get(&source_id).await {
                 Ok(Some(source)) => {
                     let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -1166,7 +1178,7 @@ async fn handle_client_msg_for_client(
                         warn!(%error, "unix: failed to save forked session");
                         return;
                     }
-                    let fork_caller = unix_session_context(agent_id, fork_id.clone());
+                    let fork_caller = unix_session_context(principal_id, agent_id, fork_id.clone());
                     for message in &history {
                         if let Err(error) = ctx
                             .sessions
@@ -1435,10 +1447,11 @@ async fn handle_client_msg_for_client(
 }
 
 fn unix_session_context(
+    principal_id: &str,
     agent_id: &AgentId,
     session_id: SessionId,
 ) -> sylvander_protocol::SessionContext {
-    sylvander_protocol::SessionContext::new("unix-client", agent_id.clone(), session_id)
+    sylvander_protocol::SessionContext::new(principal_id, agent_id.clone(), session_id)
 }
 
 fn session_info(session: sylvander_agent::session_store::StoredSession) -> SessionInfo {
@@ -1498,6 +1511,14 @@ mod tests {
 
     #[async_trait]
     impl sylvander_channel::UiService for EmptyUiService {
+        async fn authorize_message(
+            &self,
+            _boundary: &sylvander_protocol::BoundaryContext,
+            _message: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            Ok(())
+        }
+
         async fn discover_agents(
             &self,
             _boundary: &sylvander_protocol::BoundaryContext,
@@ -1930,7 +1951,7 @@ mod tests {
             ))
             .await
             .expect("save");
-        let caller = unix_session_context(&agent_id, session_id.clone());
+        let caller = unix_session_context("unix-client", &agent_id, session_id.clone());
         store
             .append_message(
                 &caller,

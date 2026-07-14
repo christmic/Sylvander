@@ -107,6 +107,19 @@ struct RuntimeUiService {
 
 #[async_trait::async_trait]
 impl sylvander_channel::UiService for RuntimeUiService {
+    async fn authorize_message(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        message: &sylvander_protocol::UiClientMessage,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        require_principal(boundary, ui_operation(message))?;
+        if let Some(session_id) = ui_session_id(message) {
+            self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn discover_agents(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -399,6 +412,67 @@ fn boundary_failure(
         request_id: boundary.request_id.clone(),
         message: message.into(),
         retry_after_ms: None,
+    }
+}
+
+fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
+    use sylvander_protocol::UiClientMessage as Message;
+    match message {
+        Message::Hello { .. } => "hello",
+        Message::Chat { .. } => "chat",
+        Message::Approve { .. } => "approve",
+        Message::Answer { .. } => "answer",
+        Message::Interrupt { .. } => "interrupt",
+        Message::ResolvePlan { .. } => "resolve_plan",
+        Message::CancelTask { .. } => "cancel_task",
+        Message::DiscoverAgents => "discover_agents",
+        Message::CreateSession { .. } => "create_session",
+        Message::GetSessionConfig { .. } => "get_session_config",
+        Message::UpdateSessionConfig { .. } => "update_session_config",
+        Message::SubmitFeedback { .. } => "submit_feedback",
+        Message::ListSessions => "list_sessions",
+        Message::LoadSession { .. } => "load_session",
+        Message::ReattachSession { .. } => "reattach_session",
+        Message::RenameSession { .. } => "rename_session",
+        Message::ArchiveSession { .. } => "archive_session",
+        Message::RestoreSession { .. } => "restore_session",
+        Message::DeleteSession { .. } => "delete_session",
+        Message::ForkSession { .. } => "fork_session",
+        Message::GetRuntimeInfo => "get_runtime_info",
+        Message::GetContext { .. } => "get_context",
+        Message::Compact { .. } => "compact",
+        Message::PreviewWorkspaceRollback { .. } => "preview_workspace_rollback",
+        Message::RollbackWorkspace { .. } => "rollback_workspace",
+        Message::SelectModel { .. } => "select_model",
+        Message::SelectPermissions { .. } => "select_permissions",
+        Message::Ping => "ping",
+    }
+}
+
+fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> {
+    use sylvander_protocol::UiClientMessage as Message;
+    match message {
+        Message::Chat { session_id, .. } | Message::GetContext { session_id } => {
+            session_id.as_deref()
+        }
+        Message::Approve { session_id, .. }
+        | Message::Answer { session_id, .. }
+        | Message::Interrupt { session_id }
+        | Message::ResolvePlan { session_id, .. }
+        | Message::CancelTask { session_id, .. }
+        | Message::GetSessionConfig { session_id }
+        | Message::LoadSession { session_id }
+        | Message::ReattachSession { session_id }
+        | Message::RenameSession { session_id, .. }
+        | Message::ArchiveSession { session_id }
+        | Message::RestoreSession { session_id }
+        | Message::DeleteSession { session_id }
+        | Message::ForkSession { session_id, .. }
+        | Message::Compact { session_id }
+        | Message::PreviewWorkspaceRollback { session_id }
+        | Message::RollbackWorkspace { session_id, .. } => Some(session_id),
+        Message::UpdateSessionConfig { request } => Some(&request.session_id.0),
+        _ => None,
     }
 }
 
@@ -1358,6 +1432,38 @@ model_name = "model-a"
         assert_eq!(
             denial.code,
             sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let chat_denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &stranger,
+            &sylvander_protocol::UiClientMessage::Chat {
+                text: "cross-session attempt".into(),
+                attachments: Vec::new(),
+                session_id: Some(created.session_id.0.clone()),
+                workspace: None,
+            },
+        )
+        .await
+        .expect_err("message dispatch must enforce the same ownership boundary");
+        assert_eq!(
+            chat_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let unauthenticated = sylvander_protocol::BoundaryContext::unauthenticated(
+            "websocket",
+            "websocket",
+            "request-ping",
+        );
+        let denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &unauthenticated,
+            &sylvander_protocol::UiClientMessage::Ping,
+        )
+        .await
+        .expect_err("an unauthenticated transport must fail closed");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Unauthenticated
         );
         assert!(
             runtime
