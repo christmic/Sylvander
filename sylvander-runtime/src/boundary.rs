@@ -13,7 +13,7 @@ use crate::config::BoundarySettings;
 #[derive(Clone)]
 pub(crate) struct BoundaryGuard {
     settings: BoundarySettings,
-    windows: Arc<Mutex<HashMap<String, RateWindow>>>,
+    rate_state: Arc<Mutex<RateState>>,
 }
 
 struct RateWindow {
@@ -21,11 +21,22 @@ struct RateWindow {
     requests: u32,
 }
 
+struct RateState {
+    windows: HashMap<String, RateWindow>,
+    last_cleanup: Instant,
+}
+
+const RATE_WINDOW: Duration = Duration::from_mins(1);
+const CLEANUP_INTERVAL: Duration = Duration::from_mins(1);
+
 impl BoundaryGuard {
     pub(crate) fn new(settings: BoundarySettings) -> Self {
         Self {
             settings,
-            windows: Arc::new(Mutex::new(HashMap::new())),
+            rate_state: Arc::new(Mutex::new(RateState {
+                windows: HashMap::new(),
+                last_cleanup: Instant::now(),
+            })),
         }
     }
 
@@ -61,18 +72,24 @@ impl BoundaryGuard {
             .map_or("__unauthenticated__", |principal| principal.id.0.as_str());
         let key = format!("{}\0{principal}", boundary.channel_instance_id);
         let now = Instant::now();
-        let mut windows = self.windows.lock().await;
-        let window = windows.entry(key).or_insert(RateWindow {
+        let mut rate_state = self.rate_state.lock().await;
+        if now.saturating_duration_since(rate_state.last_cleanup) >= CLEANUP_INTERVAL {
+            rate_state
+                .windows
+                .retain(|_, window| now.saturating_duration_since(window.started) < RATE_WINDOW);
+            rate_state.last_cleanup = now;
+        }
+        let window = rate_state.windows.entry(key).or_insert(RateWindow {
             started: now,
             requests: 0,
         });
         let elapsed = now.saturating_duration_since(window.started);
-        if elapsed >= Duration::from_mins(1) {
+        if elapsed >= RATE_WINDOW {
             window.started = now;
             window.requests = 0;
         }
         if window.requests >= self.settings.requests_per_minute {
-            let retry_after = Duration::from_mins(1).saturating_sub(elapsed);
+            let retry_after = RATE_WINDOW.saturating_sub(elapsed);
             return Err(BoundaryError {
                 code: BoundaryErrorCode::RateLimited,
                 operation: operation.into(),
@@ -130,5 +147,40 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.code, BoundaryErrorCode::PayloadTooLarge);
+    }
+
+    #[tokio::test]
+    async fn expired_rate_keys_are_cleaned_periodically() {
+        let guard = BoundaryGuard::new(BoundarySettings::default());
+        let now = Instant::now();
+        {
+            let mut state = guard.rate_state.lock().await;
+            state.windows.insert(
+                "expired".into(),
+                RateWindow {
+                    started: now
+                        .checked_sub(RATE_WINDOW + Duration::from_secs(1))
+                        .unwrap(),
+                    requests: 1,
+                },
+            );
+            state.windows.insert(
+                "fresh".into(),
+                RateWindow {
+                    started: now,
+                    requests: 1,
+                },
+            );
+            state.last_cleanup = now.checked_sub(CLEANUP_INTERVAL).unwrap();
+        }
+
+        guard
+            .check(&boundary("cleanup"), &UiClientMessage::Ping, "ping")
+            .await
+            .unwrap();
+        let state = guard.rate_state.lock().await;
+        assert!(!state.windows.contains_key("expired"));
+        assert!(state.windows.contains_key("fresh"));
+        assert_eq!(state.windows.len(), 2);
     }
 }
