@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,11 +14,20 @@ use sylvander_agent::prelude::{
     AgentRun, AgentSpec, InProcessMessageBus, MessageBus, MessageKind, ModelCapabilities,
     StreamEvent, SubscriptionFilter, ToolRegistry,
 };
-use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
+use sylvander_agent::session_store::{
+    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+};
 use sylvander_agent::tools::{AskUserTool, WriteTool};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, UiService};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_protocol::{
+    AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
+    FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
+    SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
+    SessionMetadata, UiClientMessage,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -123,6 +132,335 @@ struct RuntimeHarness {
     channel_task: tokio::task::JoinHandle<()>,
 }
 
+/// Test-only implementation of the same fail-closed UI boundary required by
+/// production channels. It authenticates every operation, binds sessions to
+/// the Unix principal and channel instance, and joins the exact durable
+/// session to the real `AgentRun` before chat can be published.
+struct HarnessUiService {
+    bus: Arc<InProcessMessageBus>,
+    sessions: Arc<dyn SessionStore>,
+    agent_id: AgentId,
+    approval_enabled: bool,
+    next_session: AtomicUsize,
+}
+
+impl HarnessUiService {
+    fn denial(
+        boundary: &BoundaryContext,
+        code: BoundaryErrorCode,
+        operation: &str,
+        message: &str,
+    ) -> BoundaryError {
+        BoundaryError {
+            code,
+            operation: operation.into(),
+            request_id: boundary.request_id.clone(),
+            message: message.into(),
+            retry_after_ms: None,
+        }
+    }
+
+    fn principal<'a>(
+        boundary: &'a BoundaryContext,
+        operation: &str,
+    ) -> Result<&'a str, BoundaryError> {
+        boundary
+            .principal
+            .as_ref()
+            .map(|principal| principal.id.0.as_str())
+            .ok_or_else(|| BoundaryError::unauthenticated(boundary, operation))
+    }
+
+    async fn require_owner(
+        &self,
+        boundary: &BoundaryContext,
+        session_id: &str,
+        operation: &str,
+    ) -> Result<(), BoundaryError> {
+        let principal = Self::principal(boundary, operation)?;
+        let session = self
+            .sessions
+            .get(&SessionId::new(session_id))
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    operation,
+                    &error.to_string(),
+                )
+            })?
+            .ok_or_else(|| BoundaryError::forbidden(boundary, operation))?;
+        if session.metadata.user_id != principal {
+            return Err(BoundaryError::forbidden(boundary, operation));
+        }
+        Ok(())
+    }
+
+    fn effective_config(&self, request: &SessionCreateRequest) -> SessionEffectiveConfig {
+        let source = || SessionConfigSource {
+            kind: SessionConfigSourceKind::AgentDefault,
+            reference: Some("real-runtime-test".into()),
+        };
+        SessionEffectiveConfig {
+            agent_id: request.agent_id.clone(),
+            agent_revision: 0,
+            provider_id: "test-provider".into(),
+            model_id: request
+                .overrides
+                .model_id
+                .clone()
+                .unwrap_or_else(|| "sylvander-test-model".into()),
+            reasoning_effort: request
+                .overrides
+                .reasoning_effort
+                .unwrap_or(ReasoningEffort::Off),
+            permissions: request
+                .overrides
+                .permissions
+                .clone()
+                .unwrap_or(PermissionProfile {
+                    file_access: FileAccess::WorkspaceWrite,
+                    network_access: NetworkAccess::Denied,
+                    approval_policy: if self.approval_enabled {
+                        sylvander_protocol::ApprovalPolicy::Ask
+                    } else {
+                        sylvander_protocol::ApprovalPolicy::Allow
+                    },
+                }),
+            prompt_profile: request.overrides.prompt_profile.clone(),
+            system_prompt_sha256: "0".repeat(64),
+            agent_workspace: None,
+            user_workspace: request.overrides.user_workspace.clone(),
+            execution_target: request
+                .overrides
+                .execution_target
+                .clone()
+                .unwrap_or_else(|| "local".into()),
+            provenance: SessionConfigProvenance {
+                model: source(),
+                reasoning_effort: source(),
+                permissions: source(),
+                prompt_profile: source(),
+                system_prompt: source(),
+                agent_workspace: source(),
+                user_workspace: source(),
+                execution_target: source(),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl UiService for HarnessUiService {
+    async fn authorize_message(
+        &self,
+        boundary: &BoundaryContext,
+        message: &UiClientMessage,
+    ) -> Result<(), BoundaryError> {
+        Self::principal(boundary, "test_ui_operation")?;
+        let payload_bytes = serde_json::to_vec(message)
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "test_ui_operation",
+                    &error.to_string(),
+                )
+            })?
+            .len();
+        if payload_bytes > 1024 * 1024 {
+            return Err(Self::denial(
+                boundary,
+                BoundaryErrorCode::PayloadTooLarge,
+                "test_ui_operation",
+                "request exceeds the test boundary payload limit",
+            ));
+        }
+
+        if let UiClientMessage::CreateSession { request } = message
+            && (request.agent_id != self.agent_id
+                || request
+                    .channel_id
+                    .as_deref()
+                    .is_some_and(|channel| channel != boundary.channel_instance_id))
+        {
+            return Err(BoundaryError::forbidden(boundary, "create_session"));
+        }
+        if let Some(session_id) = ui_message_session_id(message) {
+            self.require_owner(boundary, session_id, "session_operation")
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn discover_agents(
+        &self,
+        boundary: &BoundaryContext,
+    ) -> Result<Vec<AgentDescriptor>, BoundaryError> {
+        Self::principal(boundary, "discover_agents")?;
+        Ok(Vec::new())
+    }
+
+    async fn create_session(
+        &self,
+        boundary: &BoundaryContext,
+        request: SessionCreateRequest,
+    ) -> Result<SessionConfigState, BoundaryError> {
+        let principal = Self::principal(boundary, "create_session")?;
+        if request.agent_id != self.agent_id
+            || request.label.trim().is_empty()
+            || request.label.len() > 200
+        {
+            return Err(BoundaryError::forbidden(boundary, "create_session"));
+        }
+        let effective = self.effective_config(&request);
+        let session_id = SessionId::new(format!(
+            "real-runtime-{}",
+            self.next_session.fetch_add(1, Ordering::SeqCst)
+        ));
+        let metadata = SessionMetadata {
+            workspace: effective.user_workspace.as_ref().map_or_else(
+                || std::path::PathBuf::from("."),
+                |binding| binding.path.clone(),
+            ),
+            name: request.label.clone(),
+            user_id: principal.into(),
+        };
+        let mut stored = StoredSession::new(
+            session_id.clone(),
+            request.label,
+            SessionLifetime::Persistent,
+            metadata.clone(),
+            vec![request.agent_id.clone()],
+        );
+        stored.config_overrides = request.overrides.clone();
+        stored.effective_config = Some(effective.clone());
+        stored.external_meta.insert(
+            "channel_id".into(),
+            serde_json::Value::String(boundary.channel_instance_id.clone()),
+        );
+        self.sessions.save(&stored).await.map_err(|error| {
+            Self::denial(
+                boundary,
+                BoundaryErrorCode::InvalidScope,
+                "create_session",
+                &error.to_string(),
+            )
+        })?;
+        self.bus
+            .publish(BusMessage::system_join_session(
+                request.agent_id,
+                session_id.clone(),
+                metadata,
+            ))
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "create_session",
+                    &error.to_string(),
+                )
+            })?;
+        Ok(SessionConfigState {
+            session_id,
+            revision: 0,
+            overrides: request.overrides,
+            effective,
+        })
+    }
+
+    async fn session_config(
+        &self,
+        boundary: &BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<SessionConfigState, BoundaryError> {
+        self.require_owner(boundary, &session_id.0, "get_session_config")
+            .await?;
+        let session = self
+            .sessions
+            .get(session_id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| BoundaryError::forbidden(boundary, "get_session_config"))?;
+        let effective = session.effective_config.ok_or_else(|| {
+            Self::denial(
+                boundary,
+                BoundaryErrorCode::InvalidScope,
+                "get_session_config",
+                "session configuration is unavailable",
+            )
+        })?;
+        Ok(SessionConfigState {
+            session_id: session.id,
+            revision: session.config_revision,
+            overrides: session.config_overrides,
+            effective,
+        })
+    }
+
+    async fn update_session_config(
+        &self,
+        boundary: &BoundaryContext,
+        request: SessionConfigUpdateRequest,
+    ) -> Result<SessionConfigState, BoundaryError> {
+        self.require_owner(boundary, &request.session_id.0, "update_session_config")
+            .await?;
+        Err(Self::denial(
+            boundary,
+            BoundaryErrorCode::InvalidScope,
+            "update_session_config",
+            "the test harness does not mutate session configuration",
+        ))
+    }
+
+    async fn submit_feedback(
+        &self,
+        boundary: &BoundaryContext,
+        _feedback: RunFeedback,
+    ) -> Result<String, BoundaryError> {
+        Self::principal(boundary, "submit_feedback")?;
+        Err(Self::denial(
+            boundary,
+            BoundaryErrorCode::InvalidScope,
+            "submit_feedback",
+            "the test harness does not persist feedback",
+        ))
+    }
+}
+
+fn ui_message_session_id(message: &UiClientMessage) -> Option<&str> {
+    match message {
+        UiClientMessage::Chat {
+            session_id: Some(session_id),
+            ..
+        }
+        | UiClientMessage::GetContext {
+            session_id: Some(session_id),
+        }
+        | UiClientMessage::Approve { session_id, .. }
+        | UiClientMessage::Answer { session_id, .. }
+        | UiClientMessage::Interrupt { session_id }
+        | UiClientMessage::ResolvePlan { session_id, .. }
+        | UiClientMessage::CancelTask { session_id, .. }
+        | UiClientMessage::GetSessionConfig { session_id }
+        | UiClientMessage::LoadSession { session_id }
+        | UiClientMessage::ReattachSession { session_id }
+        | UiClientMessage::RenameSession { session_id, .. }
+        | UiClientMessage::ArchiveSession { session_id }
+        | UiClientMessage::RestoreSession { session_id }
+        | UiClientMessage::DeleteSession { session_id }
+        | UiClientMessage::ForkSession { session_id, .. }
+        | UiClientMessage::Compact { session_id }
+        | UiClientMessage::PreviewWorkspaceRollback { session_id }
+        | UiClientMessage::RollbackWorkspace { session_id, .. } => Some(session_id),
+        UiClientMessage::UpdateSessionConfig { request } => Some(&request.session_id.0),
+        _ => None,
+    }
+}
+
 impl RuntimeHarness {
     fn shutdown(self) {
         self.channel_task.abort();
@@ -169,7 +507,7 @@ async fn start_runtime(
         sylvander_protocol::ApprovalPolicy::Allow
     };
     let channel = Arc::new(
-        UnixChannel::new(socket_path, agent_id)
+        UnixChannel::new(socket_path, agent_id.clone())
             .with_runtime_info(RuntimeInfo {
                 model: "sylvander-test-model".into(),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
@@ -186,10 +524,17 @@ async fn start_runtime(
             })
             .with_runtime_control(runtime_control),
     );
+    let ui: Arc<dyn UiService> = Arc::new(HarnessUiService {
+        bus: bus.clone(),
+        sessions: store.clone(),
+        agent_id: agent_id.clone(),
+        approval_enabled,
+        next_session: AtomicUsize::new(1),
+    });
     let channel_task = tokio::spawn(channel.run(ChannelContext {
         bus: bus.clone(),
         sessions: store,
-        ui: None,
+        ui: Some(ui),
         readiness: None,
     }));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -317,7 +662,9 @@ fn run_tui_with_exit(
             "What should we work through?",
             Duration::from_secs(4)
         ),
-        "TUI welcome did not render"
+        "TUI welcome did not render; child_status={:?}; output={}",
+        child.try_wait().expect("poll failed TUI child"),
+        String::from_utf8_lossy(&captured.lock().expect("lock failed welcome output"))
     );
     interact(&mut writer, &captured);
     if disconnect {
@@ -655,6 +1002,22 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
     // boundary so the replay session is deterministically newer than alpha and
     // beta instead of relying on an unstable tie between three `0s ago` rows.
     tokio::time::sleep(Duration::from_millis(1_100)).await;
+    let mut gamma_messages = runtime
+        .bus
+        .subscribe(SubscriptionFilter::all())
+        .await
+        .expect("subscribe gamma publication observer");
+    let gamma_published = Arc::new(AtomicBool::new(false));
+    let observed_gamma = Arc::clone(&gamma_published);
+    let gamma_observer = tokio::spawn(async move {
+        while let Some(message) = gamma_messages.recv().await {
+            if matches!(message.kind, MessageKind::Chat) && message.payload.contains("client gamma")
+            {
+                observed_gamma.store(true, Ordering::SeqCst);
+                break;
+            }
+        }
+    });
     disconnect_tui(&socket_path, |writer, captured| {
         submit(writer, b"replay client gamma\r");
         assert!(wait_for_output(
@@ -662,7 +1025,18 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
             "esc interrupt",
             Duration::from_secs(3)
         ));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !gamma_published.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            gamma_published.load(Ordering::SeqCst),
+            "gamma chat did not cross the authenticated Unix boundary"
+        );
     });
+    gamma_observer
+        .await
+        .expect("join gamma publication observer");
     let replayed = run_tui(&socket_path, |writer, captured| {
         submit(writer, b"\x10");
         if !wait_for_output(
@@ -698,21 +1072,28 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
         .await
         .expect("list isolated sessions");
     assert_eq!(sessions.len(), 3);
+    let mut audited = Vec::new();
     for session in sessions {
+        let session_caller = sylvander_protocol::SessionContext::new(
+            session.metadata.user_id.clone(),
+            "real-runtime-test",
+            session.id.clone(),
+        );
         let history = store
-            .read_history(&caller, &session.id, true, None)
+            .read_history(&session_caller, &session.id, true, None)
             .await
             .expect("read isolated transcript");
         let transcript = serde_json::to_string(&history).expect("encode transcript");
-        assert_eq!(
-            ["client alpha", "client beta", "client gamma"]
-                .into_iter()
-                .filter(|marker| transcript.contains(marker))
-                .count(),
-            1,
-            "one persisted transcript contains another client's history"
-        );
+        let marker_count = ["client alpha", "client beta", "client gamma"]
+            .into_iter()
+            .filter(|marker| transcript.contains(marker))
+            .count();
+        audited.push((session.id.0, session.name, marker_count, transcript));
     }
+    assert!(
+        audited.iter().all(|(_, _, count, _)| *count == 1),
+        "persisted transcripts were not isolated: {audited:#?}"
+    );
     runtime.shutdown();
 }
 
