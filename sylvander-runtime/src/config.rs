@@ -265,6 +265,19 @@ pub struct AgentDefinitionConfig {
     pub default_prompt_profile: Option<String>,
     #[serde(default)]
     pub allow_session_prompt: bool,
+    #[serde(default)]
+    pub access: AgentAccessConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAccessConfig {
+    #[serde(default)]
+    pub allow_authenticated: bool,
+    #[serde(default)]
+    pub allowed_principals: Vec<String>,
+    #[serde(default)]
+    pub allowed_roles: Vec<String>,
 }
 
 const fn default_revision() -> u64 {
@@ -555,6 +568,12 @@ fn validate_agent(
             "Agent {} references unknown prompt profile {default}",
             agent.spec.id
         ));
+    }
+    for principal in &agent.access.allowed_principals {
+        require_text("Agent allowed principal", principal, errors);
+    }
+    for role in &agent.access.allowed_roles {
+        require_text("Agent allowed role", role, errors);
     }
 }
 
