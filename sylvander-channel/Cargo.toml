@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-protocol = { path = "../sylvander-protocol" }
+serde_json = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }
 
