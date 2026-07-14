@@ -193,6 +193,21 @@ impl Channel for UnixChannel {
                 Ok(peer) => peer,
                 Err(error) => {
                     warn!(%error, "unix: could not authenticate peer credentials");
+                    if let Some(ui) = &ctx.ui {
+                        let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+                            &self.instance_id,
+                            "unix",
+                            uuid::Uuid::new_v4().to_string(),
+                        );
+                        let _ = ui
+                            .reject_authentication(
+                                &boundary,
+                                sylvander_protocol::AuthenticationFailure::new(
+                                    sylvander_protocol::AuthenticationMethod::UnixPeer,
+                                ),
+                            )
+                            .await;
+                    }
                     continue;
                 }
             };

@@ -13,7 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -86,12 +88,19 @@ impl Channel for HttpChannel {
             bearer_token: self.bearer_token.clone(),
         });
 
+        let chat_routes =
+            Router::new()
+                .route("/chat", post(chat))
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    require_http_authentication,
+                ));
         let app = Router::new()
             .route(
                 "/health",
                 get(|| async { Json(serde_json::json!({"status":"ok"})) }),
             )
-            .route("/chat", post(chat))
+            .merge(chat_routes)
             .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
@@ -103,6 +112,39 @@ impl Channel for HttpChannel {
             .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
             .await
             .unwrap();
+    }
+}
+
+async fn require_http_authentication(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if authenticate(&state, &headers).is_some() {
+        return next.run(request).await;
+    }
+    reject_http_authentication(&state).await.into_response()
+}
+
+async fn reject_http_authentication(state: &AppState) -> StatusCode {
+    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "http",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    if let Some(ui) = &state.ctx.ui {
+        let error = ui
+            .reject_authentication(
+                &boundary,
+                sylvander_protocol::AuthenticationFailure::new(
+                    sylvander_protocol::AuthenticationMethod::BearerToken,
+                ),
+            )
+            .await;
+        boundary_status(error)
+    } else {
+        StatusCode::UNAUTHORIZED
     }
 }
 
@@ -280,6 +322,20 @@ mod tests {
 
     #[async_trait]
     impl UiService for DenyAgentAccess {
+        async fn reject_authentication(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+                operation: "authenticate_bearer_token".into(),
+                request_id: boundary.request_id.clone(),
+                message: "request rate limit exceeded".into(),
+                retry_after_ms: Some(1_000),
+            }
+        }
+
         async fn authorize_message(
             &self,
             boundary: &sylvander_protocol::BoundaryContext,
@@ -385,5 +441,26 @@ mod tests {
         assert!(matches!(result, Err(StatusCode::FORBIDDEN)));
         assert!(state.sessions.lock().await.is_empty());
         assert!(sessions.list_persistent().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authentication_rejection_uses_runtime_status() {
+        let state = AppState {
+            ctx: Arc::new(ChannelContext {
+                bus: Arc::new(InProcessMessageBus::new()),
+                sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                ui: Some(Arc::new(DenyAgentAccess)),
+                readiness: None,
+            }),
+            agent_id: sylvander_agent::spec::AgentId::new("private-agent"),
+            sessions: Mutex::new(std::collections::HashMap::new()),
+            instance_id: "http-private".into(),
+            principal_id: Some("caller".into()),
+            bearer_token: Some("secret".into()),
+        };
+        assert_eq!(
+            reject_http_authentication(&state).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 }

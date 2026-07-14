@@ -166,12 +166,43 @@ async fn ws_handler(
 ) -> Response {
     let Some(principal) = authenticate(&state, &headers) else {
         warn!(instance = %state.instance_id, "ws: rejected unauthenticated upgrade");
-        return StatusCode::UNAUTHORIZED.into_response();
+        return reject_ws_authentication(&state).await.into_response();
     };
     ws.max_frame_size(state.max_request_bytes)
         .max_message_size(state.max_request_bytes)
         .on_upgrade(move |socket| handle_socket(socket, state, principal))
         .into_response()
+}
+
+async fn reject_ws_authentication(state: &AppState) -> StatusCode {
+    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "websocket",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    if let Some(ui) = &state.ctx.ui {
+        let error = ui
+            .reject_authentication(
+                &boundary,
+                sylvander_protocol::AuthenticationFailure::new(
+                    sylvander_protocol::AuthenticationMethod::BearerToken,
+                ),
+            )
+            .await;
+        boundary_status(&error)
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
+}
+
+fn boundary_status(error: &sylvander_protocol::BoundaryError) -> StatusCode {
+    match error.code {
+        sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+    }
 }
 
 fn authenticate(
@@ -623,6 +654,20 @@ mod tests {
 
     #[async_trait]
     impl UiService for DenyAgentAccess {
+        async fn reject_authentication(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+                operation: "authenticate_bearer_token".into(),
+                request_id: boundary.request_id.clone(),
+                message: "request rate limit exceeded".into(),
+                retry_after_ms: Some(1_000),
+            }
+        }
+
         async fn authorize_message(
             &self,
             boundary: &sylvander_protocol::BoundaryContext,
@@ -753,5 +798,27 @@ mod tests {
                 if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
         ));
         assert!(sessions.list_persistent().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authentication_rejection_uses_runtime_status() {
+        let state = AppState {
+            ctx: Arc::new(ChannelContext {
+                bus: Arc::new(InProcessMessageBus::new()),
+                sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                ui: Some(Arc::new(DenyAgentAccess)),
+                readiness: None,
+            }),
+            agent_id: AgentId::new("private-agent"),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(0)),
+            instance_id: "ws-private".into(),
+            auth: None,
+            max_request_bytes: 4096,
+        };
+        assert_eq!(
+            reject_ws_authentication(&state).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 }
