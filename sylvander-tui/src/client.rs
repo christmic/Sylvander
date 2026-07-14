@@ -560,7 +560,10 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             cost_nano_usd,
         },
         // Currently unused by the UI but harmless to receive.
-        ServerMsg::IterationStart { .. } | ServerMsg::Pong => return None,
+        ServerMsg::IterationStart { .. }
+        | ServerMsg::AgentsDiscovered { .. }
+        | ServerMsg::SessionConfig { .. }
+        | ServerMsg::Pong => return None,
     })
 }
 

@@ -806,6 +806,39 @@ async fn handle_client_msg_for_client(
                 })
                 .await;
         }
+        ClientMsg::DiscoverAgents => {
+            if let Some(ui) = &ctx.ui {
+                let _ = tx.send(ServerMsg::AgentsDiscovered {
+                    agents: ui.discover_agents().await,
+                });
+            } else {
+                operation_error(tx, "discover_agents", "UI service is unavailable");
+            }
+        }
+        ClientMsg::GetSessionConfig { session_id } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.session_config(&SessionId::new(session_id)).await {
+                    Ok(state) => {
+                        let _ = tx.send(ServerMsg::SessionConfig { state });
+                    }
+                    Err(error) => operation_error(tx, "get_session_config", error),
+                }
+            } else {
+                operation_error(tx, "get_session_config", "UI service is unavailable");
+            }
+        }
+        ClientMsg::UpdateSessionConfig { request } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.update_session_config(request).await {
+                    Ok(state) => {
+                        let _ = tx.send(ServerMsg::SessionConfig { state });
+                    }
+                    Err(error) => operation_error(tx, "update_session_config", error),
+                }
+            } else {
+                operation_error(tx, "update_session_config", "UI service is unavailable");
+            }
+        }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
                 "unix-client",
@@ -1379,6 +1412,29 @@ mod tests {
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+    struct EmptyUiService;
+
+    #[async_trait]
+    impl sylvander_channel::UiService for EmptyUiService {
+        async fn discover_agents(&self) -> Vec<sylvander_protocol::AgentDescriptor> {
+            Vec::new()
+        }
+
+        async fn session_config(
+            &self,
+            _session_id: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, String> {
+            Err("missing session".into())
+        }
+
+        async fn update_session_config(
+            &self,
+            _request: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, String> {
+            Err("missing session".into())
+        }
+    }
+
     fn socket_path() -> PathBuf {
         PathBuf::from("/tmp").join(format!(
             "sylv-u-{}-{}.sock",
@@ -1493,6 +1549,32 @@ mod tests {
                 max_attachment_bytes: 1024,
                 ..
             } if model == "test-model" && models.len() == 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_discovery_is_served_through_the_ui_service_boundary() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(Arc::new(EmptyUiService)),
+            readiness: None,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::DiscoverAgents,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await.expect("discovery response"),
+            ServerMsg::AgentsDiscovered { agents } if agents.is_empty()
         ));
     }
 
