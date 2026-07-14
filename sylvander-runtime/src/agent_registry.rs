@@ -40,13 +40,17 @@ impl AgentRegistry {
         open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
     ) -> Result<Self, AgentRegistryError> {
         task::spawn_blocking(move || {
-            let connection = open().map_err(AgentRegistryError::sqlite)?;
+            let mut connection = open().map_err(AgentRegistryError::sqlite)?;
             connection
                 .busy_timeout(Duration::from_secs(5))
                 .map_err(AgentRegistryError::sqlite)?;
             connection
+                .execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(AgentRegistryError::sqlite)?;
+            connection
                 .execute_batch(SCHEMA)
                 .map_err(AgentRegistryError::sqlite)?;
+            run_registry_migrations(&mut connection)?;
             Ok(Self {
                 connection: Arc::new(Mutex::new(connection)),
             })
@@ -476,6 +480,109 @@ impl AgentRegistryError {
         Self::Serialization(error.to_string())
     }
 }
+
+fn run_registry_migrations(connection: &mut Connection) -> Result<(), AgentRegistryError> {
+    connection
+        .execute_batch(MIGRATION_SCHEMA)
+        .map_err(AgentRegistryError::sqlite)?;
+    let current = connection
+        .query_row(
+            "SELECT MAX(version) FROM schema_migrations WHERE component=?1",
+            [REGISTRY_COMPONENT],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(AgentRegistryError::sqlite)?
+        .unwrap_or(0);
+    if current > REGISTRY_SCHEMA_VERSION {
+        return Err(AgentRegistryError::Integrity(format!(
+            "registry schema version {current} is newer than supported version {REGISTRY_SCHEMA_VERSION}"
+        )));
+    }
+    for (version, migration) in REGISTRY_MIGRATIONS {
+        if *version <= current {
+            continue;
+        }
+        let transaction = connection
+            .transaction()
+            .map_err(AgentRegistryError::sqlite)?;
+        transaction
+            .execute_batch(migration)
+            .map_err(AgentRegistryError::sqlite)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(component,version,applied_at) VALUES (?1,?2,?3)",
+                params![REGISTRY_COMPONENT, version, now()],
+            )
+            .map_err(AgentRegistryError::sqlite)?;
+        transaction.commit().map_err(AgentRegistryError::sqlite)?;
+    }
+    Ok(())
+}
+
+const REGISTRY_COMPONENT: &str = "runtime_registry";
+const REGISTRY_SCHEMA_VERSION: i64 = 1;
+const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[(1, REGISTRY_SCHEMA_V1)];
+
+const MIGRATION_SCHEMA: &str = r"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    component TEXT NOT NULL,
+    version INTEGER NOT NULL CHECK(version > 0),
+    applied_at INTEGER NOT NULL,
+    PRIMARY KEY(component, version)
+);
+";
+
+const REGISTRY_SCHEMA_V1: &str = r"
+CREATE TABLE credential_binding_revisions (
+    binding_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation > 0),
+    reference_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(binding_id, generation)
+);
+CREATE TABLE credential_binding_heads (
+    binding_id TEXT PRIMARY KEY,
+    active_generation INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(binding_id, active_generation)
+        REFERENCES credential_binding_revisions(binding_id, generation)
+);
+CREATE TABLE provider_definitions (
+    provider_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    definition_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    credential_binding_id TEXT NOT NULL REFERENCES credential_binding_heads(binding_id),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(provider_id, revision)
+);
+CREATE TABLE provider_registry_heads (
+    provider_id TEXT PRIMARY KEY,
+    active_revision INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY(provider_id, active_revision)
+        REFERENCES provider_definitions(provider_id, revision)
+);
+CREATE TABLE model_definitions (
+    provider_id TEXT NOT NULL REFERENCES provider_registry_heads(provider_id),
+    model_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    definition_json TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(provider_id, model_id, revision)
+);
+CREATE TABLE model_registry_heads (
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    active_revision INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(provider_id, model_id),
+    FOREIGN KEY(provider_id, model_id, active_revision)
+        REFERENCES model_definitions(provider_id, model_id, revision)
+);
+";
 
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS agent_definitions (
