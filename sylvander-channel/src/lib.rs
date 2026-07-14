@@ -49,7 +49,8 @@ use sylvander_agent::session_store::SessionStore;
 /// 2. Calls [`Channel::run`] with a [`ChannelContext`]
 /// 3. The channel starts its event loop, communicating exclusively
 ///    through the bus and session store
-/// 4. On shutdown, the runtime cancels the channel's tokio task
+/// 4. On shutdown, the runtime requests a cooperative drain and waits for the
+///    channel to stop
 ///
 /// # Contract
 ///
@@ -110,6 +111,14 @@ impl ChannelContext {
             readiness.mark_ready();
         }
     }
+
+    pub async fn shutdown_requested(&self) {
+        if let Some(readiness) = &self.readiness {
+            readiness.shutdown_requested().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -120,6 +129,7 @@ pub struct ChannelReadiness {
 struct ReadinessInner {
     ready: AtomicBool,
     notify: tokio::sync::Notify,
+    shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 impl ChannelReadiness {
@@ -129,6 +139,7 @@ impl ChannelReadiness {
             inner: Arc::new(ReadinessInner {
                 ready: AtomicBool::new(false),
                 notify: tokio::sync::Notify::new(),
+                shutdown: tokio::sync::watch::channel(false).0,
             }),
         }
     }
@@ -142,6 +153,22 @@ impl ChannelReadiness {
     pub async fn wait(&self) {
         if !self.inner.ready.load(Ordering::SeqCst) {
             self.inner.notify.notified().await;
+        }
+    }
+
+    pub fn request_shutdown(&self) {
+        let _ = self.inner.shutdown.send(true);
+    }
+
+    pub async fn shutdown_requested(&self) {
+        let mut shutdown = self.inner.shutdown.subscribe();
+        if *shutdown.borrow() {
+            return;
+        }
+        while shutdown.changed().await.is_ok() {
+            if *shutdown.borrow() {
+                return;
+            }
         }
     }
 }

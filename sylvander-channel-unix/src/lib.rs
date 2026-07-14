@@ -466,9 +466,14 @@ impl Channel for UnixChannel {
 
         let hub = Arc::new(Mutex::new(RelayHub::default()));
         let next_id: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
+        let mut client_tasks = tokio::task::JoinSet::new();
 
         loop {
-            let (stream, _addr) = match listener.accept().await {
+            let accepted = tokio::select! {
+                result = listener.accept() => result,
+                () = ctx.shutdown_requested() => break,
+            };
+            let (stream, _addr) = match accepted {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(error = %e, "unix: accept failed");
@@ -490,7 +495,7 @@ impl Channel for UnixChannel {
 
             // Spawn writer task
             let writer_hub = hub.clone();
-            tokio::spawn(async move {
+            client_tasks.spawn(async move {
                 while let Some(msg) = rx.recv().await {
                     if let Ok(s) = serde_json::to_string(&msg) {
                         if write.write_all(s.as_bytes()).await.is_err()
@@ -510,7 +515,7 @@ impl Channel for UnixChannel {
             let runtime_control = self.runtime_control.clone();
             let reader_hub = hub.clone();
             let client_id_clone = client_id;
-            tokio::spawn(async move {
+            client_tasks.spawn(async move {
                 let mut negotiated = false;
                 while let Ok(Some(line)) = reader.next_line().await {
                     let msg: ClientMsg = match serde_json::from_str(&line) {
@@ -578,6 +583,9 @@ impl Channel for UnixChannel {
                 detach_client(&reader_hub, client_id_clone).await;
             });
         }
+        client_tasks.abort_all();
+        while client_tasks.join_next().await.is_some() {}
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 }
 

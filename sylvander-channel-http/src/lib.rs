@@ -14,9 +14,8 @@ use axum::extract::State;
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::Mutex;
-use tokio_stream::StreamExt;
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::spec::SessionId;
@@ -67,7 +66,11 @@ impl Channel for HttpChannel {
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
         tracing::info!(addr = %self.addr, "http channel listening");
         state.ctx.mark_ready();
-        axum::serve(listener, app).await.unwrap();
+        let shutdown = state.ctx.clone();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
+            .await
+            .unwrap();
     }
 }
 

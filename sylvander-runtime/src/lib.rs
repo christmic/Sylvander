@@ -82,11 +82,25 @@ pub struct Runtime {
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
     evidence: Option<EvidenceRecorder>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
+    channel_exit_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    channel_exits: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
 }
 
 struct ChannelTask {
     name: String,
     task: JoinHandle<()>,
+    lifecycle: ChannelReadiness,
+}
+
+struct ChannelExitSignal {
+    name: String,
+    sender: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl Drop for ChannelExitSignal {
+    fn drop(&mut self) {
+        let _ = self.sender.send(self.name.clone());
+    }
 }
 
 impl Runtime {
@@ -160,6 +174,7 @@ impl Runtime {
 
         info!(name = %config.name, agents = config.agents.len(), "runtime booted");
 
+        let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             engine,
             session_store,
@@ -168,6 +183,8 @@ impl Runtime {
             configured_agents: HashMap::new(),
             evidence: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
+            channel_exit_tx,
+            channel_exits: tokio::sync::Mutex::new(channel_exits),
         })
     }
 
@@ -266,6 +283,7 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
+        let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             engine,
             session_store,
@@ -274,6 +292,8 @@ impl Runtime {
             configured_agents,
             evidence,
             channels: tokio::sync::Mutex::new(Vec::new()),
+            channel_exit_tx,
+            channel_exits: tokio::sync::Mutex::new(channel_exits),
         })
     }
 
@@ -317,16 +337,20 @@ impl Runtime {
             };
             let name = ch.name().to_string();
             let task_name = name.clone();
+            let exit_tx = self.channel_exit_tx.clone();
             let mut task = tokio::spawn(async move {
+                let _exit_signal = ChannelExitSignal {
+                    name: task_name,
+                    sender: exit_tx,
+                };
                 ch.run(ctx).await;
-                warn!(channel = %task_name, "channel task exited");
             });
-            tokio::select! {
+            let startup = tokio::select! {
                 result = &mut task => {
-                    return Err(RuntimeError::Channel(match result {
+                    Err(RuntimeError::Channel(match result {
                         Ok(()) => format!("channel {name} exited before becoming ready"),
                         Err(error) => format!("channel {name} failed during startup: {error}"),
-                    }));
+                    }))
                 }
                 result = tokio::time::timeout(
                     tokio::time::Duration::from_secs(5),
@@ -334,17 +358,35 @@ impl Runtime {
                 ) => {
                     if result.is_err() {
                         task.abort();
-                        let _ = task.await;
-                        return Err(RuntimeError::Channel(format!(
+                        let _ = (&mut task).await;
+                        Err(RuntimeError::Channel(format!(
                             "channel {name} did not become ready within 5 seconds"
-                        )));
+                        )))
+                    } else {
+                        Ok(())
                     }
                 }
+            };
+            if let Err(error) = startup {
+                let started = tasks.drain(..).collect();
+                if let Err(shutdown_error) = stop_channel_tasks(started).await {
+                    warn!(%shutdown_error, "failed to roll back channels after startup failure");
+                }
+                return Err(error);
             }
             info!(channel = %name, "channel ready");
-            tasks.push(ChannelTask { name, task });
+            tasks.push(ChannelTask {
+                name,
+                task,
+                lifecycle: readiness,
+            });
         }
         Ok(())
+    }
+
+    /// Wait until a started channel exits unexpectedly.
+    pub async fn wait_for_channel_exit(&self) -> Option<String> {
+        self.channel_exits.lock().await.recv().await
     }
 
     // -- ephemeral sessions --
@@ -405,23 +447,7 @@ impl Runtime {
             let mut tasks = self.channels.lock().await;
             tasks.drain(..).collect::<Vec<_>>()
         };
-        for channel in &channel_tasks {
-            channel.task.abort();
-        }
-        for channel in channel_tasks {
-            match channel.task.await {
-                Ok(()) => info!(channel = %channel.name, "channel stopped"),
-                Err(error) if error.is_cancelled() => {
-                    info!(channel = %channel.name, "channel cancelled during shutdown");
-                }
-                Err(error) => {
-                    return Err(RuntimeError::Channel(format!(
-                        "channel {} task failed: {error}",
-                        channel.name
-                    )));
-                }
-            }
-        }
+        stop_channel_tasks(channel_tasks).await?;
         let agents = self.engine.list_agents().await;
         for handle in agents {
             self.engine
@@ -436,6 +462,40 @@ impl Runtime {
                 .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
         }
         info!("runtime shut down");
+        Ok(())
+    }
+}
+
+async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), RuntimeError> {
+    for channel in &channel_tasks {
+        channel.lifecycle.request_shutdown();
+    }
+    let mut first_error = None;
+    for mut channel in channel_tasks {
+        let result =
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), &mut channel.task).await;
+        let result = if let Ok(result) = result {
+            result
+        } else {
+            warn!(channel = %channel.name, "channel drain timed out; aborting task");
+            channel.task.abort();
+            channel.task.await
+        };
+        match result {
+            Ok(()) => info!(channel = %channel.name, "channel stopped"),
+            Err(error) if error.is_cancelled() => {
+                info!(channel = %channel.name, "channel cancelled during shutdown");
+            }
+            Err(error) => {
+                first_error.get_or_insert_with(|| {
+                    RuntimeError::Channel(format!("channel {} task failed: {error}", channel.name))
+                });
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
         Ok(())
     }
 }
@@ -519,6 +579,10 @@ mod tests {
 
     struct ExitingChannel;
 
+    struct ReadyThenExitChannel {
+        exit: Arc<Notify>,
+    }
+
     #[async_trait::async_trait]
     impl Channel for ExitingChannel {
         fn name(&self) -> &'static str {
@@ -526,6 +590,18 @@ mod tests {
         }
 
         async fn run(self: Arc<Self>, _ctx: ChannelContext) {}
+    }
+
+    #[async_trait::async_trait]
+    impl Channel for ReadyThenExitChannel {
+        fn name(&self) -> &'static str {
+            "ready-then-exit-test"
+        }
+
+        async fn run(self: Arc<Self>, ctx: ChannelContext) {
+            ctx.mark_ready();
+            self.exit.notified().await;
+        }
     }
 
     struct DropSignal(Arc<AtomicBool>);
@@ -546,7 +622,7 @@ mod tests {
             let _drop_signal = DropSignal(self.dropped.clone());
             ctx.mark_ready();
             self.started.notify_one();
-            std::future::pending::<()>().await;
+            ctx.shutdown_requested().await;
         }
     }
 
@@ -632,6 +708,65 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("before becoming ready"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_failure_drains_channels_that_are_already_ready() {
+        let runtime = Runtime::boot(
+            SystemConfig {
+                name: "test-runtime".into(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+            },
+            test_client(),
+        )
+        .await
+        .unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        let error = runtime
+            .start_channels(vec![
+                Arc::new(BlockingChannel {
+                    started: Arc::new(Notify::new()),
+                    dropped: dropped.clone(),
+                }),
+                Arc::new(ExitingChannel),
+            ])
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("before becoming ready"));
+        assert!(dropped.load(Ordering::SeqCst));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn channel_exit_after_readiness_is_reported() {
+        let runtime = Runtime::boot(
+            SystemConfig {
+                name: "test-runtime".into(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+            },
+            test_client(),
+        )
+        .await
+        .unwrap();
+        let exit = Arc::new(Notify::new());
+        runtime
+            .start_channels(vec![Arc::new(ReadyThenExitChannel { exit: exit.clone() })])
+            .await
+            .unwrap();
+
+        exit.notify_one();
+        let channel = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            runtime.wait_for_channel_exit(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(channel.as_deref(), Some("ready-then-exit-test"));
         runtime.shutdown().await.unwrap();
     }
 
