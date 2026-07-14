@@ -25,11 +25,9 @@ pub trait ModelProvider: Send + Sync {
 mod tests {
     use std::sync::Arc;
 
-    use futures_util::{StreamExt, stream};
-    use serde_json::json;
-
     use super::*;
-    use crate::{ModelRef, ModelResponse, TokenUsage};
+    use crate::{ModelRef, ModelResponse, StopReason, TokenUsage};
+    use futures_util::{StreamExt, stream};
 
     struct FakeProvider;
 
@@ -39,7 +37,8 @@ mod tests {
                 let response = ModelResponse {
                     id: request.request_id,
                     model: request.model,
-                    payload: json!({"ok": true}),
+                    content: Vec::new(),
+                    stop_reason: StopReason::EndTurn,
                     usage: TokenUsage::default(),
                 };
                 let stream: ModelEventStream =
@@ -55,7 +54,12 @@ mod tests {
         let request = ModelRequest {
             request_id: "request-1".into(),
             model: ModelRef::new("fake", "model"),
-            payload: json!({}),
+            system: Vec::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_output_tokens: 1,
+            reasoning: None,
+            output_schema: None,
         };
         let events = provider
             .complete_stream(request)
