@@ -44,7 +44,8 @@ use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
     AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionEffectiveConfig,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionEffectiveConfig,
 };
 
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
@@ -98,6 +99,7 @@ struct ChannelTask {
 }
 
 struct RuntimeUiService {
+    engine: Arc<AgentRunEngine>,
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
     evidence: Option<EvidenceStore>,
@@ -150,6 +152,73 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.id.0.cmp(&right.id.0));
         agents
+    }
+
+    async fn create_session(
+        &self,
+        request: SessionCreateRequest,
+    ) -> Result<SessionConfigState, String> {
+        let label = request.label.trim().to_string();
+        if label.is_empty() || label.len() > 200 {
+            return Err("session label must contain 1..=200 bytes".into());
+        }
+        let agent = self
+            .agents
+            .get(&request.agent_id)
+            .ok_or_else(|| format!("unknown Agent {}", request.agent_id))?;
+        let effective = resolve_session_config(agent, &request.overrides, None, None)
+            .map_err(|error| error.to_string())?;
+        let workspace = effective
+            .user_workspace
+            .as_ref()
+            .or(effective.agent_workspace.as_ref())
+            .map_or_else(
+                || std::path::PathBuf::from("."),
+                |binding| binding.path.clone(),
+            );
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let metadata = SessionMetadata {
+            workspace,
+            name: label.clone(),
+            user_id: "anonymous-ui".into(),
+        };
+        let mut session = StoredSession::new(
+            session_id.clone(),
+            &label,
+            SessionLifetime::Persistent,
+            metadata.clone(),
+            vec![request.agent_id.clone()],
+        );
+        session.config_overrides = request.overrides.clone();
+        session.effective_config = Some(effective.clone());
+        if let Some(channel_id) = request.channel_id {
+            session
+                .external_meta
+                .insert("channel_id".into(), serde_json::Value::String(channel_id));
+        }
+        self.sessions
+            .save(&session)
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = self
+            .engine
+            .attach_session(
+                session_id.clone(),
+                &label,
+                metadata,
+                std::slice::from_ref(&request.agent_id),
+            )
+            .await
+        {
+            let _ = self.sessions.delete(&session_id).await;
+            return Err(error.to_string());
+        }
+        Ok(SessionConfigState {
+            session_id,
+            revision: 0,
+            overrides: request.overrides,
+            effective,
+        })
     }
 
     async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String> {
@@ -318,6 +387,7 @@ impl Runtime {
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         let configured_agents = HashMap::new();
         let ui_service = Arc::new(RuntimeUiService {
+            engine: engine.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             evidence: None,
@@ -464,6 +534,7 @@ impl Runtime {
         );
         let evidence_store = evidence.as_ref().map(EvidenceRecorder::store);
         let ui_service = Arc::new(RuntimeUiService {
+            engine: engine.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             evidence: evidence_store,
@@ -1134,6 +1205,35 @@ model_name = "model-a"
                 .await
                 .is_err(),
             "a stale client must not overwrite a newer configuration"
+        );
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "created through UI service".into(),
+                channel_id: Some("tui-local".into()),
+                overrides: SessionConfigOverrides {
+                    model_id: Some("model-a".into()),
+                    ..SessionConfigOverrides::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let stored = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .expect("created session must be durable");
+        assert_eq!(stored.effective_config, Some(created.effective));
+        assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        assert!(
+            runtime
+                .engine
+                .get_session(&created.session_id)
+                .await
+                .is_some()
         );
         let evidence = runtime
             .evidence_store()

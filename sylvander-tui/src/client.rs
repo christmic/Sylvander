@@ -314,7 +314,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::ProtocolError { error } => DomainEvent::ProtocolDiagnostic {
             message: format!("{}: {}", error.code, error.message),
         },
-        ServerMsg::SessionCreated { session_id } => DomainEvent::SessionCreated { session_id },
+        ServerMsg::SessionCreated { session_id, .. } => DomainEvent::SessionCreated { session_id },
         ServerMsg::RuntimeInfo {
             model,
             reasoning_effort,

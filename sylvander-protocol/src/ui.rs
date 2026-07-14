@@ -54,6 +54,9 @@ pub enum UiClientMessage {
         task_id: String,
     },
     DiscoverAgents,
+    CreateSession {
+        request: crate::SessionCreateRequest,
+    },
     GetSessionConfig {
         session_id: String,
     },
@@ -126,6 +129,8 @@ pub enum UiServerMessage {
     },
     SessionCreated {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<crate::SessionConfigState>,
     },
     TextDelta {
         session_id: String,
