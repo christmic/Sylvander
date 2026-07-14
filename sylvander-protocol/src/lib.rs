@@ -20,8 +20,10 @@ pub mod bus_trait;
 pub mod in_process;
 pub mod session_context;
 pub mod types;
+pub mod ui;
 
 pub use bus_trait::{BusError, MessageBus, SubscriptionFilter};
 pub use in_process::InProcessMessageBus;
 pub use session_context::*;
 pub use types::*;
+pub use ui::*;
