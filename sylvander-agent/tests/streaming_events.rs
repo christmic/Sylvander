@@ -9,8 +9,15 @@ use std::sync::Arc;
 use serde_json::json;
 use sylvander_agent::bus::{PlanDecision, StreamEvent};
 use sylvander_agent::prelude::*;
+use sylvander_agent::session_store::{
+    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
+use sylvander_protocol::{
+    PermissionProfile, ReasoningEffort, SessionConfigProvenance, SessionConfigSource,
+    SessionConfigSourceKind, SessionEffectiveConfig,
+};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -526,6 +533,118 @@ async fn text_deltas_published_to_bus() {
         names.contains(&"Done".into()),
         "expected Done, got {names:?}"
     );
+}
+
+#[tokio::test]
+async fn durable_turn_uses_and_snapshots_effective_session_config() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({
+            "system": [{
+                "type": "text",
+                "text": "session profile",
+                "cache_control": {"type": "ephemeral"}
+            }]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_configured",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "configured"}],
+            "model": "claude-sonnet-5-20260601",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 4, "output_tokens": 2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let directory = tempfile::TempDir::new().expect("temporary directory");
+    let database = directory.path().join("sessions.db");
+    let store: Arc<dyn SessionStore> = Arc::new(
+        SqliteSessionStore::open(&database)
+            .await
+            .expect("session store"),
+    );
+    let bus = Arc::new(InProcessMessageBus::new());
+    let spec = AgentSpec::builder()
+        .id("stream-test")
+        .name("Stream Test")
+        .model_name("claude-sonnet-5-20260601")
+        .build()
+        .expect("spec");
+    let metadata = SessionMetadata {
+        workspace: "/tmp".into(),
+        name: "configured".into(),
+        user_id: "user-1".into(),
+    };
+    let source = SessionConfigSource {
+        kind: SessionConfigSourceKind::AgentDefault,
+        reference: Some("stream-test".into()),
+    };
+    let provenance = SessionConfigProvenance {
+        model: source.clone(),
+        reasoning_effort: source.clone(),
+        permissions: source.clone(),
+        prompt_profile: source.clone(),
+        system_prompt: source.clone(),
+        agent_workspace: source.clone(),
+        user_workspace: source.clone(),
+        execution_target: source,
+    };
+    let effective_config = SessionEffectiveConfig {
+        agent_id: spec.id.clone(),
+        agent_revision: 1,
+        provider_id: spec.model.provider.clone(),
+        model_id: spec.model.model_name.clone(),
+        reasoning_effort: ReasoningEffort::Off,
+        permissions: PermissionProfile::default(),
+        prompt_profile: Some("session".into()),
+        system_prompt_sha256: "test-digest".into(),
+        agent_workspace: None,
+        user_workspace: None,
+        execution_target: "local".into(),
+        provenance,
+    };
+
+    let agent = AgentRun::builder(spec, mock_client(&server))
+        .bus(bus)
+        .session_store(store.clone())
+        .prompt_profiles(std::collections::HashMap::from([(
+            "session".into(),
+            "session profile".into(),
+        )]))
+        .build()
+        .expect("build");
+    let session_id = agent.join_session(metadata.clone()).await;
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        "configured",
+        SessionLifetime::Persistent,
+        metadata,
+        vec![agent.id().clone()],
+    );
+    stored.effective_config = Some(effective_config);
+    store.save(&stored).await.expect("save session");
+    agent
+        .handle_message(BusMessage::user_chat(session_id, "user-1", "use my config"))
+        .await
+        .expect("configured turn");
+
+    let connection = rusqlite::Connection::open(database).expect("inspect database");
+    let turn_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM session_turn_configs", [], |row| {
+            row.get(0)
+        })
+        .expect("turn snapshot count");
+    let message_count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM session_messages", [], |row| {
+            row.get(0)
+        })
+        .expect("message count");
+    assert_eq!(turn_count, 1);
+    assert_eq!(message_count, 2);
 }
 
 #[tokio::test]

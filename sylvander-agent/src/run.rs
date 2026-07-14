@@ -45,7 +45,7 @@ use crate::plan_gate::PlanGate;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
-    StoredSession,
+    StoredSession, TurnStart,
 };
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
@@ -71,6 +71,7 @@ pub(crate) struct AgentRunInner {
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
+    prompt_profiles: HashMap<String, String>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
@@ -1717,31 +1718,73 @@ impl AgentRunInner {
     {
         let session_id = msg.session_id.clone();
         let user_message = self.message_to_param(&msg);
+        let stored_session = if let Some(store) = &self.session_store {
+            store
+                .get(&session_id)
+                .await
+                .map_err(|error| AgentRunError::Store(error.to_string()))?
+        } else {
+            None
+        };
+        let effective_config = stored_session
+            .as_ref()
+            .map(|session| {
+                session.effective_config.clone().ok_or_else(|| {
+                    AgentRunError::Configuration(format!(
+                        "durable session {session_id} has no effective configuration"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(effective) = &effective_config
+            && effective.agent_id != self.id
+        {
+            return Err(AgentRunError::Configuration(format!(
+                "session {session_id} is configured for Agent {}, not {}",
+                effective.agent_id, self.id
+            )));
+        }
         let (selected_model, selected_effort, selected_pricing) = {
             let runtime = self.runtime_models.read().await;
+            let model_id = effective_config
+                .as_ref()
+                .map_or(runtime.current_model.as_str(), |config| {
+                    config.model_id.as_str()
+                });
             let model = runtime
                 .available
-                .get(&runtime.current_model)
-                .expect("current runtime model must exist")
+                .get(model_id)
+                .ok_or_else(|| {
+                    AgentRunError::Configuration(format!(
+                        "session {session_id} selects unavailable model `{model_id}`"
+                    ))
+                })?
                 .clone();
             (
                 model,
-                runtime.reasoning_effort,
-                runtime.pricing.get(&runtime.current_model).copied(),
+                effective_config
+                    .as_ref()
+                    .map_or(runtime.reasoning_effort, |config| config.reasoning_effort),
+                runtime.pricing.get(model_id).copied(),
             )
         };
 
-        // 1. Append user message + take history snapshot
-        let (history, session_metadata) = {
-            let mut sessions = self.sessions.write().await;
+        // 1. Persist the immutable turn boundary before provider or tool work.
+        let session_metadata = {
+            let sessions = self.sessions.read().await;
             let ctx = sessions
-                .get_mut(&session_id)
+                .get(&session_id)
                 .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
-            ctx.append_user_message(user_message.clone());
-            (ctx.history_snapshot(), ctx.metadata.clone())
+            ctx.metadata.clone()
         };
-        let permissions = self.runtime_permissions.read().await.clone();
-        if let Some(store) = &self.session_store {
+        let permissions = if let Some(effective) = &effective_config {
+            effective.permissions.clone()
+        } else {
+            self.runtime_permissions.read().await.clone()
+        };
+        if let (Some(store), Some(stored), Some(effective)) =
+            (&self.session_store, &stored_session, &effective_config)
+        {
             let user_id = match &msg.sender {
                 Sender::User(user_id) => user_id.as_str(),
                 _ => "unix-client",
@@ -1751,23 +1794,31 @@ impl AgentRunInner {
                 self.id.clone(),
                 session_id.clone(),
             );
-            if let Ok(content) = serde_json::to_value(&user_message) {
-                if let Err(error) = store
-                    .append_message(
-                        &caller,
-                        &session_id,
-                        StoredMessageRole::User,
-                        content,
-                        Some(&selected_model.id),
-                        None,
-                        None,
-                    )
-                    .await
-                {
-                    warn!(%session_id, %error, "failed to persist user message");
-                }
-            }
+            let user_content = serde_json::to_value(&user_message)
+                .map_err(|error| AgentRunError::Store(error.to_string()))?;
+            store
+                .begin_turn(
+                    &caller,
+                    TurnStart {
+                        session_id: session_id.clone(),
+                        turn_id: turn_id.into(),
+                        config_revision: stored.config_revision,
+                        effective_config: effective.clone(),
+                        user_content,
+                        model_id: selected_model.id.clone(),
+                    },
+                )
+                .await
+                .map_err(|error| AgentRunError::Store(error.to_string()))?;
         }
+        let history = {
+            let mut sessions = self.sessions.write().await;
+            let ctx = sessions
+                .get_mut(&session_id)
+                .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
+            ctx.append_user_message(user_message);
+            ctx.history_snapshot()
+        };
 
         // 2. Build per-session approval gate and tool surface from one
         // permission snapshot. Changes made mid-turn apply to the next turn.
@@ -1799,6 +1850,18 @@ impl AgentRunInner {
                 cfg.reasoning_effort = selected_effort;
                 cfg
             };
+        if let Some(stored) = &stored_session {
+            let resolved_prompt = stored.config_overrides.system_prompt.clone().or_else(|| {
+                effective_config
+                    .as_ref()
+                    .and_then(|config| config.prompt_profile.as_ref())
+                    .and_then(|profile| self.prompt_profiles.get(profile))
+                    .cloned()
+            });
+            if let Some(prompt) = resolved_prompt {
+                loop_config.system_prompt = (!prompt.is_empty()).then_some(prompt);
+            }
+        }
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
@@ -2284,6 +2347,7 @@ pub struct AgentRunBuilder {
     available_models: Vec<ModelInfo>,
     model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
+    prompt_profiles: HashMap<String, String>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -2304,6 +2368,7 @@ impl AgentRunBuilder {
             available_models: Vec::new(),
             model_lifecycles: HashMap::new(),
             model_pricing: HashMap::new(),
+            prompt_profiles: HashMap::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -2369,6 +2434,13 @@ impl AgentRunBuilder {
         pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     ) -> Self {
         self.model_pricing = pricing;
+        self
+    }
+
+    /// Attach validated prompt profiles for per-session resolution.
+    #[must_use]
+    pub fn prompt_profiles(mut self, profiles: HashMap<String, String>) -> Self {
+        self.prompt_profiles = profiles;
         self
     }
 
@@ -2491,6 +2563,7 @@ impl AgentRunBuilder {
                 loop_config,
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
+                prompt_profiles: self.prompt_profiles,
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 bus,
@@ -2524,6 +2597,10 @@ pub enum AgentRunError {
     Loop(#[from] AgentLoopError),
     #[error("build error: {0}")]
     Build(String),
+    #[error("session configuration error: {0}")]
+    Configuration(String),
+    #[error("session store error: {0}")]
+    Store(String),
 }
 
 // ---------------------------------------------------------------------------
