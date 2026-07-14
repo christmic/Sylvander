@@ -336,6 +336,38 @@ impl EvidenceStore {
         .await
     }
 
+    /// Resolve the single session to which feedback may be attributed.
+    /// Run-level feedback is accepted only when the run contains one session;
+    /// callers must name a turn when a run spans multiple owners.
+    pub async fn feedback_session(
+        &self,
+        run_id: String,
+        turn_id: Option<String>,
+    ) -> Result<Option<String>, EvidenceError> {
+        self.run(move |connection| {
+            if let Some(turn_id) = turn_id {
+                return connection
+                    .query_row(
+                        "SELECT session_id FROM evidence_turns WHERE run_id=?1 AND id=?2",
+                        params![run_id, turn_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(EvidenceError::sqlite);
+            }
+            let mut statement = connection
+                .prepare("SELECT DISTINCT session_id FROM evidence_turns WHERE run_id=?1 LIMIT 2")
+                .map_err(EvidenceError::sqlite)?;
+            let sessions = statement
+                .query_map([run_id], |row| row.get::<_, String>(0))
+                .map_err(EvidenceError::sqlite)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)?;
+            Ok((sessions.len() == 1).then(|| sessions[0].clone()))
+        })
+        .await
+    }
+
     /// Persist explicit user feedback only when it can be traced to a real
     /// run and, when supplied, a turn belonging to that run.
     pub async fn record_feedback(
@@ -737,6 +769,17 @@ mod tests {
             })
             .await
             .unwrap();
+        assert_eq!(
+            store
+                .feedback_session("run-1".into(), Some("turn-1".into()))
+                .await
+                .unwrap(),
+            Some("session-1".into())
+        );
+        assert_eq!(
+            store.feedback_session("run-1".into(), None).await.unwrap(),
+            Some("session-1".into())
+        );
 
         let feedback_id = store
             .record_feedback(
