@@ -216,7 +216,7 @@ mod tests {
     async fn write_missing_file_path_field() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let c = ctx();
+        let _c = ctx();
         let c = ctx();
         let result = tool.execute(&c, json!({"content": "x"})).await;
         assert!(matches!(result, Err(ToolError::Other(_))));
@@ -226,7 +226,7 @@ mod tests {
     async fn write_missing_content_field() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let c = ctx();
+        let _c = ctx();
         let c = ctx();
         let result = tool.execute(&c, json!({"file_path": "x.txt"})).await;
         assert!(matches!(result, Err(ToolError::Other(_))));
@@ -236,7 +236,7 @@ mod tests {
     fn name_description_schema() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "Write");
         assert!(tool.description().contains("workdir"));
         let json = serde_json::to_value(tool.input_schema()).unwrap();
@@ -251,7 +251,7 @@ mod tests {
     fn workdir_accessor() {
         let dir = setup_workspace();
         let tool = WriteTool::new(dir.path());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.workdir(), dir.path());
     }
 }

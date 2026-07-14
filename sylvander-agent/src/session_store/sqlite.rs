@@ -2,7 +2,7 @@
 //!
 //! MVP concurrency model: a single `rusqlite::Connection` guarded by
 //! `tokio::sync::Mutex`. All calls go through `spawn_blocking` so
-//! SQLite work never stalls the async runtime. Adequate for desktop
+//! `SQLite` work never stalls the async runtime. Adequate for desktop
 //! use (single agent process, low write rate). A real production
 //! deployment should swap this for `deadpool-sqlite` or `sqlx` with
 //! a proper pool.
@@ -41,7 +41,7 @@ pub struct SqliteSessionStore {
 }
 
 struct StoreInner {
-    /// Synchronous SQLite connection. Guarded by `Mutex` so async tasks
+    /// Synchronous `SQLite` connection. Guarded by `Mutex` so async tasks
     /// serialize their `spawn_blocking` calls into a single thread.
     conn: Mutex<Connection>,
 }
@@ -70,7 +70,7 @@ impl SqliteSessionStore {
         .map_err(|e| SessionStoreError::Store(format!("blocking task panicked: {e}")))?
     }
 
-    /// In-memory SQLite (`:memory:`). Used in tests; supports the
+    /// In-memory `SQLite` (`:memory:`). Used in tests; supports the
     /// full schema so behavior matches a file-backed store.
     pub async fn open_in_memory() -> Result<Self, SessionStoreError> {
         task::spawn_blocking(|| -> Result<Self, SessionStoreError> {
@@ -121,7 +121,7 @@ impl SqliteSessionStore {
 // Schema
 // ---------------------------------------------------------------------------
 
-const SCHEMA_SQL: &str = r#"
+const SCHEMA_SQL: &str = r"
 -- Session metadata
 CREATE TABLE IF NOT EXISTS sessions (
     id              TEXT PRIMARY KEY,
@@ -211,7 +211,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session
     ON session_messages(session_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
-"#;
+";
 
 fn ensure_usage_cost_columns(conn: &Connection) -> Result<(), SessionStoreError> {
     let has_column = |name: &str| -> rusqlite::Result<bool> {
@@ -452,7 +452,7 @@ impl SessionStore for SqliteSessionStore {
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
         let trace_id = ctx.request.trace_id.clone();
-        let priority = Some(priority_str(&ctx.request.priority));
+        let priority = Some(priority_str(ctx.request.priority));
         let stored_priority = Some(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
@@ -606,7 +606,7 @@ impl SessionStore for SqliteSessionStore {
                 params![id.0],
             )?;
             if rows == 0 {
-                return Err(SessionStoreError::NotFound(id).into());
+                return Err(SessionStoreError::NotFound(id));
             }
             Ok(())
         })
@@ -622,7 +622,7 @@ impl SessionStore for SqliteSessionStore {
                 params![id.0, crate::session::now_secs()],
             )?;
             if rows == 0 {
-                return Err(SessionStoreError::NotFound(id).into());
+                return Err(SessionStoreError::NotFound(id));
             }
             Ok(())
         })
@@ -676,7 +676,7 @@ impl SessionStore for SqliteSessionStore {
             // ON DELETE CASCADE drops session_agents and session_messages.
             let rows = c.execute("DELETE FROM sessions WHERE id = ?1", params![id.0])?;
             if rows == 0 {
-                return Err(SessionStoreError::NotFound(id).into());
+                return Err(SessionStoreError::NotFound(id));
             }
             Ok(())
         })
@@ -718,8 +718,7 @@ impl SessionStore for SqliteSessionStore {
         let caller_user = filter
             .identity
             .as_ref()
-            .map(|i| i.user_id.0.clone())
-            .unwrap_or_else(|| ctx.identity.user_id.0.clone());
+            .map_or_else(|| ctx.identity.user_id.0.clone(), |i| i.user_id.0.clone());
         let caller_agent = filter.identity.as_ref().map(|i| i.agent_id.0.clone());
         let force_scope = filter.identity.is_some();
 
@@ -800,10 +799,8 @@ impl SessionStore for SqliteSessionStore {
                  ORDER BY updated_at DESC \
                  LIMIT ?2",
             )?;
-            let rows = stmt.query_map(
-                params![pattern, limit as i64, scope_user],
-                row_to_session_no_agents,
-            )?;
+            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            let rows = stmt.query_map(params![pattern, limit, scope_user], row_to_session_no_agents)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -842,7 +839,7 @@ impl SessionStore for SqliteSessionStore {
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
         let trace_id = ctx.request.trace_id.clone();
-        let priority = Some(priority_str(&ctx.request.priority));
+        let priority = Some(priority_str(ctx.request.priority));
         let now = crate::session::now_secs();
 
         self.run(move |c| {
@@ -855,7 +852,7 @@ impl SessionStore for SqliteSessionStore {
                 )
                 .optional()?;
             if exists.is_none() {
-                return Err(SessionStoreError::NotFound(session_id.clone()).into());
+                return Err(SessionStoreError::NotFound(session_id.clone()));
             }
 
             // Compute next seq within the session. SQLite serializes
@@ -983,7 +980,7 @@ impl SessionStore for SqliteSessionStore {
         let user_id = ctx.identity.user_id.0.clone();
         let agent_id = ctx.identity.agent_id.0.clone();
         let trace_id = ctx.request.trace_id.clone();
-        let priority = priority_str(&ctx.request.priority).to_string();
+        let priority = priority_str(ctx.request.priority);
         self.run(move |connection| {
             let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
             let exists: Option<i64> = transaction
@@ -1004,7 +1001,7 @@ impl SessionStore for SqliteSessionStore {
                     params![session_id.0],
                 )
                 .map_err(sqlite_err)?;
-            let mut next_seq: i64 = transaction
+            let next_seq: i64 = transaction
                 .query_row(
                     "SELECT COALESCE(MAX(seq), -1) + 1 FROM session_messages \
                      WHERE session_id = ?1",
@@ -1013,7 +1010,7 @@ impl SessionStore for SqliteSessionStore {
                 )
                 .map_err(sqlite_err)?;
             let now = crate::session::now_secs();
-            for message in messages {
+            for (next_seq, message) in (next_seq..).zip(messages) {
                 let role = match message.role {
                     MessageRole::User => "user",
                     MessageRole::Assistant => "assistant",
@@ -1042,7 +1039,6 @@ impl SessionStore for SqliteSessionStore {
                         ],
                     )
                     .map_err(sqlite_err)?;
-                next_seq += 1;
             }
             transaction
                 .execute(
@@ -1276,6 +1272,36 @@ fn parse_lifetime(s: &str) -> SessionLifetime {
 fn sqlite_err(e: rusqlite::Error) -> SessionStoreError {
     SessionStoreError::Store(e.to_string())
 }
+// ---------------------------------------------------------------------------
+// Priority <-> str
+// ---------------------------------------------------------------------------
+
+fn priority_str(p: sylvander_protocol::session_context::Priority) -> String {
+    use sylvander_protocol::session_context::Priority;
+    match p {
+        Priority::Low => "low",
+        Priority::Normal => "normal",
+        Priority::High => "high",
+        Priority::Urgent => "urgent",
+    }
+    .to_string()
+}
+
+fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_context::Priority> {
+    use sylvander_protocol::session_context::Priority;
+    Ok(match s {
+        "low" => Priority::Low,
+        "normal" => Priority::Normal,
+        "high" => Priority::High,
+        "urgent" => Priority::Urgent,
+        other => {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(format!("unknown priority: {other}")),
+            ));
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1288,7 +1314,7 @@ mod tests {
 
     /// Default session context used by every test. Identity is the
     /// legacy "user-1" from `test_meta` so existing assertions keep
-    /// working after the SessionContext split.
+    /// working after the `SessionContext` split.
     fn ctx() -> sylvander_protocol::SessionContext {
         sylvander_protocol::SessionContext::new("user-1", "agent-1", "sess-1")
     }
@@ -1412,7 +1438,10 @@ mod tests {
         let loaded = store.get(&session.id).await.unwrap().unwrap();
 
         assert_eq!(loaded.config_revision, 0);
-        assert_eq!(loaded.config_overrides, Default::default());
+        assert_eq!(
+            loaded.config_overrides,
+            sylvander_protocol::SessionConfigOverrides::default()
+        );
         assert!(loaded.effective_config.is_none());
     }
 
@@ -1422,8 +1451,10 @@ mod tests {
         let session = make_session("s1", SessionLifetime::Persistent);
         store.save(&session).await.unwrap();
         let effective = effective_config();
-        let mut overrides = sylvander_protocol::SessionConfigOverrides::default();
-        overrides.model_id = Some("model-a".into());
+        let overrides = sylvander_protocol::SessionConfigOverrides {
+            model_id: Some("model-a".into()),
+            ..Default::default()
+        };
 
         let revision = store
             .update_config(&session.id, 0, overrides.clone(), effective.clone())
@@ -1914,7 +1945,7 @@ mod tests {
             .unwrap();
         let seqs: Vec<u32> = history.iter().map(|m| m.seq).collect();
         let mut sorted = seqs.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(seqs, sorted, "seqs must be assigned uniquely");
     }
 
@@ -1952,34 +1983,4 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content["hello"], "world");
     }
-}
-// ---------------------------------------------------------------------------
-// Priority <-> str
-// ---------------------------------------------------------------------------
-
-fn priority_str(p: &sylvander_protocol::session_context::Priority) -> String {
-    use sylvander_protocol::session_context::Priority;
-    match p {
-        Priority::Low => "low",
-        Priority::Normal => "normal",
-        Priority::High => "high",
-        Priority::Urgent => "urgent",
-    }
-    .to_string()
-}
-
-fn parse_priority(s: &str) -> rusqlite::Result<sylvander_protocol::session_context::Priority> {
-    use sylvander_protocol::session_context::Priority;
-    Ok(match s {
-        "low" => Priority::Low,
-        "normal" => Priority::Normal,
-        "high" => Priority::High,
-        "urgent" => Priority::Urgent,
-        other => {
-            return Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-                Some(format!("unknown priority: {other}")),
-            ));
-        }
-    })
 }

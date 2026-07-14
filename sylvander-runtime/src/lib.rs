@@ -22,6 +22,7 @@
 //! └──────────────────┘
 //! ```
 
+pub mod agent_registry;
 mod boundary;
 pub mod composition;
 pub mod config;
@@ -53,6 +54,7 @@ use sylvander_protocol::{
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,7 @@ pub struct Runtime {
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
+    agent_registry: Option<AgentRegistry>,
     ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
@@ -105,6 +108,7 @@ struct RuntimeUiService {
     engine: Arc<AgentRunEngine>,
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
+    agent_registry: Option<AgentRegistry>,
     evidence: Option<EvidenceStore>,
     boundary: BoundaryGuard,
 }
@@ -313,6 +317,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .agents
             .iter()
             .find_map(|id| self.agents.get(id))
+            .cloned()
             .ok_or_else(|| {
                 boundary_failure(
                     boundary,
@@ -320,8 +325,11 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     format!("session {} has no configured Agent", request.session_id),
                 )
             })?;
+        let agent = self
+            .bind_session_revision(boundary, &session, agent, "update_session_config")
+            .await?;
         let effective = resolve_session_config(
-            agent,
+            &agent,
             &request.overrides,
             None,
             Some(&session.metadata.workspace),
@@ -387,6 +395,40 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn bind_session_revision(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session: &StoredSession,
+        mut agent: ConfiguredAgent,
+        operation: &'static str,
+    ) -> Result<ConfiguredAgent, sylvander_protocol::BoundaryError> {
+        let Some(effective) = &session.effective_config else {
+            return Ok(agent);
+        };
+        if effective.agent_revision == agent.definition.revision {
+            return Ok(agent);
+        }
+        let registry = self.agent_registry.as_ref().ok_or_else(|| {
+            boundary_failure(boundary, operation, "Agent registry is unavailable")
+        })?;
+        let revision = registry
+            .load(&effective.agent_id, effective.agent_revision)
+            .await
+            .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
+            .ok_or_else(|| {
+                boundary_failure(
+                    boundary,
+                    operation,
+                    format!(
+                        "unknown Agent revision {}@{}",
+                        effective.agent_id, effective.agent_revision
+                    ),
+                )
+            })?;
+        agent.definition = revision.definition;
+        Ok(agent)
+    }
+
     async fn authorize_message_inner(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -690,6 +732,7 @@ impl Runtime {
             engine: engine.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
+            agent_registry: None,
             evidence: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
@@ -699,6 +742,7 @@ impl Runtime {
             ephemeral: RwLock::new(HashMap::new()),
             bus,
             configured_agents,
+            agent_registry: None,
             ui_service,
             evidence: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
@@ -712,7 +756,7 @@ impl Runtime {
         config
             .validate()
             .map_err(|error| RuntimeError::Config(error.to_string()))?;
-        let config = with_resolved_paths(config)?;
+        let mut config = with_resolved_paths(config)?;
         let session_db = config
             .server
             .session_db
@@ -725,6 +769,29 @@ impl Runtime {
                 message: error.to_string(),
             })?;
         }
+
+        let agent_registry = AgentRegistry::open(session_db)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        agent_registry
+            .seed(&config)
+            .await
+            .map_err(|error| RuntimeError::Config(error.to_string()))?;
+        let mut active_definitions = Vec::with_capacity(config.agents.len());
+        for configured in &config.agents {
+            let active = agent_registry
+                .load_active(&configured.spec.id)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "Agent {} has no active registry revision",
+                        configured.spec.id
+                    ))
+                })?;
+            active_definitions.push(active.definition);
+        }
+        config.agents = active_definitions;
 
         let session_store: Arc<dyn SessionStore> = Arc::new(
             SqliteSessionStore::open(session_db)
@@ -794,19 +861,30 @@ impl Runtime {
                 .ok_or_else(|| {
                     RuntimeError::Config(format!("session {} has no configured Agent", session.id))
                 })?;
-            let effective = resolve_session_config(
-                agent,
-                &session.config_overrides,
-                None,
-                Some(&session.metadata.workspace),
-            )
-            .map_err(|error| {
-                RuntimeError::Config(format!(
-                    "resolve configuration for session {}: {error}",
-                    session.id
-                ))
-            })?;
-            if session.effective_config.as_ref() != Some(&effective) {
+            if let Some(effective) = &session.effective_config {
+                let registered = agent_registry
+                    .load(&effective.agent_id, effective.agent_revision)
+                    .await
+                    .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                if registered.is_none() {
+                    return Err(RuntimeError::Config(format!(
+                        "session {} references unknown Agent revision {}@{}",
+                        session.id, effective.agent_id, effective.agent_revision
+                    )));
+                }
+            } else {
+                let effective = resolve_session_config(
+                    agent,
+                    &session.config_overrides,
+                    None,
+                    Some(&session.metadata.workspace),
+                )
+                .map_err(|error| {
+                    RuntimeError::Config(format!(
+                        "resolve configuration for session {}: {error}",
+                        session.id
+                    ))
+                })?;
                 session.config_revision = session_store
                     .update_config(
                         &session.id,
@@ -839,6 +917,7 @@ impl Runtime {
             engine: engine.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
+            agent_registry: Some(agent_registry.clone()),
             evidence: Some(security_audit),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
@@ -849,6 +928,7 @@ impl Runtime {
             ephemeral: RwLock::new(HashMap::new()),
             bus,
             configured_agents,
+            agent_registry: Some(agent_registry),
             ui_service,
             evidence,
             channels: tokio::sync::Mutex::new(Vec::new()),
@@ -861,6 +941,12 @@ impl Runtime {
     #[must_use]
     pub fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
         self.configured_agents.get(id)
+    }
+
+    /// Return the durable Agent registry used by production configuration.
+    #[must_use]
+    pub fn agent_registry(&self) -> Option<&AgentRegistry> {
+        self.agent_registry.as_ref()
     }
 
     /// Resolve and atomically replace one durable session's sparse overrides.
@@ -878,15 +964,35 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Config(format!("unknown session {session_id}")))?;
-        let agent = session
+        let mut agent = session
             .agents
             .iter()
             .find_map(|id| self.configured_agents.get(id))
+            .cloned()
             .ok_or_else(|| {
                 RuntimeError::Config(format!("session {session_id} has no configured Agent"))
             })?;
+        if let Some(effective) = &session.effective_config
+            && effective.agent_revision != agent.definition.revision
+        {
+            let registry = self
+                .agent_registry
+                .as_ref()
+                .ok_or_else(|| RuntimeError::Config("Agent registry is unavailable".into()))?;
+            let revision = registry
+                .load(&effective.agent_id, effective.agent_revision)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Config(format!(
+                        "unknown Agent revision {}@{}",
+                        effective.agent_id, effective.agent_revision
+                    ))
+                })?;
+            agent.definition = revision.definition;
+        }
         let effective =
-            resolve_session_config(agent, &overrides, None, Some(&session.metadata.workspace))
+            resolve_session_config(&agent, &overrides, None, Some(&session.metadata.workspace))
                 .map_err(|error| {
                     RuntimeError::Config(format!(
                         "resolve configuration for session {session_id}: {error}"
@@ -1454,6 +1560,7 @@ model_name = "model-a"
             secret.display()
         );
         let config = ServerConfig::from_toml(&input).unwrap();
+        let restart_config = config.clone();
         let runtime = Runtime::boot_config(config).await.unwrap();
 
         assert!(
@@ -1751,10 +1858,58 @@ model_name = "model-a"
                 .all(|denial| denial.resource_digest.as_deref()
                     != Some(created.session_id.0.as_str()))
         );
+        let registry = runtime.agent_registry().unwrap();
+        let original_revision = restart_config.agents[0].revision;
+        let mut next_definition = restart_config.agents[0].clone();
+        next_definition.revision += 1;
+        next_definition.spec.name = "Sylvander revised".into();
+        registry
+            .update(&restart_config, original_revision, next_definition.clone())
+            .await
+            .unwrap();
+        registry
+            .activate(
+                &next_definition.spec.id,
+                next_definition.revision,
+                original_revision,
+            )
+            .await
+            .unwrap();
         runtime.shutdown().await.unwrap();
         let counts = evidence.counts().await.unwrap();
         assert_eq!(counts.runs, 2);
         assert!(counts.events >= 1, "Agent lifecycle must reach evidence");
+
+        let restarted = Runtime::boot_config(restart_config).await.unwrap();
+        assert_eq!(
+            restarted
+                .configured_agent(&AgentId::new("assistant"))
+                .unwrap()
+                .definition
+                .revision,
+            next_definition.revision
+        );
+        let preserved = restarted
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            preserved.effective_config.unwrap().agent_revision,
+            original_revision,
+            "activation must not migrate an existing session"
+        );
+        let (_, updated) = restarted
+            .update_session_config(
+                &created.session_id,
+                preserved.config_revision,
+                SessionConfigOverrides::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.agent_revision, original_revision);
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]

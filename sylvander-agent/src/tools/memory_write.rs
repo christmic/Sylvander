@@ -34,11 +34,11 @@ impl MemoryWriteTool {
 
 #[async_trait]
 impl Tool for MemoryWriteTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "write_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Store a piece of information in your long-term memory. \
          Use this to remember user preferences, important decisions, \
          project-specific facts, or anything else that should persist \
@@ -122,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "write_memory");
         assert!(!tool.description().is_empty());
     }
@@ -130,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_content_field() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
@@ -179,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn execute_missing_content_is_error() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let c = ctx();
         let result = tool.execute(&c, json!({"tags": ["test"]})).await;
         assert!(result.is_err());

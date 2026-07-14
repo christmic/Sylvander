@@ -7,6 +7,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
+#[derive(Default)]
 pub struct StartBackgroundTaskTool;
 
 impl StartBackgroundTaskTool {
@@ -18,11 +19,11 @@ impl StartBackgroundTaskTool {
 
 #[async_trait]
 impl Tool for StartBackgroundTaskTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "start_background_task"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Start an independent read-only background investigation and continue the main turn."
     }
 
