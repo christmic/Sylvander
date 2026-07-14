@@ -34,8 +34,7 @@ impl Component for HeaderPanel {
         let session_id = state
             .session_id
             .as_deref()
-            .map(|s| truncate(s, 8))
-            .unwrap_or_else(|| "—".into());
+            .map_or_else(|| "—".into(), |s| truncate(s, 8));
 
         // Compact Seed-Crab presence from the approved terminal system.
         // Line 1 right: <model> · <mode>  (coral model + dim mode)
@@ -108,25 +107,22 @@ fn session_label_for(state: &AppState) -> String {
         return "new session".into();
     }
     let active = state.session_id.as_deref();
-    if let Some(active_id) = active {
-        if let Some(e) = state.sessions.iter().find(|s| s.id == active_id) {
-            return e.label.clone();
-        }
+    if let Some(active_id) = active
+        && let Some(e) = state.sessions.iter().find(|s| s.id == active_id)
+    {
+        return e.label.clone();
     }
     state.sessions[0].label.clone()
 }
 
 fn workspace_label_for(state: &AppState) -> String {
-    if let Some(e) = state.sessions.iter().find(|s| {
-        state
-            .session_id
-            .as_deref()
-            .map(|id| s.id == id)
-            .unwrap_or(false)
-    }) {
-        if !e.workspace.is_empty() {
-            return theme::compact_workspace(&std::path::PathBuf::from(&e.workspace), 54);
-        }
+    if let Some(e) = state
+        .sessions
+        .iter()
+        .find(|s| state.session_id.as_deref().is_some_and(|id| s.id == id))
+        && !e.workspace.is_empty()
+    {
+        return theme::compact_workspace(&std::path::PathBuf::from(&e.workspace), 54);
     }
     theme::compact_workspace(&state.metadata.workspace, 54)
 }
@@ -212,9 +208,11 @@ mod tests {
         for y in 0..6 {
             for x in 0..120 {
                 if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "\u{25e6}" {
-                        panic!("header should not render crab when disconnected");
-                    }
+                    assert_ne!(
+                        c.symbol(),
+                        "\u{25e6}",
+                        "header should not render crab when disconnected"
+                    );
                 }
             }
         }

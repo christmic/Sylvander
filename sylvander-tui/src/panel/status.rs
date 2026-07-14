@@ -5,17 +5,17 @@
 //! - Right: up to **three** contextual unicode-symbol hints, mode-aware.
 //!
 //! Status modes are owned by `theme::StatusMode` (5-mode enum). This
-//! panel just derives which one is current based on AppState.
+//! panel just derives which one is current based on `AppState`.
 //!
 //! **Status contract** (M-T15.C):
 //! - `Disconnected`         — Unix socket is closed (`!` glyph + amber).
 //! - `Working`              — agent is iterating (`◐` glyph + blue).
 //!   Detected observationally: streaming buffer is non-empty, or a
-//!   ToolStep has any Pending child. (When the server starts emitting
-//!   `WorkingStarted`/`WorkingEnded` events, AppState.working_active
+//!   `ToolStep` has any Pending child. (When the server starts emitting
+//!   `WorkingStarted`/`WorkingEnded` events, `AppState.working_active`
 //!   will override this.)
 //! - `WaitingApproval`     — Approval modal is open (`●` glyph + amber).
-//! - `Asking`               — AskUser modal is open (`●` glyph + dim).
+//! - `Asking`               — `AskUser` modal is open (`●` glyph + dim).
 //! - `Idle`                 — everything else (`·` glyph + dim).
 
 use ratatui::{
@@ -127,11 +127,10 @@ impl Component for StatusPanel {
         let session = state
             .session_id
             .as_deref()
-            .map(|id| id.chars().take(8).collect::<String>())
-            .unwrap_or_else(|| "—".into());
+            .map_or_else(|| "—".into(), |id| id.chars().take(8).collect::<String>());
         let model = state.metadata.model_label();
         let branch = &state.metadata.branch;
-        let surface = state.modals.top().map(|modal| modal.title());
+        let surface = state.modals.top().map(super::super::modal::Modal::title);
         let mode_label = surface_status_label(surface, mode);
         if area.width < 100 {
             let compact = Line::from(vec![
@@ -280,14 +279,13 @@ fn hints_for_surface(
         Some("Permissions") => picker_hints("↵ apply"),
         Some("Mention file") => picker_hints("↵ insert"),
         Some("Sessions") => picker_hints("↵ load"),
-        Some("Plan review") => decision_hints("↵ confirm"),
+        Some("Plan review" | "Rollback files") => decision_hints("↵ confirm"),
         Some("Plan editor") => [
             Span::styled("↑↓ step", theme::text_muted()),
             Span::raw("   "),
             Span::styled("↵ done · esc back", theme::text_muted()),
         ],
         Some("Plan · Edit step") => picker_hints("↵ save"),
-        Some("Rollback files") => decision_hints("↵ confirm"),
         Some("Tool output") => [
             Span::styled("↑↓ scroll", theme::text_muted()),
             Span::raw("   "),

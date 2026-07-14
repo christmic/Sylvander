@@ -65,7 +65,7 @@ impl Modal for ModelPicker {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Model"
     }
 

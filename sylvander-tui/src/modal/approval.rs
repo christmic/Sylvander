@@ -57,7 +57,7 @@ pub struct ApprovalModal {
     pub mode: ApprovalMode,
     /// Typed feedback for the current rejection. Captured in `RejectFeedback`.
     pub feedback: String,
-    /// Position of ModalStack: 0 = first in stack, 1 = second...
+    /// Position of `ModalStack`: 0 = first in stack, 1 = second...
     /// Set by `ModalStack::push` (we accept it via constructor default 0).
     pub stack_position: usize,
     /// Total modal count when this modal was pushed.
@@ -136,7 +136,7 @@ impl Modal for ApprovalModal {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Tool Approval"
     }
 
@@ -273,9 +273,7 @@ impl ApprovalModal {
             (KeyCode::Char('p'), KeyModifiers::NONE) => {
                 self.approve_with_scope(sylvander_protocol::ApprovalScope::Persistent, state)
             }
-            (KeyCode::Char('n'), KeyModifiers::NONE) | (KeyCode::Char('r'), KeyModifiers::NONE) => {
-                self.begin_rejection(state)
-            }
+            (KeyCode::Char('n' | 'r'), KeyModifiers::NONE) => self.begin_rejection(state),
             (KeyCode::Char(number @ '1'..='4'), KeyModifiers::NONE) => {
                 let index = number as usize - '1' as usize;
                 if index < self.choices().len() {
@@ -322,7 +320,7 @@ impl ApprovalModal {
                 }
                 Consumed::Yes { dismiss: false }
             }
-            (KeyCode::Left, _) | (KeyCode::Backspace, _) => {
+            (KeyCode::Left | KeyCode::Backspace, _) => {
                 if self.current > 0 {
                     self.current -= 1;
                     self.decisions[self.current] = Decision::Pending;
@@ -331,8 +329,9 @@ impl ApprovalModal {
                 }
                 Consumed::Yes { dismiss: false }
             }
-            (KeyCode::Esc, _) => reject_pending_and_finish(self, state),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => reject_pending_and_finish(self, state),
+            (KeyCode::Esc, _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                reject_pending_and_finish(self, state)
+            }
             _ => Consumed::Ignored,
         }
     }
@@ -436,11 +435,10 @@ impl ApprovalModal {
             KeyCode::Char(c) => {
                 if !key.modifiers.contains(KeyModifiers::CONTROL)
                     && !key.modifiers.contains(KeyModifiers::ALT)
+                    && self.feedback.chars().count() < 500
                 {
-                    if self.feedback.chars().count() < 500 {
-                        self.feedback.push(c);
-                        state.dirty.mark();
-                    }
+                    self.feedback.push(c);
+                    state.dirty.mark();
                 }
                 Consumed::Yes { dismiss: false }
             }
@@ -467,7 +465,7 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
         return Consumed::Yes { dismiss: false };
     }
     // Last tool or all decided — fill remaining pending as approve (default).
-    for d in modal.decisions.iter_mut() {
+    for d in &mut modal.decisions {
         if *d == Decision::Pending {
             *d = Decision::Approve(sylvander_protocol::ApprovalScope::Once);
         }
@@ -475,7 +473,7 @@ fn advance(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     finish(modal, state)
 }
 
-/// Drain decisions into pending_actions and dismiss the modal.
+/// Drain decisions into `pending_actions` and dismiss the modal.
 fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     let rejection_reason = (!modal.feedback.trim().is_empty())
         .then(|| modal.feedback.trim().chars().take(500).collect::<String>());
