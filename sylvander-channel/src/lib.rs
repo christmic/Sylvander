@@ -28,6 +28,7 @@
 //! └──────────────────────────────────────────────┘
 //! ```
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -36,8 +37,9 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, BoundaryContext, BoundaryError, RunFeedback, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionId, UiClientMessage,
+    AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, RunFeedback,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionId, UiClientMessage,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
@@ -163,6 +165,87 @@ impl ChannelContext {
     }
 }
 
+/// Resolve or create a platform-owned session through the runtime boundary.
+///
+/// External adapters use this instead of writing a session and publishing a
+/// message directly. It applies Agent access policy on creation and session
+/// ownership, payload, and rate policy to every inbound chat message.
+pub async fn authorize_external_chat(
+    context: &ChannelContext,
+    boundary: &BoundaryContext,
+    existing_session: Option<SessionId>,
+    agent_id: AgentId,
+    label: String,
+    text: &str,
+    external_meta: BTreeMap<String, String>,
+) -> Result<SessionId, BoundaryError> {
+    let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
+        code: BoundaryErrorCode::InvalidScope,
+        operation: "external_chat".into(),
+        request_id: boundary.request_id.clone(),
+        message: "runtime authorization service is unavailable".into(),
+        retry_after_ms: None,
+    })?;
+
+    let session_id = if let Some(session_id) = existing_session {
+        session_id
+    } else {
+        let request = SessionCreateRequest {
+            agent_id,
+            label,
+            channel_id: Some(boundary.channel_instance_id.clone()),
+            overrides: SessionConfigOverrides::default(),
+        };
+        ui.authorize_message(
+            boundary,
+            &UiClientMessage::CreateSession {
+                request: request.clone(),
+            },
+        )
+        .await?;
+        let state = ui.create_session(boundary, request).await?;
+        let mut session = context
+            .sessions
+            .get(&state.session_id)
+            .await
+            .map_err(|error| external_session_error(boundary, error.to_string()))?
+            .ok_or_else(|| external_session_error(boundary, "created session was not persisted"))?;
+        for (key, value) in external_meta {
+            session
+                .external_meta
+                .insert(key, serde_json::Value::String(value));
+        }
+        context
+            .sessions
+            .save(&session)
+            .await
+            .map_err(|error| external_session_error(boundary, error.to_string()))?;
+        state.session_id
+    };
+
+    ui.authorize_message(
+        boundary,
+        &UiClientMessage::Chat {
+            text: text.into(),
+            attachments: Vec::new(),
+            session_id: Some(session_id.0.clone()),
+            workspace: None,
+        },
+    )
+    .await?;
+    Ok(session_id)
+}
+
+fn external_session_error(boundary: &BoundaryContext, message: impl Into<String>) -> BoundaryError {
+    BoundaryError {
+        code: BoundaryErrorCode::InvalidScope,
+        operation: "external_chat".into(),
+        request_id: boundary.request_id.clone(),
+        message: message.into(),
+        retry_after_ms: None,
+    }
+}
+
 #[derive(Clone)]
 pub struct ChannelReadiness {
     inner: Arc<ReadinessInner>,
@@ -218,5 +301,44 @@ impl ChannelReadiness {
 impl Default for ChannelReadiness {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod};
+
+    #[tokio::test]
+    async fn external_chat_fails_closed_without_runtime_authorizer() {
+        let context = ChannelContext::new(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        );
+        let boundary = BoundaryContext::authenticated(
+            AuthenticatedPrincipal::user(
+                "telegram:bot-a:42",
+                AuthenticationMethod::PlatformIdentity,
+            ),
+            "bot-a",
+            "telegram",
+            "update-1",
+        );
+
+        let error = authorize_external_chat(
+            &context,
+            &boundary,
+            None,
+            AgentId::new("assistant"),
+            "telegram-42".into(),
+            "hello",
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, BoundaryErrorCode::InvalidScope);
     }
 }

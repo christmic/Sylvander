@@ -2904,6 +2904,7 @@ name = "sylvander-channel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde_json",
  "sylvander-agent",
  "sylvander-protocol",
  "tokio",
