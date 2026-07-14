@@ -28,6 +28,10 @@ mod boundary;
 pub mod composition;
 pub mod config;
 pub mod evidence;
+#[allow(dead_code)] // internal API consumed by model routing/admin batches
+mod model_registry;
+#[cfg(test)]
+mod model_registry_tests;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]
