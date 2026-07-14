@@ -43,7 +43,7 @@ use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 
-use crate::composition::{ConfiguredAgent, build_agents};
+use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{EvidenceRecorder, EvidenceStore};
 
@@ -261,11 +261,41 @@ impl Runtime {
             configured_agents.insert(agent.spec.id.clone(), agent);
         }
 
-        for session in session_store
+        for mut session in session_store
             .list_persistent()
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
         {
+            let agent = session
+                .agents
+                .iter()
+                .find_map(|id| configured_agents.get(id))
+                .ok_or_else(|| {
+                    RuntimeError::Config(format!("session {} has no configured Agent", session.id))
+                })?;
+            let effective = resolve_session_config(
+                agent,
+                &session.config_overrides,
+                Some(&session.metadata.workspace),
+            )
+            .map_err(|error| {
+                RuntimeError::Config(format!(
+                    "resolve configuration for session {}: {error}",
+                    session.id
+                ))
+            })?;
+            if session.effective_config.as_ref() != Some(&effective) {
+                session.config_revision = session_store
+                    .update_config(
+                        &session.id,
+                        session.config_revision,
+                        session.config_overrides.clone(),
+                        effective.clone(),
+                    )
+                    .await
+                    .map_err(|error| RuntimeError::Store(error.to_string()))?;
+                session.effective_config = Some(effective);
+            }
             engine
                 .attach_session(
                     session.id.clone(),
@@ -868,6 +898,21 @@ model_name = "model-a"
             runtime
                 .configured_agent(&AgentId::new("assistant"))
                 .is_some()
+        );
+        let migrated = runtime
+            .session_store
+            .get(&SessionId::new("restored-session"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated.config_revision, 1);
+        let effective = migrated.effective_config.unwrap();
+        assert_eq!(effective.agent_id, AgentId::new("assistant"));
+        assert_eq!(effective.model_id, "model-a");
+        assert_eq!(effective.execution_target, "local");
+        assert_eq!(
+            effective.provenance.user_workspace.kind,
+            sylvander_protocol::SessionConfigSourceKind::LegacyMigration
         );
         let evidence = runtime
             .evidence_store()

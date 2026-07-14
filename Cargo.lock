@@ -2995,6 +2995,7 @@ dependencies = [
  "sylvander-agent",
  "sylvander-channel",
  "sylvander-llm-anthropic",
+ "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
