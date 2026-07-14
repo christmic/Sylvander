@@ -103,6 +103,69 @@ pub struct ModelSelection {
     pub model_id: String,
 }
 
+/// Backward-compatible model selection accepted by public UI requests.
+///
+/// Current clients send a provider-qualified object. Legacy clients may keep
+/// sending a bare model id, which the server must resolve against the visible
+/// catalog before it mutates session configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ModelSelectionInput {
+    Qualified(ModelSelection),
+    Legacy(String),
+}
+
+impl From<String> for ModelSelectionInput {
+    fn from(model_id: String) -> Self {
+        Self::Legacy(model_id)
+    }
+}
+
+impl From<&str> for ModelSelectionInput {
+    fn from(model_id: &str) -> Self {
+        Self::Legacy(model_id.to_owned())
+    }
+}
+
+impl ModelSelectionInput {
+    /// Resolve one public input without guessing when a legacy id is absent
+    /// or shared by more than one provider.
+    pub fn resolve(
+        &self,
+        catalog: &[ModelSelection],
+    ) -> Result<ModelSelection, ModelSelectionResolutionError> {
+        match self {
+            Self::Qualified(selection) => catalog
+                .iter()
+                .find(|candidate| *candidate == selection)
+                .cloned()
+                .ok_or_else(|| ModelSelectionResolutionError::Unavailable {
+                    provider_id: selection.provider_id.clone(),
+                    model_id: selection.model_id.clone(),
+                }),
+            Self::Legacy(model_id) => {
+                let matches = catalog
+                    .iter()
+                    .filter(|candidate| candidate.model_id == *model_id)
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [] => Err(ModelSelectionResolutionError::LegacyUnavailable {
+                        model_id: model_id.clone(),
+                    }),
+                    [selection] => Ok((*selection).clone()),
+                    _ => Err(ModelSelectionResolutionError::LegacyAmbiguous {
+                        model_id: model_id.clone(),
+                        provider_ids: matches
+                            .iter()
+                            .map(|selection| selection.provider_id.clone())
+                            .collect(),
+                    }),
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModelSelectionResolutionError {
     #[error("model and legacy model_id cannot both be set")]
@@ -606,25 +669,9 @@ impl SessionConfigOverrides {
                     })
                 }
             }
-            (None, Some(legacy_model_id)) => {
-                let matches = catalog
-                    .iter()
-                    .filter(|candidate| candidate.model_id == *legacy_model_id)
-                    .collect::<Vec<_>>();
-                match matches.as_slice() {
-                    [] => Err(ModelSelectionResolutionError::LegacyUnavailable {
-                        model_id: legacy_model_id.clone(),
-                    }),
-                    [selection] => Ok(Some((*selection).clone())),
-                    _ => Err(ModelSelectionResolutionError::LegacyAmbiguous {
-                        model_id: legacy_model_id.clone(),
-                        provider_ids: matches
-                            .iter()
-                            .map(|selection| selection.provider_id.clone())
-                            .collect(),
-                    }),
-                }
-            }
+            (None, Some(legacy_model_id)) => ModelSelectionInput::Legacy(legacy_model_id.clone())
+                .resolve(catalog)
+                .map(Some),
             (None, None) => Ok(None),
         }
     }
@@ -1409,6 +1456,46 @@ mod tests {
         );
         assert!(schema["properties"]["provider_id"].is_object());
         assert!(schema["properties"]["model_id"].is_object());
+    }
+
+    #[test]
+    fn public_model_input_resolves_qualified_and_unique_legacy_models() {
+        let catalog = vec![model("anthropic", "shared"), model("openai", "gpt-5")];
+
+        assert_eq!(
+            ModelSelectionInput::Qualified(model("openai", "gpt-5")).resolve(&catalog),
+            Ok(model("openai", "gpt-5"))
+        );
+        assert_eq!(
+            ModelSelectionInput::Legacy("shared".into()).resolve(&catalog),
+            Ok(model("anthropic", "shared"))
+        );
+        assert!(matches!(
+            ModelSelectionInput::Qualified(model("missing", "shared")).resolve(&catalog),
+            Err(ModelSelectionResolutionError::Unavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn public_legacy_model_input_fails_closed_when_missing_or_ambiguous() {
+        let catalog = vec![model("anthropic", "shared"), model("openai", "shared")];
+
+        assert!(matches!(
+            ModelSelectionInput::Legacy("missing".into()).resolve(&catalog),
+            Err(ModelSelectionResolutionError::LegacyUnavailable { .. })
+        ));
+        assert_eq!(
+            ModelSelectionInput::Legacy("shared".into()).resolve(&catalog),
+            Err(ModelSelectionResolutionError::LegacyAmbiguous {
+                model_id: "shared".into(),
+                provider_ids: vec!["anthropic".into(), "openai".into()],
+            })
+        );
+
+        let schema = serde_json::to_string(&schemars::schema_for!(ModelSelectionInput)).unwrap();
+        assert!(schema.contains("anyOf"));
+        assert!(schema.contains("ModelSelection"));
+        assert!(schema.contains(r#""type":"string""#));
     }
 
     #[test]

@@ -146,7 +146,7 @@ impl AgentService {
                 reasoning_effort,
             } => ClientMsg::SelectModel {
                 session_id: Some(session_id),
-                model,
+                model: model.into(),
                 reasoning_effort,
             },
             Action::SelectPermissions {
