@@ -2979,6 +2979,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -3100,6 +3101,7 @@ dependencies = [
 name = "sylvander-tui"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "crossterm",
  "insta",

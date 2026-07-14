@@ -114,6 +114,7 @@ fn build_channels(
                     Arc::new(
                         sylvander_channel_unix::UnixChannel::new(path, agent_id)
                             .with_instance_id(&channel.id)
+                            .with_request_limit(config.server.boundary.max_request_bytes)
                             .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
                                 model: primary.id.clone(),
                                 reasoning_effort: ReasoningEffort::Off,
@@ -141,6 +142,7 @@ fn build_channels(
                     bearer_token,
                 } => Arc::new(
                     sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
+                        .with_request_limit(config.server.boundary.max_request_bytes)
                         .with_bearer_auth(
                             &channel.id,
                             principal_id,
@@ -153,6 +155,7 @@ fn build_channels(
                     bearer_token,
                 } => Arc::new(
                     sylvander_channel_ws::WsChannel::new(parse_addr(bind)?, agent_id)
+                        .with_request_limit(config.server.boundary.max_request_bytes)
                         .with_bearer_auth(
                             &channel.id,
                             principal_id,

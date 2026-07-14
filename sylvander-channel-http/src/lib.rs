@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
@@ -35,6 +35,7 @@ pub struct HttpChannel {
     instance_id: String,
     principal_id: Option<String>,
     bearer_token: Option<String>,
+    max_request_bytes: usize,
 }
 
 impl HttpChannel {
@@ -45,7 +46,14 @@ impl HttpChannel {
             instance_id: "http".into(),
             principal_id: None,
             bearer_token: None,
+            max_request_bytes: 1024 * 1024,
         }
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
     }
 
     pub fn with_bearer_auth(
@@ -84,6 +92,7 @@ impl Channel for HttpChannel {
                 get(|| async { Json(serde_json::json!({"status":"ok"})) }),
             )
             .route("/chat", post(chat))
+            .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.addr).await.unwrap();
@@ -261,6 +270,13 @@ mod tests {
     use sylvander_channel::UiService;
 
     struct DenyAgentAccess;
+
+    #[test]
+    fn request_limit_is_configurable() {
+        let channel =
+            HttpChannel::new("127.0.0.1:0".parse().unwrap(), "agent").with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
 
     #[async_trait]
     impl UiService for DenyAgentAccess {
