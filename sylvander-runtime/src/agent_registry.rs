@@ -72,6 +72,23 @@ impl AgentRegistry {
         .map_err(|error| AgentRegistryError::Task(error.to_string()))?
     }
 
+    pub(crate) async fn run_with<T, E>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<AgentRegistryError> + Send + 'static,
+    {
+        let connection = self.connection.clone();
+        task::spawn_blocking(move || {
+            let mut connection = connection.blocking_lock();
+            operation(&mut connection)
+        })
+        .await
+        .map_err(|error| E::from(AgentRegistryError::Task(error.to_string())))?
+    }
+
     /// Import validated configuration definitions without changing an
     /// existing active revision. Configuration is bootstrap input, not an
     /// implicit rollback mechanism.

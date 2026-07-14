@@ -28,6 +28,10 @@ mod boundary;
 pub mod composition;
 pub mod config;
 pub mod evidence;
+#[allow(dead_code)] // internal API consumed by provider routing/admin batches
+mod provider_registry;
+#[cfg(test)]
+mod provider_registry_tests;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
