@@ -379,12 +379,13 @@ pub fn run_stream(
 ) -> impl Stream<Item = AgentEvent> + Send + '_ {
     async_stream::stream! {
         let mut messages = initial_messages;
-        let mut total_usage = Usage {
+        let mut cumulative_usage = Usage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
         };
+        let mut last_provider_usage = cumulative_usage.clone();
         let mut final_message: Option<Message> = None;
 
         for iteration in 1..=config.max_iterations {
@@ -395,7 +396,7 @@ pub fn run_stream(
                 let auto_threshold = (config.model.context_window as f32
                     * super::compress::layers::auto_compact::DEFAULT_TRIGGER_RATIO)
                     as u32;
-                if total_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
+                if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
                 let auto_llm = super::compress::AgentLoopAutoCompactLlm::new(
@@ -403,7 +404,7 @@ pub fn run_stream(
                 );
                 let mut compress_ctx = super::compress::CompressContext {
                     messages: &mut messages,
-                    last_usage: &total_usage,
+                    last_usage: &last_provider_usage,
                     model_info: &config.model,
                     auto_compact_llm: Some(&auto_llm),
                 };
@@ -1044,15 +1045,18 @@ pub fn run_stream(
                 }
             }
 
-            // 8. Update running usage (needed for next iteration's
-            //    compression trigger checks).
-            total_usage = response.usage.clone();
+            // 8. Keep the provider's latest context-window report separate
+            //    from turn-wide accounting. Compression must not compare a
+            //    sum of repeated prompts against one model context window.
+            last_provider_usage = response.usage.clone();
+            cumulative_usage = saturating_add_usage(&cumulative_usage, &last_provider_usage);
 
             // 9. Emit IterationEnd — only AFTER all iter-internal
             //    events (chunks + tool calls) have fired.
             yield AgentEvent::IterationEnd {
                 iteration,
-                usage: total_usage.clone(),
+                usage: cumulative_usage.clone(),
+                provider_usage: last_provider_usage.clone(),
             };
 
             // 10. Check stop_reason.
@@ -1075,7 +1079,7 @@ pub fn run_stream(
                 model: config.model.id.clone(),
                 stop_reason: response_stop_reason,
                 stop_sequence: None,
-                usage: total_usage.clone(),
+                usage: cumulative_usage.clone(),
             });
 
             let terminal = matches!(
@@ -1465,6 +1469,28 @@ async fn consume_stream_to_run(
     })
 }
 
+fn saturating_add_usage(total: &Usage, next: &Usage) -> Usage {
+    Usage {
+        input_tokens: total.input_tokens.saturating_add(next.input_tokens),
+        output_tokens: total.output_tokens.saturating_add(next.output_tokens),
+        cache_creation_input_tokens: saturating_add_optional_tokens(
+            total.cache_creation_input_tokens,
+            next.cache_creation_input_tokens,
+        ),
+        cache_read_input_tokens: saturating_add_optional_tokens(
+            total.cache_read_input_tokens,
+            next.cache_read_input_tokens,
+        ),
+    }
+}
+
+fn saturating_add_optional_tokens(total: Option<u32>, next: Option<u32>) -> Option<u32> {
+    match (total, next) {
+        (None, None) => None,
+        (total, next) => Some(total.unwrap_or(0).saturating_add(next.unwrap_or(0))),
+    }
+}
+
 // =====================================================================
 // Conversion helpers
 // =====================================================================
@@ -1682,6 +1708,29 @@ mod tests {
             .build()
             .expect("build");
         assert_eq!(loop_.max_iterations(), 50);
+    }
+
+    #[test]
+    fn cumulative_usage_saturates_and_preserves_optional_cache_semantics() {
+        let total = Usage {
+            input_tokens: u32::MAX - 1,
+            output_tokens: 10,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(u32::MAX),
+        };
+        let next = Usage {
+            input_tokens: 10,
+            output_tokens: u32::MAX,
+            cache_creation_input_tokens: Some(4),
+            cache_read_input_tokens: None,
+        };
+
+        let cumulative = saturating_add_usage(&total, &next);
+        assert_eq!(cumulative.input_tokens, u32::MAX);
+        assert_eq!(cumulative.output_tokens, u32::MAX);
+        assert_eq!(cumulative.cache_creation_input_tokens, Some(4));
+        assert_eq!(cumulative.cache_read_input_tokens, Some(u32::MAX));
+        assert_eq!(saturating_add_optional_tokens(None, None), None);
     }
 
     #[test]

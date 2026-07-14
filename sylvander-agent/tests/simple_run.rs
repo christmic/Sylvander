@@ -280,7 +280,11 @@ async fn tool_use_triggers_tool_execution_and_continues() {
             }],
             "model": "claude-sonnet-5-20260601",
             "stop_reason": "tool_use",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 7
+            }
         })))
         .up_to_n_times(1)
         .mount(&server)
@@ -296,7 +300,11 @@ async fn tool_use_triggers_tool_execution_and_continues() {
             "content": [{"type": "text", "text": "It's sunny, 25°C in Tokyo."}],
             "model": "claude-sonnet-5-20260601",
             "stop_reason": "end_turn",
-            "usage": {"input_tokens": 20, "output_tokens": 8}
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "cache_read_input_tokens": 11
+            }
         })))
         .mount(&server)
         .await;
@@ -326,6 +334,32 @@ async fn tool_use_triggers_tool_execution_and_continues() {
 
     assert_eq!(run.final_message.id, "msg_2");
     assert_eq!(run.iterations, 2);
+    assert_eq!(run.total_usage.input_tokens, 30);
+    assert_eq!(run.total_usage.output_tokens, 13);
+    assert_eq!(run.total_usage.cache_creation_input_tokens, Some(7));
+    assert_eq!(run.total_usage.cache_read_input_tokens, Some(11));
+    assert_eq!(run.final_message.usage, run.total_usage);
+
+    let iteration_usage = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::IterationEnd {
+                usage,
+                provider_usage,
+                ..
+            } => Some((usage.clone(), provider_usage.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(iteration_usage.len(), 2);
+    assert_eq!(iteration_usage[0].0, iteration_usage[0].1);
+    assert_eq!(iteration_usage[1].0, run.total_usage);
+    assert_eq!(iteration_usage[1].1.input_tokens, 20);
+    assert_eq!(iteration_usage[1].1.output_tokens, 8);
+    assert_eq!(iteration_usage[1].1.cache_creation_input_tokens, None);
+    assert_eq!(iteration_usage[1].1.cache_read_input_tokens, Some(11));
 
     // Verify tool was called and recorded
     let tool_called = {

@@ -195,8 +195,8 @@ async fn real_use_case_read_and_summarize() {
             .any(|b| matches!(b, sylvander_llm_anthropic::api::types::ContentBlock::Text(t) if t.text.contains("M3"))),
         "final message should mention M3"
     );
-    assert_eq!(run.total_usage.input_tokens, 80);
-    assert_eq!(run.total_usage.output_tokens, 45);
+    assert_eq!(run.total_usage.input_tokens, 105);
+    assert_eq!(run.total_usage.output_tokens, 75);
 
     // === Verify the event stream shows the full flow ===
     let event_log = events.lock().unwrap();
