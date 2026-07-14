@@ -259,8 +259,8 @@ mod tests {
             usage: TokenUsage {
                 input_tokens: 10,
                 output_tokens: 2,
-                cache_write_tokens: 3,
-                cache_read_tokens: 4,
+                cache_write_tokens: Some(3),
+                cache_read_tokens: Some(4),
             },
         };
         let event = ModelStreamEvent::Completed(response);
