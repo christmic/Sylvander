@@ -256,9 +256,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   Evidence: `sylvander-runtime/src/config`, `config/sylvander.example.toml`, and
   `docs/server-configuration.md`; runtime tests cover validation, secrets,
   migration, the maintained example, composition, and durable restart.
-- [ ] **P0.2 Production composition root:** make `sylvander-runtime` the only
+- [x] **P0.2 Production composition root:** make `sylvander-runtime` the only
   boot path; use the configured durable store; supervise Agents and channels;
   graceful drain and explicit startup failures.
+  Evidence: runtime-owned task handles, readiness handshakes, transactional
+  channel startup, unexpected Agent/channel exit reporting, bounded cooperative
+  drain, and a real Unix/HTTP server startup-health-shutdown smoke test.
 - [ ] **P0.3 Session effective configuration:** persist Agent revision, model,
   reasoning, permissions, prompt profile, workspaces, executor, and override
   provenance; snapshot atomically per turn; migrate existing sessions.

@@ -36,18 +36,26 @@ async fn main() -> Result<(), ServerError> {
         "sylvander server running"
     );
 
-    let channel_failure = tokio::select! {
+    let runtime_failure = tokio::select! {
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|error| ServerError::Signal(error.to_string()))?;
             info!("shutdown signal received");
             None
         }
-        channel = runtime.wait_for_channel_exit() => channel,
+        channel = runtime.wait_for_channel_exit() => channel.map(RuntimeFailure::Channel),
+        agent = runtime.wait_for_agent_exit() => agent.map(RuntimeFailure::Agent),
     };
-    runtime.shutdown().await?;
-    if let Some(channel) = channel_failure {
-        return Err(ServerError::ChannelStopped(channel));
+    let shutdown = runtime.shutdown().await;
+    if let Some(failure) = runtime_failure {
+        if let Err(error) = shutdown {
+            tracing::warn!(%error, "runtime cleanup also reported an error");
+        }
+        return Err(match failure {
+            RuntimeFailure::Channel(channel) => ServerError::ChannelStopped(channel),
+            RuntimeFailure::Agent(agent) => ServerError::AgentStopped(agent.to_string()),
+        });
     }
+    shutdown?;
     Ok(())
 }
 
@@ -234,4 +242,11 @@ enum ServerError {
     Signal(String),
     #[error("channel `{0}` exited while the server was running")]
     ChannelStopped(String),
+    #[error("Agent `{0}` exited while the server was running")]
+    AgentStopped(String),
+}
+
+enum RuntimeFailure {
+    Channel(String),
+    Agent(AgentId),
 }
