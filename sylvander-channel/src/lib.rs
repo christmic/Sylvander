@@ -37,12 +37,18 @@ use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentDescriptor, BoundaryContext, BoundaryError, RunFeedback, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionId, UiClientMessage,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait UiService: Send + Sync {
+    /// Authorize one complete public operation before a transport dispatches it.
+    async fn authorize_message(
+        &self,
+        boundary: &BoundaryContext,
+        message: &UiClientMessage,
+    ) -> Result<(), BoundaryError>;
     async fn discover_agents(
         &self,
         boundary: &BoundaryContext,
