@@ -386,6 +386,28 @@ impl RuntimeUiService {
         message: &sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
         require_principal(boundary, ui_operation(message))?;
+        if let sylvander_protocol::UiClientMessage::SubmitFeedback { feedback } = message {
+            let store = self.evidence.as_ref().ok_or_else(|| {
+                boundary_failure(
+                    boundary,
+                    "submit_feedback",
+                    "security audit store is unavailable",
+                )
+            })?;
+            let session_id = store
+                .feedback_session(feedback.run_id.clone(), feedback.turn_id.clone())
+                .await
+                .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?
+                .ok_or_else(|| {
+                    boundary_failure(
+                        boundary,
+                        "submit_feedback",
+                        "feedback must identify one attributable session",
+                    )
+                })?;
+            self.owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
+                .await?;
+        }
         if let Some(session_id) = ui_session_id(message) {
             self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
                 .await?;
@@ -1540,8 +1562,55 @@ model_name = "model-a"
         let evidence = runtime
             .evidence_store()
             .expect("evidence enabled by default");
+        evidence
+            .start_run("feedback-auth-run".into(), "test".into(), 10)
+            .await
+            .unwrap();
+        evidence
+            .start_turn(crate::evidence::TurnStart {
+                id: "feedback-auth-turn".into(),
+                run_id: "feedback-auth-run".into(),
+                session_id: created.session_id.0.clone(),
+                agent_id: Some("assistant".into()),
+                started_at: 11,
+                input_bytes: 0,
+                input_digest: None,
+            })
+            .await
+            .unwrap();
+        let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
+            feedback: RunFeedback {
+                run_id: "feedback-auth-run".into(),
+                turn_id: Some("feedback-auth-turn".into()),
+                rating: sylvander_protocol::FeedbackRating::Positive,
+                note: None,
+                tags: Vec::new(),
+            },
+        };
+        sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &feedback_message,
+        )
+        .await
+        .expect("the session owner may submit feedback");
+        let denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &stranger,
+            &feedback_message,
+        )
+        .await
+        .expect_err("another principal must not submit feedback for the turn");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        evidence
+            .finish_run("feedback-auth-run".into(), 12, "succeeded")
+            .await
+            .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 2);
+        assert_eq!(denials.len(), 3);
         assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
             || denial.code == "unauthenticated"));
         assert!(
@@ -1552,7 +1621,7 @@ model_name = "model-a"
         );
         runtime.shutdown().await.unwrap();
         let counts = evidence.counts().await.unwrap();
-        assert_eq!(counts.runs, 1);
+        assert_eq!(counts.runs, 2);
         assert!(counts.events >= 1, "Agent lifecycle must reach evidence");
     }
 
