@@ -21,8 +21,10 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{RwLock, mpsc};
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
@@ -52,6 +54,8 @@ pub struct AgentHandle {
     pub status: AgentStatus,
     /// Receiver for the agent's status updates (engine monitors this).
     status_rx: mpsc::UnboundedReceiver<BusMessage>,
+    task: Option<JoinHandle<()>>,
+    expected_exit: Arc<AtomicBool>,
 }
 
 impl AgentHandle {
@@ -113,16 +117,35 @@ pub struct AgentRunEngine {
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     /// Active sessions.
     sessions: RwLock<HashMap<SessionId, SessionMeta>>,
+    exit_tx: mpsc::UnboundedSender<AgentId>,
+    exits: tokio::sync::Mutex<mpsc::UnboundedReceiver<AgentId>>,
+}
+
+struct AgentExitSignal {
+    agent_id: AgentId,
+    expected: Arc<AtomicBool>,
+    sender: mpsc::UnboundedSender<AgentId>,
+}
+
+impl Drop for AgentExitSignal {
+    fn drop(&mut self) {
+        if !self.expected.load(Ordering::SeqCst) {
+            let _ = self.sender.send(self.agent_id.clone());
+        }
+    }
 }
 
 impl AgentRunEngine {
     /// Create a new engine.
     #[must_use]
     pub fn new(bus: Arc<dyn MessageBus>) -> Self {
+        let (exit_tx, exits) = mpsc::unbounded_channel();
         Self {
             bus,
             agents: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
+            exit_tx,
+            exits: tokio::sync::Mutex::new(exits),
         }
     }
 
@@ -173,11 +196,9 @@ impl AgentRunEngine {
             });
         }
 
-        {
-            let agents = self.agents.read().await;
-            if agents.contains_key(&agent_id) {
-                return Err(EngineError::AlreadySpawned(agent_id));
-            }
+        let mut agents = self.agents.write().await;
+        if agents.contains_key(&agent_id) {
+            return Err(EngineError::AlreadySpawned(agent_id));
         }
 
         // Subscribe to all messages for this agent (chat + system)
@@ -203,9 +224,17 @@ impl AgentRunEngine {
             .map_err(|e| EngineError::Bus(format!("status subscribe failed: {e}")))?;
 
         let agent_id_clone = agent_id.clone();
+        let expected_exit = Arc::new(AtomicBool::new(false));
+        let task_expected_exit = expected_exit.clone();
+        let exit_tx = self.exit_tx.clone();
 
         // Spawn the agent task
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
+            let _exit_signal = AgentExitSignal {
+                agent_id: agent_id_clone.clone(),
+                expected: task_expected_exit,
+                sender: exit_tx,
+            };
             run.run(inbox).await;
             info!(agent_id = %agent_id_clone, "agent task exited");
         });
@@ -215,6 +244,8 @@ impl AgentRunEngine {
             spec,
             status: AgentStatus::Starting,
             status_rx,
+            task: Some(task),
+            expected_exit: expected_exit.clone(),
         };
 
         // Return a lightweight copy before moving the handle into the map
@@ -223,9 +254,11 @@ impl AgentRunEngine {
             spec: handle.spec.clone(),
             status: handle.status,
             status_rx: mpsc::unbounded_channel().1, // dummy — caller uses list_agents for status
+            task: None,
+            expected_exit,
         };
 
-        self.agents.write().await.insert(agent_id.clone(), handle);
+        agents.insert(agent_id.clone(), handle);
 
         info!(agent_id = %agent_id, "agent spawned");
         Ok(ret)
@@ -240,15 +273,33 @@ impl AgentRunEngine {
     /// Returns [`EngineError`] if the agent is not found or doesn't
     /// stop within the timeout.
     pub async fn despawn(&self, agent_id: &AgentId) -> Result<(), EngineError> {
+        let already_finished = {
+            let mut agents = self.agents.write().await;
+            let handle = agents
+                .get_mut(agent_id)
+                .ok_or_else(|| EngineError::NotFound(agent_id.clone()))?;
+            handle.expected_exit.store(true, Ordering::SeqCst);
+            handle.task.as_ref().is_some_and(JoinHandle::is_finished)
+        };
+
         // Publish stop command via the bus
-        let stop_msg = BusMessage::system_stop(agent_id.clone());
-        self.bus
-            .publish(stop_msg)
-            .await
-            .map_err(|e| EngineError::Bus(format!("stop publish failed: {e}")))?;
+        if !already_finished {
+            let stop_msg = BusMessage::system_stop(agent_id.clone());
+            if let Err(error) = self.bus.publish(stop_msg).await {
+                if let Some(handle) = self.agents.write().await.get_mut(agent_id) {
+                    handle.expected_exit.store(false, Ordering::SeqCst);
+                    if handle.task.as_ref().is_some_and(JoinHandle::is_finished) {
+                        let _ = self.exit_tx.send(agent_id.clone());
+                    }
+                }
+                return Err(EngineError::Bus(format!("stop publish failed: {error}")));
+            }
+        }
 
         // Wait for the agent to stop
-        let stopped = {
+        let stopped = if already_finished {
+            true
+        } else {
             let mut agents = self.agents.write().await;
             if let Some(handle) = agents.get_mut(agent_id) {
                 handle.wait_for_status(AgentStatus::Stopped, 5000).await
@@ -257,13 +308,39 @@ impl AgentRunEngine {
             }
         };
 
-        if !stopped {
-            warn!(agent_id = %agent_id, "agent did not stop within timeout");
+        let mut handle = self
+            .agents
+            .write()
+            .await
+            .remove(agent_id)
+            .ok_or_else(|| EngineError::NotFound(agent_id.clone()))?;
+        if let Some(mut task) = handle.task.take() {
+            if stopped {
+                if tokio::time::timeout(tokio::time::Duration::from_secs(1), &mut task)
+                    .await
+                    .is_err()
+                {
+                    warn!(agent_id = %agent_id, "agent task did not exit after reporting stopped");
+                    task.abort();
+                    let _ = task.await;
+                }
+            } else {
+                task.abort();
+                let _ = task.await;
+            }
         }
 
-        self.agents.write().await.remove(agent_id);
+        if !stopped {
+            return Err(EngineError::StopTimeout(agent_id.clone()));
+        }
+
         info!(agent_id = %agent_id, "agent despawned");
         Ok(())
+    }
+
+    /// Wait until an Agent task exits without a matching despawn request.
+    pub async fn wait_for_agent_exit(&self) -> Option<AgentId> {
+        self.exits.lock().await.recv().await
     }
 
     /// List all running agents with their current status.
@@ -282,6 +359,8 @@ impl AgentRunEngine {
                 spec: handle.spec.clone(),
                 status: handle.status,
                 status_rx: mpsc::unbounded_channel().1,
+                task: None,
+                expected_exit: handle.expected_exit.clone(),
             });
         }
         result
@@ -295,6 +374,8 @@ impl AgentRunEngine {
             spec: h.spec.clone(),
             status: h.status,
             status_rx: mpsc::unbounded_channel().1,
+            task: None,
+            expected_exit: h.expected_exit.clone(),
         })
     }
 
@@ -437,6 +518,10 @@ pub enum EngineError {
     /// Bus operation failed.
     #[error("bus error: {0}")]
     Bus(String),
+
+    /// An Agent did not reach its terminal state before the shutdown deadline.
+    #[error("agent did not stop within timeout: {0}")]
+    StopTimeout(AgentId),
 }
 
 // ---------------------------------------------------------------------------
@@ -482,6 +567,40 @@ mod tests {
 
         // Should be removed
         assert!(engine.get_agent(&AgentId::new("agent-1")).await.is_none());
+        assert!(
+            tokio::time::timeout(
+                tokio::time::Duration::from_millis(20),
+                engine.wait_for_agent_exit(),
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn unexpected_agent_exit_is_reported_and_can_be_reaped() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let engine = AgentRunEngine::new(bus.clone());
+        let agent_id = AgentId::new("agent-1");
+        engine
+            .spawn(test_spec("agent-1"), test_client())
+            .await
+            .expect("spawn");
+
+        bus.publish(BusMessage::system_stop(agent_id.clone()))
+            .await
+            .expect("stop outside engine lifecycle");
+        let exited = tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            engine.wait_for_agent_exit(),
+        )
+        .await
+        .expect("exit signal")
+        .expect("agent id");
+
+        assert_eq!(exited, agent_id);
+        engine.despawn(&agent_id).await.expect("reap exited Agent");
+        assert!(engine.get_agent(&agent_id).await.is_none());
     }
 
     #[tokio::test]
@@ -500,6 +619,22 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, EngineError::AlreadySpawned(_)));
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_spawn_starts_exactly_one_agent() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let engine = Arc::new(AgentRunEngine::new(bus));
+        let first = engine.spawn(test_spec("same-agent"), test_client());
+        let second = engine.spawn(test_spec("same-agent"), test_client());
+
+        let (first, second) = tokio::join!(first, second);
+        assert_ne!(first.is_ok(), second.is_ok());
+        assert_eq!(engine.list_agents().await.len(), 1);
+        engine
+            .despawn(&AgentId::new("same-agent"))
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]

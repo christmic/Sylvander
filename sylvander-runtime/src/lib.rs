@@ -389,6 +389,11 @@ impl Runtime {
         self.channel_exits.lock().await.recv().await
     }
 
+    /// Wait until an Agent task exits without a matching shutdown request.
+    pub async fn wait_for_agent_exit(&self) -> Option<AgentId> {
+        self.engine.wait_for_agent_exit().await
+    }
+
     // -- ephemeral sessions --
 
     /// Create a temporary session.
@@ -447,22 +452,22 @@ impl Runtime {
             let mut tasks = self.channels.lock().await;
             tasks.drain(..).collect::<Vec<_>>()
         };
-        stop_channel_tasks(channel_tasks).await?;
+        let mut first_error = stop_channel_tasks(channel_tasks).await.err();
         let agents = self.engine.list_agents().await;
         for handle in agents {
-            self.engine
-                .despawn(&handle.id)
-                .await
-                .map_err(|e| RuntimeError::Engine(format!("despawn {} failed: {e}", handle.id)))?;
+            if let Err(error) = self.engine.despawn(&handle.id).await {
+                first_error.get_or_insert_with(|| {
+                    RuntimeError::Engine(format!("despawn {} failed: {error}", handle.id))
+                });
+            }
         }
-        if let Some(evidence) = &self.evidence {
-            evidence
-                .shutdown()
-                .await
-                .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        if let Some(evidence) = &self.evidence
+            && let Err(error) = evidence.shutdown().await
+        {
+            first_error.get_or_insert_with(|| RuntimeError::Evidence(error.to_string()));
         }
         info!("runtime shut down");
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 
