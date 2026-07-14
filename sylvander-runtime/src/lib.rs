@@ -27,6 +27,10 @@ pub mod agent_registry;
 mod boundary;
 pub mod composition;
 pub mod config;
+#[allow(dead_code)] // internal API consumed by credential administration batches
+mod credential_registry;
+#[cfg(test)]
+mod credential_registry_tests;
 pub mod evidence;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
 mod model_registry;
