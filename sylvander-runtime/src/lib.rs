@@ -661,27 +661,29 @@ impl Runtime {
         );
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+        let evidence_path = config
+            .server
+            .evidence
+            .path
+            .as_ref()
+            .expect("resolved security audit path");
+        if let Some(parent) = evidence_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+                operation: "create evidence directory",
+                path: parent.display().to_string(),
+                message: error.to_string(),
+            })?;
+        }
+        // Security denials are always durable even when optional run-content
+        // evidence collection is disabled by the operator.
+        let security_audit = EvidenceStore::open(evidence_path)
+            .await
+            .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
         let evidence = if config.server.evidence.enabled {
-            let path = config
-                .server
-                .evidence
-                .path
-                .as_ref()
-                .expect("resolved evidence path");
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
-                    operation: "create evidence directory",
-                    path: parent.display().to_string(),
-                    message: error.to_string(),
-                })?;
-            }
-            let store = EvidenceStore::open(path)
-                .await
-                .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
             Some(
                 EvidenceRecorder::start(
                     bus.clone(),
-                    store,
+                    security_audit.clone(),
                     config.server.name.clone(),
                     config.server.evidence.content,
                     config.server.evidence.retention_days,
@@ -761,12 +763,11 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
-        let evidence_store = evidence.as_ref().map(EvidenceRecorder::store);
         let ui_service = Arc::new(RuntimeUiService {
             engine: engine.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
-            evidence: evidence_store,
+            evidence: Some(security_audit),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
@@ -835,7 +836,7 @@ impl Runtime {
     /// Return the durable evidence store when collection is enabled.
     #[must_use]
     pub fn evidence_store(&self) -> Option<EvidenceStore> {
-        self.evidence.as_ref().map(EvidenceRecorder::store)
+        self.ui_service.evidence.clone()
     }
 
     // -- channels --
@@ -1080,13 +1081,11 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .workspace_journal
         .get_or_insert_with(|| data_dir.join("workspace-journal"));
-    if config.server.evidence.enabled {
-        config
-            .server
-            .evidence
-            .path
-            .get_or_insert_with(|| data_dir.join("evidence.db"));
-    }
+    config
+        .server
+        .evidence
+        .path
+        .get_or_insert_with(|| data_dir.join("evidence.db"));
     Ok(config)
 }
 
