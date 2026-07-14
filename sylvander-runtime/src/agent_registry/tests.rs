@@ -1,6 +1,6 @@
 use tempfile::tempdir;
 
-use super::{AgentRegistry, AgentRegistryError};
+use super::{AgentRegistry, AgentRegistryError, hex_digest};
 use crate::config::ServerConfig;
 
 fn catalog() -> ServerConfig {
@@ -116,5 +116,55 @@ async fn immutable_revision_rejects_changed_content() {
     assert!(matches!(
         registry.seed(&catalog).await,
         Err(AgentRegistryError::RevisionCollision { .. })
+    ));
+}
+
+#[tokio::test]
+async fn load_rejects_tampered_digest_and_definition_identity() {
+    let catalog = catalog();
+    let original = catalog.agents[0].clone();
+    let agent_id = original.spec.id.clone();
+    let registry = AgentRegistry::open_in_memory().await.unwrap();
+    registry.seed(&catalog).await.unwrap();
+
+    let id = agent_id.0.clone();
+    registry
+        .run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE agent_definitions SET digest='tampered' WHERE agent_id=?1 AND revision=1",
+                    [id],
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.load(&agent_id, 1).await,
+        Err(AgentRegistryError::Integrity(_))
+    ));
+
+    let mut mismatched = original;
+    mismatched.spec.id = sylvander_protocol::AgentId::new("other-agent");
+    let json = serde_json::to_string(&mismatched).unwrap();
+    let digest = hex_digest(json.as_bytes());
+    let id = agent_id.0.clone();
+    registry
+        .run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE agent_definitions SET definition_json=?2, digest=?3 \
+                     WHERE agent_id=?1 AND revision=1",
+                    rusqlite::params![id, json, digest],
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry.inspect(&agent_id).await,
+        Err(AgentRegistryError::Integrity(_))
     ));
 }
