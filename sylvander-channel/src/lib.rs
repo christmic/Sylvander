@@ -35,6 +35,20 @@ use async_trait::async_trait;
 
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
+use sylvander_protocol::{
+    AgentDescriptor, SessionConfigState, SessionConfigUpdateRequest, SessionId,
+};
+
+/// Transport-neutral UI service boundary owned by the runtime.
+#[async_trait]
+pub trait UiService: Send + Sync {
+    async fn discover_agents(&self) -> Vec<AgentDescriptor>;
+    async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String>;
+    async fn update_session_config(
+        &self,
+        request: SessionConfigUpdateRequest,
+    ) -> Result<SessionConfigState, String>;
+}
 
 // ---------------------------------------------------------------------------
 // Channel
@@ -90,6 +104,8 @@ pub struct ChannelContext {
     pub bus: Arc<dyn MessageBus>,
     /// Session persistence and external-ID mapping.
     pub sessions: Arc<dyn SessionStore>,
+    /// Runtime-owned UI application service. Channels adapt transports only.
+    pub ui: Option<Arc<dyn UiService>>,
     /// Runtime-owned startup handshake. Channel implementations call
     /// [`ChannelContext::mark_ready`] only after external input can arrive.
     #[doc(hidden)]
@@ -102,6 +118,7 @@ impl ChannelContext {
         Self {
             bus,
             sessions,
+            ui: None,
             readiness: None,
         }
     }

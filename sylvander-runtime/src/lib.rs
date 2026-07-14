@@ -42,7 +42,10 @@ use sylvander_agent::session_store::{
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_protocol::{SessionConfigOverrides, SessionEffectiveConfig};
+use sylvander_protocol::{
+    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, SessionConfigOverrides,
+    SessionConfigState, SessionConfigUpdateRequest, SessionEffectiveConfig,
+};
 
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
@@ -81,6 +84,7 @@ pub struct Runtime {
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
+    ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
     channel_exit_tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -91,6 +95,119 @@ struct ChannelTask {
     name: String,
     task: JoinHandle<()>,
     lifecycle: ChannelReadiness,
+}
+
+struct RuntimeUiService {
+    sessions: Arc<dyn SessionStore>,
+    agents: HashMap<AgentId, ConfiguredAgent>,
+}
+
+#[async_trait::async_trait]
+impl sylvander_channel::UiService for RuntimeUiService {
+    async fn discover_agents(&self) -> Vec<AgentDescriptor> {
+        let mut agents = self
+            .agents
+            .values()
+            .map(|agent| AgentDescriptor {
+                id: agent.spec.id.clone(),
+                revision: agent.definition.revision,
+                name: agent.spec.name.clone(),
+                provider_id: agent.spec.model.provider.clone(),
+                default_model_id: agent.spec.model.model_name.clone(),
+                models: agent
+                    .models
+                    .iter()
+                    .map(|model| ModelDescriptor {
+                        id: model.id.clone(),
+                        provider: agent.spec.model.provider.clone(),
+                        capabilities: model.capabilities.bits(),
+                        reasoning_efforts: if model.capabilities.contains(
+                            sylvander_llm_anthropic::api::model::ModelCapabilities::EXTENDED_THINKING,
+                        ) {
+                            vec![
+                                ReasoningEffort::Off,
+                                ReasoningEffort::Low,
+                                ReasoningEffort::Medium,
+                                ReasoningEffort::High,
+                            ]
+                        } else {
+                            vec![ReasoningEffort::Off]
+                        },
+                        lifecycle: ModelLifecycle::Active,
+                        pricing: None,
+                    })
+                    .collect(),
+                default_prompt_profile: agent.definition.default_prompt_profile.clone(),
+                agent_workspace: agent.definition.agent_workspace.as_ref().map(|workspace| {
+                    sylvander_protocol::SessionWorkspaceBinding {
+                        execution_target: workspace.execution_target.clone(),
+                        path: workspace.path.clone().into(),
+                        read_only: workspace.read_only,
+                    }
+                }),
+            })
+            .collect::<Vec<_>>();
+        agents.sort_by(|left, right| left.id.0.cmp(&right.id.0));
+        agents
+    }
+
+    async fn session_config(&self, session_id: &SessionId) -> Result<SessionConfigState, String> {
+        let session = self
+            .sessions
+            .get(session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("unknown session {session_id}"))?;
+        let effective = session
+            .effective_config
+            .ok_or_else(|| format!("session {session_id} has no effective configuration"))?;
+        Ok(SessionConfigState {
+            session_id: session.id,
+            revision: session.config_revision,
+            overrides: session.config_overrides,
+            effective,
+        })
+    }
+
+    async fn update_session_config(
+        &self,
+        request: SessionConfigUpdateRequest,
+    ) -> Result<SessionConfigState, String> {
+        let session = self
+            .sessions
+            .get(&request.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("unknown session {}", request.session_id))?;
+        let agent = session
+            .agents
+            .iter()
+            .find_map(|id| self.agents.get(id))
+            .ok_or_else(|| format!("session {} has no configured Agent", request.session_id))?;
+        let effective = resolve_session_config(
+            agent,
+            &request.overrides,
+            None,
+            Some(&session.metadata.workspace),
+        )
+        .map_err(|error| error.to_string())?;
+        let revision = self
+            .sessions
+            .update_config(
+                &request.session_id,
+                request.expected_revision,
+                request.overrides.clone(),
+                effective.clone(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(SessionConfigState {
+            session_id: request.session_id,
+            revision,
+            overrides: request.overrides,
+            effective,
+        })
+    }
 }
 
 struct ChannelExitSignal {
@@ -176,12 +293,18 @@ impl Runtime {
         info!(name = %config.name, agents = config.agents.len(), "runtime booted");
 
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
+        let configured_agents = HashMap::new();
+        let ui_service = Arc::new(RuntimeUiService {
+            sessions: session_store.clone(),
+            agents: configured_agents.clone(),
+        });
         Ok(Self {
             engine,
             session_store,
             ephemeral: RwLock::new(HashMap::new()),
             bus,
-            configured_agents: HashMap::new(),
+            configured_agents,
+            ui_service,
             evidence: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
@@ -315,6 +438,10 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
+        let ui_service = Arc::new(RuntimeUiService {
+            sessions: session_store.clone(),
+            agents: configured_agents.clone(),
+        });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             engine,
@@ -322,6 +449,7 @@ impl Runtime {
             ephemeral: RwLock::new(HashMap::new()),
             bus,
             configured_agents,
+            ui_service,
             evidence,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
@@ -402,6 +530,7 @@ impl Runtime {
             let ctx = ChannelContext {
                 bus: self.bus.clone(),
                 sessions: self.session_store.clone(),
+                ui: Some(self.ui_service.clone()),
                 readiness: Some(readiness.clone()),
             };
             let name = ch.name().to_string();
