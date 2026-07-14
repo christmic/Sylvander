@@ -307,6 +307,8 @@ pub enum ChannelTransportConfig {
     },
     Http {
         bind: String,
+        principal_id: String,
+        bearer_token: SecretRef,
     },
     Websocket {
         bind: String,
@@ -584,8 +586,14 @@ fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
                 errors.push(format!("channel {} Unix path is empty", channel.id));
             }
         }
-        ChannelTransportConfig::Http { bind } => {
-            require_text("channel bind", bind, errors);
+        ChannelTransportConfig::Http {
+            bind,
+            principal_id,
+            bearer_token,
+        } => {
+            require_text("HTTP bind", bind, errors);
+            require_text("HTTP principal_id", principal_id, errors);
+            bearer_token.validate("HTTP bearer_token", errors);
         }
         ChannelTransportConfig::Websocket {
             bind,

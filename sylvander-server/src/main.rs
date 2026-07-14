@@ -135,8 +135,17 @@ fn build_channels(
                             .with_runtime_control(agent.run.clone()),
                     )
                 }
-                ChannelTransportConfig::Http { bind } => Arc::new(
-                    sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id),
+                ChannelTransportConfig::Http {
+                    bind,
+                    principal_id,
+                    bearer_token,
+                } => Arc::new(
+                    sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
+                        .with_bearer_auth(
+                            &channel.id,
+                            principal_id,
+                            resolve_text(&secrets, bearer_token, &channel.id)?,
+                        ),
                 ),
                 ChannelTransportConfig::Websocket {
                     bind,
