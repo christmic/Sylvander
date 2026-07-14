@@ -92,6 +92,35 @@ pub struct ModelDescriptor {
     pub pricing: Option<ModelPricing>,
 }
 
+/// Stable identity for one model exposed by one provider.
+///
+/// Model ids are not globally unique. Persisted selections and new wire
+/// requests therefore use both fields as one indivisible identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelSelection {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ModelSelectionResolutionError {
+    #[error("model and legacy model_id cannot both be set")]
+    ConflictingOverrides,
+    #[error("model selection `{provider_id}/{model_id}` is unavailable")]
+    Unavailable {
+        provider_id: String,
+        model_id: String,
+    },
+    #[error("legacy model id `{model_id}` is unavailable")]
+    LegacyUnavailable { model_id: String },
+    #[error("legacy model id `{model_id}` is ambiguous across providers: {provider_ids:?}")]
+    LegacyAmbiguous {
+        model_id: String,
+        provider_ids: Vec<String>,
+    },
+}
+
 /// Operator-supplied API prices in micro-US-dollars per million tokens.
 /// `1_000_000` therefore means `$1.00 / 1M tokens`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -486,7 +515,13 @@ pub struct SessionConfigSource {
 /// the Agent and channel definitions instead of copying their current values.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[serde(try_from = "SessionConfigOverridesWire")]
 pub struct SessionConfigOverrides {
+    /// Provider-qualified model selection used by current clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSelection>,
+    /// Legacy model-only selection accepted solely for catalog-aware
+    /// migration. New clients must write `model` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -501,6 +536,98 @@ pub struct SessionConfigOverrides {
     pub user_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_target: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "SessionConfigOverrides")]
+struct SessionConfigOverridesWire {
+    /// Provider-qualified model selection used by current clients.
+    #[serde(default)]
+    model: Option<ModelSelection>,
+    /// Legacy model-only selection accepted for catalog-aware migration.
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    permissions: Option<PermissionProfile>,
+    #[serde(default)]
+    prompt_profile: Option<String>,
+    #[serde(default)]
+    system_prompt: Option<String>,
+    #[serde(default)]
+    user_workspace: Option<SessionWorkspaceBinding>,
+    #[serde(default)]
+    execution_target: Option<String>,
+}
+
+impl TryFrom<SessionConfigOverridesWire> for SessionConfigOverrides {
+    type Error = ModelSelectionResolutionError;
+
+    fn try_from(wire: SessionConfigOverridesWire) -> Result<Self, Self::Error> {
+        if wire.model.is_some() && wire.model_id.is_some() {
+            return Err(ModelSelectionResolutionError::ConflictingOverrides);
+        }
+        Ok(Self {
+            model: wire.model,
+            model_id: wire.model_id,
+            reasoning_effort: wire.reasoning_effort,
+            permissions: wire.permissions,
+            prompt_profile: wire.prompt_profile,
+            system_prompt: wire.system_prompt,
+            user_workspace: wire.user_workspace,
+            execution_target: wire.execution_target,
+        })
+    }
+}
+
+impl SessionConfigOverrides {
+    /// Resolve a provider-qualified selection from a current or legacy
+    /// override. A legacy id migrates only when it uniquely identifies one
+    /// catalog entry; missing and ambiguous ids fail closed.
+    pub fn resolve_model_selection(
+        &self,
+        catalog: &[ModelSelection],
+    ) -> Result<Option<ModelSelection>, ModelSelectionResolutionError> {
+        match (&self.model, &self.model_id) {
+            (Some(_), Some(_)) => Err(ModelSelectionResolutionError::ConflictingOverrides),
+            (Some(selection), None) => {
+                let matches = catalog
+                    .iter()
+                    .filter(|candidate| *candidate == selection)
+                    .count();
+                if matches == 1 {
+                    Ok(Some(selection.clone()))
+                } else {
+                    Err(ModelSelectionResolutionError::Unavailable {
+                        provider_id: selection.provider_id.clone(),
+                        model_id: selection.model_id.clone(),
+                    })
+                }
+            }
+            (None, Some(legacy_model_id)) => {
+                let matches = catalog
+                    .iter()
+                    .filter(|candidate| candidate.model_id == *legacy_model_id)
+                    .collect::<Vec<_>>();
+                match matches.as_slice() {
+                    [] => Err(ModelSelectionResolutionError::LegacyUnavailable {
+                        model_id: legacy_model_id.clone(),
+                    }),
+                    [selection] => Ok(Some((*selection).clone())),
+                    _ => Err(ModelSelectionResolutionError::LegacyAmbiguous {
+                        model_id: legacy_model_id.clone(),
+                        provider_ids: matches
+                            .iter()
+                            .map(|selection| selection.provider_id.clone())
+                            .collect(),
+                    }),
+                }
+            }
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 /// Per-field origin information for the resolved configuration. This keeps UI
@@ -538,6 +665,16 @@ pub struct SessionEffectiveConfig {
     pub user_workspace: Option<SessionWorkspaceBinding>,
     pub execution_target: String,
     pub provenance: SessionConfigProvenance,
+}
+
+impl SessionEffectiveConfig {
+    #[must_use]
+    pub fn model_selection(&self) -> ModelSelection {
+        ModelSelection {
+            provider_id: self.provider_id.clone(),
+            model_id: self.model_id.clone(),
+        }
+    }
 }
 
 /// Redacted Agent definition exposed to UI clients during discovery.
@@ -1245,6 +1382,93 @@ mod tests {
             serde_json::from_value::<SessionConfigUpdateRequest>(json).unwrap(),
             request
         );
+    }
+
+    fn model(provider_id: &str, model_id: &str) -> ModelSelection {
+        ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+        }
+    }
+
+    #[test]
+    fn qualified_model_selection_has_a_stable_schema_and_wire_shape() {
+        let selection = model("anthropic", "claude-sonnet");
+        assert_eq!(
+            serde_json::to_value(&selection).unwrap(),
+            serde_json::json!({
+                "provider_id": "anthropic",
+                "model_id": "claude-sonnet"
+            })
+        );
+
+        let schema = serde_json::to_value(schemars::schema_for!(ModelSelection)).unwrap();
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["provider_id", "model_id"])
+        );
+        assert!(schema["properties"]["provider_id"].is_object());
+        assert!(schema["properties"]["model_id"].is_object());
+    }
+
+    #[test]
+    fn current_override_round_trips_a_qualified_model() {
+        let overrides = SessionConfigOverrides {
+            model: Some(model("openai", "gpt-5")),
+            ..SessionConfigOverrides::default()
+        };
+        let json = serde_json::to_value(&overrides).unwrap();
+        assert_eq!(json["model"]["provider_id"], "openai");
+        assert!(json.get("model_id").is_none());
+        assert_eq!(
+            serde_json::from_value::<SessionConfigOverrides>(json).unwrap(),
+            overrides
+        );
+    }
+
+    #[test]
+    fn legacy_model_id_migrates_only_on_one_catalog_match() {
+        let overrides: SessionConfigOverrides =
+            serde_json::from_value(serde_json::json!({ "model_id": "sonnet" })).unwrap();
+        let catalog = vec![model("anthropic", "sonnet"), model("openai", "gpt-5")];
+
+        assert_eq!(
+            overrides.resolve_model_selection(&catalog),
+            Ok(Some(model("anthropic", "sonnet")))
+        );
+    }
+
+    #[test]
+    fn legacy_model_id_fails_closed_when_missing_or_ambiguous() {
+        let overrides = SessionConfigOverrides {
+            model_id: Some("shared".into()),
+            ..SessionConfigOverrides::default()
+        };
+        assert_eq!(
+            overrides.resolve_model_selection(&[]),
+            Err(ModelSelectionResolutionError::LegacyUnavailable {
+                model_id: "shared".into()
+            })
+        );
+
+        let catalog = vec![model("provider-a", "shared"), model("provider-b", "shared")];
+        assert_eq!(
+            overrides.resolve_model_selection(&catalog),
+            Err(ModelSelectionResolutionError::LegacyAmbiguous {
+                model_id: "shared".into(),
+                provider_ids: vec!["provider-a".into(), "provider-b".into()]
+            })
+        );
+    }
+
+    #[test]
+    fn override_wire_rejects_qualified_and_legacy_model_together() {
+        let error = serde_json::from_value::<SessionConfigOverrides>(serde_json::json!({
+            "model": { "provider_id": "anthropic", "model_id": "sonnet" },
+            "model_id": "sonnet"
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot both be set"));
     }
 
     #[test]
