@@ -36,7 +36,7 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, SessionConfigState, SessionConfigUpdateRequest, SessionId,
+    AgentDescriptor, RunFeedback, SessionConfigState, SessionConfigUpdateRequest, SessionId,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
@@ -48,6 +48,7 @@ pub trait UiService: Send + Sync {
         &self,
         request: SessionConfigUpdateRequest,
     ) -> Result<SessionConfigState, String>;
+    async fn submit_feedback(&self, feedback: RunFeedback) -> Result<String, String>;
 }
 
 // ---------------------------------------------------------------------------

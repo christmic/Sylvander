@@ -43,8 +43,8 @@ use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
-    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, SessionConfigOverrides,
-    SessionConfigState, SessionConfigUpdateRequest, SessionEffectiveConfig,
+    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RunFeedback,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionEffectiveConfig,
 };
 
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
@@ -100,6 +100,7 @@ struct ChannelTask {
 struct RuntimeUiService {
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
+    evidence: Option<EvidenceStore>,
 }
 
 #[async_trait::async_trait]
@@ -208,6 +209,28 @@ impl sylvander_channel::UiService for RuntimeUiService {
             effective,
         })
     }
+
+    async fn submit_feedback(&self, feedback: RunFeedback) -> Result<String, String> {
+        if feedback.note.as_ref().is_some_and(|note| note.len() > 4096) {
+            return Err("feedback note exceeds 4096 bytes".into());
+        }
+        if feedback.tags.len() > 16
+            || feedback
+                .tags
+                .iter()
+                .any(|tag| tag.is_empty() || tag.len() > 64)
+        {
+            return Err("feedback supports at most 16 non-empty tags of 64 bytes each".into());
+        }
+        let store = self
+            .evidence
+            .as_ref()
+            .ok_or_else(|| "runtime evidence capture is disabled".to_string())?;
+        store
+            .record_feedback(feedback, sylvander_agent::session::now_secs())
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 struct ChannelExitSignal {
@@ -297,6 +320,7 @@ impl Runtime {
         let ui_service = Arc::new(RuntimeUiService {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
+            evidence: None,
         });
         Ok(Self {
             engine,
@@ -438,9 +462,11 @@ impl Runtime {
             session_db = %session_db.display(),
             "configured runtime booted"
         );
+        let evidence_store = evidence.as_ref().map(EvidenceRecorder::store);
         let ui_service = Arc::new(RuntimeUiService {
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
+            evidence: evidence_store,
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
