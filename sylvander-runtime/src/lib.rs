@@ -115,6 +115,39 @@ struct RuntimeUiService {
 
 #[async_trait::async_trait]
 impl sylvander_channel::UiService for RuntimeUiService {
+    async fn reject_authentication(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        failure: sylvander_protocol::AuthenticationFailure,
+    ) -> sylvander_protocol::BoundaryError {
+        let operation = failure.operation();
+        let error = if boundary.principal.is_some() {
+            sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::InvalidScope,
+                operation: operation.into(),
+                request_id: boundary.request_id.clone(),
+                message: "authentication failure requires an unauthenticated boundary".into(),
+                retry_after_ms: None,
+            }
+        } else {
+            match self
+                .boundary
+                .check_authentication_failure(boundary, operation)
+                .await
+            {
+                Ok(()) => sylvander_protocol::BoundaryError::unauthenticated(boundary, operation),
+                Err(error) => error,
+            }
+        };
+        if let Err(audit_error) = self
+            .record_boundary_denial(boundary, operation, None, &error)
+            .await
+        {
+            warn!(%audit_error, request_id = %boundary.request_id, "failed to persist authentication denial");
+        }
+        error
+    }
+
     async fn authorize_message(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -528,6 +561,22 @@ impl RuntimeUiService {
         message: &sylvander_protocol::UiClientMessage,
         error: &sylvander_protocol::BoundaryError,
     ) -> Result<(), String> {
+        self.record_boundary_denial(
+            boundary,
+            ui_operation(message),
+            ui_session_id(message),
+            error,
+        )
+        .await
+    }
+
+    async fn record_boundary_denial(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        operation: &str,
+        resource_id: Option<&str>,
+        error: &sylvander_protocol::BoundaryError,
+    ) -> Result<(), String> {
         let store = self
             .evidence
             .as_ref()
@@ -550,9 +599,9 @@ impl RuntimeUiService {
                     .map(|principal| sha256_text(&principal.id.0)),
                 channel_instance_id: boundary.channel_instance_id.clone(),
                 transport: boundary.transport.clone(),
-                operation: ui_operation(message).into(),
+                operation: operation.into(),
                 code: code.into(),
-                resource_digest: ui_session_id(message).map(sha256_text),
+                resource_digest: resource_id.map(sha256_text),
             })
             .await
             .map_err(|audit_error| audit_error.to_string())
@@ -1892,6 +1941,23 @@ model_name = "model-a"
             denial.code,
             sylvander_protocol::BoundaryErrorCode::Unauthenticated
         );
+        let authentication_boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+            "websocket",
+            "websocket",
+            "request-authentication-failure",
+        );
+        let authentication_denial = sylvander_channel::UiService::reject_authentication(
+            runtime.ui_service.as_ref(),
+            &authentication_boundary,
+            sylvander_protocol::AuthenticationFailure::new(
+                sylvander_protocol::AuthenticationMethod::BearerToken,
+            ),
+        )
+        .await;
+        assert_eq!(
+            authentication_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Unauthenticated
+        );
         assert!(
             runtime
                 .engine
@@ -1950,7 +2016,13 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 6);
+        assert_eq!(denials.len(), 7);
+        let authentication_audit = denials
+            .iter()
+            .find(|denial| denial.operation == "authenticate_bearer_token")
+            .expect("authentication rejection must be audited by the runtime");
+        assert!(authentication_audit.principal_digest.is_none());
+        assert!(authentication_audit.resource_digest.is_none());
         assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
             || denial.code == "unauthenticated"));
         assert!(

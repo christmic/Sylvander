@@ -37,14 +37,25 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionId, UiClientMessage,
+    AgentDescriptor, AgentId, AuthenticationFailure, BoundaryContext, BoundaryError,
+    BoundaryErrorCode, RunFeedback, SessionConfigOverrides, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionId, UiClientMessage,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
 pub trait UiService: Send + Sync {
+    /// Reject an ingress request that failed authentication before a public
+    /// message existed. Production runtimes override this to rate-limit and
+    /// persist a content-free audit fact.
+    async fn reject_authentication(
+        &self,
+        boundary: &BoundaryContext,
+        _failure: AuthenticationFailure,
+    ) -> BoundaryError {
+        BoundaryError::unauthenticated(boundary, "authenticate")
+    }
+
     /// Authorize one complete public operation before a transport dispatches it.
     async fn authorize_message(
         &self,
