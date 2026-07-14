@@ -101,6 +101,13 @@ fn build_agent(
         .memory(memory)
         .override_tools(tools)
         .available_models(models.clone())
+        .prompt_profiles(
+            definition
+                .prompt_profiles
+                .iter()
+                .map(|profile| (profile.id.clone(), profile.system_prompt.clone()))
+                .collect(),
+        )
         .model_capabilities(primary.capabilities);
     if let Some(path) = &config.server.workspace_journal {
         builder = builder.workspace_journal(path);
