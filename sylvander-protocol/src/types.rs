@@ -440,6 +440,91 @@ pub struct SessionMetadata {
     pub user_id: String,
 }
 
+/// A workspace exposed to an Agent through a named execution target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionWorkspaceBinding {
+    pub execution_target: String,
+    pub path: PathBuf,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+/// The configuration layer that supplied one effective session field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionConfigSourceKind {
+    AgentDefault,
+    ChannelDefault,
+    SessionOverride,
+    RequestOverride,
+    LegacyMigration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfigSource {
+    pub kind: SessionConfigSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+/// Durable, user-controlled session overrides. Missing fields inherit from
+/// the Agent and channel definitions instead of copying their current values.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionConfigOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_workspace: Option<SessionWorkspaceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_target: Option<String>,
+}
+
+/// Per-field origin information for the resolved configuration. This keeps UI
+/// inspection and audit output honest when a session overrides Agent defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfigProvenance {
+    pub model: SessionConfigSource,
+    pub reasoning_effort: SessionConfigSource,
+    pub permissions: SessionConfigSource,
+    pub prompt_profile: SessionConfigSource,
+    pub system_prompt: SessionConfigSource,
+    pub agent_workspace: SessionConfigSource,
+    pub user_workspace: SessionConfigSource,
+    pub execution_target: SessionConfigSource,
+}
+
+/// Fully resolved configuration used to start a turn. The runtime persists
+/// this value before provider or tool work begins, so later configuration
+/// changes cannot rewrite the historical execution context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEffectiveConfig {
+    pub agent_id: AgentId,
+    pub agent_revision: u64,
+    pub provider_id: String,
+    pub model_id: String,
+    pub reasoning_effort: ReasoningEffort,
+    pub permissions: PermissionProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_profile: Option<String>,
+    /// Digest of the resolved prompt, never the prompt or credentials.
+    pub system_prompt_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_workspace: Option<SessionWorkspaceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_workspace: Option<SessionWorkspaceBinding>,
+    pub execution_target: String,
+    pub provenance: SessionConfigProvenance,
+}
+
 // ===========================================================================
 // Message envelope types
 // ===========================================================================

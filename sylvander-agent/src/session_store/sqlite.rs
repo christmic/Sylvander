@@ -19,7 +19,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -88,6 +90,7 @@ impl SqliteSessionStore {
     fn init_schema(conn: &Connection) -> Result<(), SessionStoreError> {
         conn.execute_batch(SCHEMA_SQL).map_err(sqlite_err)?;
         ensure_usage_cost_columns(conn)?;
+        ensure_session_config_columns(conn)?;
         Ok(())
     }
 
@@ -129,6 +132,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL,
     external_meta   TEXT NOT NULL DEFAULT '{}',
+    config_revision INTEGER NOT NULL DEFAULT 0,
+    config_overrides TEXT NOT NULL DEFAULT '{}',
+    effective_config TEXT,
     is_archived     INTEGER NOT NULL DEFAULT 0,
     archive_reason  TEXT
 );
@@ -224,6 +230,30 @@ fn ensure_usage_cost_columns(conn: &Connection) -> Result<(), SessionStoreError>
     Ok(())
 }
 
+fn ensure_session_config_columns(conn: &Connection) -> Result<(), SessionStoreError> {
+    let has_column = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?1)",
+            [name],
+            |row| row.get(0),
+        )
+    };
+    for (name, definition) in [
+        ("config_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("config_overrides", "TEXT NOT NULL DEFAULT '{}'"),
+        ("effective_config", "TEXT"),
+    ] {
+        if !has_column(name).map_err(sqlite_err)? {
+            conn.execute(
+                &format!("ALTER TABLE sessions ADD COLUMN {name} {definition}"),
+                [],
+            )
+            .map_err(sqlite_err)?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Trait impl
 // ---------------------------------------------------------------------------
@@ -239,7 +269,8 @@ impl SessionStore for SqliteSessionStore {
         // per-user filtering happens in `list` at request time.
         self.run(|c| {
             let mut stmt = c.prepare(
-                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta \
+                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta, \
+                        config_revision, config_overrides, effective_config \
                  FROM sessions \
                  WHERE lifetime = 'persistent' AND is_archived = 0 \
                  ORDER BY updated_at DESC",
@@ -260,6 +291,20 @@ impl SessionStore for SqliteSessionStore {
         self.run(move |c| {
             let external = serde_json::to_string(&s.external_meta)
                 .map_err(|e| SessionStoreError::Store(format!("serialize external_meta: {e}")))?;
+            let overrides = serde_json::to_string(&s.config_overrides).map_err(|error| {
+                SessionStoreError::Store(format!("serialize session config overrides: {error}"))
+            })?;
+            let effective = s
+                .effective_config
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| {
+                    SessionStoreError::Store(format!("serialize effective config: {error}"))
+                })?;
+            let config_revision = i64::try_from(s.config_revision).map_err(|_| {
+                SessionStoreError::Invalid("session config revision exceeds SQLite range".into())
+            })?;
             let lifetime = match s.lifetime {
                 SessionLifetime::Ephemeral => "ephemeral",
                 SessionLifetime::Persistent => "persistent",
@@ -270,15 +315,19 @@ impl SessionStore for SqliteSessionStore {
 
             c.execute(
                 "INSERT INTO sessions (id, name, lifetime, workspace, user_id, \
-                                       created_at, updated_at, external_meta, is_archived) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0) \
+                                       created_at, updated_at, external_meta, config_revision, \
+                                       config_overrides, effective_config, is_archived) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0) \
                  ON CONFLICT(id) DO UPDATE SET \
                    name = excluded.name, \
                    lifetime = excluded.lifetime, \
                    workspace = excluded.workspace, \
                    user_id = excluded.user_id, \
                    updated_at = excluded.updated_at, \
-                   external_meta = excluded.external_meta",
+                   external_meta = excluded.external_meta, \
+                   config_revision = excluded.config_revision, \
+                   config_overrides = excluded.config_overrides, \
+                   effective_config = excluded.effective_config",
                 params![
                     s.id.0,
                     s.name,
@@ -288,6 +337,9 @@ impl SessionStore for SqliteSessionStore {
                     s.created_at,
                     now,
                     external,
+                    config_revision,
+                    overrides,
+                    effective,
                 ],
             )?;
 
@@ -402,7 +454,8 @@ impl SessionStore for SqliteSessionStore {
             // a second round-trip when fetching a single record.
             let mut stmt = c.prepare(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
-                        s.created_at, s.updated_at, s.external_meta, \
+                        s.created_at, s.updated_at, s.external_meta, s.config_revision, \
+                        s.config_overrides, s.effective_config, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -437,7 +490,8 @@ impl SessionStore for SqliteSessionStore {
         self.run(move |c| {
             let mut sql = String::from(
                 "SELECT s.id, s.name, s.lifetime, s.workspace, s.user_id, \
-                        s.created_at, s.updated_at, s.external_meta, \
+                        s.created_at, s.updated_at, s.external_meta, s.config_revision, \
+                        s.config_overrides, s.effective_config, \
                         GROUP_CONCAT(sa.agent_id, ',') AS agents \
                  FROM sessions s \
                  LEFT JOIN session_agents sa ON sa.session_id = s.id \
@@ -501,7 +555,8 @@ impl SessionStore for SqliteSessionStore {
             // on name + user_id, ordered by updated_at DESC.
             let pattern = format!("%{query}%");
             let mut stmt = c.prepare(
-                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta \
+                "SELECT id, name, lifetime, workspace, user_id, created_at, updated_at, external_meta, \
+                        config_revision, config_overrides, effective_config \
                  FROM sessions \
                  WHERE is_archived = 0 \
                    AND user_id = ?3 \
@@ -833,6 +888,9 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
     let created_at: i64 = row.get(5)?;
     let updated_at: i64 = row.get(6)?;
     let external: String = row.get(7)?;
+    let config_revision: i64 = row.get(8)?;
+    let config_overrides: String = row.get(9)?;
+    let effective_config: Option<String> = row.get(10)?;
 
     Ok(StoredSession {
         id: SessionId::new(id),
@@ -846,7 +904,15 @@ fn row_to_session_no_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredS
         agents: Vec::new(),
         created_at,
         updated_at,
-        external_meta: serde_json::from_str(&external).unwrap_or_default(),
+        external_meta: decode_json(7, &external)?,
+        config_revision: config_revision.try_into().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(8, Type::Integer, Box::new(error))
+        })?,
+        config_overrides: decode_json(9, &config_overrides)?,
+        effective_config: effective_config
+            .as_deref()
+            .map(|value| decode_json(10, value))
+            .transpose()?,
     })
 }
 
@@ -861,7 +927,10 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
     let created_at: i64 = row.get(5)?;
     let updated_at: i64 = row.get(6)?;
     let external: String = row.get(7)?;
-    let agents_csv: Option<String> = row.get(8)?;
+    let config_revision: i64 = row.get(8)?;
+    let config_overrides: String = row.get(9)?;
+    let effective_config: Option<String> = row.get(10)?;
+    let agents_csv: Option<String> = row.get(11)?;
 
     let agents = agents_csv
         .map(|s| {
@@ -884,7 +953,21 @@ fn row_to_session_with_agents(row: &rusqlite::Row<'_>) -> rusqlite::Result<Store
         agents,
         created_at,
         updated_at,
-        external_meta: serde_json::from_str(&external).unwrap_or_default(),
+        external_meta: decode_json(7, &external)?,
+        config_revision: config_revision.try_into().map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(8, Type::Integer, Box::new(error))
+        })?,
+        config_overrides: decode_json(9, &config_overrides)?,
+        effective_config: effective_config
+            .as_deref()
+            .map(|value| decode_json(10, value))
+            .transpose()?,
+    })
+}
+
+fn decode_json<T: DeserializeOwned>(index: usize, value: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(index, Type::Text, Box::new(error))
     })
 }
 
@@ -992,6 +1075,44 @@ mod tests {
         )
     }
 
+    fn effective_config() -> sylvander_protocol::SessionEffectiveConfig {
+        let source = sylvander_protocol::SessionConfigSource {
+            kind: sylvander_protocol::SessionConfigSourceKind::AgentDefault,
+            reference: Some("assistant@7".into()),
+        };
+        sylvander_protocol::SessionEffectiveConfig {
+            agent_id: AgentId::new("agent-1"),
+            agent_revision: 7,
+            provider_id: "primary".into(),
+            model_id: "model-a".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
+            permissions: sylvander_protocol::PermissionProfile::default(),
+            prompt_profile: Some("coding".into()),
+            system_prompt_sha256: "abc123".into(),
+            agent_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: "/agent".into(),
+                read_only: false,
+            }),
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: "/project".into(),
+                read_only: false,
+            }),
+            execution_target: "local".into(),
+            provenance: sylvander_protocol::SessionConfigProvenance {
+                model: source.clone(),
+                reasoning_effort: source.clone(),
+                permissions: source.clone(),
+                prompt_profile: source.clone(),
+                system_prompt: source.clone(),
+                agent_workspace: source.clone(),
+                user_workspace: source.clone(),
+                execution_target: source,
+            },
+        }
+    }
+
     // ---- session metadata ----
 
     #[tokio::test]
@@ -1014,16 +1135,48 @@ mod tests {
     #[tokio::test]
     async fn save_and_get() {
         let store = SqliteSessionStore::open_in_memory().await.unwrap();
-        store
-            .save(&make_session("s1", SessionLifetime::Persistent))
-            .await
-            .unwrap();
+        let mut session = make_session("s1", SessionLifetime::Persistent);
+        session.config_revision = 3;
+        session.config_overrides.model_id = Some("model-a".into());
+        session.effective_config = Some(effective_config());
+        store.save(&session).await.unwrap();
 
         let found = store.get(&SessionId::new("s1")).await.unwrap();
         assert!(found.is_some());
         let s = found.unwrap();
         assert_eq!(s.agents.len(), 1);
         assert_eq!(s.agents[0], AgentId::new("agent-1"));
+        assert_eq!(s.config_revision, 3);
+        assert_eq!(s.config_overrides.model_id.as_deref(), Some("model-a"));
+        assert_eq!(s.effective_config, session.effective_config);
+    }
+
+    #[tokio::test]
+    async fn opening_legacy_database_adds_session_config_columns() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("legacy.db");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE sessions (\
+                        id TEXT PRIMARY KEY, name TEXT NOT NULL, lifetime TEXT NOT NULL, \
+                        workspace TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL, \
+                        updated_at INTEGER NOT NULL, external_meta TEXT NOT NULL DEFAULT '{}', \
+                        is_archived INTEGER NOT NULL DEFAULT 0, archive_reason TEXT\
+                    );",
+                )
+                .unwrap();
+        }
+
+        let store = SqliteSessionStore::open(&path).await.unwrap();
+        let session = make_session("migrated", SessionLifetime::Persistent);
+        store.save(&session).await.unwrap();
+        let loaded = store.get(&session.id).await.unwrap().unwrap();
+
+        assert_eq!(loaded.config_revision, 0);
+        assert_eq!(loaded.config_overrides, Default::default());
+        assert!(loaded.effective_config.is_none());
     }
 
     #[tokio::test]
