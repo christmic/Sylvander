@@ -360,6 +360,15 @@ fn apply_default_prompt(
             agent: spec.id.to_string(),
             profile: profile_id.clone(),
         })?;
+    if (!profile.providers.is_empty() && !profile.providers.contains(&spec.model.provider))
+        || (!profile.models.is_empty() && !profile.models.contains(&spec.model.model_name))
+    {
+        return Err(CompositionError::IncompatiblePromptProfile {
+            profile: profile.id.clone(),
+            provider: spec.model.provider.clone(),
+            model: spec.model.model_name.clone(),
+        });
+    }
     spec.persona
         .system_prompt
         .clone_from(&profile.system_prompt);

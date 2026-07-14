@@ -2566,6 +2566,59 @@ model_name = "model-a"
             "internal",
             "hot-activate",
         );
+        let mut uncomposable = next_definition.clone();
+        uncomposable.prompt_profiles = vec![crate::config::PromptProfileConfig {
+            id: "wrong-provider".into(),
+            providers: vec!["another-provider".into()],
+            models: Vec::new(),
+            system_prompt: "must not persist".into(),
+        }];
+        uncomposable.default_prompt_profile = Some("wrong-provider".into());
+        let rejected = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::UpdateDefinition {
+                expected_active_revision: original_revision,
+                definition: Box::new(
+                    crate::agent_admin::draft_from_definition(&uncomposable).unwrap(),
+                ),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                rejected,
+                sylvander_protocol::AgentAdminResponse::Error {
+                    error: sylvander_protocol::AgentAdminError {
+                        code: sylvander_protocol::AgentAdminErrorCode::InvalidDefinition,
+                        ..
+                    }
+                }
+            ),
+            "unexpected rejection response: {rejected:?}"
+        );
+        let inspected = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::ListRevisions {
+                agent_id: next_definition.spec.id.clone(),
+                before_revision: None,
+                limit: 10,
+            },
+        )
+        .await;
+        assert!(matches!(
+            inspected,
+            sylvander_protocol::AgentAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::AgentAdminResult::RevisionsListed {
+                        active_revision,
+                        revisions,
+                        ..
+                    } if *active_revision == original_revision && revisions.len() == 1
+                )
+        ));
         let update_request = sylvander_protocol::AgentAdminRequest::UpdateDefinition {
             expected_active_revision: original_revision,
             definition: Box::new(
@@ -2758,13 +2811,26 @@ model_name = "model-a"
                 )
         ));
         let administration_audits = evidence.agent_administration_audits(10).await.unwrap();
-        assert_eq!(administration_audits.len(), 4);
+        assert_eq!(administration_audits.len(), 5);
         assert!(
             administration_audits
                 .iter()
-                .all(|audit| audit.outcome == "succeeded"
-                    && audit.principal_digest != "operator"
+                .all(|audit| audit.principal_digest != "operator"
                     && audit.agent_digest != "assistant")
+        );
+        assert_eq!(
+            administration_audits
+                .iter()
+                .filter(|audit| audit.outcome == "succeeded")
+                .count(),
+            4
+        );
+        assert_eq!(
+            administration_audits
+                .iter()
+                .filter(|audit| audit.outcome == "failed")
+                .count(),
+            1
         );
         let owner_denial = sylvander_channel::UiService::authorize_message(
             runtime.ui_service.as_ref(),
