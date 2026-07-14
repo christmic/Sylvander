@@ -169,7 +169,8 @@ fn build_channels(
                     resolve_text(&secrets, app_key, &channel.id)?,
                     resolve_text(&secrets, app_secret, &channel.id)?,
                 )
-                .with_identity(&channel.id, agent_id)),
+                .with_identity(&channel.id, agent_id)
+                .with_request_limit(config.server.boundary.max_request_bytes)),
                 ChannelTransportConfig::Telegram {
                     token,
                     bind,
@@ -185,7 +186,8 @@ fn build_channels(
                         webhook_secret,
                         &channel.id,
                     )?)
-                    .with_instance_id(&channel.id),
+                    .with_instance_id(&channel.id)
+                    .with_request_limit(config.server.boundary.max_request_bytes),
                 ),
                 ChannelTransportConfig::Wechat {
                     bind,
@@ -210,7 +212,8 @@ fn build_channels(
                             id: channel.id.clone(),
                             message,
                         })?
-                        .with_instance_id(&channel.id),
+                        .with_instance_id(&channel.id)
+                        .with_request_limit(config.server.boundary.max_request_bytes),
                     )
                 }
             };

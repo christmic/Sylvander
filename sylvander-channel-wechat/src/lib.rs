@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     routing::get,
 };
 use serde::Deserialize;
@@ -19,7 +19,9 @@ use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFil
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
-use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
+use sylvander_protocol::{
+    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
+};
 
 use protocol::{WechatCrypto, parse_message_xml};
 
@@ -34,6 +36,7 @@ pub struct WechatChannel {
     webhook_addr: SocketAddr,
     agent_id: AgentId,
     instance_id: String,
+    max_request_bytes: usize,
 }
 
 impl WechatChannel {
@@ -51,6 +54,7 @@ impl WechatChannel {
             webhook_addr,
             agent_id: agent_id.into(),
             instance_id: "wechat".into(),
+            max_request_bytes: 1024 * 1024,
         })
     }
 
@@ -58,6 +62,12 @@ impl WechatChannel {
     #[must_use]
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = instance_id.into();
+        self
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
         self
     }
 }
@@ -88,6 +98,7 @@ impl Channel for WechatChannel {
 
         let app = Router::new()
             .route("/wechat/callback", get(handle_verify).post(handle_callback))
+            .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.webhook_addr)
@@ -112,6 +123,7 @@ impl Clone for WechatChannel {
             webhook_addr: self.webhook_addr,
             agent_id: self.agent_id.clone(),
             instance_id: self.instance_id.clone(),
+            max_request_bytes: self.max_request_bytes,
         }
     }
 }
@@ -187,11 +199,14 @@ async fn handle_verify(
         .crypto
         .verify_signature(&q.msg_signature, &q.timestamp, &q.nonce, &echostr)
     {
+        reject_webhook_authentication(&state).await;
         return String::new();
     }
-    match state.crypto.decrypt(&echostr) {
-        Ok((msg, _)) => msg,
-        Err(_) => String::new(),
+    if let Ok((msg, _)) = state.crypto.decrypt(&echostr) {
+        msg
+    } else {
+        reject_webhook_authentication(&state).await;
+        String::new()
     }
 }
 
@@ -210,6 +225,7 @@ async fn handle_callback(
     Json(body): Json<CallbackBody>,
 ) -> String {
     let Some(encrypted) = body.encrypt else {
+        reject_webhook_authentication(&state).await;
         return "success".into();
     };
 
@@ -218,6 +234,7 @@ async fn handle_callback(
         .verify_signature(&q.msg_signature, &q.timestamp, &q.nonce, &encrypted)
     {
         warn!("wechat: signature invalid");
+        reject_webhook_authentication(&state).await;
         return "success".into();
     }
 
@@ -225,6 +242,7 @@ async fn handle_callback(
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "wechat: decrypt failed");
+            reject_webhook_authentication(&state).await;
             return "success".into();
         }
     };
@@ -305,6 +323,22 @@ async fn handle_callback(
         .await;
 
     "success".into()
+}
+
+async fn reject_webhook_authentication(state: &AppState) {
+    let boundary = BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "wechat",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    if let Some(ui) = &state.ctx.ui {
+        let _ = ui
+            .reject_authentication(
+                &boundary,
+                AuthenticationFailure::new(AuthenticationMethod::WebhookSignature),
+            )
+            .await;
+    }
 }
 
 fn platform_principal_id(instance_id: &str, user_name: &str) -> String {
@@ -445,6 +479,116 @@ fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_channel::UiService;
+
+    struct AuthenticationRecorder(AtomicUsize);
+
+    #[async_trait]
+    impl UiService for AuthenticationRecorder {
+        async fn reject_authentication(
+            &self,
+            boundary: &BoundaryContext,
+            failure: AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            assert_eq!(boundary.transport, "wechat");
+            assert_eq!(
+                failure.attempted_method,
+                AuthenticationMethod::WebhookSignature
+            );
+            self.0.fetch_add(1, Ordering::Relaxed);
+            sylvander_protocol::BoundaryError::unauthenticated(boundary, failure.operation())
+        }
+
+        async fn authorize_message(
+            &self,
+            _: &BoundaryContext,
+            _: &sylvander_protocol::UiClientMessage,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+        async fn discover_agents(
+            &self,
+            _: &BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn create_session(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn session_config(
+            &self,
+            _: &BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn update_session_config(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn submit_feedback(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn request_limit_is_configurable() {
+        let channel = WechatChannel::new(
+            "token".into(),
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            "corp".into(),
+            "127.0.0.1:0".parse().unwrap(),
+            "agent",
+        )
+        .unwrap()
+        .with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn invalid_signature_reaches_runtime_authentication_boundary() {
+        let ui = Arc::new(AuthenticationRecorder(AtomicUsize::new(0)));
+        let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let mut context =
+            ChannelContext::new(Arc::new(InProcessMessageBus::new()), sessions.clone());
+        context.ui = Some(ui.clone());
+        let state = AppState {
+            ctx: Arc::new(context),
+            crypto: Arc::new(
+                WechatCrypto::new(
+                    "token".into(),
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "corp".into(),
+                )
+                .unwrap(),
+            ),
+            agent_id: AgentId::new("agent"),
+            sessions,
+            instance_id: "app-a".into(),
+            replay: ReplayCache::default(),
+        };
+
+        reject_webhook_authentication(&state).await;
+        assert_eq!(ui.0.load(Ordering::Relaxed), 1);
+    }
     #[test]
     fn tool_output_truncation_is_unicode_safe() {
         assert_eq!(truncate_chars("中文消息", 2), "中文");

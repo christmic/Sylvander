@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     routing::post,
 };
@@ -30,7 +30,10 @@ use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFil
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
-use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
+use sylvander_protocol::{
+    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
+    BoundaryErrorCode,
+};
 
 // ===========================================================================
 // Telegram types
@@ -85,6 +88,7 @@ pub struct TelegramChannel {
     http: reqwest::Client,
     webhook_secret: Option<String>,
     instance_id: String,
+    max_request_bytes: usize,
 }
 
 impl TelegramChannel {
@@ -101,6 +105,7 @@ impl TelegramChannel {
             http: reqwest::Client::new(),
             webhook_secret: None,
             instance_id: "telegram".into(),
+            max_request_bytes: 1024 * 1024,
         }
     }
 
@@ -115,6 +120,12 @@ impl TelegramChannel {
     #[must_use]
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = instance_id.into();
+        self
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
         self
     }
 
@@ -149,6 +160,7 @@ impl Channel for TelegramChannel {
 
         let app = Router::new()
             .route("/telegram/webhook", post(handle_webhook))
+            .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.webhook_addr)
@@ -177,6 +189,7 @@ impl Clone for TelegramChannel {
             http: self.http.clone(),
             webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
+            max_request_bytes: self.max_request_bytes,
         }
     }
 }
@@ -237,7 +250,7 @@ async fn handle_webhook(
 ) -> Result<&'static str, StatusCode> {
     if !valid_webhook_secret(&headers, state.webhook_secret.as_deref()) {
         warn!("telegram: rejected webhook with invalid secret token");
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(reject_webhook_authentication(&state).await);
     }
     let Some(msg) = update.message else {
         return Ok("ok");
@@ -313,6 +326,28 @@ async fn handle_webhook(
 
     info!(%chat_id, sender = %sender_name, text, "telegram: message received");
     Ok("ok")
+}
+
+async fn reject_webhook_authentication(state: &AppState) -> StatusCode {
+    let boundary = BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "telegram",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let Some(ui) = &state.ctx.ui else {
+        return StatusCode::UNAUTHORIZED;
+    };
+    let error = ui
+        .reject_authentication(
+            &boundary,
+            AuthenticationFailure::new(AuthenticationMethod::WebhookSignature),
+        )
+        .await;
+    if error.code == BoundaryErrorCode::RateLimited {
+        StatusCode::TOO_MANY_REQUESTS
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
 }
 
 fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
@@ -456,6 +491,111 @@ fn _unused_json(_v: JsonValue) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_channel::UiService;
+
+    struct AuthenticationRecorder(AtomicUsize);
+
+    #[async_trait]
+    impl UiService for AuthenticationRecorder {
+        async fn reject_authentication(
+            &self,
+            boundary: &BoundaryContext,
+            failure: AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            assert_eq!(boundary.transport, "telegram");
+            assert_eq!(
+                failure.attempted_method,
+                AuthenticationMethod::WebhookSignature
+            );
+            self.0.fetch_add(1, Ordering::Relaxed);
+            sylvander_protocol::BoundaryError {
+                code: BoundaryErrorCode::RateLimited,
+                operation: failure.operation().into(),
+                request_id: boundary.request_id.clone(),
+                message: "rate limited".into(),
+                retry_after_ms: Some(1_000),
+            }
+        }
+
+        async fn authorize_message(
+            &self,
+            _: &BoundaryContext,
+            _: &sylvander_protocol::UiClientMessage,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+        async fn discover_agents(
+            &self,
+            _: &BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn create_session(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn session_config(
+            &self,
+            _: &BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn update_session_config(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn submit_feedback(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn request_limit_is_configurable() {
+        let channel = TelegramChannel::new("token", "127.0.0.1:0".parse().unwrap(), "agent")
+            .with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn invalid_secret_reaches_runtime_authentication_boundary() {
+        let ui = Arc::new(AuthenticationRecorder(AtomicUsize::new(0)));
+        let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let mut context =
+            ChannelContext::new(Arc::new(InProcessMessageBus::new()), sessions.clone());
+        context.ui = Some(ui.clone());
+        let state = AppState {
+            ctx: Arc::new(context),
+            agent_id: AgentId::new("agent"),
+            sessions,
+            webhook_secret: Some("secret".into()),
+            instance_id: "bot-a".into(),
+            replay: ReplayCache::default(),
+        };
+
+        assert_eq!(
+            reject_webhook_authentication(&state).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(ui.0.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn webhook_secret_is_required_by_default() {
