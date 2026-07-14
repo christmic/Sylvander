@@ -24,7 +24,7 @@ use serde_json::Value as JsonValue;
 
 use crate::session::SessionMetadata;
 use crate::spec::{AgentId, SessionId};
-use sylvander_protocol::types::UserId;
+use sylvander_protocol::types::{SessionConfigOverrides, SessionEffectiveConfig, UserId};
 
 // ---------------------------------------------------------------------------
 // SessionLifetime
@@ -62,6 +62,16 @@ pub struct StoredSession {
     /// Protocol-specific metadata (agent never sees this).
     #[serde(default)]
     pub external_meta: HashMap<String, JsonValue>,
+    /// Monotonic revision for optimistic session configuration updates.
+    #[serde(default)]
+    pub config_revision: u64,
+    /// Sparse session-owned values layered over Agent and channel defaults.
+    #[serde(default)]
+    pub config_overrides: SessionConfigOverrides,
+    /// Last successfully resolved configuration. Legacy rows remain `None`
+    /// until the runtime migrates them against a live Agent definition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_config: Option<SessionEffectiveConfig>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +103,9 @@ impl StoredSession {
             created_at: now,
             updated_at: now,
             external_meta: HashMap::new(),
+            config_revision: 0,
+            config_overrides: SessionConfigOverrides::default(),
+            effective_config: None,
         }
     }
 
