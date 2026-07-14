@@ -460,16 +460,12 @@ pub fn run_stream(
                 if last_provider_usage.total_input_tokens() >= auto_threshold && messages.len() > 4 {
                     yield AgentEvent::CompressionStarted;
                 }
-                let auto_llm = config.legacy_client().map(|client|
-                    super::compress::AgentLoopAutoCompactLlm::new(client.clone())
-                );
+                let auto_llm = config.auto_compact_llm();
                 let mut compress_ctx = super::compress::CompressContext {
                     messages: &mut messages,
                     last_usage: &last_provider_usage,
                     model_info: &config.model,
-                    auto_compact_llm: auto_llm
-                        .as_ref()
-                        .map(|llm| llm as &dyn super::compress::AutoCompactLlm),
+                    auto_compact_llm: Some(&auto_llm),
                 };
                 let reports = config
                     .compression_pipeline
@@ -1346,10 +1342,23 @@ async fn consume_provider_stream(
 }
 
 impl AgentLoop {
-    pub(crate) fn legacy_client(&self) -> Option<&AnthropicClient> {
+    pub(crate) fn auto_compact_llm(
+        &self,
+    ) -> super::compress::auto_compact_llm::BackendAutoCompactLlm {
         match &self.backend {
-            ModelBackend::LegacyAnthropic { client } => Some(client),
-            ModelBackend::Provider { .. } => None,
+            ModelBackend::LegacyAnthropic { client } => {
+                super::compress::auto_compact_llm::BackendAutoCompactLlm::Legacy(
+                    super::compress::AgentLoopAutoCompactLlm::new(client.clone()),
+                )
+            }
+            ModelBackend::Provider { provider, model } => {
+                super::compress::auto_compact_llm::BackendAutoCompactLlm::Provider(
+                    super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+                        provider.clone(),
+                        model.clone(),
+                    ),
+                )
+            }
         }
     }
 
