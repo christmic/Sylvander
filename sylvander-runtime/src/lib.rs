@@ -22,6 +22,7 @@
 //! └──────────────────┘
 //! ```
 
+mod agent_admin;
 pub mod agent_registry;
 mod boundary;
 pub mod composition;
@@ -46,11 +47,16 @@ use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
+    AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RunFeedback,
     SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
     SessionEffectiveConfig,
 };
 
+use crate::agent_admin::{
+    AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
+    redact_revision,
+};
 use crate::composition::{ConfiguredAgent, build_agent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
@@ -90,7 +96,6 @@ pub struct Runtime {
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
     configured_agents: HashMap<AgentId, ConfiguredAgent>,
-    agent_registry: Option<AgentRegistry>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
@@ -125,6 +130,25 @@ struct RuntimeRevisionProvider {
 }
 
 impl RuntimeRevisionProvider {
+    fn compose_definition(
+        &self,
+        definition: &crate::config::AgentDefinitionConfig,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
+        build_agent(
+            &self.config,
+            definition,
+            self.bus.clone(),
+            self.sessions.clone(),
+            &SystemSecretResolver,
+        )
+        .map_err(|error| RuntimeError::Composition(error.to_string()))
+    }
+
+    async fn cache_revision(&self, configured: ConfiguredAgent) {
+        let key = (configured.spec.id.clone(), configured.definition.revision);
+        self.configured.write().await.insert(key, configured);
+    }
+
     async fn configured_revision(
         &self,
         agent_id: &AgentId,
@@ -143,14 +167,7 @@ impl RuntimeRevisionProvider {
                 RuntimeError::Config(format!("unknown Agent revision {agent_id}@{revision}"))
             })?
             .definition;
-        let configured = build_agent(
-            &self.config,
-            &definition,
-            self.bus.clone(),
-            self.sessions.clone(),
-            &SystemSecretResolver,
-        )
-        .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        let configured = self.compose_definition(&definition)?;
         let mut cache = self.configured.write().await;
         Ok(cache
             .entry(key)
@@ -571,6 +588,115 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .await
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
     }
+
+    async fn agent_admin(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: AgentAdminRequest,
+    ) -> AgentAdminResponse {
+        let (Some(registry), Some(provider)) = (
+            self.agent_registry.as_ref(),
+            self.revision_provider.as_ref(),
+        ) else {
+            return agent_admin_error(
+                AgentAdminErrorCode::StorageUnavailable,
+                "Agent administration service is unavailable",
+            );
+        };
+        match AgentAdminService::new(registry, &provider.config)
+            .dispatch(boundary.principal.as_ref(), request)
+            .await
+        {
+            AgentAdminDispatch::Response(response) => response,
+            AgentAdminDispatch::Update {
+                expected_active_revision,
+                definition,
+            } => {
+                let Ok(configured) = provider.compose_definition(&definition) else {
+                    return agent_admin_error(
+                        AgentAdminErrorCode::InvalidDefinition,
+                        "Agent revision could not be composed",
+                    );
+                };
+                match registry
+                    .update(&provider.config, expected_active_revision, *definition)
+                    .await
+                {
+                    Ok(stored) => {
+                        provider.cache_revision(configured).await;
+                        AgentAdminResponse::Success {
+                            result: Box::new(AgentAdminResult::DefinitionUpdated {
+                                revision: redact_revision(&stored),
+                            }),
+                        }
+                    }
+                    Err(error) => AgentAdminResponse::Error {
+                        error: map_registry_error(error),
+                    },
+                }
+            }
+            AgentAdminDispatch::Activate {
+                agent_id,
+                revision,
+                expected_active_revision,
+            } => {
+                if provider
+                    .configured_revision(&agent_id, revision)
+                    .await
+                    .is_err()
+                {
+                    return agent_admin_error(
+                        AgentAdminErrorCode::InvalidDefinition,
+                        "Agent revision could not be composed",
+                    );
+                }
+                match registry
+                    .activate(&agent_id, revision, expected_active_revision)
+                    .await
+                {
+                    Ok(()) => AgentAdminResponse::Success {
+                        result: Box::new(AgentAdminResult::RevisionActivated {
+                            agent_id,
+                            active_revision: revision,
+                        }),
+                    },
+                    Err(error) => AgentAdminResponse::Error {
+                        error: map_registry_error(error),
+                    },
+                }
+            }
+            AgentAdminDispatch::Rollback {
+                agent_id,
+                target_revision,
+                expected_active_revision,
+            } => {
+                if provider
+                    .configured_revision(&agent_id, target_revision)
+                    .await
+                    .is_err()
+                {
+                    return agent_admin_error(
+                        AgentAdminErrorCode::InvalidDefinition,
+                        "Agent revision could not be composed",
+                    );
+                }
+                match registry
+                    .rollback(&agent_id, target_revision, expected_active_revision)
+                    .await
+                {
+                    Ok(()) => AgentAdminResponse::Success {
+                        result: Box::new(AgentAdminResult::RevisionRolledBack {
+                            agent_id,
+                            active_revision: target_revision,
+                        }),
+                    },
+                    Err(error) => AgentAdminResponse::Error {
+                        error: map_registry_error(error),
+                    },
+                }
+            }
+        }
+    }
 }
 
 impl RuntimeUiService {
@@ -664,11 +790,11 @@ impl RuntimeUiService {
         if matches!(
             message,
             sylvander_protocol::UiClientMessage::AgentAdmin { .. }
-        ) {
-            return Err(boundary_failure(
+        ) && !is_agent_administrator(boundary.principal.as_ref())
+        {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary,
                 "agent_admin",
-                "Agent administration is not connected to this runtime",
             ));
         }
         if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
@@ -877,6 +1003,19 @@ fn boundary_failure(
     }
 }
 
+fn agent_admin_error(code: AgentAdminErrorCode, message: impl Into<String>) -> AgentAdminResponse {
+    AgentAdminResponse::Error {
+        error: AgentAdminError {
+            code,
+            message: message.into(),
+            agent_id: None,
+            revision: None,
+            expected_active_revision: None,
+            actual_active_revision: None,
+        },
+    }
+}
+
 fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
     use sylvander_protocol::UiClientMessage as Message;
     match message {
@@ -1039,7 +1178,6 @@ impl Runtime {
             ephemeral: Arc::new(RwLock::new(HashMap::new())),
             bus,
             configured_agents,
-            agent_registry: None,
             revision_provider: None,
             ui_service,
             evidence: None,
@@ -1268,7 +1406,6 @@ impl Runtime {
             ephemeral,
             bus,
             configured_agents,
-            agent_registry: Some(agent_registry),
             revision_provider: Some(revision_provider),
             ui_service,
             evidence,
@@ -1282,12 +1419,6 @@ impl Runtime {
     #[must_use]
     pub fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
         self.configured_agents.get(id)
-    }
-
-    /// Return the durable Agent registry used by production configuration.
-    #[must_use]
-    pub fn agent_registry(&self) -> Option<&AgentRegistry> {
-        self.agent_registry.as_ref()
     }
 
     /// Resolve and atomically replace one durable session's sparse overrides.
@@ -2335,24 +2466,11 @@ model_name = "model-a"
                 .all(|denial| denial.resource_digest.as_deref()
                     != Some(created.session_id.0.as_str()))
         );
-        let registry = runtime.agent_registry().unwrap();
         let original_revision = restart_config.agents[0].revision;
         let mut next_definition = restart_config.agents[0].clone();
         next_definition.revision += 1;
         next_definition.spec.name = "Sylvander revised".into();
         next_definition.access = crate::config::AgentAccessConfig::default();
-        registry
-            .update(&restart_config, original_revision, next_definition.clone())
-            .await
-            .unwrap();
-        registry
-            .activate(
-                &next_definition.spec.id,
-                next_definition.revision,
-                original_revision,
-            )
-            .await
-            .unwrap();
         let administrator = sylvander_protocol::BoundaryContext::authenticated(
             sylvander_protocol::AuthenticatedPrincipal {
                 id: sylvander_protocol::PrincipalId::new("operator"),
@@ -2364,6 +2482,78 @@ model_name = "model-a"
             "internal",
             "hot-activate",
         );
+        let update_request = sylvander_protocol::AgentAdminRequest::UpdateDefinition {
+            expected_active_revision: original_revision,
+            definition: Box::new(
+                crate::agent_admin::draft_from_definition(&next_definition).unwrap(),
+            ),
+        };
+        let update_message = sylvander_protocol::UiClientMessage::AgentAdmin {
+            request: update_request.clone(),
+        };
+        let denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &update_message,
+        )
+        .await
+        .expect_err("ordinary session owners must not administer Agents");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            &update_message,
+        )
+        .await
+        .expect("administrators may reach the Agent administration service");
+        assert!(
+            evidence
+                .authorization_denials(20)
+                .await
+                .unwrap()
+                .iter()
+                .any(|denial| denial.operation == "agent_admin")
+        );
+        let updated = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            update_request,
+        )
+        .await;
+        assert!(matches!(
+            updated,
+            sylvander_protocol::AgentAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::AgentAdminResult::DefinitionUpdated { revision }
+                        if revision.definition.revision == next_definition.revision
+                            && !revision.active
+                )
+        ));
+        let activated = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                agent_id: next_definition.spec.id.clone(),
+                revision: next_definition.revision,
+                expected_active_revision: original_revision,
+            },
+        )
+        .await;
+        assert!(matches!(
+            activated,
+            sylvander_protocol::AgentAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::AgentAdminResult::RevisionActivated {
+                        active_revision,
+                        ..
+                    } if *active_revision == next_definition.revision
+                )
+        ));
         let discovered = sylvander_channel::UiService::discover_agents(
             runtime.ui_service.as_ref(),
             &administrator,
@@ -2425,14 +2615,27 @@ model_name = "model-a"
             "an existing session must not drift to the activated revision"
         );
 
-        registry
-            .rollback(
-                &next_definition.spec.id,
-                original_revision,
-                next_definition.revision,
-            )
-            .await
-            .unwrap();
+        let rolled_back = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::RollbackRevision {
+                agent_id: next_definition.spec.id.clone(),
+                target_revision: original_revision,
+                expected_active_revision: next_definition.revision,
+            },
+        )
+        .await;
+        assert!(matches!(
+            rolled_back,
+            sylvander_protocol::AgentAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::AgentAdminResult::RevisionRolledBack {
+                        active_revision,
+                        ..
+                    } if *active_revision == original_revision
+                )
+        ));
         let rolled_back_session = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
             &administrator,
@@ -2449,14 +2652,27 @@ model_name = "model-a"
             rolled_back_session.effective.agent_revision, original_revision,
             "rollback must affect new sessions without restarting"
         );
-        registry
-            .activate(
-                &next_definition.spec.id,
-                next_definition.revision,
-                original_revision,
-            )
-            .await
-            .unwrap();
+        let reactivated = sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                agent_id: next_definition.spec.id.clone(),
+                revision: next_definition.revision,
+                expected_active_revision: original_revision,
+            },
+        )
+        .await;
+        assert!(matches!(
+            reactivated,
+            sylvander_protocol::AgentAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::AgentAdminResult::RevisionActivated {
+                        active_revision,
+                        ..
+                    } if *active_revision == next_definition.revision
+                )
+        ));
         let owner_denial = sylvander_channel::UiService::authorize_message(
             runtime.ui_service.as_ref(),
             &owner,
