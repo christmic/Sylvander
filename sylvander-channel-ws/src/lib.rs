@@ -182,6 +182,13 @@ async fn handle_client_msg(
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
+    // WebSocket authentication is fail-closed until the configured bearer
+    // credential is established during the HTTP upgrade.
+    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+        "websocket",
+        "websocket",
+        uuid::Uuid::new_v4().to_string(),
+    );
     match msg {
         ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
         {
@@ -401,23 +408,26 @@ async fn handle_client_msg(
         }
         ClientMsg::DiscoverAgents => {
             if let Some(ui) = &ctx.ui {
-                let _ = tx.send(ServerMsg::AgentsDiscovered {
-                    agents: ui.discover_agents().await,
-                });
+                match ui.discover_agents(&boundary).await {
+                    Ok(agents) => {
+                        let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
+                    }
+                    Err(error) => operation_error(tx, "discover_agents", error.to_string()),
+                }
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
             }
         }
         ClientMsg::CreateSession { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.create_session(request).await {
+                match ui.create_session(&boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
                             config: Some(config),
                         });
                     }
-                    Err(error) => operation_error(tx, "create_session", error),
+                    Err(error) => operation_error(tx, "create_session", error.to_string()),
                 }
             } else {
                 operation_error(tx, "create_session", "UI service is unavailable");
@@ -425,11 +435,14 @@ async fn handle_client_msg(
         }
         ClientMsg::GetSessionConfig { session_id } => {
             if let Some(ui) = &ctx.ui {
-                match ui.session_config(&SessionId::new(session_id)).await {
+                match ui
+                    .session_config(&boundary, &SessionId::new(session_id))
+                    .await
+                {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "get_session_config", error),
+                    Err(error) => operation_error(tx, "get_session_config", error.to_string()),
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
@@ -437,11 +450,11 @@ async fn handle_client_msg(
         }
         ClientMsg::UpdateSessionConfig { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(request).await {
+                match ui.update_session_config(&boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "update_session_config", error),
+                    Err(error) => operation_error(tx, "update_session_config", error.to_string()),
                 }
             } else {
                 operation_error(tx, "update_session_config", "UI service is unavailable");
@@ -449,11 +462,11 @@ async fn handle_client_msg(
         }
         ClientMsg::SubmitFeedback { feedback } => {
             if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(feedback).await {
+                match ui.submit_feedback(&boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
-                    Err(error) => operation_error(tx, "submit_feedback", error),
+                    Err(error) => operation_error(tx, "submit_feedback", error.to_string()),
                 }
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");

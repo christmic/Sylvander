@@ -150,6 +150,30 @@ impl std::fmt::Display for BoundaryError {
 
 impl std::error::Error for BoundaryError {}
 
+impl BoundaryError {
+    #[must_use]
+    pub fn unauthenticated(context: &BoundaryContext, operation: &str) -> Self {
+        Self {
+            code: BoundaryErrorCode::Unauthenticated,
+            operation: operation.into(),
+            request_id: context.request_id.clone(),
+            message: "authentication is required".into(),
+            retry_after_ms: None,
+        }
+    }
+
+    #[must_use]
+    pub fn forbidden(context: &BoundaryContext, operation: &str) -> Self {
+        Self {
+            code: BoundaryErrorCode::Forbidden,
+            operation: operation.into(),
+            request_id: context.request_id.clone(),
+            message: "the principal is not allowed to access this resource".into(),
+            retry_after_ms: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
