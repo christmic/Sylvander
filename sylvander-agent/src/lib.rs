@@ -84,6 +84,7 @@ pub mod error;
 pub mod event;
 pub mod loop_;
 pub mod plan_gate;
+pub mod provider_compat;
 pub mod run;
 pub mod session;
 pub mod session_store;
