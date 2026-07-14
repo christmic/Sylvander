@@ -624,12 +624,7 @@ impl AgentRun {
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
         };
-        let client = self
-            .inner
-            .loop_config
-            .legacy_client()
-            .ok_or_else(|| "provider-backed manual compaction is not configured".to_string())?;
-        let summarizer = crate::compress::AgentLoopAutoCompactLlm::new(client.clone());
+        let summarizer = self.inner.loop_config.auto_compact_llm();
         let mut context = crate::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
@@ -2885,6 +2880,48 @@ mod tests {
             requests[0].model,
             sylvander_llm_core::ModelRef::new("local", "model-a")
         );
+    }
+
+    #[tokio::test]
+    async fn provider_manual_compaction_uses_backend_factory() {
+        let mut spec = AgentSpec::builder()
+            .id("provider-agent")
+            .name("Provider")
+            .model_name("model-a")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let provider = Arc::new(RecordingProvider::default());
+        let run = AgentRun::provider_builder(
+            spec,
+            provider.clone(),
+            ProviderModelInfo {
+                reference: sylvander_llm_core::ModelRef::new("local", "model-a"),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+            },
+        )
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .build()
+        .unwrap();
+        let session_id = run.join_session(test_metadata()).await;
+        {
+            let mut sessions = run.inner.sessions.write().await;
+            let session = sessions.get_mut(&session_id).unwrap();
+            for index in 0..6 {
+                session.append_user_message(
+                    sylvander_llm_anthropic::api::types::MessageParam::user(format!(
+                        "message {index}"
+                    )),
+                );
+            }
+        }
+
+        let report = run.compact_session(&session_id).await.unwrap();
+        assert_eq!(report.removed_messages, 2);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(run.get_session(&session_id).await.unwrap().len(), 5);
     }
 
     #[test]
