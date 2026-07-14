@@ -608,8 +608,12 @@ impl AgentRun {
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
         };
-        let summarizer =
-            crate::compress::AgentLoopAutoCompactLlm::new(self.inner.loop_config.client.clone());
+        let client = self
+            .inner
+            .loop_config
+            .legacy_client()
+            .ok_or_else(|| "provider-backed manual compaction is not configured".to_string())?;
+        let summarizer = crate::compress::AgentLoopAutoCompactLlm::new(client.clone());
         let mut context = crate::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
