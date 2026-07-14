@@ -28,6 +28,10 @@ mod boundary;
 pub mod composition;
 pub mod config;
 pub mod evidence;
+#[allow(dead_code)] // consumed by the staged registry mutation batches
+mod registry_domain;
+#[cfg(test)]
+mod registry_domain_tests;
 
 use std::collections::HashMap;
 use std::sync::Arc;
