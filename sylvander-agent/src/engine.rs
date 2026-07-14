@@ -36,6 +36,25 @@ use crate::run::AgentRun;
 use crate::session::SessionMetadata;
 use crate::spec::{AgentId, AgentSpec, SessionId};
 
+/// Supplies immutable Agent runs to the engine's revision router.
+///
+/// The engine deliberately knows nothing about registries or configuration.
+/// A runtime resolves each durable session binding and composes the requested
+/// revision on demand.
+#[async_trait::async_trait]
+pub trait RevisionedAgentRunProvider: Send + Sync {
+    /// Return the immutable Agent revision bound to `session_id`.
+    async fn revision_for_session(
+        &self,
+        agent_id: &AgentId,
+        session_id: &SessionId,
+    ) -> Result<u64, String>;
+
+    /// Build or retrieve the run for one immutable revision.
+    async fn run_for_revision(&self, agent_id: &AgentId, revision: u64)
+    -> Result<AgentRun, String>;
+}
+
 // ---------------------------------------------------------------------------
 // AgentHandle
 // ---------------------------------------------------------------------------
@@ -264,6 +283,90 @@ impl AgentRunEngine {
         Ok(ret)
     }
 
+    /// Spawn one logical Agent whose sessions may be pinned to different
+    /// immutable revisions.
+    ///
+    /// There remains exactly one canonical bus subscription and one engine
+    /// handle for the Agent. Messages are routed to revision-specific
+    /// [`AgentRun`] workers according to the provider's durable session
+    /// binding. Existing sessions therefore cannot drift when another
+    /// revision becomes active for newly created sessions.
+    pub async fn spawn_revisioned_run(
+        &self,
+        spec: AgentSpec,
+        initial_revision: u64,
+        initial_run: AgentRun,
+        provider: Arc<dyn RevisionedAgentRunProvider>,
+    ) -> Result<AgentHandle, EngineError> {
+        let agent_id = spec.id.clone();
+        if initial_run.id() != &agent_id {
+            return Err(EngineError::AgentRunMismatch {
+                spec: agent_id,
+                run: initial_run.id().clone(),
+            });
+        }
+
+        let mut agents = self.agents.write().await;
+        if agents.contains_key(&agent_id) {
+            return Err(EngineError::AlreadySpawned(agent_id));
+        }
+        let inbox = self
+            .bus
+            .subscribe(initial_run.subscription_filter())
+            .await
+            .map_err(|error| EngineError::Bus(format!("agent subscribe failed: {error}")))?;
+        let status_filter = crate::bus::SubscriptionFilter {
+            session_ids: None,
+            recipients: Some(vec![Recipient::Broadcast]),
+            kinds: None,
+        };
+        let status_rx = self
+            .bus
+            .subscribe(status_filter)
+            .await
+            .map_err(|error| EngineError::Bus(format!("status subscribe failed: {error}")))?;
+
+        let agent_id_clone = agent_id.clone();
+        let expected_exit = Arc::new(AtomicBool::new(false));
+        let task_expected_exit = expected_exit.clone();
+        let exit_tx = self.exit_tx.clone();
+        let task = tokio::spawn(async move {
+            let _exit_signal = AgentExitSignal {
+                agent_id: agent_id_clone.clone(),
+                expected: task_expected_exit,
+                sender: exit_tx,
+            };
+            run_revision_router(
+                agent_id_clone.clone(),
+                initial_revision,
+                initial_run,
+                provider,
+                inbox,
+            )
+            .await;
+            info!(agent_id = %agent_id_clone, "revisioned agent task exited");
+        });
+        let handle = AgentHandle {
+            id: agent_id.clone(),
+            spec,
+            status: AgentStatus::Starting,
+            status_rx,
+            task: Some(task),
+            expected_exit: expected_exit.clone(),
+        };
+        let ret = AgentHandle {
+            id: handle.id.clone(),
+            spec: handle.spec.clone(),
+            status: handle.status,
+            status_rx: mpsc::unbounded_channel().1,
+            task: None,
+            expected_exit,
+        };
+        agents.insert(agent_id.clone(), handle);
+        info!(agent_id = %agent_id, initial_revision, "revisioned agent spawned");
+        Ok(ret)
+    }
+
     /// Despawn (stop) a running agent.
     ///
     /// Publishes a `System::Stop` message to the bus, then waits for
@@ -484,6 +587,102 @@ impl AgentRunEngine {
     }
 }
 
+struct RevisionWorker {
+    inbox: mpsc::UnboundedSender<BusMessage>,
+    task: JoinHandle<()>,
+}
+
+async fn run_revision_router(
+    agent_id: AgentId,
+    initial_revision: u64,
+    initial_run: AgentRun,
+    provider: Arc<dyn RevisionedAgentRunProvider>,
+    mut inbox: mpsc::UnboundedReceiver<BusMessage>,
+) {
+    let mut workers = HashMap::new();
+    workers.insert(initial_revision, spawn_revision_worker(initial_run));
+
+    while let Some(message) = inbox.recv().await {
+        if !matches!(&message.recipient, Recipient::Agent(id) if id == &agent_id) {
+            continue;
+        }
+        if matches!(
+            message.kind,
+            MessageKind::Stream(_) | MessageKind::System(SystemMessage::StatusUpdate { .. })
+        ) {
+            continue;
+        }
+        if matches!(message.kind, MessageKind::System(SystemMessage::Stop)) {
+            for worker in workers.values() {
+                let _ = worker.inbox.send(message.clone());
+            }
+            break;
+        }
+        let revision = match provider
+            .revision_for_session(&agent_id, &message.session_id)
+            .await
+        {
+            Ok(revision) => revision,
+            Err(error) => {
+                warn!(
+                    %agent_id,
+                    session_id = %message.session_id,
+                    %error,
+                    "failed to resolve Agent revision; dropping message"
+                );
+                continue;
+            }
+        };
+        if let std::collections::hash_map::Entry::Vacant(entry) = workers.entry(revision) {
+            let run = match provider.run_for_revision(&agent_id, revision).await {
+                Ok(run) if run.id() == &agent_id => run,
+                Ok(run) => {
+                    warn!(
+                        %agent_id,
+                        revision,
+                        run_agent_id = %run.id(),
+                        "revision provider returned a run for another Agent"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    warn!(
+                        %agent_id,
+                        revision,
+                        %error,
+                        "failed to compose Agent revision; dropping message"
+                    );
+                    continue;
+                }
+            };
+            entry.insert(spawn_revision_worker(run));
+        }
+        let delivered = workers
+            .get(&revision)
+            .is_some_and(|worker| worker.inbox.send(message).is_ok());
+        if !delivered {
+            warn!(%agent_id, revision, "Agent revision worker exited unexpectedly");
+            workers.remove(&revision);
+        }
+    }
+
+    // Closing an inbox is not sufficient: AgentRun waits for messages and
+    // emits its terminal status only after receiving Stop.
+    let stop = BusMessage::system_stop(agent_id);
+    for worker in workers.values() {
+        let _ = worker.inbox.send(stop.clone());
+    }
+    for (_, worker) in workers {
+        let _ = worker.task.await;
+    }
+}
+
+fn spawn_revision_worker(run: AgentRun) -> RevisionWorker {
+    let (inbox, receiver) = mpsc::unbounded_channel();
+    let task = tokio::spawn(run.run(receiver));
+    RevisionWorker { inbox, task }
+}
+
 // ---------------------------------------------------------------------------
 // EngineError
 // ---------------------------------------------------------------------------
@@ -533,6 +732,38 @@ mod tests {
     use super::*;
     use crate::bus::{InProcessMessageBus, Recipient};
 
+    struct TestRevisionProvider {
+        bindings: RwLock<HashMap<SessionId, u64>>,
+        runs: HashMap<u64, AgentRun>,
+    }
+
+    #[async_trait::async_trait]
+    impl RevisionedAgentRunProvider for TestRevisionProvider {
+        async fn revision_for_session(
+            &self,
+            _agent_id: &AgentId,
+            session_id: &SessionId,
+        ) -> Result<u64, String> {
+            self.bindings
+                .read()
+                .await
+                .get(session_id)
+                .copied()
+                .ok_or_else(|| format!("missing binding for {session_id}"))
+        }
+
+        async fn run_for_revision(
+            &self,
+            _agent_id: &AgentId,
+            revision: u64,
+        ) -> Result<AgentRun, String> {
+            self.runs
+                .get(&revision)
+                .cloned()
+                .ok_or_else(|| format!("missing run for revision {revision}"))
+        }
+    }
+
     fn test_spec(id: &str) -> AgentSpec {
         AgentSpec::builder()
             .id(id)
@@ -547,6 +778,104 @@ mod tests {
             .api_key("test-key")
             .build()
             .expect("client build")
+    }
+
+    fn test_run(spec: &AgentSpec, bus: Arc<dyn MessageBus>) -> AgentRun {
+        AgentRun::builder(spec.clone(), test_client())
+            .bus(bus)
+            .build()
+            .expect("run build")
+    }
+
+    #[tokio::test]
+    async fn revisioned_run_routes_concurrent_sessions_without_drift() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let engine = AgentRunEngine::new(bus.clone());
+        let spec = test_spec("revisioned");
+        let revision_one = test_run(&spec, bus.clone());
+        let revision_two = test_run(&spec, bus.clone());
+        let old_session = SessionId::new("old-session");
+        let new_session = SessionId::new("new-session");
+        let provider = Arc::new(TestRevisionProvider {
+            bindings: RwLock::new(HashMap::from([
+                (old_session.clone(), 1),
+                (new_session.clone(), 2),
+            ])),
+            runs: HashMap::from([(1, revision_one.clone()), (2, revision_two.clone())]),
+        });
+        engine
+            .spawn_revisioned_run(spec.clone(), 1, revision_one.clone(), provider.clone())
+            .await
+            .expect("spawn revision router");
+
+        bus.publish(BusMessage::agent_response(
+            old_session.clone(),
+            spec.id.clone(),
+            "self output must not loop back",
+        ))
+        .await
+        .unwrap();
+        let mut malformed = BusMessage::user_chat(
+            SessionId::new("unknown-session"),
+            "attacker",
+            "unknown sessions must not stop the router",
+        );
+        malformed.recipient = Recipient::Agent(spec.id.clone());
+        bus.publish(malformed).await.unwrap();
+
+        let metadata = SessionMetadata {
+            workspace: "/tmp".into(),
+            name: "revision test".into(),
+            user_id: "user".into(),
+        };
+        let (old, new) = tokio::join!(
+            engine.attach_session(
+                old_session.clone(),
+                "old",
+                metadata.clone(),
+                std::slice::from_ref(&spec.id),
+            ),
+            engine.attach_session(
+                new_session.clone(),
+                "new",
+                metadata,
+                std::slice::from_ref(&spec.id),
+            )
+        );
+        old.expect("attach old revision");
+        new.expect("attach new revision");
+
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if revision_one.get_session(&old_session).await.is_some()
+                    && revision_two.get_session(&new_session).await.is_some()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("both revisions receive their bound sessions");
+        assert!(revision_one.get_session(&new_session).await.is_none());
+        assert!(revision_two.get_session(&old_session).await.is_none());
+
+        // Changing what a hypothetical new session would bind to cannot
+        // mutate the already persisted old-session binding.
+        provider
+            .bindings
+            .write()
+            .await
+            .insert(SessionId::new("future-session"), 2);
+        assert_eq!(
+            provider
+                .revision_for_session(&spec.id, &old_session)
+                .await
+                .unwrap(),
+            1
+        );
+        engine.despawn(&spec.id).await.expect("clean shutdown");
+        assert!(engine.list_agents().await.is_empty());
     }
 
     #[tokio::test]
