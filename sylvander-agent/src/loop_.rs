@@ -445,68 +445,26 @@ pub fn run_stream(
                 break;
             }
 
-            // 4. Call LLM with streaming + stream-level retry on transient
-            //    errors. If the stream connection drops mid-flight
-            //    (5xx, network), we reopen and continue. 4xx / validation
-            //    errors still propagate immediately.
-            //
-            //    The request is the same for each retry — the LLM
-            //    generates from the same conversation state, so
-            //    reopening is safe.
-            const MAX_STREAM_RETRIES: u32 = 2;
-            let mut stream_attempt = 0u32;
-            let mut llm_stream: Option<sylvander_llm_anthropic::prelude::MessageStream> = None;
-            let mut stream_open_err: Option<AgentLoopError> = None;
-
-            loop {
-                let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
-                let call = config.call_llm_with_retry(&request, retry_tx);
-                tokio::pin!(call);
-                let call_result = loop {
-                    tokio::select! {
-                        biased;
-                        Some(retry) = retry_rx.recv() => yield retry,
-                        result = &mut call => break result,
-                    }
-                };
-                match call_result {
-                    Ok(s) => {
-                        llm_stream = Some(s);
-                        break;
-                    }
-                    Err(AgentLoopError::Llm { source, .. })
-                        if source.is_retryable()
-                            && stream_attempt < MAX_STREAM_RETRIES =>
-                    {
-                        stream_attempt += 1;
-                        let delay =
-                            std::time::Duration::from_millis(100 * (1 << stream_attempt));
-                        warn!(
-                            stream_attempt,
-                            delay_ms = delay.as_millis(),
-                            error = %source,
-                            "stream open failed, retrying"
-                        );
-                        yield AgentEvent::ModelRetry {
-                            attempt: stream_attempt,
-                            max_attempts: MAX_STREAM_RETRIES,
-                            delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                            reason: source.to_string(),
-                            cause: retry_cause(&source),
-                        };
-                        tokio::time::sleep(delay).await;
-                    }
-                    Err(e) => {
-                        stream_open_err = Some(e);
-                        break;
-                    }
+            // 4. Open the provider stream. This is the only retry owner;
+            //    provider adapters never retry and a failed streaming
+            //    request is never replayed as a buffered request.
+            let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
+            let call = config.call_llm_with_retry(&request, retry_tx);
+            tokio::pin!(call);
+            let call_result = loop {
+                tokio::select! {
+                    biased;
+                    Some(retry) = retry_rx.recv() => yield retry,
+                    result = &mut call => break result,
                 }
-            }
-
-            if let Some(e) = stream_open_err {
-                yield AgentEvent::Error(e);
-                break;
-            }
+            };
+            let mut llm_stream = match call_result {
+                Ok(stream) => stream,
+                Err(error) => {
+                    yield AgentEvent::Error(error);
+                    break;
+                }
+            };
 
             // 5. Consume the stream in a spawned task — events flow
             //    through an mpsc channel into the outer event stream.
@@ -518,7 +476,6 @@ pub fn run_stream(
             let (done_tx, done_rx) =
                 tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
 
-            let mut llm_stream = llm_stream.take().expect("stream must be set after open loop");
             let consumer_task = tokio::spawn(async move {
                 let mut stream_err: Option<AgentLoopError> = None;
                 while let Some(event_result) = llm_stream.next().await {
@@ -1258,18 +1215,16 @@ fn retry_cause(error: &AnthropicError) -> sylvander_protocol::RetryCause {
 
 impl AgentLoop {
     /// Call the LLM with retry/backoff on transient errors. Returns
-    /// a [`MessageStream`]. Tries streaming first (so `TextChunk`s
-    /// arrive as SSE deltas); falls back to non-streaming if the
-    /// provider doesn't support SSE.
+    /// a [`MessageStream`]. A provider may normalize a valid buffered
+    /// response into a stream, but an error never triggers a second request
+    /// using another transport mode.
     async fn call_llm_with_retry(
         &self,
         request: &CreateMessageRequest,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<sylvander_llm_anthropic::prelude::MessageStream, AgentLoopError> {
-        let mut last_err: Option<AnthropicError> = None;
         let max_attempts = self.max_retries + 1;
 
-        // Try streaming first.
         let url = self.client.base_url().join("v1/messages").unwrap();
         tracing::debug!(%url, model=%request.model, max_tokens=request.max_tokens, "calling LLM");
         for attempt in 0..max_attempts {
@@ -1278,14 +1233,10 @@ impl AgentLoop {
                 Err(e) => {
                     tracing::warn!(%url, status=?e, "streaming attempt failed");
                     if !e.is_retryable() || attempt == max_attempts - 1 {
-                        // Non-retryable (or exhausted retries): try
-                        // non-streaming as a fallback. Some providers
-                        // (e.g. MiniMax-M3) don't support SSE.
-                        warn!(
-                            error = %e,
-                            "streaming failed, falling back to non-streaming create()"
-                        );
-                        break;
+                        return Err(AgentLoopError::Llm {
+                            retries: attempt,
+                            source: e,
+                        });
                     }
                     let delay = std::time::Duration::from_millis(100 * (1 << attempt));
                     warn!(
@@ -1302,48 +1253,10 @@ impl AgentLoop {
                         cause: retry_cause(&e),
                     });
                     tokio::time::sleep(delay).await;
-                    last_err = Some(e);
                 }
             }
         }
-
-        // Fallback: non-streaming create(), wrapped as a synthetic
-        // MessageStream via from_message().
-        for attempt in 0..max_attempts {
-            match self.client.messages().create(request).await {
-                Ok(msg) => {
-                    return Ok(sylvander_llm_anthropic::prelude::MessageStream::from_message(msg));
-                }
-                Err(e) => {
-                    if !e.is_retryable() || attempt == max_attempts - 1 {
-                        return Err(AgentLoopError::Llm {
-                            retries: attempt,
-                            source: e,
-                        });
-                    }
-                    let delay = std::time::Duration::from_millis(100 * (1 << attempt));
-                    warn!(
-                        attempt = attempt,
-                        delay_ms = delay.as_millis(),
-                        error = %e,
-                        "LLM call failed, retrying"
-                    );
-                    let _ = retry_events.send(AgentEvent::ModelRetry {
-                        attempt: attempt + 1,
-                        max_attempts: self.max_retries,
-                        delay_ms: u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                        reason: e.to_string(),
-                        cause: retry_cause(&e),
-                    });
-                    tokio::time::sleep(delay).await;
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(AgentLoopError::Llm {
-            retries: self.max_retries,
-            source: last_err.expect("retry loop must have errored at least once"),
-        })
+        unreachable!("retry loop always returns success or the final error")
     }
 
     /// Validate the request against the model's capabilities.
