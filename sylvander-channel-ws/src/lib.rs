@@ -603,6 +603,90 @@ async fn handle_client_msg(
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
         }
+        ClientMsg::SelectModel {
+            session_id,
+            model,
+            reasoning_effort,
+        } => {
+            let Some(session_id) = session_id else {
+                operation_error(tx, "select_model", "select_model requires a session_id");
+                return;
+            };
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_model", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(&boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let mut overrides = state.overrides;
+            overrides.model_id = Some(model);
+            overrides.reasoning_effort = Some(reasoning_effort);
+            match ui
+                .update_session_config(
+                    &boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => {
+                    let _ = tx.send(ServerMsg::SessionConfig { state });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::SelectPermissions {
+            session_id,
+            profile,
+        } => {
+            let Some(session_id) = session_id else {
+                operation_error(
+                    tx,
+                    "select_permissions",
+                    "select_permissions requires a session_id",
+                );
+                return;
+            };
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_permissions", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(&boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let mut overrides = state.overrides;
+            overrides.permissions = Some(profile);
+            match ui
+                .update_session_config(
+                    &boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => {
+                    let _ = tx.send(ServerMsg::SessionConfig { state });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
         ClientMsg::ListSessions => {
             info!("ws: client listed sessions (not yet fully implemented)");
         }
@@ -644,6 +728,126 @@ mod tests {
     use sylvander_channel::UiService;
 
     struct DenyAgentAccess;
+
+    struct SessionConfigUi {
+        states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
+    }
+
+    fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
+        use sylvander_protocol::{
+            SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+            SessionEffectiveConfig,
+        };
+        let source = SessionConfigSource {
+            kind: SessionConfigSourceKind::AgentDefault,
+            reference: Some("agent-1".into()),
+        };
+        sylvander_protocol::SessionConfigState {
+            session_id: SessionId::new(id),
+            revision: 1,
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            effective: SessionEffectiveConfig {
+                agent_id: AgentId::new("agent-1"),
+                agent_revision: 1,
+                provider_id: "test".into(),
+                model_id: "default-model".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                permissions: sylvander_protocol::PermissionProfile::default(),
+                prompt_profile: None,
+                system_prompt_sha256: "digest".into(),
+                agent_workspace: None,
+                user_workspace: None,
+                execution_target: "local".into(),
+                provenance: SessionConfigProvenance {
+                    model: source.clone(),
+                    reasoning_effort: source.clone(),
+                    permissions: source.clone(),
+                    prompt_profile: source.clone(),
+                    system_prompt: source.clone(),
+                    agent_workspace: source.clone(),
+                    user_workspace: source.clone(),
+                    execution_target: source,
+                },
+            },
+        }
+    }
+
+    #[async_trait]
+    impl UiService for SessionConfigUi {
+        async fn authorize_message(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            Ok(())
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn session_config(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            session_id: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            self.states
+                .lock()
+                .await
+                .get(&session_id.0)
+                .cloned()
+                .ok_or_else(|| {
+                    sylvander_protocol::BoundaryError::forbidden(boundary, "get_session_config")
+                })
+        }
+
+        async fn update_session_config(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(&request.session_id.0).ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "update_session_config")
+            })?;
+            assert_eq!(request.expected_revision, state.revision);
+            state.revision += 1;
+            state.overrides = request.overrides;
+            if let Some(model) = &state.overrides.model_id {
+                state.effective.model_id = model.clone();
+            }
+            if let Some(effort) = state.overrides.reasoning_effort {
+                state.effective.reasoning_effort = effort;
+            }
+            if let Some(profile) = &state.overrides.permissions {
+                state.effective.permissions = profile.clone();
+            }
+            Ok(state.clone())
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn message_limit_is_configurable() {
@@ -820,5 +1024,52 @@ mod tests {
             reject_ws_authentication(&state).await,
             StatusCode::TOO_MANY_REQUESTS
         );
+    }
+
+    #[tokio::test]
+    async fn selection_updates_only_the_addressed_session() {
+        let ui = Arc::new(SessionConfigUi {
+            states: Mutex::new(HashMap::from([
+                ("session-a".into(), config_state("session-a")),
+                ("session-b".into(), config_state("session-b")),
+            ])),
+        });
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            ui: Some(ui.clone()),
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::SelectModel {
+                session_id: Some("session-a".into()),
+                model: "thinking-model".into(),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::High,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::SessionConfig { state })
+                if state.session_id.0 == "session-a"
+                    && state.effective.model_id == "thinking-model"
+                    && state.effective.reasoning_effort
+                        == sylvander_protocol::ReasoningEffort::High
+        ));
+        let states = ui.states.lock().await;
+        assert_eq!(states["session-a"].revision, 2);
+        assert_eq!(states["session-b"], config_state("session-b"));
     }
 }
