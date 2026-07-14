@@ -46,7 +46,7 @@ use sylvander_agent::bus::{
     BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
 };
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
 use sylvander_protocol::{
     UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
@@ -299,13 +299,18 @@ async fn handle_client_msg(
             let sid = match authorize_external_chat(
                 ctx,
                 &boundary,
-                existing_session,
-                agent_id.clone(),
-                "websocket session".into(),
-                sylvander_protocol::SessionConfigOverrides::default(),
-                &text,
-                &attachments,
-                BTreeMap::from([("channel_instance_id".into(), instance_id.into())]),
+                ExternalChatRequest {
+                    existing_session,
+                    agent_id: agent_id.clone(),
+                    label: "websocket session".into(),
+                    overrides: sylvander_protocol::SessionConfigOverrides::default(),
+                    text: text.clone(),
+                    attachments: attachments.clone(),
+                    external_meta: BTreeMap::from([(
+                        "channel_instance_id".into(),
+                        instance_id.into(),
+                    )]),
+                },
             )
             .await
             {
