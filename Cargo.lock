@@ -3037,6 +3037,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sylvander-llm-core",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
