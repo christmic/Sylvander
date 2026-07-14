@@ -1206,6 +1206,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.modals.push(Box::new(ModelPicker::new(state)));
             }
             [model] | [model, _] => {
+                let session_id = state
+                    .session_id
+                    .clone()
+                    .ok_or("Start a session before selecting a model")?;
                 let descriptor = state
                     .metadata
                     .models
@@ -1227,6 +1231,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state
                     .pending_actions
                     .push(crate::event::Action::SelectModel {
+                        session_id,
                         model: (*model).to_string(),
                         reasoning_effort: effort,
                     });
@@ -1853,6 +1858,7 @@ mod tests {
     fn model_command_uses_only_server_advertised_combinations() {
         let mut state = AppState::new();
         state.connected = true;
+        state.session_id = Some("session-1".into());
         state.metadata.models = vec![sylvander_protocol::ModelDescriptor {
             id: "thinking".into(),
             provider: "test".into(),
@@ -1868,9 +1874,10 @@ mod tests {
         assert!(matches!(
             state.pending_actions.as_slice(),
             [crate::event::Action::SelectModel {
+                session_id,
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-            }] if model == "thinking"
+            }] if session_id == "session-1" && model == "thinking"
         ));
         assert!(execute(parse("model thinking high").unwrap(), &mut state).is_err());
         assert!(execute(parse("model missing off").unwrap(), &mut state).is_err());

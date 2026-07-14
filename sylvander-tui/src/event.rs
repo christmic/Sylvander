@@ -375,10 +375,12 @@ pub enum Action {
         expected_turn_id: String,
     },
     SelectModel {
+        session_id: String,
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     },
     SelectPermissions {
+        session_id: String,
         profile: sylvander_protocol::PermissionProfile,
     },
     LoadSession {

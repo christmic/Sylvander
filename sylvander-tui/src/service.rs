@@ -141,13 +141,21 @@ impl AgentService {
                 expected_turn_id,
             },
             Action::SelectModel {
+                session_id,
                 model,
                 reasoning_effort,
             } => ClientMsg::SelectModel {
+                session_id: Some(session_id),
                 model,
                 reasoning_effort,
             },
-            Action::SelectPermissions { profile } => ClientMsg::SelectPermissions { profile },
+            Action::SelectPermissions {
+                session_id,
+                profile,
+            } => ClientMsg::SelectPermissions {
+                session_id: Some(session_id),
+                profile,
+            },
             Action::LoadSession { session_id } => ClientMsg::LoadSession { session_id },
             Action::ReconcileSession { session_id } => ClientMsg::ReattachSession { session_id },
             Action::RenameSession { session_id, label } => {
