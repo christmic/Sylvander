@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
@@ -1557,13 +1558,14 @@ impl AgentRunInner {
 
         match store.get(session_id).await {
             Ok(None) => {
-                let stored = StoredSession::new(
+                let mut stored = StoredSession::new(
                     session_id.clone(),
                     metadata.name.clone(),
                     SessionLifetime::Persistent,
                     metadata.clone(),
                     vec![self.id.clone()],
                 );
+                stored.effective_config = Some(self.legacy_session_config(metadata).await);
                 if let Err(error) = store.save(&stored).await {
                     warn!(%session_id, %error, "failed to persist joined session");
                     return context;
@@ -1600,6 +1602,49 @@ impl AgentRunInner {
             Err(error) => warn!(%session_id, %error, "failed to restore session history"),
         }
         context
+    }
+
+    async fn legacy_session_config(
+        &self,
+        metadata: &SessionMetadata,
+    ) -> sylvander_protocol::SessionEffectiveConfig {
+        let runtime = self.runtime_models.read().await;
+        let source = || sylvander_protocol::SessionConfigSource {
+            kind: sylvander_protocol::SessionConfigSourceKind::LegacyMigration,
+            reference: Some("legacy-channel-session".into()),
+        };
+        let prompt = self
+            .loop_config
+            .system_prompt
+            .as_deref()
+            .unwrap_or_default();
+        sylvander_protocol::SessionEffectiveConfig {
+            agent_id: self.id.clone(),
+            agent_revision: 0,
+            provider_id: self.spec.model.provider.clone(),
+            model_id: runtime.current_model.clone(),
+            reasoning_effort: runtime.reasoning_effort,
+            permissions: self.runtime_permissions.read().await.clone(),
+            prompt_profile: None,
+            system_prompt_sha256: format!("{:x}", Sha256::digest(prompt.as_bytes())),
+            agent_workspace: None,
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: metadata.workspace.clone(),
+                read_only: false,
+            }),
+            execution_target: "local".into(),
+            provenance: sylvander_protocol::SessionConfigProvenance {
+                model: source(),
+                reasoning_effort: source(),
+                permissions: source(),
+                prompt_profile: source(),
+                system_prompt: source(),
+                agent_workspace: source(),
+                user_workspace: source(),
+                execution_target: source(),
+            },
+        }
     }
 
     async fn interrupt_turn(&self, session_id: &SessionId) {
@@ -3267,6 +3312,39 @@ mod tests {
             .await;
 
         assert_eq!(restored.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_join_persists_an_auditable_effective_configuration() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let store: Arc<dyn SessionStore> = Arc::new(
+            crate::session_store::SqliteSessionStore::open_in_memory()
+                .await
+                .expect("store"),
+        );
+        let session_id = SessionId::new("legacy-session");
+        let metadata = test_metadata();
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .session_store(store.clone())
+            .build()
+            .expect("build");
+
+        run.inner
+            .restore_session_context(&session_id, &metadata)
+            .await;
+
+        let stored = store.get(&session_id).await.unwrap().unwrap();
+        let effective = stored
+            .effective_config
+            .expect("legacy session must snapshot runtime defaults");
+        assert_eq!(effective.agent_id, run.id().clone());
+        assert_eq!(effective.user_workspace.unwrap().path, metadata.workspace);
+        assert_eq!(
+            effective.provenance.model.kind,
+            sylvander_protocol::SessionConfigSourceKind::LegacyMigration
+        );
     }
 
     #[tokio::test]
