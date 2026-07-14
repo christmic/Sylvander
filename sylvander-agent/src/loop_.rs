@@ -1353,6 +1353,32 @@ impl AgentLoop {
         }
     }
 
+    /// Guard the temporary legacy runtime catalog until it carries qualified
+    /// provider models. A provider-backed loop must never update only its
+    /// metadata shadow and then send the request to a different backend model.
+    pub(crate) fn validate_runtime_model(
+        &self,
+        provider_id: &str,
+        model: &ModelInfo,
+    ) -> Result<(), AgentLoopError> {
+        let ModelBackend::Provider {
+            model: backend_model,
+            ..
+        } = &self.backend
+        else {
+            return Ok(());
+        };
+        if backend_model.reference.provider != provider_id
+            || backend_model.reference.model != model.id
+        {
+            return Err(AgentLoopError::IncompatibleModel(format!(
+                "provider-backed runtime is fixed to `{}/{}`; qualified model switching is not available",
+                backend_model.reference.provider, backend_model.reference.model
+            )));
+        }
+        Ok(())
+    }
+
     /// Call the LLM with retry/backoff on transient errors. Returns
     /// a [`MessageStream`]. A provider may normalize a valid buffered
     /// response into a stream, but an error never triggers a second request
