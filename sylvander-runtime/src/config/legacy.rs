@@ -22,6 +22,7 @@ const LEGACY_KEYS: &[&str] = &[
     "SYLVANDER_AGENT_WORKSPACE",
     "SYLVANDER_SOCKET",
     "HTTP_ADDR",
+    "SYLVANDER_HTTP_TOKEN",
     "SYLVANDER_APPROVAL",
     "SYLVANDER_APPROVAL_STORE",
     "DINGTALK_APP_KEY",
@@ -122,7 +123,7 @@ impl ServerConfig {
             },
             ChannelInstanceConfig {
                 id: "http-debug".into(),
-                enabled: true,
+                enabled: values.contains_key("SYLVANDER_HTTP_TOKEN"),
                 default_agent: "assistant".into(),
                 default_workspace: None,
                 transport: ChannelTransportConfig::Http {
@@ -130,6 +131,10 @@ impl ServerConfig {
                         .get("HTTP_ADDR")
                         .cloned()
                         .unwrap_or_else(|| "127.0.0.1:8080".into()),
+                    principal_id: "legacy-http".into(),
+                    bearer_token: SecretRef::Env {
+                        name: "SYLVANDER_HTTP_TOKEN".into(),
+                    },
                 },
             },
         ];

@@ -98,6 +98,11 @@ default_agent = "sylvander"
 [channels.transport]
 kind = "http"
 bind = "127.0.0.1:8080"
+principal_id = "local-http-client"
+
+[channels.transport.bearer_token]
+source = "env"
+name = "SYLVANDER_HTTP_TOKEN"
 
 # Each bot is a separate channel instance. Duplicate this block with a unique
 # id, bind address, and secret references to configure another Telegram bot.

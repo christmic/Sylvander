@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -30,6 +31,9 @@ struct ChatRequest {
 pub struct HttpChannel {
     addr: SocketAddr,
     agent_id: sylvander_agent::spec::AgentId,
+    instance_id: String,
+    principal_id: Option<String>,
+    bearer_token: Option<String>,
 }
 
 impl HttpChannel {
@@ -37,7 +41,22 @@ impl HttpChannel {
         Self {
             addr,
             agent_id: agent_id.into(),
+            instance_id: "http".into(),
+            principal_id: None,
+            bearer_token: None,
         }
+    }
+
+    pub fn with_bearer_auth(
+        mut self,
+        instance_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Self {
+        self.instance_id = instance_id.into();
+        self.principal_id = Some(principal_id.into());
+        self.bearer_token = Some(bearer_token.into());
+        self
     }
 }
 
@@ -53,6 +72,9 @@ impl Channel for HttpChannel {
             ctx: Arc::new(ctx),
             agent_id: agent,
             sessions: Mutex::new(std::collections::HashMap::new()),
+            instance_id: self.instance_id.clone(),
+            principal_id: self.principal_id.clone(),
+            bearer_token: self.bearer_token.clone(),
         });
 
         let app = Router::new()
@@ -78,12 +100,47 @@ struct AppState {
     ctx: Arc<ChannelContext>,
     agent_id: sylvander_agent::spec::AgentId,
     sessions: Mutex<std::collections::HashMap<String, SessionId>>,
+    instance_id: String,
+    principal_id: Option<String>,
+    bearer_token: Option<String>,
 }
 
 async fn chat(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(req): Json<ChatRequest>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
+    StatusCode,
+> {
+    let principal = authenticate(&state, &headers).ok_or(StatusCode::UNAUTHORIZED)?;
+    let existing_session = state.sessions.lock().await.get(&req.session_id).cloned();
+    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+        principal.clone(),
+        &state.instance_id,
+        "http",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let message = sylvander_protocol::UiClientMessage::Chat {
+        text: req.message.clone(),
+        attachments: Vec::new(),
+        session_id: existing_session.as_ref().map(|session| session.0.clone()),
+        workspace: None,
+    };
+    let ui = state
+        .ctx
+        .ui
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    if let Err(error) = ui.authorize_message(&boundary, &message).await {
+        return Err(match error.code {
+            sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+            sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+            sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+        });
+    }
     let sid = {
         let mut sessions = state.sessions.lock().await;
         sessions
@@ -119,7 +176,7 @@ async fn chat(
                 metadata: SessionMetadata {
                     workspace: PathBuf::from("/tmp"),
                     name: "http".into(),
-                    user_id: "http-user".into(),
+                    user_id: principal.id.0.clone(),
                 },
             }),
             payload: String::new(),
@@ -134,7 +191,7 @@ async fn chat(
         .bus
         .publish(BusMessage::user_chat(
             sid.clone(),
-            "http-user",
+            &principal.id.0,
             &req.message,
         ))
         .await;
@@ -164,5 +221,48 @@ async fn chat(
         }
     };
 
-    Sse::new(stream)
+    Ok(Sse::new(stream))
+}
+
+fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
+    let expected = state.bearer_token.as_deref()?;
+    let supplied = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
+        return None;
+    }
+    Some(sylvander_protocol::AuthenticatedPrincipal::user(
+        state.principal_id.clone()?,
+        sylvander_protocol::AuthenticationMethod::BearerToken,
+    ))
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut different = left.len() ^ right.len();
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        different |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    different == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn bearer_comparison_rejects_wrong_content_and_length() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"wrong!"));
+        assert!(!constant_time_eq(b"secret", b"secret-extra"));
+    }
 }
