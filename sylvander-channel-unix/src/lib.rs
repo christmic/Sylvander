@@ -43,7 +43,10 @@ use sylvander_agent::bus::{
     BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
 };
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
+    unavailable_agent_admin_response,
+};
 use sylvander_protocol::{
     SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,
     UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg, UiSessionInfo as SessionInfo,
@@ -992,6 +995,14 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
         }
+        ClientMsg::AgentAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.agent_admin(boundary, request).await
+            } else {
+                unavailable_agent_admin_response()
+            };
+            let _ = tx.send(ServerMsg::AgentAdmin { response });
+        }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
                 principal_id,
@@ -1843,6 +1854,50 @@ mod tests {
             rx.recv().await.expect("feedback response"),
             ServerMsg::FeedbackRecorded { feedback_id } if feedback_id == "feedback-1"
         ));
+    }
+
+    #[tokio::test]
+    async fn agent_admin_without_ui_service_returns_content_free_error() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
+            readiness: None,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::AgentAdmin {
+                request: sylvander_protocol::AgentAdminRequest::InspectRevision {
+                    agent_id: AgentId::new("private-agent"),
+                    revision: 42,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            None,
+        )
+        .await;
+
+        let response = rx.recv().await.expect("Agent admin response");
+        let json = serde_json::to_string(&response).expect("serialize response");
+        assert!(matches!(
+            response,
+            ServerMsg::AgentAdmin {
+                response: sylvander_protocol::AgentAdminResponse::Error {
+                    error: sylvander_protocol::AgentAdminError {
+                        code: sylvander_protocol::AgentAdminErrorCode::Unauthorized,
+                        agent_id: None,
+                        revision: None,
+                        ..
+                    }
+                }
+            }
+        ));
+        assert!(!json.contains("private-agent"));
+        assert!(!json.contains("42"));
     }
 
     #[tokio::test]

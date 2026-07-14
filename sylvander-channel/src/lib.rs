@@ -37,9 +37,10 @@ use async_trait::async_trait;
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
-    AgentDescriptor, AgentId, AuthenticationFailure, BoundaryContext, BoundaryError,
-    BoundaryErrorCode, RunFeedback, SessionConfigOverrides, SessionConfigState,
-    SessionConfigUpdateRequest, SessionCreateRequest, SessionId, UiClientMessage,
+    AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
+    AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode, RunFeedback,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionId, UiClientMessage,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
@@ -86,6 +87,33 @@ pub trait UiService: Send + Sync {
         boundary: &BoundaryContext,
         feedback: RunFeedback,
     ) -> Result<String, BoundaryError>;
+
+    /// Apply one privileged Agent registry operation.
+    ///
+    /// Runtimes that have not installed an administration service fail closed.
+    async fn agent_admin(
+        &self,
+        _boundary: &BoundaryContext,
+        _request: AgentAdminRequest,
+    ) -> AgentAdminResponse {
+        unavailable_agent_admin_response()
+    }
+}
+
+/// Content-free response used when the runtime has no Agent administration
+/// service. The request is intentionally not reflected into the response.
+#[must_use]
+pub fn unavailable_agent_admin_response() -> AgentAdminResponse {
+    AgentAdminResponse::Error {
+        error: AgentAdminError {
+            code: AgentAdminErrorCode::Unauthorized,
+            message: "Agent administration service is unavailable".into(),
+            agent_id: None,
+            revision: None,
+            expected_active_revision: None,
+            actual_active_revision: None,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +365,87 @@ mod tests {
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
     use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod};
+
+    struct DefaultUiService;
+
+    #[async_trait]
+    impl UiService for DefaultUiService {
+        async fn authorize_message(
+            &self,
+            boundary: &BoundaryContext,
+            _: &UiClientMessage,
+        ) -> Result<(), BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+
+        async fn discover_agents(
+            &self,
+            boundary: &BoundaryContext,
+        ) -> Result<Vec<AgentDescriptor>, BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+
+        async fn create_session(
+            &self,
+            boundary: &BoundaryContext,
+            _: SessionCreateRequest,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+
+        async fn session_config(
+            &self,
+            boundary: &BoundaryContext,
+            _: &SessionId,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+
+        async fn update_session_config(
+            &self,
+            boundary: &BoundaryContext,
+            _: SessionConfigUpdateRequest,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+
+        async fn submit_feedback(
+            &self,
+            boundary: &BoundaryContext,
+            _: RunFeedback,
+        ) -> Result<String, BoundaryError> {
+            Err(BoundaryError::forbidden(boundary, "test"))
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_admin_default_fails_closed_without_reflecting_request() {
+        let boundary = BoundaryContext::unauthenticated("unix", "unix", "request-1");
+        let response = DefaultUiService
+            .agent_admin(
+                &boundary,
+                AgentAdminRequest::InspectRevision {
+                    agent_id: AgentId::new("private-agent"),
+                    revision: 42,
+                },
+            )
+            .await;
+        let json = serde_json::to_string(&response).expect("serialize response");
+
+        assert!(matches!(
+            response,
+            AgentAdminResponse::Error {
+                error: AgentAdminError {
+                    code: AgentAdminErrorCode::Unauthorized,
+                    agent_id: None,
+                    revision: None,
+                    ..
+                }
+            }
+        ));
+        assert!(!json.contains("private-agent"));
+        assert!(!json.contains("42"));
+    }
 
     #[tokio::test]
     async fn external_chat_fails_closed_without_runtime_authorizer() {

@@ -46,7 +46,10 @@ use sylvander_agent::bus::{
     BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
 };
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
+    unavailable_agent_admin_response,
+};
 use sylvander_protocol::{
     UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
@@ -603,6 +606,14 @@ async fn handle_client_msg(
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
         }
+        ClientMsg::AgentAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.agent_admin(&boundary, request).await
+            } else {
+                unavailable_agent_admin_response()
+            };
+            let _ = tx.send(ServerMsg::AgentAdmin { response });
+        }
         ClientMsg::SelectModel {
             session_id,
             model,
@@ -847,6 +858,73 @@ mod tests {
         ) -> Result<String, sylvander_protocol::BoundaryError> {
             unreachable!()
         }
+
+        async fn agent_admin(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::AgentAdminRequest,
+        ) -> sylvander_protocol::AgentAdminResponse {
+            let sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                agent_id, revision, ..
+            } = request
+            else {
+                unreachable!()
+            };
+            sylvander_protocol::AgentAdminResponse::Success {
+                result: Box::new(sylvander_protocol::AgentAdminResult::RevisionActivated {
+                    agent_id,
+                    active_revision: revision,
+                }),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_admin_dispatches_through_the_ui_service() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(Arc::new(SessionConfigUi {
+                states: Mutex::new(HashMap::new()),
+            })),
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::AgentAdmin {
+                request: sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                    agent_id: AgentId::new("oraculo"),
+                    revision: 5,
+                    expected_active_revision: 4,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await.expect("Agent admin response"),
+            ServerMsg::AgentAdmin {
+                response: sylvander_protocol::AgentAdminResponse::Success {
+                    result
+                }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::AgentAdminResult::RevisionActivated {
+                    agent_id,
+                    active_revision: 5,
+                } if agent_id == &AgentId::new("oraculo")
+            )
+        ));
     }
 
     #[test]
