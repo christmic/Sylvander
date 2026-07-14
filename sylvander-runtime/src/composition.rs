@@ -148,18 +148,12 @@ pub fn resolve_session_config(
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
     let provider_id = definition.spec.model.provider.clone();
-    let model_id = overrides
-        .model_id
-        .clone()
-        .unwrap_or_else(|| definition.spec.model.model_name.clone());
-    let model = agent
-        .models
-        .iter()
-        .find(|candidate| candidate.id == model_id)
-        .ok_or_else(|| CompositionError::MissingModel {
-            provider: provider_id.clone(),
-            model: model_id.clone(),
-        })?;
+    let (model, model_id) = resolve_model_override(
+        &provider_id,
+        &definition.spec.model.model_name,
+        &agent.models,
+        overrides,
+    )?;
     let reasoning_effort = overrides.reasoning_effort.unwrap_or_default();
     if reasoning_effort != ReasoningEffort::Off
         && !model
@@ -266,7 +260,7 @@ pub fn resolve_session_config(
         execution_target,
         provenance: SessionConfigProvenance {
             model: choose(
-                overrides.model_id.is_some(),
+                overrides.model.is_some() || overrides.model_id.is_some(),
                 &session_override,
                 &agent_default,
             ),
@@ -316,6 +310,34 @@ pub fn resolve_session_config(
             },
         },
     })
+}
+
+fn resolve_model_override<'a>(
+    configured_provider: &str,
+    default_model_id: &str,
+    models: &'a [ModelInfo],
+    overrides: &SessionConfigOverrides,
+) -> Result<(&'a ModelInfo, String), CompositionError> {
+    let model_id = match (&overrides.model, &overrides.model_id) {
+        (Some(_), Some(_)) => return Err(CompositionError::ConflictingModelOverrides),
+        (Some(selection), None) if selection.provider_id != configured_provider => {
+            return Err(CompositionError::ProviderSwitchUnavailable {
+                configured: configured_provider.to_string(),
+                requested: selection.provider_id.clone(),
+            });
+        }
+        (Some(selection), None) => selection.model_id.clone(),
+        (None, Some(legacy_model_id)) => legacy_model_id.clone(),
+        (None, None) => default_model_id.to_string(),
+    };
+    let model = models
+        .iter()
+        .find(|candidate| candidate.id == model_id)
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: configured_provider.to_string(),
+            model: model_id.clone(),
+        })?;
+    Ok((model, model_id))
 }
 
 fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> SessionWorkspaceBinding {
@@ -420,6 +442,15 @@ pub enum CompositionError {
     MissingProvider(String),
     #[error("model `{model}` is unavailable from provider `{provider}`")]
     MissingModel { provider: String, model: String },
+    #[error("model and legacy model_id overrides cannot both be set")]
+    ConflictingModelOverrides,
+    #[error(
+        "provider switch from `{configured}` to `{requested}` requires a provider-capable runtime"
+    )]
+    ProviderSwitchUnavailable {
+        configured: String,
+        requested: String,
+    },
     #[error("model `{0}` does not support reasoning")]
     UnsupportedReasoning(String),
     #[error("execution target `{0}` is unavailable")]
@@ -453,6 +484,74 @@ mod tests {
     use super::*;
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_protocol::ModelSelection;
+
+    fn test_models() -> Vec<ModelInfo> {
+        vec![ModelInfo {
+            id: "model-a".into(),
+            context_window: 100_000,
+            max_output_tokens: 16_000,
+            capabilities: ModelCapabilities::TOOL_USE,
+            cache_ttl: Vec::new(),
+        }]
+    }
+
+    #[test]
+    fn qualified_override_selects_a_model_from_the_configured_provider() {
+        let models = test_models();
+        let overrides = SessionConfigOverrides {
+            model: Some(ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "model-a".into(),
+            }),
+            ..SessionConfigOverrides::default()
+        };
+
+        let (model, model_id) =
+            resolve_model_override("primary", "default", &models, &overrides).unwrap();
+        assert_eq!(model.id, "model-a");
+        assert_eq!(model_id, "model-a");
+    }
+
+    #[test]
+    fn qualified_override_rejects_a_provider_switch() {
+        let models = test_models();
+        let overrides = SessionConfigOverrides {
+            model: Some(ModelSelection {
+                provider_id: "secondary".into(),
+                model_id: "model-a".into(),
+            }),
+            ..SessionConfigOverrides::default()
+        };
+
+        let error = resolve_model_override("primary", "model-a", &models, &overrides).unwrap_err();
+        assert!(matches!(
+            error,
+            CompositionError::ProviderSwitchUnavailable {
+                configured,
+                requested
+            } if configured == "primary" && requested == "secondary"
+        ));
+    }
+
+    #[test]
+    fn qualified_override_rejects_an_unknown_model() {
+        let models = test_models();
+        let overrides = SessionConfigOverrides {
+            model: Some(ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "missing".into(),
+            }),
+            ..SessionConfigOverrides::default()
+        };
+
+        let error = resolve_model_override("primary", "model-a", &models, &overrides).unwrap_err();
+        assert!(matches!(
+            error,
+            CompositionError::MissingModel { provider, model }
+                if provider == "primary" && model == "missing"
+        ));
+    }
 
     #[tokio::test]
     async fn configured_agent_uses_catalog_prompt_and_secret_reference() {
@@ -549,6 +648,38 @@ path = "/tmp/sylvander-test.sock"
             SessionConfigSourceKind::LegacyMigration
         );
         assert_eq!(effective.system_prompt_sha256.len(), 64);
+
+        let qualified = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides {
+                model: Some(ModelSelection {
+                    provider_id: "primary".into(),
+                    model_id: "model-a".into(),
+                }),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            qualified.provenance.model.kind,
+            SessionConfigSourceKind::SessionOverride
+        );
+        let legacy_model = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides {
+                model_id: Some("model-a".into()),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy_model.provenance.model.kind,
+            SessionConfigSourceKind::SessionOverride
+        );
 
         let channel_workspace = crate::config::WorkspaceBindingConfig {
             execution_target: "local".into(),
