@@ -42,6 +42,7 @@ use sylvander_agent::session_store::{
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_protocol::{SessionConfigOverrides, SessionEffectiveConfig};
 
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
@@ -276,6 +277,7 @@ impl Runtime {
             let effective = resolve_session_config(
                 agent,
                 &session.config_overrides,
+                None,
                 Some(&session.metadata.workspace),
             )
             .map_err(|error| {
@@ -331,6 +333,43 @@ impl Runtime {
     #[must_use]
     pub fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
         self.configured_agents.get(id)
+    }
+
+    /// Resolve and atomically replace one durable session's sparse overrides.
+    /// The expected revision prevents two clients from silently overwriting
+    /// each other's model, prompt, permission, or workspace choices.
+    pub async fn update_session_config(
+        &self,
+        session_id: &SessionId,
+        expected_revision: u64,
+        overrides: SessionConfigOverrides,
+    ) -> Result<(u64, SessionEffectiveConfig), RuntimeError> {
+        let session = self
+            .session_store
+            .get(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Config(format!("unknown session {session_id}")))?;
+        let agent = session
+            .agents
+            .iter()
+            .find_map(|id| self.configured_agents.get(id))
+            .ok_or_else(|| {
+                RuntimeError::Config(format!("session {session_id} has no configured Agent"))
+            })?;
+        let effective =
+            resolve_session_config(agent, &overrides, None, Some(&session.metadata.workspace))
+                .map_err(|error| {
+                    RuntimeError::Config(format!(
+                        "resolve configuration for session {session_id}: {error}"
+                    ))
+                })?;
+        let revision = self
+            .session_store
+            .update_config(session_id, expected_revision, overrides, effective.clone())
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        Ok((revision, effective))
     }
 
     /// Return the shared message bus used by protocol adapters.
@@ -913,6 +952,33 @@ model_name = "model-a"
         assert_eq!(
             effective.provenance.user_workspace.kind,
             sylvander_protocol::SessionConfigSourceKind::LegacyMigration
+        );
+        let (revision, updated) = runtime
+            .update_session_config(
+                &SessionId::new("restored-session"),
+                1,
+                SessionConfigOverrides {
+                    model_id: Some("model-a".into()),
+                    ..SessionConfigOverrides::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(
+            updated.provenance.model.kind,
+            sylvander_protocol::SessionConfigSourceKind::SessionOverride
+        );
+        assert!(
+            runtime
+                .update_session_config(
+                    &SessionId::new("restored-session"),
+                    1,
+                    SessionConfigOverrides::default(),
+                )
+                .await
+                .is_err(),
+            "a stale client must not overwrite a newer configuration"
         );
         let evidence = runtime
             .evidence_store()

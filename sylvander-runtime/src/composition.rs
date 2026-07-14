@@ -1,5 +1,6 @@
 //! Production composition of configured Agent runs.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -33,6 +34,7 @@ pub struct ConfiguredAgent {
     pub models: Vec<ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
+    pub execution_targets: HashSet<String>,
 }
 
 /// Build every configured Agent without starting background tasks.
@@ -128,6 +130,12 @@ fn build_agent(
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
+        execution_targets: config
+            .execution_targets
+            .iter()
+            .map(|target| target.id.clone())
+            .chain(std::iter::once("local".into()))
+            .collect(),
     })
 }
 
@@ -135,6 +143,7 @@ fn build_agent(
 pub fn resolve_session_config(
     agent: &ConfiguredAgent,
     overrides: &SessionConfigOverrides,
+    channel_workspace: Option<(&str, &crate::config::WorkspaceBindingConfig)>,
     legacy_workspace: Option<&std::path::Path>,
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
@@ -206,13 +215,17 @@ pub fn resolve_session_config(
     }
 
     let agent_workspace = definition.agent_workspace.as_ref().map(workspace_binding);
-    let user_workspace = overrides.user_workspace.clone().or_else(|| {
-        legacy_workspace.map(|path| SessionWorkspaceBinding {
-            execution_target: "local".into(),
-            path: path.to_path_buf(),
-            read_only: false,
-        })
-    });
+    let user_workspace = overrides
+        .user_workspace
+        .clone()
+        .or_else(|| channel_workspace.map(|(_, workspace)| workspace_binding(workspace)))
+        .or_else(|| {
+            legacy_workspace.map(|path| SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: path.to_path_buf(),
+                read_only: false,
+            })
+        });
     let execution_target = overrides
         .execution_target
         .clone()
@@ -227,12 +240,17 @@ pub fn resolve_session_config(
                 .map(|workspace| workspace.execution_target.clone())
         })
         .unwrap_or_else(|| "local".into());
+    if !agent.execution_targets.contains(&execution_target) {
+        return Err(CompositionError::MissingExecutionTarget(execution_target));
+    }
     let agent_default = source(SessionConfigSourceKind::AgentDefault, &definition.spec.id.0);
     let session_override = source(SessionConfigSourceKind::SessionOverride, "session");
     let legacy = source(
         SessionConfigSourceKind::LegacyMigration,
         "metadata.workspace",
     );
+    let channel_default = channel_workspace
+        .map(|(channel, _)| source(SessionConfigSourceKind::ChannelDefault, channel));
 
     Ok(SessionEffectiveConfig {
         agent_id: definition.spec.id.clone(),
@@ -275,6 +293,8 @@ pub fn resolve_session_config(
             agent_workspace: agent_default.clone(),
             user_workspace: if overrides.user_workspace.is_some() {
                 session_override.clone()
+            } else if let Some(source) = &channel_default {
+                source.clone()
             } else if legacy_workspace.is_some() {
                 legacy.clone()
             } else {
@@ -282,6 +302,13 @@ pub fn resolve_session_config(
             },
             execution_target: if overrides.execution_target.is_some() {
                 session_override
+            } else if overrides.user_workspace.is_some() {
+                source(
+                    SessionConfigSourceKind::SessionOverride,
+                    "session.user_workspace",
+                )
+            } else if let Some(source) = channel_default {
+                source
             } else if overrides.user_workspace.is_none() && legacy_workspace.is_some() {
                 legacy
             } else {
@@ -386,6 +413,8 @@ pub enum CompositionError {
     MissingModel { provider: String, model: String },
     #[error("model `{0}` does not support reasoning")]
     UnsupportedReasoning(String),
+    #[error("execution target `{0}` is unavailable")]
+    MissingExecutionTarget(String),
     #[error("approval policy `ask` requires approvals to be enabled")]
     ApprovalDisabled,
     #[error("session system prompt overrides are disabled")]
@@ -495,6 +524,7 @@ path = "/tmp/sylvander-test.sock"
         let effective = resolve_session_config(
             &agents[0],
             &SessionConfigOverrides::default(),
+            None,
             Some(std::path::Path::new("/work/project")),
         )
         .unwrap();
@@ -511,12 +541,34 @@ path = "/tmp/sylvander-test.sock"
         );
         assert_eq!(effective.system_prompt_sha256.len(), 64);
 
+        let channel_workspace = crate::config::WorkspaceBindingConfig {
+            execution_target: "local".into(),
+            path: "/channel/project".into(),
+            read_only: true,
+        };
+        let channel_effective = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides::default(),
+            Some(("terminal", &channel_workspace)),
+            Some(std::path::Path::new("/legacy/project")),
+        )
+        .unwrap();
+        assert_eq!(
+            channel_effective.user_workspace.unwrap().path,
+            std::path::PathBuf::from("/channel/project")
+        );
+        assert_eq!(
+            channel_effective.provenance.user_workspace.kind,
+            SessionConfigSourceKind::ChannelDefault
+        );
+
         let error = resolve_session_config(
             &agents[0],
             &SessionConfigOverrides {
                 system_prompt: Some("session prompt".into()),
                 ..SessionConfigOverrides::default()
             },
+            None,
             None,
         )
         .unwrap_err();

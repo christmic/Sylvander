@@ -262,9 +262,16 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   Evidence: runtime-owned task handles, readiness handshakes, transactional
   channel startup, unexpected Agent/channel exit reporting, bounded cooperative
   drain, and a real Unix/HTTP server startup-health-shutdown smoke test.
-- [ ] **P0.3 Session effective configuration:** persist Agent revision, model,
+- [x] **P0.3 Session effective configuration:** persist Agent revision, model,
   reasoning, permissions, prompt profile, workspaces, executor, and override
   provenance; snapshot atomically per turn; migrate existing sessions.
+  Evidence: protocol-owned sparse/effective/provenance types; dedicated SQLite
+  columns and immutable turn snapshots; runtime resolution across Agent,
+  channel, session, and legacy workspace layers; optimistic revision updates;
+  boot migration; and an end-to-end model request proving that the persisted
+  model/prompt/permission selection is used before the provider or tools run.
+  The configured execution-target identity is durable here; backend-neutral
+  filesystem/process execution remains deliberately tracked by P3.1/P3.2.
 - [ ] **P0.4 Public protocol v2:** move service messages into
   `sylvander-protocol`; add Agent discovery, session create/update/effective
   state, feedback, and optimistic concurrency; generate and compatibility-test
