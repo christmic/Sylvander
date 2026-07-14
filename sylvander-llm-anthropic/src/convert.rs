@@ -273,8 +273,8 @@ pub(crate) fn usage(input: &wire::Usage) -> core::TokenUsage {
     core::TokenUsage {
         input_tokens: u64::from(input.input_tokens),
         output_tokens: u64::from(input.output_tokens),
-        cache_write_tokens: u64::from(input.cache_creation_input_tokens.unwrap_or(0)),
-        cache_read_tokens: u64::from(input.cache_read_input_tokens.unwrap_or(0)),
+        cache_write_tokens: input.cache_creation_input_tokens.map(u64::from),
+        cache_read_tokens: input.cache_read_input_tokens.map(u64::from),
     }
 }
 

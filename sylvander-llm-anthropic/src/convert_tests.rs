@@ -131,6 +131,8 @@ fn response_preserves_content_stop_reason_and_usage() {
         core::StopReason::StopSequence("END".into())
     );
     assert_eq!(mapped.usage.total_input_tokens(), 17);
+    assert_eq!(mapped.usage.cache_write_tokens, Some(3));
+    assert_eq!(mapped.usage.cache_read_tokens, Some(4));
     assert!(matches!(
         &mapped.content[1],
         core::ContentBlock::Reasoning { opaque_state: Some(state), .. }
