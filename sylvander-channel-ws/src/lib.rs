@@ -37,7 +37,6 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
@@ -46,103 +45,9 @@ use sylvander_agent::bus::{
 };
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{Channel, ChannelContext};
-
-// ===========================================================================
-// Wire protocol
-// ===========================================================================
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMsg {
-    Chat {
-        text: String,
-        #[serde(default)]
-        session_id: Option<String>,
-    },
-    Approve {
-        #[serde(default)]
-        session_id: String,
-        call_id: String,
-        approved: bool,
-        #[serde(default)]
-        scope: sylvander_agent::bus::ApprovalScope,
-        #[serde(default)]
-        reason: Option<String>,
-    },
-    /// User answered an AskUser question.
-    Answer {
-        #[serde(default)]
-        session_id: String,
-        call_id: String,
-        answer: String,
-    },
-    ListSessions,
-    Ping,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMsg {
-    SessionCreated {
-        session_id: String,
-    },
-    TextDelta {
-        session_id: String,
-        delta: String,
-    },
-    ThinkingDelta {
-        session_id: String,
-        delta: String,
-    },
-    ToolCall {
-        session_id: String,
-        tool_name: String,
-    },
-    ToolResult {
-        session_id: String,
-        tool_name: String,
-        output: String,
-        is_error: bool,
-    },
-    ToolApprovalRequired {
-        session_id: String,
-        batch_id: String,
-        tools: Vec<ToolInfo>,
-        allowed_scopes: Vec<sylvander_agent::bus::ApprovalScope>,
-    },
-    AskUser {
-        session_id: String,
-        call_id: String,
-        question: String,
-        options: Vec<String>,
-        multi_select: bool,
-    },
-    UserAnswer {
-        session_id: String,
-        call_id: String,
-        answer: Vec<String>,
-    },
-    IterationStart {
-        session_id: String,
-        iteration: u32,
-    },
-    Done {
-        session_id: String,
-        text: String,
-    },
-    Error {
-        session_id: String,
-        message: String,
-    },
-    Pong,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ToolInfo {
-    call_id: String,
-    tool_name: String,
-    input: serde_json::Value,
-}
+use sylvander_protocol::{
+    UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
+};
 
 // ===========================================================================
 // Channel
@@ -176,11 +81,6 @@ impl Channel for WsChannel {
             Arc::new(Mutex::new(HashMap::new()));
         let next_id: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
 
-        // Spawn outgoing loop: bus events → fanout to all clients
-        let bus_ctx = ctx.clone();
-        let clients_out = clients.clone();
-        let outgoing = tokio::spawn(async move { run_outgoing(bus_ctx, clients_out).await });
-
         // HTTP server
         let state = Arc::new(AppState {
             ctx,
@@ -201,8 +101,6 @@ impl Channel for WsChannel {
             .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
             .await
             .unwrap();
-        outgoing.abort();
-        let _ = outgoing.await;
     }
 }
 
@@ -285,7 +183,31 @@ async fn handle_client_msg(
     tx: &mpsc::UnboundedSender<ServerMsg>,
 ) {
     match msg {
-        ClientMsg::Chat { text, session_id } => {
+        ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
+        {
+            Ok(version) => {
+                let _ = tx.send(ServerMsg::Welcome {
+                    protocol: sylvander_protocol::UiProtocolWelcome {
+                        server_name: "sylvander-server".into(),
+                        version,
+                        capabilities: vec![
+                            "agent_discovery".into(),
+                            "session_config".into(),
+                            "feedback".into(),
+                        ],
+                    },
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(ServerMsg::ProtocolError { error });
+            }
+        },
+        ClientMsg::Chat {
+            text,
+            attachments,
+            session_id,
+            workspace,
+        } => {
             let sid = SessionId::new(match session_id {
                 Some(s) => s,
                 None => uuid::Uuid::new_v4().to_string(),
@@ -315,7 +237,9 @@ async fn handle_client_msg(
                     kind: MessageKind::System(SystemMessage::JoinSession {
                         session_id: sid.clone(),
                         metadata: sylvander_agent::session::SessionMetadata {
-                            workspace: std::path::PathBuf::from("/tmp"),
+                            workspace: workspace
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
                             name: "ws".into(),
                             user_id: "ws-client".into(),
                         },
@@ -328,10 +252,9 @@ async fn handle_client_msg(
                 .await;
 
             // Send user message
-            let _ = ctx
-                .bus
-                .publish(BusMessage::user_chat(sid.clone(), "ws-client", &text))
-                .await;
+            let mut message = BusMessage::user_chat(sid.clone(), "ws-client", &text);
+            message.attachments = attachments;
+            let _ = ctx.bus.publish(message).await;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
@@ -355,17 +278,25 @@ async fn handle_client_msg(
                                     delta,
                                 })
                             }
-                            StreamEvent::ToolCall { tool_name, .. } => Some(ServerMsg::ToolCall {
-                                session_id: s.0.clone(),
+                            StreamEvent::ToolCall {
+                                call_id,
                                 tool_name,
+                                input,
+                            } => Some(ServerMsg::ToolCall {
+                                session_id: s.0.clone(),
+                                call_id,
+                                tool_name,
+                                input,
                             }),
                             StreamEvent::ToolResult {
+                                call_id,
                                 tool_name,
                                 output,
                                 is_error,
                                 ..
                             } => Some(ServerMsg::ToolResult {
                                 session_id: s.0.clone(),
+                                call_id,
                                 tool_name,
                                 output,
                                 is_error,
@@ -380,7 +311,7 @@ async fn handle_client_msg(
                                 batch_id,
                                 tools,
                                 allowed_scopes,
-                            } => Some(ServerMsg::ToolApprovalRequired {
+                            } => Some(ServerMsg::ApprovalRequest {
                                 session_id: s.0.clone(),
                                 batch_id,
                                 tools: tools
@@ -405,13 +336,7 @@ async fn handle_client_msg(
                                 options,
                                 multi_select,
                             }),
-                            StreamEvent::UserAnswer { call_id, answer } => {
-                                Some(ServerMsg::UserAnswer {
-                                    session_id: s.0.clone(),
-                                    call_id,
-                                    answer,
-                                })
-                            }
+                            StreamEvent::UserAnswer { .. } => None,
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -473,13 +398,75 @@ async fn handle_client_msg(
                 })
                 .await;
         }
+        ClientMsg::DiscoverAgents => {
+            if let Some(ui) = &ctx.ui {
+                let _ = tx.send(ServerMsg::AgentsDiscovered {
+                    agents: ui.discover_agents().await,
+                });
+            } else {
+                operation_error(tx, "discover_agents", "UI service is unavailable");
+            }
+        }
+        ClientMsg::GetSessionConfig { session_id } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.session_config(&SessionId::new(session_id)).await {
+                    Ok(state) => {
+                        let _ = tx.send(ServerMsg::SessionConfig { state });
+                    }
+                    Err(error) => operation_error(tx, "get_session_config", error),
+                }
+            } else {
+                operation_error(tx, "get_session_config", "UI service is unavailable");
+            }
+        }
+        ClientMsg::UpdateSessionConfig { request } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.update_session_config(request).await {
+                    Ok(state) => {
+                        let _ = tx.send(ServerMsg::SessionConfig { state });
+                    }
+                    Err(error) => operation_error(tx, "update_session_config", error),
+                }
+            } else {
+                operation_error(tx, "update_session_config", "UI service is unavailable");
+            }
+        }
+        ClientMsg::SubmitFeedback { feedback } => {
+            if let Some(ui) = &ctx.ui {
+                match ui.submit_feedback(feedback).await {
+                    Ok(feedback_id) => {
+                        let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
+                    }
+                    Err(error) => operation_error(tx, "submit_feedback", error),
+                }
+            } else {
+                operation_error(tx, "submit_feedback", "UI service is unavailable");
+            }
+        }
         ClientMsg::ListSessions => {
             info!("ws: client listed sessions (not yet fully implemented)");
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);
         }
+        unsupported => {
+            let _ = tx.send(ServerMsg::OperationError {
+                operation: "websocket".into(),
+                message: format!("operation is not supported by this transport: {unsupported:?}"),
+            });
+        }
     }
+}
+
+fn operation_error(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    operation: &str,
+    message: impl Into<String>,
+) {
+    let _ = tx.send(ServerMsg::OperationError {
+        operation: operation.into(),
+        message: message.into(),
+    });
 }
 
 #[cfg(test)]
@@ -508,103 +495,5 @@ mod tests {
             ClientMsg::Approve { reason: Some(reason), .. }
                 if reason == "unsafe outside workspace"
         ));
-    }
-}
-
-// ===========================================================================
-// Outgoing: bus events → all clients
-// ===========================================================================
-
-async fn run_outgoing(
-    ctx: Arc<ChannelContext>,
-    clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
-) {
-    let mut rx = match ctx.bus.subscribe(SubscriptionFilter::all()).await {
-        Ok(rx) => rx,
-        Err(_) => return,
-    };
-
-    while let Some(msg) = rx.recv().await {
-        let MessageKind::Stream(ref ev) = msg.kind else {
-            continue;
-        };
-
-        let s = msg.session_id.0.clone();
-        let server_msg = match ev {
-            StreamEvent::TextDelta { delta } => Some(ServerMsg::TextDelta {
-                session_id: s,
-                delta: delta.clone(),
-            }),
-            StreamEvent::ThinkingDelta { delta } => Some(ServerMsg::ThinkingDelta {
-                session_id: s,
-                delta: delta.clone(),
-            }),
-            StreamEvent::ToolCall { tool_name, .. } => Some(ServerMsg::ToolCall {
-                session_id: s,
-                tool_name: tool_name.clone(),
-            }),
-            StreamEvent::ToolResult {
-                tool_name,
-                output,
-                is_error,
-                ..
-            } => Some(ServerMsg::ToolResult {
-                session_id: s,
-                tool_name: tool_name.clone(),
-                output: output.clone(),
-                is_error: *is_error,
-            }),
-            StreamEvent::IterationStart { iteration } => Some(ServerMsg::IterationStart {
-                session_id: s,
-                iteration: *iteration,
-            }),
-            StreamEvent::Done { text } => Some(ServerMsg::Done {
-                session_id: s,
-                text: text.clone(),
-            }),
-            StreamEvent::ToolApprovalRequired {
-                batch_id,
-                tools,
-                allowed_scopes,
-            } => Some(ServerMsg::ToolApprovalRequired {
-                session_id: s,
-                batch_id: batch_id.clone(),
-                tools: tools
-                    .iter()
-                    .map(|t| ToolInfo {
-                        call_id: t.call_id.clone(),
-                        tool_name: t.tool_name.clone(),
-                        input: t.input.clone(),
-                    })
-                    .collect(),
-                allowed_scopes: allowed_scopes.clone(),
-            }),
-            StreamEvent::AskUser {
-                call_id,
-                question,
-                options,
-                multi_select,
-            } => Some(ServerMsg::AskUser {
-                session_id: s,
-                call_id: call_id.clone(),
-                question: question.clone(),
-                options: options.clone(),
-                multi_select: *multi_select,
-            }),
-            StreamEvent::UserAnswer { call_id, answer } => Some(ServerMsg::UserAnswer {
-                session_id: s,
-                call_id: call_id.clone(),
-                answer: answer.clone(),
-            }),
-            _ => None,
-        };
-
-        if let Some(m) = server_msg {
-            // Fanout to all clients
-            let clients_guard = clients.lock().await;
-            for (_, tx) in clients_guard.iter() {
-                let _ = tx.send(m.clone());
-            }
-        }
     }
 }
