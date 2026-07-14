@@ -1,5 +1,6 @@
 //! `WeChat` enterprise bot channel — encrypted XML callbacks.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -13,10 +14,10 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
+use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::{WechatCrypto, parse_message_xml};
 
@@ -199,13 +200,37 @@ async fn handle_callback(
     info!(from = %msg.from_user_name, msg_type = %msg.msg_type, "wechat: message");
 
     // Session mapping
-    let session_id = resolve_session(
-        &state.sessions,
+    let existing = find_by_user(&state.sessions, &state.instance_id, &msg.from_user_name).await;
+    let boundary = BoundaryContext::authenticated(
+        AuthenticatedPrincipal::user(
+            format!("wechat:{}:{}", state.instance_id, msg.from_user_name),
+            AuthenticationMethod::PlatformIdentity,
+        ),
         &state.instance_id,
-        &msg.from_user_name,
-        &state.agent_id,
+        "wechat",
+        format!("wechat-message-{}", msg.msg_id),
+    );
+    let external_meta = BTreeMap::from([
+        ("channel_instance_id".into(), state.instance_id.clone()),
+        ("from_user_name".into(), msg.from_user_name.clone()),
+    ]);
+    let session_id = match authorize_external_chat(
+        &state.ctx,
+        &boundary,
+        existing,
+        state.agent_id.clone(),
+        format!("wechat-{}", msg.from_user_name),
+        &msg.content,
+        external_meta,
     )
-    .await;
+    .await
+    {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            warn!(code = ?error.code, request_id = %error.request_id, "wechat: message denied");
+            return "success".into();
+        }
+    };
     if let Ok(Some(session)) = state.sessions.get(&session_id).await {
         let _ = state
             .ctx
@@ -230,35 +255,6 @@ async fn handle_callback(
         .await;
 
     "success".into()
-}
-
-async fn resolve_session(
-    store: &Arc<dyn SessionStore>,
-    instance_id: &str,
-    user_name: &str,
-    agent_id: &AgentId,
-) -> SessionId {
-    if let Some(sid) = find_by_user(store, instance_id, user_name).await {
-        return sid;
-    }
-    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
-    let meta = SessionMetadata {
-        workspace: "/tmp".into(),
-        name: format!("wechat-{user_name}"),
-        user_id: format!("wechat:{instance_id}:{user_name}"),
-    };
-    let session_name = meta.name.clone();
-    let stored = StoredSession::new(
-        sid.clone(),
-        session_name,
-        SessionLifetime::Persistent,
-        meta,
-        vec![agent_id.clone()],
-    )
-    .with_external_meta("channel_instance_id", instance_id)
-    .with_external_meta("from_user_name", user_name);
-    let _ = store.save(&stored).await;
-    sid
 }
 
 async fn find_by_user(
@@ -395,19 +391,6 @@ fn send_reply(ch: &WechatChannel, to_user: &str, content: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_agent::session_store::SqliteSessionStore;
-
-    #[tokio::test]
-    async fn channel_session_uses_shared_store_and_agent_membership() {
-        let store: Arc<dyn SessionStore> =
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-        let agent = AgentId::new("agent-1");
-        let session = resolve_session(&store, "wechat-a", "user-1", &agent).await;
-        let persisted = store.get(&session).await.unwrap().unwrap();
-        assert_eq!(persisted.agents, vec![agent]);
-        assert_eq!(persisted.metadata.user_id, "wechat:wechat-a:user-1");
-    }
-
     #[test]
     fn tool_output_truncation_is_unicode_safe() {
         assert_eq!(truncate_chars("中文消息", 2), "中文");

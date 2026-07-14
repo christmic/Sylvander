@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 sylvander-channel = { path = "../sylvander-channel" }
+sylvander-protocol = { path = "../sylvander-protocol" }
 sylvander-agent = { path = "../sylvander-agent" }
 async-trait = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

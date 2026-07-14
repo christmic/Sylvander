@@ -9,7 +9,7 @@
 //!   -d "url=https://your-host/telegram/webhook"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -26,10 +26,10 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
+use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, authorize_external_chat};
+use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 // ===========================================================================
 // Telegram types
@@ -211,13 +211,37 @@ async fn handle_webhook(
     let chat_id_str = chat_id.to_string();
 
     // Find or create session
-    let session_id = resolve_session(
-        &state.sessions,
+    let existing = find_by_chat_id(&state.sessions, &state.instance_id, &chat_id_str).await;
+    let boundary = BoundaryContext::authenticated(
+        AuthenticatedPrincipal::user(
+            format!("telegram:{}:{chat_id_str}", state.instance_id),
+            AuthenticationMethod::PlatformIdentity,
+        ),
         &state.instance_id,
-        &chat_id_str,
-        &state.agent_id,
+        "telegram",
+        format!("telegram-update-{}", update.update_id),
+    );
+    let external_meta = BTreeMap::from([
+        ("channel_instance_id".into(), state.instance_id.clone()),
+        ("chat_id".into(), chat_id_str.clone()),
+    ]);
+    let session_id = match authorize_external_chat(
+        &state.ctx,
+        &boundary,
+        existing,
+        state.agent_id.clone(),
+        format!("telegram-{chat_id}"),
+        &text,
+        external_meta,
     )
-    .await;
+    .await
+    {
+        Ok(session_id) => session_id,
+        Err(error) => {
+            warn!(code = ?error.code, request_id = %error.request_id, "telegram: message denied");
+            return Ok("denied");
+        }
+    };
     let sender_name = msg
         .from
         .as_ref()
@@ -252,35 +276,6 @@ fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
             .and_then(|value| value.to_str().ok())
             == Some(expected)
     })
-}
-
-async fn resolve_session(
-    store: &Arc<dyn SessionStore>,
-    instance_id: &str,
-    chat_id: &str,
-    agent_id: &AgentId,
-) -> SessionId {
-    if let Some(sid) = find_by_chat_id(store, instance_id, chat_id).await {
-        return sid;
-    }
-    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
-    let meta = SessionMetadata {
-        workspace: "/tmp".into(),
-        name: format!("telegram-{chat_id}"),
-        user_id: format!("telegram:{instance_id}:{chat_id}"),
-    };
-    let session_name = meta.name.clone();
-    let stored = StoredSession::new(
-        sid.clone(),
-        session_name,
-        SessionLifetime::Persistent,
-        meta,
-        vec![agent_id.clone()],
-    )
-    .with_external_meta("channel_instance_id", instance_id)
-    .with_external_meta("chat_id", chat_id);
-    let _ = store.save(&stored).await;
-    sid
 }
 
 async fn find_by_chat_id(
@@ -410,7 +405,6 @@ fn _unused_json(_v: JsonValue) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_agent::session_store::SqliteSessionStore;
 
     #[test]
     fn webhook_secret_is_required_when_configured() {
@@ -425,16 +419,5 @@ mod tests {
     #[test]
     fn message_split_respects_unicode_character_boundaries() {
         assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
-    }
-
-    #[tokio::test]
-    async fn same_chat_is_isolated_between_bot_instances() {
-        let store: Arc<dyn SessionStore> =
-            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-        let agent = AgentId::new("agent-1");
-        let first = resolve_session(&store, "bot-a", "42", &agent).await;
-        let second = resolve_session(&store, "bot-b", "42", &agent).await;
-        assert_ne!(first, second);
-        assert_eq!(find_by_chat_id(&store, "bot-a", "42").await, Some(first));
     }
 }
