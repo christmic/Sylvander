@@ -13,11 +13,12 @@
 //!
 //! ```bash
 //! # Generate JSON Schema for TypeScript/Python/etc codegen
-//! cargo run -p sylvander-protocol --features codegen -- --output schema/
+//! cargo run -p sylvander-protocol --example generate_ui_schema
 //! ```
 
 pub mod bus_trait;
 pub mod in_process;
+pub mod schema;
 pub mod session_context;
 pub mod types;
 pub mod ui;

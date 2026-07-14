@@ -9,7 +9,7 @@ use crate::{
     UiProtocolHello,
 };
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiClientMessage {
     Hello {
@@ -115,7 +115,7 @@ pub enum UiClientMessage {
     Ping,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiServerMessage {
     Welcome {
@@ -341,14 +341,14 @@ pub enum UiServerMessage {
     Pong,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiToolInfo {
     pub call_id: String,
     pub tool_name: String,
     pub input: serde_json::Value,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiSessionInfo {
     pub id: String,
     pub label: String,
@@ -356,7 +356,7 @@ pub struct UiSessionInfo {
     pub last_seen_secs: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiHistoryMessage {
     pub role: String,
     pub text: String,
