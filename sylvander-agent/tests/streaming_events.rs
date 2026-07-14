@@ -1,7 +1,7 @@
 //! End-to-end tests for streaming events on the bus.
 //!
 //! Verifies that `AgentRun::handle_message` publishes `StreamEvent`
-//! variants (TextDelta, ToolCall, ToolResult, Done, etc.) to the bus
+//! variants (`TextDelta`, `ToolCall`, `ToolResult`, Done, etc.) to the bus
 //! in real-time as the loop executes.
 
 use std::sync::Arc;
@@ -833,10 +833,10 @@ async fn agent_error_published_and_returns_err() {
     // An error Chat message should have been published
     let mut found_error = false;
     while let Ok(ev) = rx.try_recv() {
-        if let MessageKind::Chat = ev.kind {
-            if ev.payload.contains("Error") {
-                found_error = true;
-            }
+        if let MessageKind::Chat = ev.kind
+            && ev.payload.contains("Error")
+        {
+            found_error = true;
         }
     }
     assert!(found_error, "expected an error Chat message on the bus");

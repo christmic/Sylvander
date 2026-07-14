@@ -38,10 +38,10 @@ struct ProgressTool;
 
 #[async_trait::async_trait]
 impl Tool for ProgressTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "progress_probe"
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "emits output before completion"
     }
     fn input_schema(&self) -> InputSchema {
@@ -123,10 +123,10 @@ async fn tool_output_deltas_arrive_before_final_result() {
 
 #[async_trait::async_trait]
 impl Tool for BarrierTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "parallel_probe"
     }
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "waits for another invocation"
     }
     fn input_schema(&self) -> InputSchema {
