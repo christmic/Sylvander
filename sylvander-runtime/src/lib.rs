@@ -29,6 +29,7 @@ pub mod evidence;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -50,7 +51,7 @@ use sylvander_protocol::{
 
 use crate::composition::{ConfiguredAgent, build_agents, resolve_session_config};
 use crate::config::{ServerConfig, SystemSecretResolver};
-use crate::evidence::{EvidenceRecorder, EvidenceStore};
+use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 
 // ---------------------------------------------------------------------------
 // SystemConfig
@@ -112,12 +113,13 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         message: &sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
-        require_principal(boundary, ui_operation(message))?;
-        if let Some(session_id) = ui_session_id(message) {
-            self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
-                .await?;
+        let result = self.authorize_message_inner(boundary, message).await;
+        if let Err(error) = &result
+            && let Err(audit_error) = self.record_denial(boundary, message, error).await
+        {
+            warn!(%audit_error, request_id = %boundary.request_id, "failed to persist authorization denial");
         }
-        Ok(())
+        result
     }
 
     async fn discover_agents(
@@ -369,6 +371,55 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn authorize_message_inner(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        message: &sylvander_protocol::UiClientMessage,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        require_principal(boundary, ui_operation(message))?;
+        if let Some(session_id) = ui_session_id(message) {
+            self.owned_session(boundary, &SessionId::new(session_id), ui_operation(message))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn record_denial(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        message: &sylvander_protocol::UiClientMessage,
+        error: &sylvander_protocol::BoundaryError,
+    ) -> Result<(), String> {
+        let store = self
+            .evidence
+            .as_ref()
+            .ok_or_else(|| "security audit store is unavailable".to_string())?;
+        let code = match error.code {
+            sylvander_protocol::BoundaryErrorCode::Unauthenticated => "unauthenticated",
+            sylvander_protocol::BoundaryErrorCode::Forbidden => "forbidden",
+            sylvander_protocol::BoundaryErrorCode::InvalidScope => "invalid_scope",
+            sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => "payload_too_large",
+            sylvander_protocol::BoundaryErrorCode::RateLimited => "rate_limited",
+        };
+        store
+            .record_authorization_denial(AuthorizationDenial {
+                id: uuid::Uuid::new_v4().to_string(),
+                occurred_at: sylvander_agent::session::now_secs(),
+                request_id: boundary.request_id.clone(),
+                principal_digest: boundary
+                    .principal
+                    .as_ref()
+                    .map(|principal| sha256_text(&principal.id.0)),
+                channel_instance_id: boundary.channel_instance_id.clone(),
+                transport: boundary.transport.clone(),
+                operation: ui_operation(message).into(),
+                code: code.into(),
+                resource_digest: ui_session_id(message).map(sha256_text),
+            })
+            .await
+            .map_err(|audit_error| audit_error.to_string())
+    }
+
     async fn owned_session(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -389,6 +440,10 @@ impl RuntimeUiService {
         }
         Ok(session)
     }
+}
+
+fn sha256_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
 fn require_principal<'a>(
@@ -1475,6 +1530,16 @@ model_name = "model-a"
         let evidence = runtime
             .evidence_store()
             .expect("evidence enabled by default");
+        let denials = evidence.authorization_denials(10).await.unwrap();
+        assert_eq!(denials.len(), 2);
+        assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
+            || denial.code == "unauthenticated"));
+        assert!(
+            denials
+                .iter()
+                .all(|denial| denial.resource_digest.as_deref()
+                    != Some(created.session_id.0.as_str()))
+        );
         runtime.shutdown().await.unwrap();
         let counts = evidence.counts().await.unwrap();
         assert_eq!(counts.runs, 1);
