@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
@@ -14,103 +14,14 @@ use tokio::sync::mpsc;
 use crate::app::ToolInfo;
 use crate::event::DomainEvent;
 
+pub use sylvander_protocol::UiClientMessage as ClientMsg;
+
 const CLIENT_EVENT_CAPACITY: usize = 1_024;
 const MAX_SERVER_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 // ===========================================================================
 // Wire protocol (mirror of sylvander-channel-unix ServerMsg)
 // ===========================================================================
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ClientMsg {
-    Hello {
-        protocol: sylvander_protocol::UiProtocolHello,
-    },
-    Chat {
-        text: String,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        attachments: Vec<sylvander_protocol::MessageAttachment>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        workspace: Option<String>,
-    },
-    Approve {
-        session_id: String,
-        call_id: String,
-        approved: bool,
-        scope: sylvander_protocol::ApprovalScope,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-    },
-    Answer {
-        session_id: String,
-        call_id: String,
-        answer: String,
-    },
-    Interrupt {
-        session_id: String,
-    },
-    ResolvePlan {
-        session_id: String,
-        plan_id: String,
-        decision: sylvander_protocol::PlanDecision,
-    },
-    CancelTask {
-        session_id: String,
-        task_id: String,
-    },
-    ListSessions,
-    LoadSession {
-        session_id: String,
-    },
-    ReattachSession {
-        session_id: String,
-    },
-    RenameSession {
-        session_id: String,
-        label: String,
-    },
-    ArchiveSession {
-        session_id: String,
-    },
-    RestoreSession {
-        session_id: String,
-    },
-    DeleteSession {
-        session_id: String,
-    },
-    ForkSession {
-        session_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        completed_turns: Option<usize>,
-        checkpoint: bool,
-    },
-    GetRuntimeInfo,
-    GetContext {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_id: Option<String>,
-    },
-    Compact {
-        session_id: String,
-    },
-    PreviewWorkspaceRollback {
-        session_id: String,
-    },
-    RollbackWorkspace {
-        session_id: String,
-        expected_turn_id: String,
-    },
-    SelectModel {
-        model: String,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-    },
-    SelectPermissions {
-        profile: sylvander_protocol::PermissionProfile,
-    },
-    Ping,
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

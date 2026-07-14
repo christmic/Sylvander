@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
@@ -43,106 +43,11 @@ use sylvander_agent::bus::{
 };
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{Channel, ChannelContext};
+use sylvander_protocol::UiClientMessage as ClientMsg;
 
 // ===========================================================================
 // Wire protocol
 // ===========================================================================
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMsg {
-    Hello {
-        protocol: sylvander_protocol::UiProtocolHello,
-    },
-    Chat {
-        text: String,
-        #[serde(default)]
-        attachments: Vec<sylvander_protocol::MessageAttachment>,
-        #[serde(default)]
-        session_id: Option<String>,
-        #[serde(default)]
-        workspace: Option<String>,
-    },
-    Approve {
-        #[serde(default)]
-        session_id: String,
-        call_id: String,
-        approved: bool,
-        #[serde(default)]
-        scope: sylvander_protocol::ApprovalScope,
-        #[serde(default)]
-        reason: Option<String>,
-    },
-    Answer {
-        #[serde(default)]
-        session_id: String,
-        call_id: String,
-        answer: String,
-    },
-    Interrupt {
-        session_id: String,
-    },
-    ResolvePlan {
-        #[serde(default)]
-        session_id: String,
-        plan_id: String,
-        decision: sylvander_protocol::PlanDecision,
-    },
-    CancelTask {
-        session_id: String,
-        task_id: String,
-    },
-    ListSessions,
-    LoadSession {
-        session_id: String,
-    },
-    ReattachSession {
-        session_id: String,
-    },
-    RenameSession {
-        session_id: String,
-        label: String,
-    },
-    ArchiveSession {
-        session_id: String,
-    },
-    RestoreSession {
-        session_id: String,
-    },
-    DeleteSession {
-        session_id: String,
-    },
-    ForkSession {
-        session_id: String,
-        #[serde(default)]
-        completed_turns: Option<usize>,
-        #[serde(default)]
-        checkpoint: bool,
-    },
-    GetRuntimeInfo,
-    GetContext {
-        #[serde(default)]
-        session_id: Option<String>,
-    },
-    Compact {
-        session_id: String,
-    },
-    PreviewWorkspaceRollback {
-        session_id: String,
-    },
-    RollbackWorkspace {
-        session_id: String,
-        expected_turn_id: String,
-    },
-    SelectModel {
-        model: String,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-    },
-    SelectPermissions {
-        profile: sylvander_protocol::PermissionProfile,
-    },
-    Ping,
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
