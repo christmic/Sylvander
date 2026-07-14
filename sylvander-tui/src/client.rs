@@ -694,17 +694,20 @@ mod tests {
     #[test]
     fn model_selection_uses_typed_reasoning_effort_on_wire() {
         let value = serde_json::to_value(ClientMsg::SelectModel {
+            session_id: Some("session-1".into()),
             model: "thinking".into(),
             reasoning_effort: sylvander_protocol::ReasoningEffort::High,
         })
         .unwrap();
         assert_eq!(value["type"], "select_model");
+        assert_eq!(value["session_id"], "session-1");
         assert_eq!(value["reasoning_effort"], "high");
     }
 
     #[test]
     fn permission_selection_is_a_typed_wire_profile() {
         let value = serde_json::to_value(ClientMsg::SelectPermissions {
+            session_id: Some("session-1".into()),
             profile: sylvander_protocol::PermissionProfile {
                 file_access: sylvander_protocol::FileAccess::ReadOnly,
                 network_access: sylvander_protocol::NetworkAccess::Denied,

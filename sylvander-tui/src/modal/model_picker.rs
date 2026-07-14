@@ -213,6 +213,10 @@ impl Modal for ModelPicker {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
+                let Some(session_id) = state.session_id.clone() else {
+                    state.status = "Start a session before selecting a model".into();
+                    return Consumed::Yes { dismiss: true };
+                };
                 let Some(model) = self.selected(state) else {
                     return Consumed::Yes { dismiss: true };
                 };
@@ -224,6 +228,7 @@ impl Modal for ModelPicker {
                 state
                     .pending_actions
                     .push(crate::event::Action::SelectModel {
+                        session_id,
                         model: model.id.clone(),
                         reasoning_effort: effort,
                     });
@@ -294,6 +299,7 @@ mod tests {
     #[test]
     fn keyboard_selects_only_server_advertised_effort() {
         let mut state = state();
+        state.session_id = Some("session-1".into());
         let mut picker = ModelPicker::new(&state);
         picker.handle_key(&KeyEvent::from(KeyCode::Down), &mut state);
         picker.handle_key(&KeyEvent::from(KeyCode::Right), &mut state);
@@ -304,9 +310,10 @@ mod tests {
         assert!(matches!(
             state.pending_actions.as_slice(),
             [crate::event::Action::SelectModel {
+                session_id,
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Low,
-            }] if model == "thinking"
+            }] if session_id == "session-1" && model == "thinking"
         ));
     }
 }

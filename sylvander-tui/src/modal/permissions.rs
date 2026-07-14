@@ -167,9 +167,14 @@ impl Modal for PermissionsPicker {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
+                let Some(session_id) = state.session_id.clone() else {
+                    state.status = "Start a session before changing permissions".into();
+                    return Consumed::Yes { dismiss: true };
+                };
                 state
                     .pending_actions
                     .push(crate::event::Action::SelectPermissions {
+                        session_id,
                         profile: self.profile.clone(),
                     });
                 state.status = "Updating permissions…".into();
@@ -208,6 +213,7 @@ mod tests {
     #[test]
     fn unavailable_ask_is_skipped_and_selection_is_typed() {
         let mut state = AppState::new();
+        state.session_id = Some("session-1".into());
         state.metadata.approval_enabled = false;
         let mut picker = PermissionsPicker::new(&state);
         picker.row = 2;
@@ -220,8 +226,9 @@ mod tests {
         picker.handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
         assert!(matches!(
             state.pending_actions.as_slice(),
-            [crate::event::Action::SelectPermissions { profile }]
-                if profile.approval_policy == sylvander_protocol::ApprovalPolicy::Deny
+            [crate::event::Action::SelectPermissions { session_id, profile }]
+                if session_id == "session-1"
+                    && profile.approval_policy == sylvander_protocol::ApprovalPolicy::Deny
         ));
     }
 }
