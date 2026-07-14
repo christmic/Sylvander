@@ -269,7 +269,7 @@ pub enum PasteOutcome {
 pub struct Composer {
     /// One String per visible row. Always non-empty (a "blank" line is `""`).
     rows: Vec<String>,
-    /// Cursor row index, 0..rows.len().
+    /// Cursor row index, `0..rows.len()`.
     cursor_row: usize,
     /// Cursor *byte* offset within `rows[cursor_row]`.
     cursor_col: usize,
@@ -714,10 +714,7 @@ impl Composer {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error),
         }
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) => return Err(error),
-        };
+        let bytes = std::fs::read(path)?;
         let snapshot: DraftSnapshot = serde_json::from_slice(&bytes)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         let invalid = snapshot.text.len() > MAX_DRAFT_BYTES
@@ -845,8 +842,7 @@ impl Composer {
                     self.collapse_selection_right();
                 }
             }
-            KeyCode::Up => { /* handled above */ }
-            KeyCode::Down => { /* handled above */ }
+            KeyCode::Up | KeyCode::Down => { /* handled above */ }
             KeyCode::Home => {
                 if shift {
                     self.set_anchor((self.cursor_row, self.cursor_col));
@@ -1258,8 +1254,9 @@ impl Composer {
     }
 
     fn move_cursor_vertical(&mut self, delta: isize) {
-        let target = (self.cursor_row as isize + delta)
-            .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
+        let target = (self.cursor_row.cast_signed() + delta)
+            .clamp(0, self.rows.len().saturating_sub(1).cast_signed())
+            .cast_unsigned();
         let desired_cells = self.cursor_col_cells();
         self.cursor_row = target;
         self.cursor_col = byte_at_cell(&self.rows[target], desired_cells);
@@ -1302,20 +1299,21 @@ impl Composer {
     }
 
     fn set_anchor(&mut self, at: (usize, usize)) {
-        if let Some(a) = self.anchor {
-            if a == at && (self.cursor_row, self.cursor_col) == at {
-                self.anchor = None;
-                return;
-            }
+        if let Some(a) = self.anchor
+            && a == at
+            && (self.cursor_row, self.cursor_col) == at
+        {
+            self.anchor = None;
+            return;
         }
         self.anchor = Some(at);
     }
 
     fn clear_selection_if_empty(&mut self) {
-        if let Some(a) = self.anchor {
-            if a == (self.cursor_row, self.cursor_col) {
-                self.anchor = None;
-            }
+        if let Some(a) = self.anchor
+            && a == (self.cursor_row, self.cursor_col)
+        {
+            self.anchor = None;
         }
     }
 
@@ -1363,12 +1361,12 @@ impl Composer {
             None if delta < 0 => Some(self.history.len() - 1),
             None => return None,
             Some(i) => {
-                let signed = i as isize + delta;
-                if signed < 0 || (signed as usize) >= self.history.len() {
+                let signed = i.cast_signed() + delta;
+                if signed < 0 || signed.cast_unsigned() >= self.history.len() {
                     // Walked past either edge — back to live.
                     None
                 } else {
-                    Some(signed as usize)
+                    Some(signed.cast_unsigned())
                 }
             }
         };
@@ -1839,11 +1837,13 @@ mod tests {
     fn delete_forward_at_end_of_row_merges_with_next_row() {
         // Construct state with cursor at end of "ab" and a second row containing
         // "cd". Then Delete should join them into "abcd".
-        let mut c = Composer::default();
-        c.rows = vec!["ab".to_string(), "cd".to_string()];
-        c.cursor_row = 0;
-        c.cursor_col = 2;
-        c.anchor = None;
+        let mut c = Composer {
+            rows: vec!["ab".to_string(), "cd".to_string()],
+            cursor_row: 0,
+            cursor_col: 2,
+            anchor: None,
+            ..Default::default()
+        };
         c.handle_key(&key(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(c.text(), "abcd");
         assert_eq!(c.row_count(), 1);
@@ -2150,8 +2150,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .map_or(0, |duration| duration.as_nanos())
         ));
         std::fs::create_dir_all(&dir).expect("create tempdir");
         dir

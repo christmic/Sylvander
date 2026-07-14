@@ -47,7 +47,7 @@ pub enum ClientEvent {
     /// surface an Info message, drop session.
     Disconnected,
     /// A parsed server message arrived.
-    Message(ServerMsg),
+    Message(Box<ServerMsg>),
     Diagnostic(String),
 }
 
@@ -108,9 +108,7 @@ impl UnixClient {
         .map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::TimedOut, "protocol handshake timed out")
         })??;
-        let line = if let Some(line) = handshake_line {
-            line
-        } else {
+        let Some(line) = handshake_line else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "server closed during protocol handshake",
@@ -166,7 +164,7 @@ impl UnixClient {
                         }
                         match parse_server_line(line) {
                             Ok(msg) => {
-                                if tx.send(ClientEvent::Message(msg)).await.is_err() {
+                                if tx.send(ClientEvent::Message(Box::new(msg))).await.is_err() {
                                     break;
                                 }
                             }
@@ -194,14 +192,11 @@ impl UnixClient {
 
     /// Send a client message. Returns Err if not connected or write fails.
     pub async fn send(&mut self, msg: &ClientMsg) -> std::io::Result<()> {
-        let writer = match self.writer.as_mut() {
-            Some(w) => w,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotConnected,
-                    "socket not connected",
-                ));
-            }
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "socket not connected",
+            ));
         };
         let json = serde_json::to_string(msg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -298,7 +293,7 @@ fn parse_server_line(line: &str) -> Result<ServerMsg, String> {
 // Protocol → Domain adapter (only place that knows both worlds)
 // ===========================================================================
 
-/// Translate a parsed server message into a neutral DomainEvent.
+/// Translate a parsed server message into a neutral `DomainEvent`.
 ///
 /// This is the ONLY function that bridges wire-format and domain state.
 /// Replace it when adding a new transport (WebSocket, HTTP, ...) — no

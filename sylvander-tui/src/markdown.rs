@@ -145,7 +145,7 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
                 out.blank();
             }
             Event::Html(value) | Event::InlineHtml(value) => {
-                out.push_text(&value, theme::text_dim())
+                out.push_text(&value, theme::text_dim());
             }
             Event::FootnoteReference(value) => out.push_text(&format!("[{value}]"), link_style()),
             _ => {}
@@ -161,16 +161,17 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
 fn stabilize_incomplete_inline_markers(text: &str) -> String {
     let mut value = text.to_string();
     for marker in ["**", "__"] {
-        if value.matches(marker).count() % 2 == 1 {
-            if let Some(index) = value.rfind(marker) {
-                value.replace_range(index..index + marker.len(), "");
-            }
+        if value.matches(marker).count() % 2 == 1
+            && let Some(index) = value.rfind(marker)
+        {
+            value.replace_range(index..index + marker.len(), "");
         }
     }
-    if !value.contains("```") && value.matches('`').count() % 2 == 1 {
-        if let Some(index) = value.rfind('`') {
-            value.remove(index);
-        }
+    if !value.contains("```")
+        && value.matches('`').count() % 2 == 1
+        && let Some(index) = value.rfind('`')
+    {
+        value.remove(index);
     }
     value
 }
@@ -258,10 +259,8 @@ impl TableBuilder {
             Event::Start(Tag::TableCell) => self.cell.clear(),
             Event::Text(value) | Event::Code(value) => self.cell.push_str(value),
             Event::End(TagEnd::TableCell) => self.row.push(self.cell.trim().to_string()),
-            Event::End(TagEnd::TableHead) | Event::End(TagEnd::TableRow) => {
-                if !self.row.is_empty() {
-                    self.rows.push(std::mem::take(&mut self.row));
-                }
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) if !self.row.is_empty() => {
+                self.rows.push(std::mem::take(&mut self.row));
             }
             _ => {}
         }

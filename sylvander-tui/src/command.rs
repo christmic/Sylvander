@@ -603,7 +603,7 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
         {
             Some("prompt template is empty or too large".into())
         }
-        _ => None,
+        sylvander_protocol::UiCommandEffect::SubmitPrompt { .. } => None,
     }
 }
 
@@ -708,16 +708,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.mode = AppMode::Normal;
             state.status = "New session ready".into();
         }
-        CommandId::Sessions => {
-            require_no_args(&invocation)?;
-            state
-                .pending_actions
-                .push(crate::event::Action::RequestSessions);
-            state
-                .modals
-                .push(Box::new(SessionsOverlay::new(state.sessions.clone())));
-        }
-        CommandId::Resume => {
+        CommandId::Sessions | CommandId::Resume => {
             require_no_args(&invocation)?;
             state
                 .pending_actions
@@ -1296,9 +1287,7 @@ fn platform_report(
             let status = platform_status_label(feature.status);
             let auth = platform_auth_label(feature.auth);
             let trust = feature
-                .trust
-                .map(platform_trust_label)
-                .unwrap_or_else(|| "unspecified".into());
+                .trust.map_or_else(|| "unspecified".into(), platform_trust_label);
             let source = feature
                 .source
                 .as_deref()
@@ -1438,8 +1427,7 @@ fn find_tool_output(
             _ => &[],
         })
         .filter(|child| {
-            child.output.is_some()
-                && prefix.map_or(true, |prefix| child.call_id.starts_with(prefix))
+            child.output.is_some() && prefix.is_none_or(|prefix| child.call_id.starts_with(prefix))
         })
         .collect::<Vec<_>>();
     let child = match (prefix, matches.as_slice()) {
@@ -1666,7 +1654,7 @@ mod tests {
         let mut state = AppState::new();
         execute(parse("/mention").expect("parse"), &mut state).expect("execute");
         assert_eq!(
-            state.modals.top().map(|modal| modal.title()),
+            state.modals.top().map(crate::modal::Modal::title),
             Some("Mention file")
         );
         assert!(state.pending_actions.is_empty());
@@ -1905,7 +1893,7 @@ mod tests {
         });
         execute(parse("inspect call-a").unwrap(), &mut state).unwrap();
         assert_eq!(
-            state.modals.top().map(|modal| modal.title()),
+            state.modals.top().map(crate::modal::Modal::title),
             Some("Tool output")
         );
         state.modals.pop();

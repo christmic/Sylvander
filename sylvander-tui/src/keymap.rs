@@ -103,7 +103,7 @@ impl KeyChord {
             return Err("Ctrl+C, Ctrl+X, and Ctrl+Z are reserved safety/editing keys".into());
         }
         Ok(Self {
-            label: chord_label(&code, parsed_modifiers),
+            label: chord_label(code, parsed_modifiers),
             code,
             modifiers: parsed_modifiers,
         })
@@ -189,7 +189,7 @@ impl KeyMap {
     }
 }
 
-fn chord_label(code: &KeyCode, modifiers: KeyModifiers) -> String {
+fn chord_label(code: KeyCode, modifiers: KeyModifiers) -> String {
     let mut parts = Vec::new();
     if modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("Ctrl".to_string());
