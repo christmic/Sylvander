@@ -126,9 +126,15 @@ impl AgentRegistry {
                     actual: definition.revision,
                 });
             }
+            let revision = definition.revision;
             insert_definition(&transaction, &definition, false)?;
+            let stored = load_revision(&transaction, &agent_id, revision)?.ok_or_else(|| {
+                AgentRegistryError::Integrity(format!(
+                    "newly inserted Agent revision `{agent_id}`@{revision} is missing"
+                ))
+            })?;
             transaction.commit().map_err(AgentRegistryError::sqlite)?;
-            encode_revision(definition, false)
+            Ok(stored)
         })
         .await
     }
@@ -203,7 +209,7 @@ impl AgentRegistry {
                 )
                 .map_err(AgentRegistryError::sqlite)?;
             let rows = statement
-                .query_map([agent_id], |row| {
+                .query_map([&agent_id], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -216,12 +222,14 @@ impl AgentRegistry {
                 let (json, digest, created_at, revision) =
                     row.map_err(AgentRegistryError::sqlite)?;
                 let revision = decode_revision(revision)?;
-                Ok(AgentRevision {
-                    definition: decode_definition(&json)?,
+                decode_stored_revision(
+                    &agent_id,
+                    revision,
+                    json,
                     digest,
                     created_at,
-                    active: active == Some(revision),
-                })
+                    active == Some(revision),
+                )
             })
             .collect()
         })
@@ -359,25 +367,42 @@ fn load_revision(
         .optional()
         .map_err(AgentRegistryError::sqlite)?
         .map(|(json, digest, created_at)| {
-            Ok(AgentRevision {
-                definition: decode_definition(&json)?,
+            decode_stored_revision(
+                agent_id,
+                revision,
+                json,
                 digest,
                 created_at,
-                active: active == Some(revision),
-            })
+                active == Some(revision),
+            )
         })
         .transpose()
 }
 
-fn encode_revision(
-    definition: AgentDefinitionConfig,
+fn decode_stored_revision(
+    agent_id: &str,
+    revision: u64,
+    json: String,
+    digest: String,
+    created_at: i64,
     active: bool,
 ) -> Result<AgentRevision, AgentRegistryError> {
-    let json = serde_json::to_vec(&definition).map_err(AgentRegistryError::serde)?;
+    let actual_digest = hex_digest(json.as_bytes());
+    if actual_digest != digest {
+        return Err(AgentRegistryError::Integrity(format!(
+            "Agent revision `{agent_id}`@{revision} digest mismatch"
+        )));
+    }
+    let definition = decode_definition(&json)?;
+    if definition.spec.id.0 != agent_id || definition.revision != revision {
+        return Err(AgentRegistryError::Integrity(format!(
+            "Agent revision `{agent_id}`@{revision} identity does not match stored definition"
+        )));
+    }
     Ok(AgentRevision {
         definition,
-        digest: hex_digest(&json),
-        created_at: now(),
+        digest,
+        created_at,
         active,
     })
 }
@@ -436,6 +461,8 @@ pub enum AgentRegistryError {
     Storage(String),
     #[error("Agent registry serialization error: {0}")]
     Serialization(String),
+    #[error("Agent registry integrity error: {0}")]
+    Integrity(String),
     #[error("Agent registry task failed: {0}")]
     Task(String),
 }
