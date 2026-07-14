@@ -71,8 +71,10 @@ An immutable, versioned definition contains:
 - secret references, never secret values in inspectable protocol objects.
 
 Updating an Agent creates a new validated revision. Existing sessions retain
-their recorded revision until explicitly migrated or resumed under a declared
-migration policy.
+their recorded execution composition until explicitly migrated or resumed
+under a declared migration policy. The active server safety and access policy
+is a live floor rather than historical session state: activating a stricter
+policy may immediately revoke access to an older session.
 
 ### 3.2 SessionDefinition and EffectiveSessionConfig
 
@@ -209,12 +211,12 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | ID | Area | Status | Evidence and gap |
 |---|---|---:|---|
 | A01 | Agent specification | partial | The production runtime loads validated configured Agent definitions, including access, model, prompt, workspace, tools, and MCP declarations. The definition surface still needs the P1/P2 prompt, memory, Skill, and MCP runtimes. |
-| A02 | Agent registry | partial | SQLite persists immutable Agent revisions and supports validated seed, inspect, optimistic update, activate, and rollback. Public administration and hot runtime recomposition remain in P1.1. |
+| A02 | Agent registry | implemented | SQLite persists immutable, integrity-checked Agent revisions and an optimistic active head. Redacted public administration supports inspect, update, activate, and rollback; the runtime precomposes candidates, hot-loads active revisions, preserves historical execution workers, restores them after restart, and audits mutations. |
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. TUI, Unix, and WebSocket selection require a session ID and use optimistic updates; legacy unscoped requests fail closed. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
 | A06 | Model providers | partial | A catalog of model ids exists, but all selections use one `AnthropicClient`; `ModelConfig.provider` does not resolve a provider implementation. |
-| A07 | Model-specific prompts | missing | One `persona.system_prompt` is copied into every loop. There is no provider/model profile, prompt provenance, or safe session override. |
+| A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
 | A10 | Command/Git tools | missing | The Agent has no production spawn/shell/Git tool surface. `Cap::Spawn` and `Cap::Git` are declarations without executor-backed tools. |
@@ -230,13 +232,13 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A20 | Telegram instances | partial | The server constructs configured bots using the shared durable store, required webhook authentication, instance-scoped principals/chat mappings, authorization, and Unicode-safe chunking. Interactive decisions, retries, and operational health remain in P4.3. |
 | A21 | Other channels | partial | The production server constructs configured Unix, HTTP, WebSocket, DingTalk, Telegram, and WeChat instances. Uniform supervision, interactive operations, retries, and health remain in P4. |
 | A22 | Channel supervision | partial | DingTalk reconnects internally, but runtime-wide instance health, restart backoff, readiness, drain, and failure isolation are not modeled. Some channel startup paths unwrap. |
-| A23 | Run evidence | partial | Tracing spans, persisted messages, aggregate usage, tool stream events, and workspace journal records exist. There is no durable correlated run/turn/step ledger or outcome model. |
+| A23 | Run evidence | implemented | The durable run ledger correlates runs, turns, steps, outcomes, usage, tool activity, recovery, retention, queries, feedback, and content-free administration/authorization audit. Raw content is governed separately from structured evidence. |
 | A24 | Feedback | complete | Typed positive/negative feedback is accepted through the public UI service and persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
 | A25 | Self-improvement | missing | There is no evidence selection, evaluation corpus, proposal, experiment, comparison, or human merge gate. |
 | A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
 | A27 | Secrets | partial | Core credentials come from environment variables and debug formatting avoids the API key. There is no secret-reference abstraction, rotation, or per-channel isolation. |
 | A28 | Database migrations | partial | SQLite uses create-if-missing and targeted column checks. There is no explicit schema version, ordered migration ledger, backup/restore verification, or downgrade policy. |
-| A29 | Shutdown and recovery | partial | Sessions can recover and turns can be interrupted, but server shutdown aborts tasks rather than draining channels/turns and closing durable terminal states. |
+| A29 | Shutdown and recovery | partial | Runtime boot restores durable sessions and interrupted evidence, and shutdown uses bounded cooperative channel/Agent drain. Full crash orchestration, executor leases, and per-instance recovery policy remain incomplete. |
 | A30 | Observability and operations | partial | Structured tracing and health endpoints exist. Metrics, readiness dependencies, per-instance health, queue/backpressure visibility, audit export, and operational diagnostics are incomplete. |
 | A31 | Concurrency isolation | implemented | Agent turns use per-session locks and active-turn cancellation; real-runtime PTY tests cover multi-client session isolation. This must remain a regression gate. |
 | A32 | Approval authority | partial | The Agent owns approval decisions and durable fingerprints can be configured. Permission selection remains global and persistent approvals need identity/policy scoping. |
@@ -297,8 +299,14 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 ### P1 — Persistent Agent organism
 
-- [ ] **P1.1 Agent registry and revisions:** load, validate, persist, inspect,
+- [x] **P1.1 Agent registry and revisions:** load, validate, persist, inspect,
   update, activate, roll back, and bind sessions to revisions.
+  Evidence: immutable SQLite revisions and active heads with digest validation;
+  redacted protocol administration over Unix/WebSocket; admin/system
+  authorization; optimistic conflicts; full composition before mutation;
+  hot activation, rollback, historical session workers, restart restoration;
+  provider-request tests for revision-specific model/prompt selection; and
+  durable content-free success/failure audit.
 - [ ] **P1.2 Provider and model registry:** provider-neutral client factory,
   capability discovery/validation, per-Agent default, per-session override,
   lifecycle, pricing, and credential references.
