@@ -34,6 +34,7 @@ use sylvander_llm_anthropic::api::types::{
     ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
     Usage, UserContentBlock,
 };
+use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
@@ -72,6 +73,18 @@ pub struct AgentLoop {
     pub(crate) tool_context: ToolContext,
 }
 
+#[derive(Clone)]
+enum ModelBackend {
+    LegacyAnthropic {
+        client: AnthropicClient,
+        model: ModelInfo,
+    },
+    Provider {
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    },
+}
+
 impl std::fmt::Debug for AgentLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoop")
@@ -104,6 +117,8 @@ pub struct AgentLoopResult {
 pub struct AgentLoopBuilder {
     client: Option<AnthropicClient>,
     model: Option<ModelInfo>,
+    provider: Option<Arc<dyn ModelProvider>>,
+    provider_model: Option<ProviderModelInfo>,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
     tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
@@ -122,6 +137,8 @@ impl Default for AgentLoopBuilder {
         Self {
             client: None,
             model: None,
+            provider: None,
+            provider_model: None,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             tools: ToolRegistry::new(),
             compression_pipeline: None,
@@ -140,8 +157,10 @@ impl Default for AgentLoopBuilder {
 impl std::fmt::Debug for AgentLoopBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoopBuilder")
-            .field("client", &self.client.as_ref().map(|_| "AnthropicClient"))
+            .field("legacy_client_set", &self.client.is_some())
             .field("model", &self.model)
+            .field("provider_set", &self.provider.is_some())
+            .field("provider_model", &self.provider_model)
             .field("tools", &self.tools)
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
@@ -168,6 +187,20 @@ impl AgentLoopBuilder {
     #[must_use]
     pub fn model(mut self, model: ModelInfo) -> Self {
         self.model = Some(model);
+        self
+    }
+
+    /// Set a provider-neutral model adapter.
+    #[must_use]
+    pub fn provider(mut self, provider: Arc<dyn ModelProvider>) -> Self {
+        self.provider = Some(provider);
+        self
+    }
+
+    /// Set provider-qualified model metadata.
+    #[must_use]
+    pub fn provider_model(mut self, model: ProviderModelInfo) -> Self {
+        self.provider_model = Some(model);
         self
     }
 
@@ -260,15 +293,42 @@ impl AgentLoopBuilder {
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
-    /// Returns [`AgentLoopError::Builder`] if `client` or `model` is
-    /// missing.
+    /// Returns [`AgentLoopError::Builder`] when one backend is incomplete,
+    /// backends are mixed, or provider execution is not enabled yet.
     pub fn build(self) -> Result<AgentLoop, AgentLoopError> {
-        let client = self
-            .client
-            .ok_or_else(|| AgentLoopError::Builder("client is required".into()))?;
-        let model = self
-            .model
-            .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
+        let legacy_set = self.client.is_some() || self.model.is_some();
+        let provider_set = self.provider.is_some() || self.provider_model.is_some();
+        if legacy_set && provider_set {
+            return Err(AgentLoopError::Builder(
+                "legacy and provider model backends cannot be mixed".into(),
+            ));
+        }
+        let backend = if provider_set {
+            let provider = self
+                .provider
+                .ok_or_else(|| AgentLoopError::Builder("provider is required".into()))?;
+            let model = self
+                .provider_model
+                .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
+            ModelBackend::Provider { provider, model }
+        } else {
+            let client = self
+                .client
+                .ok_or_else(|| AgentLoopError::Builder("client is required".into()))?;
+            let model = self
+                .model
+                .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
+            ModelBackend::LegacyAnthropic { client, model }
+        };
+        let (client, model) = match backend {
+            ModelBackend::LegacyAnthropic { client, model } => (client, model),
+            ModelBackend::Provider { provider, model } => {
+                drop((provider, model));
+                return Err(AgentLoopError::Builder(
+                    "provider backend execution is not enabled yet".into(),
+                ));
+            }
+        };
         // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
         // Opt-in to L0 (disk offload) or L4 (LLM summary) by
         // building a custom pipeline.
@@ -1436,6 +1496,25 @@ mod tests {
     use serde_json::json;
     use sylvander_llm_anthropic::api::client::AnthropicClient;
     use sylvander_llm_anthropic::api::model::ModelCapabilities;
+    use sylvander_llm_core::{
+        ModelCapabilities as ProviderCapabilities, ModelEventStream, ModelRef, ProviderFuture,
+    };
+
+    struct FakeProvider {
+        _secret: &'static str,
+    }
+
+    impl ModelProvider for FakeProvider {
+        fn complete_stream(
+            &self,
+            _request: sylvander_llm_core::ModelRequest,
+        ) -> ProviderFuture<'_> {
+            Box::pin(async {
+                let stream: ModelEventStream = Box::pin(futures_util::stream::empty());
+                Ok(stream)
+            })
+        }
+    }
 
     struct SlowTool;
 
@@ -1499,6 +1578,15 @@ mod tests {
             .expect("model build")
     }
 
+    fn provider_model() -> ProviderModelInfo {
+        ProviderModelInfo {
+            reference: ModelRef::new("local", "test-model"),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: ProviderCapabilities::TOOL_USE,
+        }
+    }
+
     #[test]
     fn builder_requires_client() {
         let result = AgentLoop::builder().model(test_model()).build();
@@ -1527,6 +1615,45 @@ mod tests {
         assert_eq!(loop_.model().id.as_str(), "test-model");
         assert_eq!(loop_.max_iterations(), 50);
         assert_eq!(loop_.max_retries(), 3);
+    }
+
+    #[test]
+    fn provider_builder_is_fail_closed_until_execution_is_connected() {
+        let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider {
+            _secret: "secret-provider-state",
+        });
+        let builder = AgentLoop::builder()
+            .provider(provider)
+            .provider_model(provider_model());
+        let debug = format!("{builder:?}");
+        assert!(!debug.contains("secret-provider-state"));
+        assert!(matches!(
+            builder.build(),
+            Err(AgentLoopError::Builder(message))
+                if message.contains("execution is not enabled")
+        ));
+    }
+
+    #[test]
+    fn provider_builder_rejects_missing_and_mixed_backends() {
+        let provider = || Arc::new(FakeProvider { _secret: "secret" }) as Arc<dyn ModelProvider>;
+        assert!(matches!(
+            AgentLoop::builder().provider(provider()).build(),
+            Err(AgentLoopError::Builder(message)) if message.contains("provider model")
+        ));
+        assert!(matches!(
+            AgentLoop::builder().provider_model(provider_model()).build(),
+            Err(AgentLoopError::Builder(message)) if message.contains("provider is required")
+        ));
+        assert!(matches!(
+            AgentLoop::builder()
+                .client(test_client())
+                .model(test_model())
+                .provider(provider())
+                .provider_model(provider_model())
+                .build(),
+            Err(AgentLoopError::Builder(message)) if message.contains("cannot be mixed")
+        ));
     }
 
     #[test]
