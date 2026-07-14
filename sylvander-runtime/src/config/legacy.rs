@@ -176,6 +176,10 @@ impl ServerConfig {
                 prompt_profiles: Vec::new(),
                 default_prompt_profile: None,
                 allow_session_prompt: false,
+                access: super::AgentAccessConfig {
+                    allow_authenticated: true,
+                    ..super::AgentAccessConfig::default()
+                },
             }],
             channels,
         };

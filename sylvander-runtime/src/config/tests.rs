@@ -35,6 +35,9 @@ revision = 7
 default_prompt_profile = "model-a"
 allow_session_prompt = false
 
+[agents.access]
+allow_authenticated = true
+
 [agents.spec]
 id = "assistant"
 name = "Sylvander"

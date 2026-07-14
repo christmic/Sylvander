@@ -50,6 +50,9 @@ revision = 1
 default_prompt_profile = "claude"
 allow_session_prompt = false
 
+[agents.access]
+allow_authenticated = true
+
 [agents.spec]
 id = "sylvander"
 name = "Sylvander"

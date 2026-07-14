@@ -139,6 +139,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let mut agents = self
             .agents
             .values()
+            .filter(|agent| agent_access_allowed(agent, boundary))
             .map(|agent| AgentDescriptor {
                 id: agent.spec.id.clone(),
                 revision: agent.definition.revision,
@@ -213,6 +214,12 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 format!("unknown Agent {}", request.agent_id),
             )
         })?;
+        if !agent_access_allowed(agent, boundary) {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ));
+        }
         let effective = resolve_session_config(agent, &request.overrides, None, None)
             .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
         let workspace = effective
@@ -386,6 +393,17 @@ impl RuntimeUiService {
         message: &sylvander_protocol::UiClientMessage,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
         require_principal(boundary, ui_operation(message))?;
+        if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
+            let agent = self.agents.get(&request.agent_id).ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "create_session")
+            })?;
+            if !agent_access_allowed(agent, boundary) {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "create_session",
+                ));
+            }
+        }
         if let sylvander_protocol::UiClientMessage::SubmitFeedback { feedback } = message {
             let store = self.evidence.as_ref().ok_or_else(|| {
                 boundary_failure(
@@ -475,6 +493,28 @@ impl RuntimeUiService {
 
 fn sha256_text(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn agent_access_allowed(
+    agent: &ConfiguredAgent,
+    boundary: &sylvander_protocol::BoundaryContext,
+) -> bool {
+    let Some(principal) = &boundary.principal else {
+        return false;
+    };
+    principal.kind == sylvander_protocol::PrincipalKind::System
+        || principal.has_role("admin")
+        || agent.definition.access.allow_authenticated
+        || agent
+            .definition
+            .access
+            .allowed_principals
+            .iter()
+            .any(|allowed| allowed == &principal.id.0)
+        || principal
+            .roles
+            .iter()
+            .any(|role| agent.definition.access.allowed_roles.contains(role))
 }
 
 fn require_principal<'a>(
@@ -1398,6 +1438,9 @@ capabilities = ["tool_use"]
 [[agents]]
 allow_session_prompt = false
 
+[agents.access]
+allowed_principals = ["test-user"]
+
 [agents.spec]
 id = "assistant"
 name = "Sylvander"
@@ -1509,6 +1552,30 @@ model_name = "model-a"
             "unix",
             "request-read",
         );
+        assert!(
+            sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &stranger,)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let denial = sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &stranger,
+            &sylvander_protocol::UiClientMessage::CreateSession {
+                request: SessionCreateRequest {
+                    agent_id: AgentId::new("assistant"),
+                    label: "unauthorized".into(),
+                    channel_id: Some("tui-local".into()),
+                    overrides: SessionConfigOverrides::default(),
+                },
+            },
+        )
+        .await
+        .expect_err("an Agent allowlist must be enforced before creation");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
         let denial = sylvander_channel::UiService::session_config(
             runtime.ui_service.as_ref(),
             &stranger,
@@ -1610,7 +1677,7 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 3);
+        assert_eq!(denials.len(), 4);
         assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
             || denial.code == "unauthenticated"));
         assert!(
