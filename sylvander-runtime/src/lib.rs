@@ -1439,7 +1439,7 @@ capabilities = ["tool_use"]
 allow_session_prompt = false
 
 [agents.access]
-allowed_principals = ["test-user"]
+allowed_principals = ["test-user", "telegram:bot-a:42"]
 
 [agents.spec]
 id = "assistant"
@@ -1543,6 +1543,71 @@ model_name = "model-a"
         assert_eq!(stored.effective_config, Some(created.effective));
         assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        let platform_boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "telegram:bot-a:42",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "bot-a",
+            "telegram",
+            "telegram-update-1",
+        );
+        let channel_context = ChannelContext {
+            bus: runtime.bus(),
+            sessions: runtime.session_store.clone(),
+            ui: Some(runtime.ui_service.clone()),
+            readiness: None,
+        };
+        let platform_session = sylvander_channel::authorize_external_chat(
+            &channel_context,
+            &platform_boundary,
+            None,
+            AgentId::new("assistant"),
+            "telegram-42".into(),
+            "hello from Telegram",
+            std::collections::BTreeMap::from([
+                ("channel_instance_id".into(), "bot-a".into()),
+                ("chat_id".into(), "42".into()),
+            ]),
+        )
+        .await
+        .expect("an allowed platform principal may create and use its session");
+        let platform_stored = runtime
+            .session_store
+            .get(&platform_session)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(platform_stored.metadata.user_id, "telegram:bot-a:42");
+        assert_eq!(
+            platform_stored.external_meta["channel_instance_id"],
+            "bot-a"
+        );
+        assert!(platform_stored.effective_config.is_some());
+        let other_bot = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "telegram:bot-b:42",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "bot-b",
+            "telegram",
+            "telegram-update-2",
+        );
+        let denial = sylvander_channel::authorize_external_chat(
+            &channel_context,
+            &other_bot,
+            Some(platform_session),
+            AgentId::new("assistant"),
+            "telegram-42".into(),
+            "cross-instance attempt",
+            std::collections::BTreeMap::new(),
+        )
+        .await
+        .expect_err("another channel instance must not reuse the session");
+        assert_eq!(
+            denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
         let stranger = sylvander_protocol::BoundaryContext::authenticated(
             sylvander_protocol::AuthenticatedPrincipal::user(
                 "other-user",
@@ -1677,7 +1742,7 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 4);
+        assert_eq!(denials.len(), 5);
         assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
             || denial.code == "unauthenticated"));
         assert!(
