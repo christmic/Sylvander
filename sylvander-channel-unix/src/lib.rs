@@ -1462,6 +1462,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1526,6 +1527,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1648,6 +1650,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            ui: None,
             readiness: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1747,6 +1750,7 @@ mod tests {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
             sessions: store.clone(),
+            ui: None,
             readiness: None,
         };
         let task = tokio::spawn(channel.run(context));
@@ -1920,6 +1924,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
+            ui: None,
             readiness: None,
         }));
 
@@ -2004,6 +2009,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
+            ui: None,
             readiness: None,
         }));
 
@@ -2105,6 +2111,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2147,6 +2154,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2190,6 +2198,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2225,6 +2234,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();

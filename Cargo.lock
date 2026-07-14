@@ -2841,6 +2841,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "sylvander-agent",
+ "sylvander-protocol",
  "tokio",
 ]
 
