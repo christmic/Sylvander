@@ -78,11 +78,18 @@ impl Tool for MemoryReadTool {
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
 
-        let limit = input["limit"].as_u64().unwrap_or(5) as usize;
+        let limit =
+            match input.get("limit") {
+                None => 5,
+                Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
+                    ToolError::Other("'limit' must be a positive integer".into())
+                })?)
+                .map_err(|_| ToolError::Other("'limit' is too large".into()))?,
+            };
 
-        let kind_filter = parse_kind(input.get("kind").and_then(|v| v.as_str()));
+        let kind_filter = parse_kind(input.get("kind").and_then(|v| v.as_str()))?;
         let importance_filter =
-            parse_importance(input.get("min_importance").and_then(|v| v.as_str()));
+            parse_importance(input.get("min_importance").and_then(|v| v.as_str()))?;
 
         let results = self
             .store
@@ -120,29 +127,26 @@ impl Tool for MemoryReadTool {
     }
 }
 
-// Parse a string from the model's input into a `MemoryKind`. Unknown
-// values map to `None` (no filter) so the model can probe without
-// hard-failing.
-fn parse_kind(s: Option<&str>) -> Option<super::memory::MemoryKind> {
-    let s = s?;
-    Some(match s {
+fn parse_kind(s: Option<&str>) -> Result<Option<super::memory::MemoryKind>, ToolError> {
+    let Some(s) = s else { return Ok(None) };
+    Ok(Some(match s {
         "preference" => super::memory::MemoryKind::Preference,
         "project_fact" => super::memory::MemoryKind::ProjectFact,
         "decision" => super::memory::MemoryKind::Decision,
         "agent_note" => super::memory::MemoryKind::AgentNote,
-        _ => return None,
-    })
+        _ => return Err(ToolError::Other("unknown memory kind".into())),
+    }))
 }
 
-fn parse_importance(s: Option<&str>) -> Option<super::memory::Importance> {
-    let s = s?;
-    Some(match s {
+fn parse_importance(s: Option<&str>) -> Result<Option<super::memory::Importance>, ToolError> {
+    let Some(s) = s else { return Ok(None) };
+    Ok(Some(match s {
         "low" => super::memory::Importance::Low,
         "medium" => super::memory::Importance::Medium,
         "high" => super::memory::Importance::High,
         "critical" => super::memory::Importance::Critical,
-        _ => return None,
-    })
+        _ => return Err(ToolError::Other("unknown memory importance".into())),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +231,20 @@ mod tests {
         let c = ctx();
         let result = tool.execute(&c, json!({})).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_filters_never_expand_the_query() {
+        let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
+        for input in [
+            json!({"query": "", "kind": "everything"}),
+            json!({"query": "", "min_importance": "any"}),
+            json!({"query": "", "limit": -1}),
+            json!({"query": "", "limit": super::super::memory::MAX_MEMORY_RESULTS + 1}),
+        ] {
+            assert!(tool.execute(&c, input).await.is_err());
+        }
     }
 
     #[tokio::test]
