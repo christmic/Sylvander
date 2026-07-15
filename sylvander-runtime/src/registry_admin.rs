@@ -17,7 +17,8 @@ use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolv
 use crate::model_registry::ModelRegistryError;
 use crate::provider_registry::ProviderRegistryError;
 use crate::registry_domain::{
-    CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind, StoredRevision,
+    CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind,
+    StoredRevision, canonicalize_model_capabilities,
 };
 use crate::request_scoped_provider::AnthropicProviderFactory;
 
@@ -408,7 +409,10 @@ impl<'a> RegistryAdminService<'a> {
         model_id: String,
         draft: ModelDefinitionDraft,
     ) -> RegistryAdminResponse {
-        let definition = model_definition(provider_id.clone(), model_id.clone(), 1, draft);
+        let definition = match model_definition(provider_id.clone(), model_id.clone(), 1, draft) {
+            Ok(definition) => definition,
+            Err(error) => return failure(error),
+        };
         match self.registry.create_model(definition).await {
             Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
                 RegistryAdminResult::ModelCreated { revision }
@@ -425,7 +429,11 @@ impl<'a> RegistryAdminService<'a> {
         expected_active: u64,
         draft: ModelDefinitionDraft,
     ) -> RegistryAdminResponse {
-        let definition = model_definition(provider_id.clone(), model_id.clone(), revision, draft);
+        let definition =
+            match model_definition(provider_id.clone(), model_id.clone(), revision, draft) {
+                Ok(definition) => definition,
+                Err(error) => return failure(error),
+            };
         match self.registry.stage_model(expected_active, definition).await {
             Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
                 RegistryAdminResult::ModelRevisionStaged { revision }
@@ -736,14 +744,23 @@ fn model_definition(
     model_id: String,
     revision: u64,
     draft: ModelDefinitionDraft,
-) -> ModelDefinition {
-    ModelDefinition {
+) -> Result<ModelDefinition, RegistryAdminError> {
+    let capabilities = canonicalize_model_capabilities(&draft.capabilities).map_err(|_| {
+        model_error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "model revision is invalid",
+            provider_id.clone(),
+            model_id.clone(),
+            Some(revision),
+        )
+    })?;
+    Ok(ModelDefinition {
         provider_id,
         model_id,
         revision,
         context_window: draft.context_window,
         max_output_tokens: draft.max_output_tokens,
-        capabilities: draft.capabilities.into_iter().collect(),
+        capabilities,
         lifecycle: match draft.lifecycle {
             ModelLifecycleDraft::Active {} => ModelLifecycle::Active,
             ModelLifecycleDraft::Deprecated { replacement } => {
@@ -751,7 +768,7 @@ fn model_definition(
             }
         },
         pricing: draft.pricing.map(model_pricing),
-    }
+    })
 }
 
 fn model_pricing(pricing: ModelPricingDraft) -> ModelPricing {
@@ -1791,6 +1808,84 @@ mod tests {
                     && error.provider_id.as_deref() == Some("alpha")
                     && error.model_id.as_deref() == Some("missing")
         ));
+    }
+
+    #[tokio::test]
+    async fn model_capability_ingress_is_canonical_and_fails_before_mutation() {
+        let registry = registry().await;
+        let service = RegistryAdminService::new(&registry);
+        let principal = admin();
+
+        let mut reasoning = model_draft(100_000, 1);
+        reasoning.capabilities = vec!["reasoning".into()];
+        let created = service
+            .dispatch(
+                Some(&principal),
+                RegistryAdminRequest::CreateModel {
+                    provider_id: "alpha".into(),
+                    model_id: "reasoning-model".into(),
+                    definition: reasoning,
+                },
+            )
+            .await;
+        assert!(matches!(
+            created,
+            RegistryAdminResponse::Success { result }
+                if matches!(result.as_ref(), RegistryAdminResult::ModelCreated { .. })
+        ));
+        assert_eq!(
+            registry
+                .load_active_model(("alpha", "reasoning-model"))
+                .await
+                .unwrap()
+                .unwrap()
+                .definition
+                .capabilities,
+            BTreeSet::from(["extended_thinking".into()])
+        );
+
+        for (index, capabilities) in [
+            vec!["telepathy"],
+            vec![" tool_use"],
+            vec!["TOOL_USE"],
+            vec!["tool_use", "tool_use"],
+            vec!["reasoning", "extended_thinking"],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let model_id = format!("invalid-capability-{index}");
+            let mut draft = model_draft(100_000, 1);
+            draft.capabilities = capabilities.iter().map(|value| (*value).into()).collect();
+            let rejected = service
+                .dispatch(
+                    Some(&principal),
+                    RegistryAdminRequest::CreateModel {
+                        provider_id: "alpha".into(),
+                        model_id: model_id.clone(),
+                        definition: draft,
+                    },
+                )
+                .await;
+            assert!(matches!(
+                rejected,
+                RegistryAdminResponse::Error { ref error }
+                    if error.code == RegistryAdminErrorCode::InvalidRequest
+            ));
+            let encoded = serde_json::to_string(&rejected).unwrap();
+            assert!(
+                capabilities
+                    .iter()
+                    .all(|capability| !encoded.contains(capability))
+            );
+            assert!(
+                registry
+                    .load_active_model(("alpha", &model_id))
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]
