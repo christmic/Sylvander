@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sylvander_protocol::SessionContext;
 use sylvander_protocol::types::{AgentId, SessionId, UserId};
 
@@ -49,6 +50,15 @@ const RESERVED_MEMORY_METADATA_KEYS: &[&str] = &[
     "updated_at",
     "user_id",
 ];
+
+const MEMORY_TRACE_DIGEST_DOMAIN: &[u8] = b"sylvander.memory.trace.v1\0";
+
+fn memory_trace_digest(trace_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(MEMORY_TRACE_DIGEST_DOMAIN);
+    hasher.update(trace_id.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
 
 /// Stable ownership domain for a memory record. Session state and user
 /// profiles are intentionally stored by their own services.
@@ -116,7 +126,10 @@ impl MemoryExecutionContext {
             agent_id: Some(session.identity.agent_id.clone()),
             session_id: Some(session.identity.session_id.clone()),
             authorized_workspace_ids: Vec::new(),
-            trace_id: session.request.trace_id.clone(),
+            // Trace identifiers cross a persistence boundary below this type.
+            // Keep correlation while ensuring provenance and audit records can
+            // never retain caller-controlled text, controls, or unbounded data.
+            trace_id: session.request.trace_id.as_deref().map(memory_trace_digest),
         }
     }
 
@@ -1220,14 +1233,21 @@ mod tests {
     }
 
     #[test]
-    fn runtime_context_has_read_only_identity_accessors() {
-        let session = session("alice", "a1", "s1").with_trace_id("trace");
+    fn runtime_context_hashes_untrusted_trace_identifiers() {
+        let raw_trace = format!("private\n\0{}", "x".repeat(128 * 1024));
+        let session = session("alice", "a1", "s1").with_trace_id(&raw_trace);
         let worker = MemoryExecutionContext::worker(&session);
         assert_eq!(worker.actor(), MemoryActorKind::Worker);
         assert_eq!(worker.user_id(), Some(&UserId::new("alice")));
         assert_eq!(worker.agent_id(), Some(&AgentId::new("a1")));
         assert_eq!(worker.session_id(), Some(&SessionId::new("s1")));
-        assert_eq!(worker.trace_id(), Some("trace"));
+        let trace = worker.trace_id().unwrap();
+        assert_eq!(trace, memory_trace_digest(&raw_trace));
+        assert_eq!(trace.len(), 71);
+        assert!(trace.starts_with("sha256:"));
+        assert!(trace[7..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!trace.contains("private"));
+        assert!(!trace.chars().any(char::is_control));
         assert!(worker.authorized_workspace_ids().is_empty());
         assert_eq!(
             worker.relationship_owner().unwrap(),
