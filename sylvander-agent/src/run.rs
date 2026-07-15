@@ -1949,6 +1949,13 @@ impl AgentRunInner {
         } else {
             None
         };
+        if let (Some(stored), Sender::User(sender)) = (&stored_session, &msg.sender)
+            && sender != &stored.metadata.user_id
+        {
+            return Err(AgentRunError::Configuration(
+                "session identity verification failed".into(),
+            ));
+        }
         let effective_config = stored_session
             .as_ref()
             .map(|session| {
@@ -3083,14 +3090,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prompt_integrity_failure_precedes_provider_and_durable_turn_writes() {
+    async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_writes() {
+        #[derive(Clone, Copy)]
         enum Tamper {
+            SenderIdentity,
             SystemHash,
             LayerHash,
             MissingManifest,
         }
 
         for tamper in [
+            Tamper::SenderIdentity,
             Tamper::SystemHash,
             Tamper::LayerHash,
             Tamper::MissingManifest,
@@ -3151,6 +3161,7 @@ mod tests {
             effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
             effective.prompt_manifest = Some(prompt_snapshot.manifest);
             match tamper {
+                Tamper::SenderIdentity => {}
                 Tamper::SystemHash => effective.system_prompt_sha256 = "tampered".into(),
                 Tamper::LayerHash => {
                     effective.prompt_manifest.as_mut().expect("manifest").layers[0].sha256 =
@@ -3164,15 +3175,23 @@ mod tests {
             let error = run
                 .handle_message(BusMessage::user_chat(
                     session_id.clone(),
-                    "user-1",
+                    if matches!(tamper, Tamper::SenderIdentity) {
+                        "different-user"
+                    } else {
+                        "user-1"
+                    },
                     "must not execute",
                 ))
                 .await
-                .expect_err("tampered prompt metadata must fail closed");
+                .expect_err("invalid session inputs must fail closed");
             let rendered = error.to_string();
             assert_eq!(
                 rendered,
-                "session configuration error: prompt integrity verification failed"
+                if matches!(tamper, Tamper::SenderIdentity) {
+                    "session configuration error: session identity verification failed"
+                } else {
+                    "session configuration error: prompt integrity verification failed"
+                }
             );
             assert!(!rendered.contains("private prompt sentinel"));
             assert!(provider.requests.lock().unwrap().is_empty());
