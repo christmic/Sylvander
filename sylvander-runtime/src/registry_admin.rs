@@ -1306,6 +1306,21 @@ mod tests {
         }
     }
 
+    fn model_draft(context_window: u32, input_price: u64) -> ModelDefinitionDraft {
+        ModelDefinitionDraft {
+            context_window,
+            max_output_tokens: 4096,
+            capabilities: vec!["tool_use".into()],
+            lifecycle: ModelLifecycleDraft::Active {},
+            pricing: Some(ModelPricingDraft {
+                input_usd_micros_per_million: input_price,
+                output_usd_micros_per_million: input_price + 1,
+                cache_write_usd_micros_per_million: None,
+                cache_read_usd_micros_per_million: None,
+            }),
+        }
+    }
+
     async fn registry() -> AgentRegistry {
         let registry = AgentRegistry::open(":memory:").await.unwrap();
         registry
@@ -1652,6 +1667,165 @@ mod tests {
                 if error.code == RegistryAdminErrorCode::UnknownModel
                     && error.provider_id.as_deref() == Some("alpha")
                     && error.model_id.as_deref() == Some("missing")
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_lifecycle_is_redacted_and_maps_revision_conflicts() {
+        let registry = registry().await;
+        let service = RegistryAdminService::new(&registry);
+        let principal = admin();
+        let dispatch = |request| service.dispatch(Some(&principal), request);
+
+        let created = dispatch(RegistryAdminRequest::CreateModel {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            definition: model_draft(100_000, 900_001),
+        })
+        .await;
+        assert!(matches!(
+            created,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ModelCreated { revision }
+                    if revision.active && revision.definition.revision == 1)
+        ));
+        let created_wire = serde_json::to_string(&created).unwrap();
+        assert!(!created_wire.contains("900001"));
+        assert!(!created_wire.contains("input_usd_micros_per_million"));
+
+        let duplicate = dispatch(RegistryAdminRequest::CreateModel {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            definition: model_draft(200_000, 1),
+        })
+        .await;
+        assert!(matches!(
+            duplicate,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::ModelAlreadyExists
+        ));
+
+        let staged = dispatch(RegistryAdminRequest::StageModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            revision: 2,
+            expected_active_revision: 1,
+            definition: model_draft(200_000, 900_002),
+        })
+        .await;
+        assert!(matches!(
+            staged,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ModelRevisionStaged { revision }
+                    if !revision.active && revision.definition.revision == 2)
+        ));
+        let activated = dispatch(RegistryAdminRequest::ActivateModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            revision: 2,
+            expected_active_revision: 1,
+        })
+        .await;
+        assert!(matches!(
+            activated,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ModelRevisionActivated { revision }
+                    if revision.active && revision.definition.revision == 2)
+        ));
+
+        let _ = dispatch(RegistryAdminRequest::StageModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            revision: 3,
+            expected_active_revision: 2,
+            definition: model_draft(300_000, 900_003),
+        })
+        .await;
+        let collision = dispatch(RegistryAdminRequest::StageModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            revision: 3,
+            expected_active_revision: 2,
+            definition: model_draft(333_000, 3),
+        })
+        .await;
+        assert!(matches!(
+            collision,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::RevisionCollision
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::RevisionCollision { revision: 3 }
+                    ))
+        ));
+        let nonsequential = dispatch(RegistryAdminRequest::StageModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            revision: 5,
+            expected_active_revision: 2,
+            definition: model_draft(500_000, 5),
+        })
+        .await;
+        assert!(matches!(
+            nonsequential,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::NonSequentialRevision
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::NonSequentialRevision {
+                            expected_revision: 4,
+                            actual_revision: 5,
+                        }
+                    ))
+        ));
+        let invalid_rollback = dispatch(RegistryAdminRequest::RollbackModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            target_revision: 3,
+            expected_active_revision: 2,
+        })
+        .await;
+        assert!(matches!(
+            invalid_rollback,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::InvalidRevisionRollback
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::InvalidRevisionRollback {
+                            target_revision: 3,
+                            actual_active_revision: 2,
+                        }
+                    ))
+        ));
+
+        let conflict = dispatch(RegistryAdminRequest::RollbackModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            target_revision: 1,
+            expected_active_revision: 1,
+        })
+        .await;
+        assert!(matches!(
+            conflict,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::ActiveRevisionConflict
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::ActiveRevisionConflict {
+                            expected_active_revision: 1,
+                            actual_active_revision: 2,
+                        }
+                    ))
+        ));
+
+        let rolled_back = dispatch(RegistryAdminRequest::RollbackModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "lifecycle".into(),
+            target_revision: 1,
+            expected_active_revision: 2,
+        })
+        .await;
+        assert!(matches!(
+            rolled_back,
+            RegistryAdminResponse::Success { result }
+                if matches!(result.as_ref(), RegistryAdminResult::ModelRevisionRolledBack { revision }
+                    if revision.active && revision.definition.revision == 1)
         ));
     }
 
