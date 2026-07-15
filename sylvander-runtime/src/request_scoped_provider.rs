@@ -17,6 +17,7 @@ use crate::agent_registry::AgentRegistry;
 use crate::credential_registry::{
     CredentialRegistryError, CredentialSecretResolver, ResolvedCredential,
 };
+use crate::registry_domain::{ProviderDefinition, StoredRevision};
 
 pub(crate) type CredentialLeaseFuture<'a> = Pin<
     Box<
@@ -148,6 +149,57 @@ impl std::fmt::Debug for RequestScopedAnthropicProvider {
             .field("provider_revision", &self.provider_revision)
             .finish_non_exhaustive()
     }
+}
+
+/// Builds a provider adapter from an already pinned registry revision.
+/// Implementations must not consult mutable provider or Agent heads.
+pub(crate) trait ProviderAdapterFactory: Send + Sync {
+    fn create(
+        &self,
+        provider: StoredRevision<ProviderDefinition>,
+        credentials: Arc<dyn ActiveCredentialSource>,
+    ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct AnthropicProviderFactory;
+
+impl ProviderAdapterFactory for AnthropicProviderFactory {
+    fn create(
+        &self,
+        provider: StoredRevision<ProviderDefinition>,
+        credentials: Arc<dyn ActiveCredentialSource>,
+    ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
+        let definition = provider.definition;
+        if definition.kind != "anthropic_compatible" {
+            return Err(ProviderFactoryError::UnsupportedKind);
+        }
+        definition
+            .validate()
+            .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
+        AnthropicClient::builder()
+            .api_key("factory-validation-only")
+            .base_url(&definition.base_url)
+            .build()
+            .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
+
+        Ok(Arc::new(RequestScopedAnthropicProvider::new(
+            definition.id,
+            definition.revision,
+            definition.base_url,
+            definition.credential_binding_id,
+            credentials,
+        )))
+    }
+}
+
+/// Stable, content-free factory failures safe for protocol and log surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ProviderFactoryError {
+    #[error("provider kind is unsupported")]
+    UnsupportedKind,
+    #[error("provider definition is invalid")]
+    InvalidDefinition,
 }
 
 impl ModelProvider for RequestScopedAnthropicProvider {
