@@ -216,10 +216,10 @@ fn parse_launch_options(
         return Err("use either --socket or the positional socket path, not both".into());
     }
     let session_id = session.or(env_session).filter(|value| !value.is_empty());
-    if let Some(value) = session_id.as_deref() {
-        if value.len() > 256 || value.chars().any(char::is_control) {
-            return Err("session id must be at most 256 characters without controls".into());
-        }
+    if let Some(value) = session_id.as_deref()
+        && (value.len() > 256 || value.chars().any(char::is_control))
+    {
+        return Err("session id must be at most 256 characters without controls".into());
     }
 
     Ok(LaunchOptions {
