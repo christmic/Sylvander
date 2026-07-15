@@ -521,6 +521,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
             id: "claude-sonnet".into(),
             provider: "anthropic-compatible".into(),
             capabilities: 0,
+            capability_names: Vec::new(),
             reasoning_efforts: vec![
                 sylvander_protocol::ReasoningEffort::Off,
                 sylvander_protocol::ReasoningEffort::Low,
@@ -539,6 +540,7 @@ fn model_picker_shows_server_truth_and_reasoning_control() {
             id: "fast-code".into(),
             provider: "anthropic-compatible".into(),
             capabilities: 0,
+            capability_names: Vec::new(),
             reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
             lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                 replacement: Some("claude-sonnet".into()),

@@ -652,6 +652,7 @@ mod tests {
                 id: "claude-test".into(),
                 provider: "test".into(),
                 capabilities: 0b10001,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Medium],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,

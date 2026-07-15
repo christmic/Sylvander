@@ -275,6 +275,7 @@ mod tests {
                 id: "plain".into(),
                 provider: "test".into(),
                 capabilities: 0,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -283,6 +284,7 @@ mod tests {
                 id: "thinking".into(),
                 provider: "test".into(),
                 capabilities: 0,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![
                     sylvander_protocol::ReasoningEffort::Off,
                     sylvander_protocol::ReasoningEffort::Low,

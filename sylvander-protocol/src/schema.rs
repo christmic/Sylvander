@@ -66,6 +66,12 @@ mod tests {
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }
+        for capability_contract in ["capability_names", "ModelCapability", "tool_use"] {
+            assert!(
+                encoded.contains(capability_contract),
+                "schema omitted {capability_contract}"
+            );
+        }
     }
 
     #[test]

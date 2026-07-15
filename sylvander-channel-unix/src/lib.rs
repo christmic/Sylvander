@@ -1862,6 +1862,7 @@ mod tests {
                 id: "test-model".into(),
                 provider: "test".into(),
                 capabilities: 0b101,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -2454,7 +2455,7 @@ mod tests {
                 automatic: false,
                 reason,
                 ..
-            }) if reason.contains("unknown session")
+            }) if reason == "session is unavailable for compaction"
         ));
     }
 
