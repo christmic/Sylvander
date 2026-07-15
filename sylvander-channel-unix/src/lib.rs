@@ -45,7 +45,7 @@ use sylvander_agent::bus::{
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
-    unavailable_agent_admin_response,
+    unavailable_agent_admin_response, unavailable_registry_admin_response,
 };
 use sylvander_protocol::{
     SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,
@@ -1003,6 +1003,14 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             };
             let _ = tx.send(ServerMsg::AgentAdmin { response });
         }
+        ClientMsg::RegistryAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.registry_admin(boundary, request).await
+            } else {
+                unavailable_registry_admin_response()
+            };
+            let _ = tx.send(ServerMsg::RegistryAdmin { response });
+        }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
                 principal_id,
@@ -1953,6 +1961,49 @@ mod tests {
             }
         ));
         assert!(!json.contains("private-agent"));
+        assert!(!json.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_without_ui_service_returns_content_free_error() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
+            readiness: None,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::RegistryAdmin {
+                request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                    provider_id: "private-provider".into(),
+                    revision: 42,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+            None,
+        )
+        .await;
+
+        let response = rx.recv().await.expect("registry admin response");
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(matches!(
+            response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Error {
+                    error: sylvander_protocol::RegistryAdminError {
+                        code: sylvander_protocol::RegistryAdminErrorCode::Unauthorized,
+                        provider_id: None,
+                        revision: None,
+                        ..
+                    }
+                }
+            }
+        ));
+        assert!(!json.contains("private-provider"));
         assert!(!json.contains("42"));
     }
 

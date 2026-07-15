@@ -1028,11 +1028,12 @@ impl RuntimeUiService {
         if matches!(
             message,
             sylvander_protocol::UiClientMessage::AgentAdmin { .. }
+                | sylvander_protocol::UiClientMessage::RegistryAdmin { .. }
         ) && !is_agent_administrator(boundary.principal.as_ref())
         {
             return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary,
-                "agent_admin",
+                ui_operation(message),
             ));
         }
         if let sylvander_protocol::UiClientMessage::CreateSession { request } = message {
@@ -1321,6 +1322,7 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::UpdateSessionConfig { .. } => "update_session_config",
         Message::SubmitFeedback { .. } => "submit_feedback",
         Message::AgentAdmin { .. } => "agent_admin",
+        Message::RegistryAdmin { .. } => "registry_admin",
         Message::ListSessions => "list_sessions",
         Message::LoadSession { .. } => "load_session",
         Message::ReattachSession { .. } => "reattach_session",
@@ -2974,6 +2976,28 @@ model_name = "model-a"
         )
         .await
         .expect("administrators may reach the Agent administration service");
+        let registry_message = sylvander_protocol::UiClientMessage::RegistryAdmin {
+            request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                provider_id: "primary".into(),
+                revision: 1,
+            },
+        };
+        assert!(
+            sylvander_channel::UiService::authorize_message(
+                runtime.ui_service.as_ref(),
+                &owner,
+                &registry_message,
+            )
+            .await
+            .is_err()
+        );
+        sylvander_channel::UiService::authorize_message(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            &registry_message,
+        )
+        .await
+        .expect("administrators may reach the registry administration seam");
         assert!(
             evidence
                 .authorization_denials(20)
