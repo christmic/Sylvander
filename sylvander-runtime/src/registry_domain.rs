@@ -33,6 +33,114 @@ pub(crate) struct ModelDefinition {
     pub pricing: Option<ModelPricing>,
 }
 
+/// Capability vocabulary persisted by the registry and consumed by adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum CanonicalModelCapability {
+    ExtendedThinking,
+    PromptCaching,
+    StructuredOutput,
+    ToolUse,
+    Vision,
+    DocumentInput,
+}
+
+impl CanonicalModelCapability {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExtendedThinking => "extended_thinking",
+            Self::PromptCaching => "prompt_caching",
+            Self::StructuredOutput => "structured_output",
+            Self::ToolUse => "tool_use",
+            Self::Vision => "vision",
+            Self::DocumentInput => "document_input",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "extended_thinking" | "reasoning" => Some(Self::ExtendedThinking),
+            "prompt_caching" => Some(Self::PromptCaching),
+            "structured_output" => Some(Self::StructuredOutput),
+            "tool_use" => Some(Self::ToolUse),
+            "vision" => Some(Self::Vision),
+            "document_input" => Some(Self::DocumentInput),
+            _ => None,
+        }
+    }
+}
+
+/// Parse capability input without silently repairing malformed identities.
+pub(crate) fn parse_model_capabilities<I, S>(
+    capabilities: I,
+) -> Result<BTreeSet<CanonicalModelCapability>, ModelCapabilityError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut parsed = BTreeSet::new();
+    for capability in capabilities {
+        let raw = capability.as_ref();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(ModelCapabilityError::Blank);
+        }
+        if raw != trimmed {
+            return Err(ModelCapabilityError::SurroundingWhitespace(raw.to_owned()));
+        }
+        let Some(capability) = CanonicalModelCapability::parse(trimmed) else {
+            if CanonicalModelCapability::parse(&trimmed.to_ascii_lowercase()).is_some() {
+                return Err(ModelCapabilityError::NotLowercase(raw.to_owned()));
+            }
+            return Err(ModelCapabilityError::Unknown(raw.to_owned()));
+        };
+        if !parsed.insert(capability) {
+            return Err(ModelCapabilityError::Duplicate(capability));
+        }
+    }
+    Ok(parsed)
+}
+
+/// Canonicalize ingress values for new persisted Model revisions.
+///
+/// The historical `reasoning` alias is accepted and emitted as
+/// `extended_thinking`. Callers validating an existing revision may discard
+/// this return value, preserving its original JSON and digest.
+pub(crate) fn canonicalize_model_capabilities<I, S>(
+    capabilities: I,
+) -> Result<BTreeSet<String>, ModelCapabilityError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    parse_model_capabilities(capabilities).map(|parsed| {
+        parsed
+            .into_iter()
+            .map(|capability| capability.as_str().to_owned())
+            .collect()
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ModelCapabilityError {
+    #[error("model capability must not be blank")]
+    Blank,
+    #[error("model capability `{0}` has surrounding whitespace")]
+    SurroundingWhitespace(String),
+    #[error("model capability `{0}` must use lowercase canonical spelling")]
+    NotLowercase(String),
+    #[error("unknown model capability `{0}`")]
+    Unknown(String),
+    #[error("duplicate model capability `{0}`")]
+    Duplicate(CanonicalModelCapability),
+}
+
+impl std::fmt::Display for CanonicalModelCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CredentialBindingRevision {
@@ -100,6 +208,9 @@ impl ModelDefinition {
                 "model token limits must be positive".into(),
             ));
         }
+        parse_model_capabilities(&self.capabilities).map_err(|error| {
+            AgentRegistryError::Invalid(format!("invalid model capabilities: {error}"))
+        })?;
         Ok(())
     }
 }
@@ -356,4 +467,122 @@ fn decode_stored<T: DeserializeOwned + ValidateIdentity>(
         created_at,
         active,
     })
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    fn model(capabilities: impl IntoIterator<Item = &'static str>) -> ModelDefinition {
+        ModelDefinition {
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            revision: 1,
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: capabilities.into_iter().map(str::to_owned).collect(),
+            lifecycle: ModelLifecycle::Active,
+            pricing: None,
+        }
+    }
+
+    #[test]
+    fn parses_every_canonical_capability() {
+        let parsed = parse_model_capabilities([
+            "extended_thinking",
+            "prompt_caching",
+            "structured_output",
+            "tool_use",
+            "vision",
+            "document_input",
+        ])
+        .unwrap();
+        assert_eq!(parsed.len(), 6);
+        assert!(parsed.contains(&CanonicalModelCapability::ExtendedThinking));
+        assert!(parsed.contains(&CanonicalModelCapability::PromptCaching));
+        assert!(parsed.contains(&CanonicalModelCapability::StructuredOutput));
+        assert!(parsed.contains(&CanonicalModelCapability::ToolUse));
+        assert!(parsed.contains(&CanonicalModelCapability::Vision));
+        assert!(parsed.contains(&CanonicalModelCapability::DocumentInput));
+    }
+
+    #[test]
+    fn ingress_alias_is_canonicalized_deterministically() {
+        assert_eq!(
+            canonicalize_model_capabilities(["reasoning", "tool_use"]).unwrap(),
+            BTreeSet::from(["extended_thinking".into(), "tool_use".into()])
+        );
+        assert!(
+            canonicalize_model_capabilities(std::iter::empty::<&str>())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_blank_whitespace_and_case_variants() {
+        assert_eq!(
+            parse_model_capabilities([""]),
+            Err(ModelCapabilityError::Blank)
+        );
+        assert_eq!(
+            parse_model_capabilities(["   "]),
+            Err(ModelCapabilityError::Blank)
+        );
+        assert!(matches!(
+            parse_model_capabilities([" tool_use"]),
+            Err(ModelCapabilityError::SurroundingWhitespace(_))
+        ));
+        assert!(matches!(
+            parse_model_capabilities(["TOOL_USE"]),
+            Err(ModelCapabilityError::NotLowercase(_))
+        ));
+        assert!(matches!(
+            parse_model_capabilities(["telepathy"]),
+            Err(ModelCapabilityError::Unknown(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_raw_and_alias_semantic_duplicates() {
+        assert_eq!(
+            parse_model_capabilities(["tool_use", "tool_use"]),
+            Err(ModelCapabilityError::Duplicate(
+                CanonicalModelCapability::ToolUse
+            ))
+        );
+        assert_eq!(
+            parse_model_capabilities(["reasoning", "extended_thinking"]),
+            Err(ModelCapabilityError::Duplicate(
+                CanonicalModelCapability::ExtendedThinking
+            ))
+        );
+    }
+
+    #[test]
+    fn model_validation_accepts_historical_alias_without_rewriting_it() {
+        let definition = model(["reasoning"]);
+        definition.validate().unwrap();
+        assert_eq!(
+            definition.capabilities,
+            BTreeSet::from(["reasoning".into()])
+        );
+        let (json, _) = canonical_definition(&definition).unwrap();
+        assert!(json.contains("reasoning"));
+        assert!(!json.contains("extended_thinking"));
+    }
+
+    #[test]
+    fn model_validation_fails_closed_for_invalid_capability_state() {
+        for definition in [
+            model(["unknown"]),
+            model([" tool_use"]),
+            model(["reasoning", "extended_thinking"]),
+        ] {
+            assert!(matches!(
+                definition.validate(),
+                Err(AgentRegistryError::Invalid(_))
+            ));
+        }
+    }
 }
