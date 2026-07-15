@@ -2555,9 +2555,8 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use sylvander_agent::tools::{
-        MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryProvenanceSource,
-    };
+    use sylvander_agent::tools::memory::MemoryFilter;
+    use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2683,6 +2682,19 @@ id = "model-a"
             secret.display()
         ))
         .unwrap()
+    }
+
+    async fn attach_memory_session(runtime: &Runtime, agent: &str, user: &str) -> SessionId {
+        runtime
+            .configured_agent(&AgentId::new(agent))
+            .unwrap()
+            .run
+            .join_session(SessionMetadata {
+                workspace: PathBuf::from("/tmp"),
+                name: "memory-test".into(),
+                user_id: user.into(),
+            })
+            .await
     }
 
     #[test]
@@ -2998,25 +3010,23 @@ model_name = "shared"
         let directory = tempfile::tempdir().unwrap();
         let config = configured_memory_test_config(&directory, &["agent-a", "agent-b"]);
         let runtime = Runtime::boot_config(config).await.unwrap();
-        let agent_a = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "same-user",
-            "agent-a",
-            "session-a",
-        ));
-        let agent_b = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "same-user",
-            "agent-b",
-            "session-b",
-        ));
+        let session_a = attach_memory_session(&runtime, "agent-a", "same-user").await;
+        let session_b = attach_memory_session(&runtime, "agent-b", "same-user").await;
+        let agent_a = &runtime
+            .configured_agent(&AgentId::new("agent-a"))
+            .unwrap()
+            .run;
+        let agent_b = &runtime
+            .configured_agent(&AgentId::new("agent-b"))
+            .unwrap()
+            .run;
 
-        let entry_a = runtime
-            .memory_store
-            .append_relationship(&agent_a, MemoryAppend::new("agent A only"))
+        let entry_a = agent_a
+            .remember_entry(&session_a, MemoryAppend::new("agent A only"))
             .await
             .unwrap();
-        let entry_b = runtime
-            .memory_store
-            .append_relationship(&agent_b, MemoryAppend::new("agent B only"))
+        let entry_b = agent_b
+            .remember_entry(&session_b, MemoryAppend::new("agent B only"))
             .await
             .unwrap();
 
@@ -3033,41 +3043,40 @@ model_name = "shared"
                 .uses_memory_store(&runtime.memory_store)
         );
         assert_eq!(
-            runtime
-                .memory_store
-                .get_relationship(&agent_a, &entry_a.id)
+            agent_a
+                .recall(&session_a, "agent A only", MemoryFilter::default())
                 .await
                 .unwrap()
+                .first()
                 .unwrap()
                 .content,
             "agent A only"
         );
         assert_eq!(
-            runtime
-                .memory_store
-                .get_relationship(&agent_b, &entry_b.id)
+            agent_b
+                .recall(&session_b, "agent B only", MemoryFilter::default())
                 .await
                 .unwrap()
+                .first()
                 .unwrap()
                 .content,
             "agent B only"
         );
         assert!(
-            runtime
-                .memory_store
-                .get_relationship(&agent_a, &entry_b.id)
+            agent_a
+                .recall(&session_a, "agent B only", MemoryFilter::default())
                 .await
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
         assert!(
-            runtime
-                .memory_store
-                .get_relationship(&agent_b, &entry_a.id)
+            agent_b
+                .recall(&session_b, "agent A only", MemoryFilter::default())
                 .await
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
+        assert_ne!(entry_a.owner, entry_b.owner);
         runtime.shutdown().await.unwrap();
     }
 
@@ -3075,15 +3084,14 @@ model_name = "shared"
     async fn production_memory_preserves_revision_provenance_and_expiry_across_restart() {
         let directory = tempfile::tempdir().unwrap();
         let config = configured_memory_test_config(&directory, &["assistant"]);
-        let session =
-            sylvander_protocol::SessionContext::new("user-a", "assistant", "memory-session")
-                .with_trace_id("trace-before-restart");
-        let context = MemoryExecutionContext::worker(&session);
         let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let session_id = attach_memory_session(&runtime, "assistant", "user-a").await;
         let entry = runtime
-            .memory_store
-            .append_relationship(
-                &context,
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .remember_entry(
+                &session_id,
                 MemoryAppend::new("restart field fidelity").with_ttl(3600),
             )
             .await
@@ -3092,11 +3100,20 @@ model_name = "shared"
         drop(runtime);
 
         let restarted = Runtime::boot_config(config).await.unwrap();
+        let restarted_session = attach_memory_session(&restarted, "assistant", "user-a").await;
         let restored = restarted
-            .memory_store
-            .get_relationship(&context, &entry.id)
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .recall(
+                &restarted_session,
+                "restart field fidelity",
+                MemoryFilter::default(),
+            )
             .await
             .unwrap()
+            .into_iter()
+            .next()
             .unwrap();
         assert_eq!(restored.revision, 1);
         assert_eq!(restored.revision, entry.revision);
@@ -3108,15 +3125,8 @@ model_name = "shared"
             restored.provenance.agent_id.as_ref().unwrap().0,
             "assistant"
         );
-        assert_eq!(
-            restored.provenance.session_id.as_ref().unwrap().0,
-            "memory-session"
-        );
-        let trace = restored.provenance.trace_id.as_deref().unwrap();
-        assert_eq!(trace.len(), 71);
-        assert!(trace.starts_with("sha256:"));
-        assert!(trace[7..].bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert!(!trace.contains("trace-before-restart"));
+        assert_eq!(restored.provenance.session_id, entry.provenance.session_id);
+        assert_eq!(restored.provenance.trace_id, None);
         assert_eq!(restored.provenance.source, MemoryProvenanceSource::Runtime);
         assert!(restored.provenance.trusted);
         assert_eq!(restored.provenance, entry.provenance);
@@ -3164,14 +3174,12 @@ model_name = "model-a"
                 .unwrap()
                 .uses_memory_store(&runtime.memory_store)
         );
-        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "user-a",
-            "assistant",
-            "memory-session",
-        ));
-        let entry = runtime
-            .memory_store
-            .append_relationship(&context, MemoryAppend::new("durable shared memory"))
+        let session_id = attach_memory_session(&runtime, "assistant", "user-a").await;
+        runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .remember_entry(&session_id, MemoryAppend::new("durable shared memory"))
             .await
             .unwrap();
         provider.configured.write().await.clear();
@@ -3193,12 +3201,20 @@ model_name = "model-a"
         drop(runtime);
 
         let restarted = Runtime::boot_config(config).await.unwrap();
+        let restarted_session = attach_memory_session(&restarted, "assistant", "user-a").await;
         assert_eq!(
             restarted
-                .memory_store
-                .get_relationship(&context, &entry.id)
+                .configured_agent(&AgentId::new("assistant"))
+                .unwrap()
+                .run
+                .recall(
+                    &restarted_session,
+                    "durable shared memory",
+                    MemoryFilter::default(),
+                )
                 .await
                 .unwrap()
+                .first()
                 .unwrap()
                 .content,
             "durable shared memory"

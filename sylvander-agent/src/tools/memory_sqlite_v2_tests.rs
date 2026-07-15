@@ -6,14 +6,14 @@ use crate::tools::memory::{
 use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::worker(&SessionContext::new("alice", "agent-a", "session"))
+    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
 }
 
 #[tokio::test]
 async fn audit_is_content_safe_append_only_and_cas_consistent() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
     let raw_trace = format!("SECRET-trace\n\0{}", "x".repeat(128 * 1024));
-    let ctx = MemoryExecutionContext::worker(
+    let ctx = MemoryExecutionContext::application_worker(
         &SessionContext::new("alice", "agent-a", "session").with_trace_id(&raw_trace),
     );
     let sentinel = "SECRET-memory-payload";

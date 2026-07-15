@@ -120,7 +120,7 @@ mod tests {
 
     use crate::tool_context::ToolContext;
     fn ctx() -> ToolContext {
-        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        ToolContext::application(sylvander_protocol::SessionContext::new("u", "a", "s"))
             .with_capability(crate::tool_context::Cap::Read)
             .with_capability(crate::tool_context::Cap::Write)
             .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -247,5 +247,33 @@ mod tests {
             .await
             .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn caller_built_tool_context_cannot_forge_memory_authority() {
+        let store = test_store();
+        let tool = MemoryWriteTool::new(store.clone());
+        let forged = ToolContext::new(sylvander_protocol::SessionContext::new(
+            "victim", "agent", "session",
+        ))
+        .with_capability(crate::tool_context::Cap::MemoryWrite);
+
+        let error = tool
+            .execute(&forged, json!({"content": "forged trusted memory"}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("memory access denied"));
+
+        assert!(
+            store
+                .search_relationship(
+                    ctx().memory_context(),
+                    "forged trusted memory",
+                    crate::tools::memory::MemoryFilter::default(),
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -6,7 +6,7 @@ use crate::tools::memory::{
 use sylvander_protocol::SessionContext;
 
 fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
-    MemoryExecutionContext::worker(&SessionContext::new(user, agent, "session"))
+    MemoryExecutionContext::application_worker(&SessionContext::new(user, agent, "session"))
 }
 
 #[tokio::test]
