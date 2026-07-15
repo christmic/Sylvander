@@ -222,3 +222,33 @@ async fn v3_identity_prevents_parallel_v2_snapshot() {
         }) if agent_id == "assistant"
     ));
 }
+
+#[tokio::test]
+async fn versioned_loader_lifts_a_valid_legacy_snapshot() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install(&registry).await;
+    registry
+        .stage_agent_snapshot(AgentSnapshotSelection {
+            agent_id: "assistant".into(),
+            agent_revision: 1,
+            provider_id: "alpha".into(),
+            allowed_model_ids: BTreeSet::from(["shared".into()]),
+            default_model_id: "shared".into(),
+        })
+        .await
+        .unwrap();
+
+    let lifted = registry
+        .load_agent_snapshot_versioned("assistant", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(lifted.default_model, model("alpha", "shared"));
+    assert_eq!(lifted.providers, [("alpha".into(), 1)].into());
+    assert_eq!(lifted.models.len(), 1);
+    assert_eq!(lifted.models[0].model, model("alpha", "shared"));
+    assert_eq!(lifted.models[0].revision, 1);
+}
