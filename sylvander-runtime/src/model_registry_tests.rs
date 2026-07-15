@@ -79,12 +79,7 @@ async fn install_providers(registry: &AgentRegistry) {
         .unwrap();
 }
 
-fn assert_one_conflict(
-    results: (
-        Result<(), ModelRegistryError>,
-        Result<(), ModelRegistryError>,
-    ),
-) {
+fn assert_one_conflict<T>(results: (Result<T, ModelRegistryError>, Result<T, ModelRegistryError>)) {
     let values = [results.0, results.1];
     assert_eq!(values.iter().filter(|result| result.is_ok()).count(), 1);
     assert_eq!(
@@ -112,6 +107,152 @@ async fn model_row_counts(registry: &AgentRegistry) -> (i64, i64) {
         })
         .await
         .unwrap()
+}
+
+async fn model_head(registry: &AgentRegistry) -> u64 {
+    let revision = registry
+        .run(|connection| {
+            connection
+                .query_row(
+                    "SELECT active_revision FROM model_registry_heads \
+                     WHERE provider_id='alpha' AND model_id='shared'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    u64::try_from(revision).unwrap()
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ModelTamper {
+    Json,
+    Digest,
+    ProviderIdentity,
+    ModelIdentity,
+    RevisionIdentity,
+}
+
+async fn tamper_model(registry: &AgentRegistry, revision: u64, tamper: ModelTamper) {
+    let revision = i64::try_from(revision).unwrap();
+    registry
+        .run(move |connection| {
+            if matches!(tamper, ModelTamper::Digest) {
+                connection
+                    .execute(
+                        "UPDATE model_definitions SET digest='tampered' \
+                         WHERE provider_id='alpha' AND model_id='shared' AND revision=?1",
+                        [revision],
+                    )
+                    .map_err(AgentRegistryError::sqlite)?;
+                return Ok(());
+            }
+            let json: String = connection
+                .query_row(
+                    "SELECT definition_json FROM model_definitions \
+                     WHERE provider_id='alpha' AND model_id='shared' AND revision=?1",
+                    [revision],
+                    |row| row.get(0),
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            if matches!(tamper, ModelTamper::Json) {
+                connection
+                    .execute(
+                        "UPDATE model_definitions SET definition_json=?1 \
+                         WHERE provider_id='alpha' AND model_id='shared' AND revision=?2",
+                        params![format!(" {json}"), revision],
+                    )
+                    .map_err(AgentRegistryError::sqlite)?;
+                return Ok(());
+            }
+            let mut definition: ModelDefinition =
+                serde_json::from_str(&json).map_err(AgentRegistryError::serde)?;
+            match tamper {
+                ModelTamper::ProviderIdentity => definition.provider_id = "beta".into(),
+                ModelTamper::ModelIdentity => definition.model_id = "other".into(),
+                ModelTamper::RevisionIdentity => definition.revision += 1,
+                ModelTamper::Json | ModelTamper::Digest => unreachable!(),
+            }
+            connection
+                .execute(
+                    "UPDATE model_definitions SET definition_json=?1 \
+                     WHERE provider_id='alpha' AND model_id='shared' AND revision=?2",
+                    params![
+                        serde_json::to_string(&definition).map_err(AgentRegistryError::serde)?,
+                        revision
+                    ],
+                )
+                .map_err(AgentRegistryError::sqlite)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ModelMutation {
+    Stage,
+    Activate,
+    Rollback,
+}
+
+#[tokio::test]
+async fn lifecycle_mutations_verify_complete_model_rows_before_moving_head() {
+    for mutation in [
+        ModelMutation::Stage,
+        ModelMutation::Activate,
+        ModelMutation::Rollback,
+    ] {
+        for tamper in [
+            ModelTamper::Json,
+            ModelTamper::Digest,
+            ModelTamper::ProviderIdentity,
+            ModelTamper::ModelIdentity,
+            ModelTamper::RevisionIdentity,
+        ] {
+            let directory = tempdir().unwrap();
+            let registry =
+                AgentRegistry::open(directory.path().join(format!("{mutation:?}-{tamper:?}.db")))
+                    .await
+                    .unwrap();
+            install_providers(&registry).await;
+            registry.seed_model(model("alpha", 1, 100)).await.unwrap();
+            registry
+                .stage_model(1, model("alpha", 2, 200))
+                .await
+                .unwrap();
+            let (target, expected) = match mutation {
+                ModelMutation::Stage | ModelMutation::Activate => (2, 1),
+                ModelMutation::Rollback => {
+                    registry
+                        .activate_model(("alpha", "shared"), 2, 1)
+                        .await
+                        .unwrap();
+                    (1, 2)
+                }
+            };
+            tamper_model(&registry, target, tamper).await;
+            let before = model_head(&registry).await;
+            let result = match mutation {
+                ModelMutation::Stage => registry
+                    .stage_model(expected, model("alpha", target, 200))
+                    .await
+                    .map(|_| ()),
+                ModelMutation::Activate => registry
+                    .activate_model(("alpha", "shared"), target, expected)
+                    .await
+                    .map(|_| ()),
+                ModelMutation::Rollback => registry
+                    .rollback_model(("alpha", "shared"), target, expected)
+                    .await
+                    .map(|_| ()),
+            };
+            assert!(result.is_err(), "{mutation:?} accepted {tamper:?}");
+            assert_eq!(model_head(&registry).await, before);
+        }
+    }
 }
 
 #[tokio::test]
@@ -252,10 +393,12 @@ async fn model_lifecycle_preserves_qualified_identity_and_provider_head() {
         .stage_model(1, model("alpha", 3, 130))
         .await
         .unwrap();
-    registry
+    let activated = registry
         .activate_model(("alpha", "shared"), 2, 1)
         .await
         .unwrap();
+    assert!(activated.active);
+    assert_eq!(activated.definition.revision, 2);
     assert!(matches!(
         registry.activate_model(("alpha", "shared"), 3, 1).await,
         Err(ModelRegistryError::Conflict {
@@ -288,10 +431,12 @@ async fn model_lifecycle_preserves_qualified_identity_and_provider_head() {
         [3, 2, 1]
     );
     assert_eq!(revisions.iter().filter(|item| item.active).count(), 1);
-    registry
+    let rolled_back = registry
         .rollback_model(("alpha", "shared"), 1, 2)
         .await
         .unwrap();
+    assert!(rolled_back.active);
+    assert_eq!(rolled_back.definition.revision, 1);
     assert!(matches!(
         registry.activate_model(("alpha", "shared"), 99, 1).await,
         Err(ModelRegistryError::UnknownRevision { revision: 99, .. })
