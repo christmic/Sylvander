@@ -164,6 +164,17 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
             .iter()
             .any(|error| error.contains("must not exceed max_ttl_days"))
     );
+
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    config.server.memory_maintenance.batch_size = 1_001;
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .errors
+            .iter()
+            .any(|error| error.contains("batch_size must be between 1 and 1000"))
+    );
 }
 
 #[test]
