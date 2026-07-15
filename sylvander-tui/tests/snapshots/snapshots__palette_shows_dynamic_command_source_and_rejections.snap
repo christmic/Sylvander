@@ -16,11 +16,11 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ /review                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 › /review          Ask Sylvander to review workspace changes                                        
+  /preview         requires a trusted desktop host                                                  
   /security-review Review a workspace scope · agent configuration                                   
   /external-review external source is not trusted for commands                                      
   /status          conflicts with a built-in command or alias                                       
