@@ -96,6 +96,107 @@ fn assert_one_conflict(
     );
 }
 
+async fn model_row_counts(registry: &AgentRegistry) -> (i64, i64) {
+    registry
+        .run(|connection| {
+            connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM model_definitions \
+                             WHERE provider_id='alpha' AND model_id='shared'), \
+                            (SELECT COUNT(*) FROM model_registry_heads \
+                             WHERE provider_id='alpha' AND model_id='shared')",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn strict_model_create_requires_revision_one_and_never_reuses_an_identity() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_providers(&registry).await;
+    assert!(matches!(
+        registry.create_model(model("alpha", 2, 200)).await,
+        Err(ModelRegistryError::NonSequential {
+            expected: 1,
+            actual: 2,
+            ..
+        })
+    ));
+
+    let created = registry.create_model(model("alpha", 1, 100)).await.unwrap();
+    assert!(created.active);
+    assert_eq!(created.definition.revision, 1);
+    for context_window in [100, 999] {
+        assert!(matches!(
+            registry
+                .create_model(model("alpha", 1, context_window))
+                .await,
+            Err(ModelRegistryError::AlreadyExists { identity })
+                if identity == "alpha/shared"
+        ));
+    }
+    let stored = registry
+        .load_active_model(("alpha", "shared"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.definition.context_window, 100);
+    assert_eq!(model_row_counts(&registry).await, (1, 1));
+}
+
+#[tokio::test]
+async fn strict_model_create_fails_closed_for_definition_only_or_head_only_state() {
+    let directory = tempdir().unwrap();
+    let definition_only = AgentRegistry::open(directory.path().join("definition-only.db"))
+        .await
+        .unwrap();
+    install_providers(&definition_only).await;
+    definition_only
+        .seed_model(model("alpha", 1, 100))
+        .await
+        .unwrap();
+    definition_only
+        .run(|connection| {
+            connection
+                .execute("DELETE FROM model_registry_heads", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        definition_only.create_model(model("alpha", 1, 999)).await,
+        Err(ModelRegistryError::AlreadyExists { .. })
+    ));
+    assert_eq!(model_row_counts(&definition_only).await, (1, 0));
+
+    let head_only = AgentRegistry::open(directory.path().join("head-only.db"))
+        .await
+        .unwrap();
+    install_providers(&head_only).await;
+    head_only.seed_model(model("alpha", 1, 100)).await.unwrap();
+    head_only
+        .run(|connection| {
+            connection
+                .execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM model_definitions;")
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        head_only.create_model(model("alpha", 1, 999)).await,
+        Err(ModelRegistryError::AlreadyExists { .. })
+    ));
+    assert_eq!(model_row_counts(&head_only).await, (0, 1));
+}
+
 #[tokio::test]
 async fn model_lifecycle_preserves_qualified_identity_and_provider_head() {
     let directory = tempdir().unwrap();
