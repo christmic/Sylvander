@@ -173,7 +173,7 @@ impl AgentRegistry {
     }
 }
 
-fn load_snapshot(
+pub(crate) fn load_snapshot(
     connection: &Connection,
     agent_id: &str,
     revision: i64,
