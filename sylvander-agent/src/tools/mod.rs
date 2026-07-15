@@ -7,6 +7,7 @@ pub mod background_task;
 pub mod edit;
 pub mod memory;
 pub mod memory_read;
+pub mod memory_sqlite;
 pub mod memory_write;
 pub mod plan;
 pub mod read;
@@ -21,6 +22,7 @@ pub use memory::{
     MemoryScope, MemoryStore, MemoryStoreError,
 };
 pub use memory_read::MemoryReadTool;
+pub use memory_sqlite::SqliteMemoryStore;
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
 pub use read::ReadTool;

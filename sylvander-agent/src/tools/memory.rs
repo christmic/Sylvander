@@ -483,7 +483,7 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 }
 
-fn validate_entry(entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
+pub(super) fn validate_entry(entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
     if entry.id.is_empty()
         || entry.id.len() > 128
         || entry.content.is_empty()
@@ -503,7 +503,7 @@ fn validate_entry(entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
 /// Two memories "belong to" the same identity if user + agent
 /// match. (Session id is intentionally excluded — memories persist
 /// across sessions by design.)
-fn same_owner(owner: &MemoryOwner, ctx: &SessionContext) -> bool {
+pub(super) fn same_owner(owner: &MemoryOwner, ctx: &SessionContext) -> bool {
     owner == &MemoryOwner::relationship(ctx)
 }
 

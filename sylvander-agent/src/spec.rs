@@ -140,7 +140,7 @@ pub struct UiCommandConfig {
 impl MemoryStoreConfig {
     /// Resolve this config into an actual [`MemoryStore`] implementation.
     ///
-    /// Currently supports `"in_memory"`. `"sqlite"` is planned.
+    /// Supports `"in_memory"` and `"sqlite"`.
     ///
     /// # Errors
     /// Returns an error for unknown store types.
@@ -153,6 +153,9 @@ impl MemoryStoreConfig {
         match self.store_type.as_str() {
             "in_memory" => Ok(std::sync::Arc::new(
                 crate::tools::memory::InMemoryMemoryStore::new(),
+            )),
+            "sqlite" => Ok(std::sync::Arc::new(
+                crate::tools::memory_sqlite::SqliteMemoryStore::open(&self.path)?,
             )),
             other => Err(crate::tools::memory::MemoryStoreError::Store(format!(
                 "unknown memory store type: {other}"
