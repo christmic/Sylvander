@@ -44,11 +44,22 @@ final class SylvanderWorkspaceController: BaseTerminalController {
 
         self.sessionStore.$selectedSessionID
             .removeDuplicates()
-            .compactMap { $0 }
             .sink { [weak self] sessionID in
                 self?.preview = nil
                 self?.changesWorkspace = nil
-                self?.activateSession(sessionID)
+                if let sessionID {
+                    self?.activateSession(sessionID)
+                } else {
+                    self?.deactivateSessions()
+                }
+            }
+            .store(in: &cancellables)
+
+        self.sessionStore.$sessions
+            .map { Set($0.map(\.id)) }
+            .removeDuplicates()
+            .sink { [weak self] sessionIDs in
+                self?.reclaimSessions(notIn: sessionIDs)
             }
             .store(in: &cancellables)
     }
@@ -102,9 +113,11 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         guard let session = sessionStore.sessions.first(where: { $0.id == sessionID }) else { return }
 
         let surface: Ghostty.SurfaceView
-        if let existing = sessionSurfaces[sessionID] {
+        if let existing = sessionSurfaces[sessionID], !existing.processExited {
             surface = existing
         } else {
+            sessionSurfaces[sessionID] = nil
+            hostBroker?.unregister(sessionID: sessionID)
             guard let app = ghostty.app else { return }
             do {
                 let credential = try hostBroker?.register(
@@ -138,6 +151,26 @@ final class SylvanderWorkspaceController: BaseTerminalController {
             surfaceView.isWindowVisible = false
             surfaceView.focusDidChange(false)
         }
+    }
+
+    private func reclaimSessions(notIn validSessionIDs: Set<String>) {
+        let removedSessionIDs = Set(sessionSurfaces.keys).subtracting(validSessionIDs)
+        for sessionID in removedSessionIDs {
+            if let surface = sessionSurfaces.removeValue(forKey: sessionID) {
+                surface.isWindowVisible = false
+                surface.focusDidChange(false)
+            }
+            hostBroker?.unregister(sessionID: sessionID)
+        }
+        if let selectedSessionID = sessionStore.selectedSessionID,
+           !validSessionIDs.contains(selectedSessionID) {
+            deactivateSessions()
+        }
+    }
+
+    private func deactivateSessions() {
+        focusedSurface = nil
+        surfaceTree = .init()
     }
 }
 
@@ -281,7 +314,7 @@ private struct SylvanderWorkspaceView: View {
         return switch controller.sessionStore.connectionState {
         case .connecting: "DISCOVERING SESSIONS"
         case .online: "NO ACTIVE SESSION"
-        case .offline: "SYLVANDER IS OFFLINE"
+        case .recovering: "RECONNECTING TO SYLVANDER"
         }
     }
 
@@ -292,8 +325,8 @@ private struct SylvanderWorkspaceView: View {
             "Negotiating the local desktop-host protocol."
         case .online:
             "Start a session from a channel or refresh after the server creates one."
-        case .offline(let message):
-            message
+        case .recovering(let message, let attempt):
+            "Attempt \(attempt) · \(message)"
         }
     }
 }
