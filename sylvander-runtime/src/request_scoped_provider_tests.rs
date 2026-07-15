@@ -126,22 +126,13 @@ fn provider(
     )
 }
 
-fn stored_provider(
-    revision: u64,
-    kind: &str,
-    base_url: String,
-) -> StoredRevision<ProviderDefinition> {
-    StoredRevision {
-        definition: ProviderDefinition {
-            id: "anthropic".into(),
-            revision,
-            kind: kind.into(),
-            base_url,
-            credential_binding_id: "provider:anthropic:api_key".into(),
-        },
-        digest: format!("digest-{revision}"),
-        created_at: 1,
-        active: true,
+fn stored_provider(revision: u64, kind: &str, base_url: String) -> ProviderDefinition {
+    ProviderDefinition {
+        id: "anthropic".into(),
+        revision,
+        kind: kind.into(),
+        base_url,
+        credential_binding_id: "provider:anthropic:api_key".into(),
     }
 }
 
