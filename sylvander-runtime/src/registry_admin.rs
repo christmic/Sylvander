@@ -19,6 +19,7 @@ use crate::provider_registry::ProviderRegistryError;
 use crate::registry_domain::{
     CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind, StoredRevision,
 };
+use crate::request_scoped_provider::AnthropicProviderFactory;
 
 pub(crate) struct RegistryAdminService<'a> {
     registry: &'a AgentRegistry,
@@ -192,6 +193,9 @@ impl<'a> RegistryAdminService<'a> {
         definition: ProviderDefinitionDraft,
     ) -> RegistryAdminResponse {
         let definition = provider_definition(provider_id.clone(), 1, definition);
+        if AnthropicProviderFactory::validate_definition(&definition).is_err() {
+            return invalid_provider_definition(provider_id, Some(1));
+        }
         match self.registry.create_provider(definition).await {
             Ok(stored) => success(RegistryAdminResult::ProviderCreated {
                 revision: redact_provider_revision(&stored),
@@ -208,6 +212,9 @@ impl<'a> RegistryAdminService<'a> {
         definition: ProviderDefinitionDraft,
     ) -> RegistryAdminResponse {
         let definition = provider_definition(provider_id.clone(), revision, definition);
+        if AnthropicProviderFactory::validate_definition(&definition).is_err() {
+            return invalid_provider_definition(provider_id, Some(revision));
+        }
         match self
             .registry
             .stage_provider(expected_active, definition)
@@ -226,6 +233,9 @@ impl<'a> RegistryAdminService<'a> {
         revision: u64,
         expected_active: u64,
     ) -> RegistryAdminResponse {
+        if let Err(response) = self.preflight_provider(&provider_id, revision).await {
+            return response;
+        }
         match self
             .registry
             .activate_provider(&provider_id, revision, expected_active)
@@ -244,6 +254,9 @@ impl<'a> RegistryAdminService<'a> {
         target: u64,
         expected_active: u64,
     ) -> RegistryAdminResponse {
+        if let Err(response) = self.preflight_provider(&provider_id, target).await {
+            return response;
+        }
         match self
             .registry
             .rollback_provider(&provider_id, target, expected_active)
@@ -254,6 +267,37 @@ impl<'a> RegistryAdminService<'a> {
             }),
             Err(source) => failure(map_provider_error(source, provider_id, Some(target))),
         }
+    }
+
+    async fn preflight_provider(
+        &self,
+        provider_id: &str,
+        revision: u64,
+    ) -> Result<(), RegistryAdminResponse> {
+        let stored = match self
+            .registry
+            .load_provider_revision(provider_id, revision)
+            .await
+        {
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                return Err(failure(error(
+                    RegistryAdminErrorCode::UnknownRevision,
+                    "provider revision is unknown",
+                    Some(provider_id.to_owned()),
+                    Some(revision),
+                )));
+            }
+            Err(source) => {
+                return Err(failure(map_registry_error(
+                    source,
+                    provider_id.to_owned(),
+                    Some(revision),
+                )));
+            }
+        };
+        AnthropicProviderFactory::validate_definition(&stored.definition)
+            .map_err(|_| invalid_provider_definition(provider_id.to_owned(), Some(revision)))
     }
 
     async fn list(
@@ -1197,6 +1241,18 @@ fn provider_error_details(
     }
 }
 
+fn invalid_provider_definition(
+    provider_id: String,
+    revision: Option<u64>,
+) -> RegistryAdminResponse {
+    failure(error(
+        RegistryAdminErrorCode::InvalidRequest,
+        "provider revision is not supported",
+        Some(provider_id),
+        revision,
+    ))
+}
+
 fn map_registry_error(
     source: AgentRegistryError,
     provider_id: String,
@@ -1552,6 +1608,73 @@ mod tests {
                         }
                     ))
         ));
+    }
+
+    #[tokio::test]
+    async fn provider_lifecycle_preflights_adapter_without_mutating_heads() {
+        let registry = registry().await;
+        let service = RegistryAdminService::new(&registry);
+        let principal = admin();
+        let invalid_url = "NOT_A_PROVIDER_URL_SECRET";
+        let rejected = service
+            .dispatch(
+                Some(&principal),
+                RegistryAdminRequest::CreateProvider {
+                    provider_id: "invalid".into(),
+                    definition: provider_draft(invalid_url),
+                },
+            )
+            .await;
+        assert!(matches!(
+            rejected,
+            RegistryAdminResponse::Error { ref error }
+                if error.code == RegistryAdminErrorCode::InvalidRequest
+        ));
+        assert!(
+            !serde_json::to_string(&rejected)
+                .unwrap()
+                .contains(invalid_url)
+        );
+        assert!(
+            registry
+                .load_active_provider("invalid")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let mut first = provider(1, "https://valid.invalid");
+        first.id = "legacy".into();
+        registry.create_provider(first).await.unwrap();
+        let mut unsupported = provider(2, "https://valid.invalid");
+        unsupported.id = "legacy".into();
+        unsupported.kind = "UNSUPPORTED_KIND_SECRET".into();
+        registry.stage_provider(1, unsupported).await.unwrap();
+        let rejected = service
+            .dispatch(
+                Some(&principal),
+                RegistryAdminRequest::ActivateProviderRevision {
+                    provider_id: "legacy".into(),
+                    revision: 2,
+                    expected_active_revision: 1,
+                },
+            )
+            .await;
+        assert!(matches!(
+            rejected,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::InvalidRequest
+        ));
+        assert_eq!(
+            registry
+                .load_active_provider("legacy")
+                .await
+                .unwrap()
+                .unwrap()
+                .definition
+                .revision,
+            1
+        );
     }
 
     #[tokio::test]
