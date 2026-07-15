@@ -325,6 +325,11 @@ impl DomainEvent {
 /// A side effect the main loop should perform after applying an event.
 #[derive(Debug, Clone)]
 pub enum Action {
+    HostPreview {
+        session_id: String,
+        kind: crate::host_bridge::PreviewKind,
+        target: String,
+    },
     /// Send a chat message to the server.
     SendChat {
         text: String,

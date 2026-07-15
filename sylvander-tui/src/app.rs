@@ -70,6 +70,8 @@ pub struct AppState {
     /// session-local: command ranking must not become another persistence or
     /// privacy surface.
     pub recent_commands: VecDeque<crate::command::CommandId>,
+    /// Set only when a desktop host supplied a complete local capability bridge.
+    pub host_preview_available: bool,
 
     /// Local cache of known sessions (newest first) — populated as
     /// `SessionCreated` events arrive. Survives reconnects so the user
@@ -158,6 +160,7 @@ impl AppState {
             queued_prompt_attachments: VecDeque::new(),
             tool_details_expanded: false,
             recent_commands: VecDeque::new(),
+            host_preview_available: false,
             sessions: Vec::new(),
             last_archived_session: None,
             modals: ModalStack::new(),
