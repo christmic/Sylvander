@@ -96,7 +96,9 @@ pub struct ModelDescriptor {
 ///
 /// Model ids are not globally unique. Persisted selections and new wire
 /// requests therefore use both fields as one indivisible identity.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSelection {
     pub provider_id: String,
