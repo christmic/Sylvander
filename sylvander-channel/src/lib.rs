@@ -141,6 +141,7 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
             binding_id_sha256: None,
             revision: None,
             generation: None,
+            details: None,
         },
     }
 }
