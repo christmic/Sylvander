@@ -37,6 +37,7 @@ use sylvander_llm_anthropic::api::types::{
 use sylvander_llm_core::{
     ModelEventStream, ModelInfo as ProviderModelInfo, ModelProvider, ModelRequest,
 };
+use sylvander_protocol::ModelSelection;
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
@@ -83,7 +84,14 @@ enum ModelBackend {
     Provider {
         provider: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
+        routing: ProviderRouting,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderRouting {
+    Single,
+    Qualified,
 }
 
 enum LoopModelStream {
@@ -128,6 +136,7 @@ pub struct AgentLoopBuilder {
     model: Option<ModelInfo>,
     provider: Option<Arc<dyn ModelProvider>>,
     provider_model: Option<ProviderModelInfo>,
+    provider_routing: Option<ProviderRouting>,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
     tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
@@ -148,6 +157,7 @@ impl Default for AgentLoopBuilder {
             model: None,
             provider: None,
             provider_model: None,
+            provider_routing: None,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             tools: ToolRegistry::new(),
             compression_pipeline: None,
@@ -170,6 +180,7 @@ impl std::fmt::Debug for AgentLoopBuilder {
             .field("model", &self.model)
             .field("provider_set", &self.provider.is_some())
             .field("provider_model", &self.provider_model)
+            .field("provider_routing", &self.provider_routing)
             .field("tools", &self.tools)
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
@@ -203,6 +214,20 @@ impl AgentLoopBuilder {
     #[must_use]
     pub fn provider(mut self, provider: Arc<dyn ModelProvider>) -> Self {
         self.provider = Some(provider);
+        self.provider_routing = Some(ProviderRouting::Single);
+        self
+    }
+
+    /// Set a provider-neutral router that accepts exact qualified models.
+    ///
+    /// Unlike [`Self::provider`], this explicitly permits a runtime model
+    /// selection to cross Provider boundaries. The router remains responsible
+    /// for enforcing its immutable qualified allowlist; the loop never falls
+    /// back to another route.
+    #[must_use]
+    pub fn qualified_router(mut self, router: Arc<dyn ModelProvider>) -> Self {
+        self.provider = Some(router);
+        self.provider_routing = Some(ProviderRouting::Qualified);
         self
     }
 
@@ -319,8 +344,18 @@ impl AgentLoopBuilder {
             let model = self
                 .provider_model
                 .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
+            let routing = self.provider_routing.ok_or_else(|| {
+                AgentLoopError::Builder("provider routing mode is required".into())
+            })?;
             let shadow = crate::provider_compat::model_metadata_from_core(&model);
-            (ModelBackend::Provider { provider, model }, shadow)
+            (
+                ModelBackend::Provider {
+                    provider,
+                    model,
+                    routing,
+                },
+                shadow,
+            )
         } else {
             let client = self
                 .client
@@ -1351,23 +1386,26 @@ impl AgentLoop {
                     super::compress::AgentLoopAutoCompactLlm::new(client.clone()),
                 )
             }
-            ModelBackend::Provider { provider, model } => {
-                super::compress::auto_compact_llm::BackendAutoCompactLlm::Provider(
-                    super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
-                        provider.clone(),
-                        model.clone(),
-                    ),
-                )
-            }
+            ModelBackend::Provider {
+                provider, model, ..
+            } => super::compress::auto_compact_llm::BackendAutoCompactLlm::Provider(
+                super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+                    provider.clone(),
+                    model.clone(),
+                ),
+            ),
         }
     }
 
-    /// Guard the temporary legacy runtime catalog until it carries qualified
-    /// provider models. A provider-backed loop must never update only its
-    /// metadata shadow and then send the request to a different backend model.
+    /// Apply one exact qualified model to an immutable turn snapshot.
+    ///
+    /// Single-Provider backends retain their original routing boundary.
+    /// Qualified routers may cross that boundary, but only when the selection,
+    /// exact provider metadata, and compatibility shadow identify the same
+    /// model. Neither mode performs fallback.
     pub(crate) fn apply_runtime_model(
         &mut self,
-        provider_id: &str,
+        selection: &ModelSelection,
         shadow: &ModelInfo,
         exact: Option<&ProviderModelInfo>,
     ) -> Result<(), AgentLoopError> {
@@ -1379,18 +1417,21 @@ impl AgentLoop {
                     ));
                 }
             }
-            ModelBackend::Provider { model, .. } => {
+            ModelBackend::Provider { model, routing, .. } => {
                 let exact = exact.ok_or_else(|| {
                     AgentLoopError::IncompatibleModel(
                         "provider-backed model selection lacks exact metadata".into(),
                     )
                 })?;
-                if model.reference.provider != provider_id
-                    || exact.reference.provider != provider_id
-                    || exact.reference.model != shadow.id
-                {
+                let exact_matches = exact.reference.provider == selection.provider_id
+                    && exact.reference.model == selection.model_id
+                    && shadow.id == selection.model_id;
+                let route_matches = *routing == ProviderRouting::Qualified
+                    || model.reference.provider == selection.provider_id;
+                if !exact_matches || !route_matches {
                     return Err(AgentLoopError::IncompatibleModel(format!(
-                        "model provider `{provider_id}` is not routed by this Agent"
+                        "model `{}/{}` is not routed by this Agent",
+                        selection.provider_id, selection.model_id
                     )));
                 }
                 *model = exact.clone();
@@ -1422,7 +1463,9 @@ impl AgentLoop {
                         retries: attempt,
                         source,
                     }),
-                ModelBackend::Provider { provider, model } => provider
+                ModelBackend::Provider {
+                    provider, model, ..
+                } => provider
                     .complete_stream(provider_request.clone().ok_or_else(|| {
                         AgentLoopError::Validation("provider request was not built".into())
                     })?)
@@ -1783,8 +1826,12 @@ mod tests {
     }
 
     fn test_model() -> ModelInfo {
+        shadow_model("test-model")
+    }
+
+    fn shadow_model(model_id: &str) -> ModelInfo {
         ModelInfo::builder()
-            .id("test-model")
+            .id(model_id)
             .context_window(200_000)
             .max_output_tokens(8192)
             .capability(ModelCapabilities::TOOL_USE)
@@ -1793,8 +1840,12 @@ mod tests {
     }
 
     fn provider_model() -> ProviderModelInfo {
+        provider_model_for("local", "test-model")
+    }
+
+    fn provider_model_for(provider_id: &str, model_id: &str) -> ProviderModelInfo {
         ProviderModelInfo {
-            reference: ModelRef::new("local", "test-model"),
+            reference: ModelRef::new(provider_id, model_id),
             context_window: 100_000,
             max_output_tokens: 4096,
             capabilities: ProviderCapabilities::TOOL_USE,
@@ -1843,6 +1894,102 @@ mod tests {
         assert!(!debug.contains("secret-provider-state"));
         let loop_ = builder.build().unwrap();
         assert_eq!(loop_.model.id, "test-model");
+        assert!(matches!(
+            &loop_.backend,
+            ModelBackend::Provider { model, routing, .. }
+                if model.reference == ModelRef::new("local", "test-model")
+                    && *routing == ProviderRouting::Single
+        ));
+    }
+
+    #[test]
+    fn single_provider_rejects_cross_provider_runtime_model() {
+        let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
+        let mut loop_ = AgentLoop::builder()
+            .provider(provider)
+            .provider_model(provider_model())
+            .build()
+            .unwrap();
+        let selection = ModelSelection {
+            provider_id: "remote".into(),
+            model_id: "model-b".into(),
+        };
+        let error = loop_
+            .apply_runtime_model(
+                &selection,
+                &shadow_model("model-b"),
+                Some(&provider_model_for("remote", "model-b")),
+            )
+            .unwrap_err();
+        assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
+        assert!(matches!(
+            &loop_.backend,
+            ModelBackend::Provider { model, routing, .. }
+                if model.reference == ModelRef::new("local", "test-model")
+                    && *routing == ProviderRouting::Single
+        ));
+    }
+
+    #[test]
+    fn qualified_router_accepts_cross_provider_runtime_model() {
+        let router: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
+        let mut loop_ = AgentLoop::builder()
+            .qualified_router(router)
+            .provider_model(provider_model())
+            .build()
+            .unwrap();
+        let selection = ModelSelection {
+            provider_id: "remote".into(),
+            model_id: "model-b".into(),
+        };
+        loop_
+            .apply_runtime_model(
+                &selection,
+                &shadow_model("model-b"),
+                Some(&provider_model_for("remote", "model-b")),
+            )
+            .unwrap();
+        assert_eq!(loop_.model.id, "model-b");
+        assert!(matches!(
+            &loop_.backend,
+            ModelBackend::Provider { model, routing, .. }
+                if model.reference == ModelRef::new("remote", "model-b")
+                    && *routing == ProviderRouting::Qualified
+        ));
+    }
+
+    #[test]
+    fn qualified_router_rejects_any_runtime_identity_mismatch() {
+        let router: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
+        let mut loop_ = AgentLoop::builder()
+            .qualified_router(router)
+            .provider_model(provider_model())
+            .build()
+            .unwrap();
+        let selection = ModelSelection {
+            provider_id: "remote".into(),
+            model_id: "model-b".into(),
+        };
+        let cases = [
+            (
+                shadow_model("model-b"),
+                provider_model_for("remote", "wrong"),
+            ),
+            (
+                shadow_model("wrong"),
+                provider_model_for("remote", "model-b"),
+            ),
+            (
+                shadow_model("model-b"),
+                provider_model_for("wrong", "model-b"),
+            ),
+        ];
+        for (shadow, exact) in cases {
+            assert!(matches!(
+                loop_.apply_runtime_model(&selection, &shadow, Some(&exact)),
+                Err(AgentLoopError::IncompatibleModel(_))
+            ));
+        }
         assert!(matches!(
             &loop_.backend,
             ModelBackend::Provider { model, .. }
