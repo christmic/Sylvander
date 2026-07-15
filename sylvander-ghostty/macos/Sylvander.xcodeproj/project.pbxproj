@@ -452,6 +452,7 @@
 				A5B3052E299BEAAA0047F10C /* Frameworks */,
 				A5B3052F299BEAAA0047F10C /* Resources */,
 				819324572F24E74E00A9ED8F /* Copy DockTilePlugin */,
+				8F3A9B4D2FA6C91000A18D13 /* Embed Sylvander TUI */,
 			);
 			buildRules = (
 			);
@@ -599,6 +600,27 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		8F3A9B4D2FA6C91000A18D13 /* Embed Sylvander TUI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Sylvander TUI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/bin/sylvander-tui",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/Scripts/embed-sylvander-tui.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		FC501E0B2F46B410007AE49D /* Run SwiftLint */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -736,7 +758,7 @@
 		3B39CAA32B33946300DABEB8 /* ReleaseLocal */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = Ghostty;
+				ASSETCATALOG_COMPILER_APPICON_NAME = SylvanderTerminal;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -750,6 +772,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				EXECUTABLE_NAME = ghostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Sylvander-Info.plist";
@@ -964,7 +987,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Sylvander.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
 			};
 			name = Debug;
 		};
@@ -987,7 +1010,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Sylvander.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
 			};
 			name = Release;
 		};
@@ -1010,7 +1033,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Sylvander.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
 			};
 			name = ReleaseLocal;
 		};
@@ -1134,7 +1157,7 @@
 		A5B30541299BEAAB0047F10C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = Ghostty;
+				ASSETCATALOG_COMPILER_APPICON_NAME = SylvanderTerminal;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -1149,6 +1172,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				EXECUTABLE_NAME = ghostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Sylvander-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Sylvander[DEBUG]";
@@ -1189,7 +1213,7 @@
 		A5B30542299BEAAB0047F10C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = Ghostty;
+				ASSETCATALOG_COMPILER_APPICON_NAME = SylvanderTerminal;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CLANG_ENABLE_MODULES = YES;
@@ -1203,6 +1227,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				EXECUTABLE_NAME = ghostty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Sylvander-Info.plist";

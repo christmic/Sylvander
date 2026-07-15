@@ -40,6 +40,7 @@ pub enum CommandId {
     Context,
     Compact,
     Rollback,
+    Preview,
     Status,
     Quit,
 }
@@ -214,6 +215,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/memory",
         description: "Inspect long-term memory availability",
         hint: "server truth",
+    },
+    CommandSpec {
+        id: CommandId::Preview,
+        name: "preview",
+        usage: "/preview <image|web> <path-or-url>",
+        description: "Open a resource in the trusted desktop host",
+        hint: "Ghostty host only",
     },
     CommandSpec {
         id: CommandId::Status,
@@ -436,6 +444,9 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
     }
     if spec.id == CommandId::Model && state.metadata.models.is_empty() {
         return Unavailable("model catalog is still loading".into());
+    }
+    if spec.id == CommandId::Preview && !state.host_preview_available {
+        return Unavailable("requires a trusted desktop host".into());
     }
     if matches!(spec.id, CommandId::Inspect | CommandId::Copy)
         && find_tool_output(state, None).is_err()
@@ -1247,6 +1258,32 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             require_no_args(&invocation)?;
             state.modals.push(Box::new(PermissionsPicker::new(state)));
         }
+        CommandId::Preview => {
+            let [kind, target @ ..] = invocation.args.as_slice() else {
+                return Err(format!("Usage: {}", invocation.spec.usage));
+            };
+            let kind = match *kind {
+                "image" => crate::host_bridge::PreviewKind::Image,
+                "web" => crate::host_bridge::PreviewKind::Web,
+                _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+            };
+            let target = target.join(" ");
+            if target.is_empty() {
+                return Err(format!("Usage: {}", invocation.spec.usage));
+            }
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "Host preview requires a persisted session".to_string())?;
+            state
+                .pending_actions
+                .push(crate::event::Action::HostPreview {
+                    session_id,
+                    kind,
+                    target,
+                });
+            state.status = "Requesting host preview…".into();
+        }
         CommandId::Quit => {
             require_no_args(&invocation)?;
             state.should_quit = true;
@@ -1977,5 +2014,31 @@ mod tests {
         execute(parse("attachments drop 1").unwrap(), &mut state).unwrap();
         assert_eq!(state.composer.attachments.len(), 1);
         assert_eq!(state.composer.attachments[0].content, "first");
+    }
+
+    #[test]
+    fn preview_requires_host_and_preserves_session_scope() {
+        let mut state = AppState::new();
+        state.session_id = Some("session-preview".into());
+        let spec = resolve("preview").unwrap();
+        assert_eq!(
+            availability(spec, &state).reason(),
+            Some("requires a trusted desktop host")
+        );
+
+        state.host_preview_available = true;
+        execute(
+            parse("preview image artifacts/result.png").unwrap(),
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::HostPreview {
+                session_id,
+                kind: crate::host_bridge::PreviewKind::Image,
+                target,
+            }] if session_id == "session-preview" && target == "artifacts/result.png"
+        ));
     }
 }

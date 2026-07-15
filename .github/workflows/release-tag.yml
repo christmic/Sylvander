@@ -43,6 +43,15 @@ jobs:
           version: "0.15.2"
           cache: false
 
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            target -> target
+
       - name: Select Xcode 26
         run: |
           set -e
@@ -51,42 +60,116 @@ jobs:
           sudo xcode-select -s "$xcode_path"
           xcodebuild -version
 
-      - name: Build Sylvander.app (Release)
-        working-directory: sylvander-ghostty
+      - name: Require distribution credentials
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          # Full release build of the macOS .app. This is the slow
-          # path (zig build + xcodebuild + Swift compilation).
+          set -euo pipefail
+          for name in CERTIFICATE_P12 CERTIFICATE_PASSWORD SIGNING_IDENTITY \
+            APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            test -n "${!name}" || { echo "Missing required secret: $name" >&2; exit 1; }
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/sylvander-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "$password" > "$RUNNER_TEMP/keychain-password"
+          echo "$CERTIFICATE_P12" | /usr/bin/base64 -D > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+      - name: Build universal native components
+        run: |
+          set -euo pipefail
+          cd sylvander-ghostty
+          zig build -Demit-macos-app=false -Doptimize=ReleaseFast
+          cd ..
+          sylvander-ghostty/macos/Scripts/build-sylvander-tui-universal.sh \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP/sylvander-tui-universal"
+
+      - name: Archive Sylvander.app (Release)
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
           xcodebuild \
-            -project macos/Sylvander.xcodeproj \
+            -project sylvander-ghostty/macos/Sylvander.xcodeproj \
             -scheme Sylvander \
             -configuration Release \
-            -derivedDataPath build \
-            -destination 'platform=macOS' \
-            build
-          ls -la build/Build/Products/Release/Sylvander.app
+            -archivePath "$RUNNER_TEMP/Sylvander.xcarchive" \
+            -destination 'generic/platform=macOS' \
+            SYLVANDER_TUI_PATH="$RUNNER_TEMP/sylvander-tui-universal" \
+            ARCHS='arm64 x86_64' \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            archive
 
-      - name: Build Rust workspace (release)
-        run: cargo build --workspace --release --locked
+      - name: Verify, notarize, and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/Sylvander.xcarchive/Products/Applications/Sylvander.app"
+          helper="$app/Contents/Resources/bin/sylvander-tui"
+          test -d "$app"
+          test "$(lipo -archs "$helper")" = "x86_64 arm64" || \
+            test "$(lipo -archs "$helper")" = "arm64 x86_64"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
 
       - name: Smoke-test the .app
-        working-directory: sylvander-ghostty
         run: |
-          # Verify it launches and exits cleanly (--help path; the
-          # real CLI is a tiny `+version` arg in upstream).
-          ./build/Build/Products/Release/Sylvander.app/Contents/MacOS/ghostty +version
+          "$RUNNER_TEMP/Sylvander.xcarchive/Products/Applications/Sylvander.app/Contents/MacOS/ghostty" +version
 
       - name: Package .app as zip
         run: |
-          cd sylvander-ghostty/build/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent Sylvander.app Sylvander.app.zip
-          ls -la Sylvander.app.zip
+          mkdir -p dist
+          app="$RUNNER_TEMP/Sylvander.xcarchive/Products/Applications/Sylvander.app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" dist/Sylvander.app.zip
+          shasum -a 256 dist/Sylvander.app.zip > dist/Sylvander.app.zip.sha256
+          ls -la dist/Sylvander.app.zip*
 
       - name: Upload .app artifact
         uses: actions/upload-artifact@v4
         with:
           name: Sylvander-app
-          path: sylvander-ghostty/build/Build/Products/Release/Sylvander.app.zip
+          path: |
+            dist/Sylvander.app.zip
+            dist/Sylvander.app.zip.sha256
           retention-days: 30
+
+      - name: Delete temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/sylvander-signing.keychain-db" || true
 
   release:
     name: Create GitHub Release
@@ -94,6 +177,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download .app
         uses: actions/download-artifact@v4
         with:
@@ -132,6 +219,7 @@ jobs:
           gh release create \
             "${{ github.ref_name }}" \
             dist/Sylvander.app.zip \
+            dist/Sylvander.app.zip.sha256 \
             --title "Sylvander ${{ github.ref_name }}" \
             --notes-file dist/RELEASE_NOTES.md \
             --draft     # publish manually after smoke-testing

@@ -104,6 +104,9 @@ class AppDelegate: NSObject,
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
 
+    /// Sylvander owns one desktop workspace whose sidebar multiplexes session PTYs.
+    private var sylvanderWorkspaceController: SylvanderWorkspaceController?
+
     /// Whether the quick terminal has already been initialized.
     var quickControllerInitialized: Bool {
         if case .initialized = quickTerminalControllerState {
@@ -339,6 +342,7 @@ class AppDelegate: NSObject,
                 NSApp.arrangeInFront(nil)
             }
         }
+
     }
 
     func applicationDidHide(_ notification: Notification) {
@@ -358,9 +362,9 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if TerminalController.all.isEmpty && sylvanderWorkspaceController == nil && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                showSylvanderWorkspace()
                 undoManager.enableUndoRegistration()
             }
         }
@@ -434,7 +438,8 @@ class AppDelegate: NSObject,
         // This is possible with flag set to false if there a race where the
         // window is still initializing and is not visible but the user clicked
         // the dock icon.
-        guard TerminalController.all.isEmpty else { return true }
+        guard TerminalController.all.isEmpty,
+              sylvanderWorkspaceController?.window?.isVisible != true else { return true }
 
         // If the application isn't active yet then we don't want to process
         // this because we're not ready. This happens sometimes in Xcode runs
@@ -442,7 +447,7 @@ class AppDelegate: NSObject,
         guard applicationHasBecomeActive else { return true }
 
         // No visible windows, open a new one.
-        _ = TerminalController.newWindow(ghostty)
+        showSylvanderWorkspace()
         return false
     }
 
@@ -682,6 +687,7 @@ class AppDelegate: NSObject,
                 }
             }
         }
+
     }
 
     private func syncDockBadge() {
@@ -934,6 +940,28 @@ class AppDelegate: NSObject,
 
     // MARK: - IB Actions
 
+    private func showSylvanderWorkspace() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.showSylvanderWorkspace()
+            }
+            return
+        }
+
+        let controller: SylvanderWorkspaceController
+        if let existing = sylvanderWorkspaceController {
+            controller = existing
+        } else {
+            controller = SylvanderWorkspaceController(ghostty)
+            sylvanderWorkspaceController = controller
+        }
+        controller.loadWorkspaceWindowIfNeeded()
+
+        controller.showWindow(self)
+        controller.window?.makeKeyAndOrderFront(self)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     @IBAction func openConfig(_ sender: Any?) {
         ghostty.openConfig()
     }
@@ -948,7 +976,7 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        _ = TerminalController.newWindow(ghostty)
+        showSylvanderWorkspace()
     }
 
     @IBAction func newTab(_ sender: Any?) {
@@ -960,6 +988,7 @@ class AppDelegate: NSObject,
 
     @IBAction func closeAllWindows(_ sender: Any?) {
         TerminalController.closeAllWindows()
+        sylvanderWorkspaceController?.close()
         AboutController.shared.hide()
     }
 

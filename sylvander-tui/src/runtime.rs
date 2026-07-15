@@ -83,6 +83,8 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     )?;
 
     let mut state = AppState::with_metadata(config.history_path.clone(), config.metadata.clone());
+    state.session_id.clone_from(&config.initial_session_id);
+    state.host_preview_available = config.host_bridge.is_some();
     state.keymap = config.keymap.clone();
     state.composer.set_editing_style(config.editing_style);
     let mut application = Application::new(state);
@@ -158,6 +160,24 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
         }
 
         for effect in application.take_effects() {
+            if let crate::event::Action::HostPreview {
+                session_id,
+                kind,
+                target,
+            } = effect
+            {
+                let result = if let Some(host) = &config.host_bridge {
+                    crate::host_bridge::request_preview(host, &session_id, kind, &target).await
+                } else {
+                    Err("desktop host preview is unavailable".into())
+                };
+                application.state.status = match result {
+                    Ok(message) => message,
+                    Err(error) => format!("Preview rejected: {error}"),
+                };
+                application.state.dirty.mark();
+                continue;
+            }
             if let crate::event::Action::RunDoctor { destination } = effect {
                 let report = crate::diagnostics::report(&config, &application.state);
                 let event = match destination {
@@ -364,6 +384,8 @@ fn edit_draft_with_command(initial: &str, editor: &str) -> std::io::Result<Strin
         let status = std::process::Command::new(program)
             .args(args)
             .arg(&path)
+            .env_remove("SYLVANDER_HOST_SOCKET")
+            .env_remove("SYLVANDER_HOST_TOKEN")
             .status()?;
         if !status.success() {
             return Err(std::io::Error::other(format!(

@@ -16,6 +16,9 @@ const DEFAULT_SOCKET: &str = "/tmp/sylvander.sock";
 #[derive(Debug, Clone)]
 pub struct TuiConfig {
     pub socket_path: PathBuf,
+    /// Session selected by a desktop host. `None` keeps the standalone picker flow.
+    pub initial_session_id: Option<String>,
+    pub host_bridge: Option<HostBridgeConfig>,
     pub history_path: Option<PathBuf>,
     pub theme: ThemeName,
     pub theme_overrides: ThemeOverrides,
@@ -33,11 +36,12 @@ pub struct TuiConfig {
 
 impl TuiConfig {
     pub fn from_env_and_args() -> Result<Self, String> {
-        let socket_path = std::env::args()
-            .nth(1)
-            .or_else(|| std::env::var("SYLVANDER_SOCKET").ok())
-            .unwrap_or_else(|| DEFAULT_SOCKET.into())
-            .into();
+        let launch = parse_launch_options(
+            std::env::args().skip(1),
+            std::env::var("SYLVANDER_SOCKET").ok(),
+            std::env::var("SYLVANDER_SESSION").ok(),
+            std::env::var("SYLVANDER_WORKSPACE").ok(),
+        )?;
         let theme = std::env::var("SYLVANDER_TUI_THEME")
             .unwrap_or_else(|_| "sylvander".into())
             .parse()?;
@@ -65,9 +69,12 @@ impl TuiConfig {
         let reduced_motion = env_bool("SYLVANDER_TUI_REDUCED_MOTION", false)?;
         let no_italic = env_bool("SYLVANDER_TUI_NO_ITALIC", false)?;
         let keymap = KeyMap::from_environment()?;
+        let host_bridge = HostBridgeConfig::from_environment()?;
 
         Ok(Self {
-            socket_path,
+            socket_path: launch.socket_path,
+            initial_session_id: launch.session_id,
+            host_bridge,
             history_path: history_path(),
             theme,
             theme_overrides,
@@ -85,7 +92,9 @@ impl TuiConfig {
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models: Vec::new(),
                 permissions: sylvander_protocol::PermissionProfile::default(),
-                workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("~")),
+                workspace: launch.workspace.unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("~"))
+                }),
                 branch: git_branch(),
                 capabilities: 0,
                 approval_enabled: false,
@@ -96,13 +105,14 @@ impl TuiConfig {
 
     pub fn report(&self, metadata: &RuntimeMetadata) -> String {
         format!(
-            "theme       {}\nforeground  {}\naccent      {}\ncolors      {}\nediting     {}\nsocket      {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
+            "theme       {}\nforeground  {}\naccent      {}\ncolors      {}\nediting     {}\nsocket      {}\nsession     {}\nhistory     {}\nworkspace   {}\nmodel       {}\nrender      {} ms\nanimation   {}\nitalics     {}\nreconnect   {} ms\nmouse wheel {} lines\nkeys        {}\nattachment  {} bytes",
             self.theme,
             self.theme_overrides.describe_foreground(),
             self.theme_overrides.describe_accent(),
             self.color_capability,
             self.editing_style,
             self.socket_path.display(),
+            self.initial_session_id.as_deref().unwrap_or("picker"),
             self.history_path
                 .as_deref()
                 .map_or_else(|| "disabled".into(), |path| path.display().to_string()),
@@ -125,6 +135,106 @@ impl TuiConfig {
             metadata.max_attachment_bytes,
         )
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostBridgeConfig {
+    pub socket_path: PathBuf,
+    pub token: String,
+}
+
+impl HostBridgeConfig {
+    fn from_environment() -> Result<Option<Self>, String> {
+        let socket = std::env::var("SYLVANDER_HOST_SOCKET").ok();
+        let token = std::env::var("SYLVANDER_HOST_TOKEN").ok();
+        match (socket, token) {
+            (None, None) => Ok(None),
+            (Some(socket), Some(token))
+                if PathBuf::from(&socket).is_absolute() && valid_host_token(&token) =>
+            {
+                Ok(Some(Self {
+                    socket_path: socket.into(),
+                    token,
+                }))
+            }
+            (Some(_), Some(_)) => Err("invalid desktop host bridge configuration".into()),
+            _ => Err("desktop host bridge requires both socket and token".into()),
+        }
+    }
+}
+
+fn valid_host_token(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LaunchOptions {
+    socket_path: PathBuf,
+    session_id: Option<String>,
+    workspace: Option<PathBuf>,
+}
+
+fn parse_launch_options(
+    args: impl IntoIterator<Item = String>,
+    env_socket: Option<String>,
+    env_session: Option<String>,
+    env_workspace: Option<String>,
+) -> Result<LaunchOptions, String> {
+    let mut socket = None;
+    let mut session = None;
+    let mut workspace = None;
+    let mut positional_socket = None;
+    let mut args = args.into_iter();
+
+    while let Some(argument) = args.next() {
+        let destination = match argument.as_str() {
+            "--socket" => &mut socket,
+            "--session" => &mut session,
+            "--workspace" => &mut workspace,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option {value:?}"));
+            }
+            value => {
+                if positional_socket.replace(value.to_owned()).is_some() {
+                    return Err("only one positional socket path is supported".into());
+                }
+                continue;
+            }
+        };
+        let value = args
+            .next()
+            .ok_or_else(|| format!("{argument} requires a value"))?;
+        if value.is_empty() {
+            return Err(format!("{argument} requires a non-empty value"));
+        }
+        if destination.replace(value).is_some() {
+            return Err(format!("{argument} may only be specified once"));
+        }
+    }
+
+    if socket.is_some() && positional_socket.is_some() {
+        return Err("use either --socket or the positional socket path, not both".into());
+    }
+    let session_id = session.or(env_session).filter(|value| !value.is_empty());
+    if let Some(value) = session_id.as_deref()
+        && (value.len() > 256 || value.chars().any(char::is_control))
+    {
+        return Err("session id must be at most 256 characters without controls".into());
+    }
+
+    Ok(LaunchOptions {
+        socket_path: socket
+            .or(positional_socket)
+            .or(env_socket)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_SOCKET.into())
+            .into(),
+        session_id,
+        workspace: workspace
+            .or(env_workspace)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+    })
 }
 
 fn env_color(name: &str) -> Result<Option<ratatui::style::Color>, String> {
@@ -171,6 +281,8 @@ fn parse_bool(name: &str, raw: Option<&str>, default: bool) -> Result<bool, Stri
 fn git_branch() -> String {
     std::process::Command::new("git")
         .args(["branch", "--show-current"])
+        .env_remove("SYLVANDER_HOST_SOCKET")
+        .env_remove("SYLVANDER_HOST_TOKEN")
         .output()
         .ok()
         .filter(|output| output.status.success())
@@ -253,6 +365,8 @@ mod tests {
     fn report_uses_resolved_values_without_reading_environment_again() {
         let config = TuiConfig {
             socket_path: "/tmp/test.sock".into(),
+            initial_session_id: Some("session-1".into()),
+            host_bridge: None,
             history_path: None,
             theme: ThemeName::Midnight,
             theme_overrides: ThemeOverrides {
@@ -278,6 +392,7 @@ mod tests {
         assert!(report.contains("editing     vim"));
         assert!(report.contains("history     disabled"));
         assert!(report.contains("socket      /tmp/test.sock"));
+        assert!(report.contains("session     session-1"));
         assert!(report.contains("sessions=Ctrl+P"));
         assert!(report.contains("animation   reduced"));
         assert!(report.contains("italics     disabled"));
@@ -298,5 +413,54 @@ mod tests {
             ColorCapability::Ansi256
         );
         assert!(resolve_color_capability(Some("millions"), false, None, None).is_err());
+    }
+
+    #[test]
+    fn desktop_launch_options_bind_one_session_and_workspace() {
+        let options = parse_launch_options(
+            [
+                "--socket".into(),
+                "/tmp/desktop.sock".into(),
+                "--session".into(),
+                "session-42".into(),
+                "--workspace".into(),
+                "/workspace/project".into(),
+            ],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(options.socket_path, PathBuf::from("/tmp/desktop.sock"));
+        assert_eq!(options.session_id.as_deref(), Some("session-42"));
+        assert_eq!(options.workspace, Some(PathBuf::from("/workspace/project")));
+    }
+
+    #[test]
+    fn positional_socket_remains_backward_compatible() {
+        let options = parse_launch_options(
+            ["/tmp/legacy.sock".into()],
+            Some("/tmp/env.sock".into()),
+            Some("session-env".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(options.socket_path, PathBuf::from("/tmp/legacy.sock"));
+        assert_eq!(options.session_id.as_deref(), Some("session-env"));
+    }
+
+    #[test]
+    fn launch_options_reject_ambiguous_or_malformed_input() {
+        assert!(
+            parse_launch_options(
+                ["--socket".into(), "/tmp/a".into(), "/tmp/b".into()],
+                None,
+                None,
+                None,
+            )
+            .is_err()
+        );
+        assert!(parse_launch_options(["--session".into()], None, None, None).is_err());
+        assert!(parse_launch_options(["--wat".into()], None, None, None).is_err());
     }
 }

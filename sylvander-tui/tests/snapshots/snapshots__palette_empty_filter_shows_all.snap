@@ -21,6 +21,6 @@ expression: "render_buf(state, 90, 22)"
   /fork          Fork the current persisted session                                       
   /rewind        Branch from a completed conversation turn                                
   /checkpoint    Create a conversation checkpoint branch                                  
-  ↓ 26 more                                                                               
+  ↓ 27 more                                                                               
 ──────────────────────────────────────────────────────────────────────────────────────────
 ◌ connecting · model — · branch — · session —
