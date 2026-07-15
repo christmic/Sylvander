@@ -29,6 +29,7 @@ pub const MAX_MEMORY_RESULTS: usize = 50;
 pub const MAX_MEMORY_METADATA_ENTRIES: usize = 32;
 pub const MAX_MEMORY_METADATA_KEY_BYTES: usize = 64;
 pub const MAX_MEMORY_METADATA_VALUE_BYTES: usize = 1024;
+pub const MAX_MEMORY_TTL_SECONDS: u64 = 5 * 365 * 24 * 60 * 60;
 
 const RESERVED_MEMORY_METADATA_KEYS: &[&str] = &[
     "access_count",
@@ -167,6 +168,18 @@ impl MemoryExecutionContext {
         self.trace_id.as_deref()
     }
 
+    pub(super) fn provenance(&self) -> MemoryProvenance {
+        MemoryProvenance {
+            actor: self.actor,
+            user_id: self.user_id.clone(),
+            agent_id: self.agent_id.clone(),
+            session_id: self.session_id.clone(),
+            trace_id: self.trace_id.clone(),
+            source: MemoryProvenanceSource::Runtime,
+            trusted: true,
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn privileged_for_test(actor: MemoryActorKind) -> Self {
         Self {
@@ -191,6 +204,9 @@ pub struct MemoryAppend {
     pub tags: Vec<String>,
     pub importance: Importance,
     pub metadata: HashMap<String, String>,
+    /// Relative expiry requested by the caller. The store validates this and
+    /// derives the absolute timestamp from its own clock.
+    pub expires_after_secs: Option<u64>,
 }
 
 impl MemoryAppend {
@@ -203,6 +219,7 @@ impl MemoryAppend {
             tags: Vec::new(),
             importance: Importance::Medium,
             metadata: HashMap::new(),
+            expires_after_secs: None,
         }
     }
 
@@ -229,6 +246,31 @@ impl MemoryAppend {
         self.importance = importance;
         self
     }
+
+    #[must_use]
+    pub fn with_ttl(mut self, seconds: u64) -> Self {
+        self.expires_after_secs = Some(seconds);
+        self
+    }
+}
+
+/// Immutable origin recorded when a memory is created. These fields are
+/// derived from the runtime execution context, never from [`MemoryAppend`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryProvenance {
+    pub actor: MemoryActorKind,
+    pub user_id: Option<UserId>,
+    pub agent_id: Option<AgentId>,
+    pub session_id: Option<SessionId>,
+    pub trace_id: Option<String>,
+    pub source: MemoryProvenanceSource,
+    pub trusted: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryProvenanceSource {
+    Runtime,
 }
 
 // ---------------------------------------------------------------------------
@@ -283,11 +325,40 @@ pub struct MemoryEntry {
     /// Free-form key/value metadata (legacy / extension).
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+
+    /// Monotonic optimistic-concurrency revision, starting at one.
+    pub revision: u64,
+
+    /// Store-controlled last mutation timestamp.
+    pub updated_at: i64,
+
+    /// Store-derived absolute expiry. Expired records are not visible to
+    /// ordinary relationship reads.
+    pub expires_at: Option<i64>,
+
+    /// Public id of a replacement memory, once superseded.
+    pub superseded_by: Option<String>,
+
+    /// Immutable runtime-derived creation provenance.
+    pub provenance: MemoryProvenance,
 }
 
 impl MemoryEntry {
-    pub(super) fn materialize(id: String, owner: MemoryOwner, append: MemoryAppend) -> Self {
-        Self {
+    pub(super) fn materialize(
+        id: String,
+        owner: MemoryOwner,
+        append: MemoryAppend,
+        provenance: MemoryProvenance,
+        now: i64,
+    ) -> Result<Self, MemoryStoreError> {
+        let expires_at = match append.expires_after_secs {
+            Some(ttl) => Some(
+                now.checked_add(i64::try_from(ttl).map_err(|_| MemoryStoreError::InvalidInput)?)
+                    .ok_or(MemoryStoreError::InvalidInput)?,
+            ),
+            None => None,
+        };
+        Ok(Self {
             id,
             owner,
             kind: append.kind,
@@ -295,11 +366,16 @@ impl MemoryEntry {
             references: append.references,
             tags: append.tags,
             importance: append.importance,
-            created_at: crate::session::now_secs(),
+            created_at: now,
             last_accessed: None,
             access_count: 0,
             metadata: append.metadata,
-        }
+            revision: 1,
+            updated_at: now,
+            expires_at,
+            superseded_by: None,
+            provenance,
+        })
     }
 }
 
@@ -404,6 +480,7 @@ pub trait MemoryStore: Send + Sync {
         &self,
         ctx: &MemoryExecutionContext,
         id: &str,
+        expected_revision: u64,
     ) -> Result<(), MemoryStoreError>;
 
     /// Get one relationship entry without revealing another owner's entry.
@@ -444,6 +521,12 @@ pub enum MemoryStoreError {
     /// Entry exists but the caller is not allowed to see it.
     #[error("memory access denied")]
     AccessDenied,
+    /// The visible record changed since the caller read it.
+    #[error("memory revision conflict")]
+    Conflict,
+    /// Missing and foreign-owner records deliberately share one result.
+    #[error("memory not found")]
+    NotFound,
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +560,13 @@ impl MemoryStore for InMemoryMemoryStore {
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_append(&append)?;
-        let entry = MemoryEntry::materialize(uuid::Uuid::new_v4().to_string(), owner, append);
+        let entry = MemoryEntry::materialize(
+            uuid::Uuid::new_v4().to_string(),
+            owner,
+            append,
+            ctx.provenance(),
+            crate::session::now_secs(),
+        )?;
         self.entries.write().await.push(entry.clone());
         Ok(entry)
     }
@@ -497,10 +586,12 @@ impl MemoryStore for InMemoryMemoryStore {
             return Err(MemoryStoreError::InvalidInput);
         }
         let query_lower = query.to_lowercase();
+        let now = crate::session::now_secs();
         let entries = self.entries.read().await;
         let mut results: Vec<MemoryEntry> = entries
             .iter()
             .filter(|entry| entry.owner == owner)
+            .filter(|entry| is_active(entry, now))
             .filter(|e| query.is_empty() || e.content.to_lowercase().contains(&query_lower))
             .filter(|e| filter.kind.as_ref().is_none_or(|k| &e.kind == k))
             .filter(|e| filter.min_importance.is_none_or(|i| e.importance >= i))
@@ -516,15 +607,24 @@ impl MemoryStore for InMemoryMemoryStore {
         &self,
         ctx: &MemoryExecutionContext,
         id: &str,
+        expected_revision: u64,
     ) -> Result<(), MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
-        let mut entries = self.entries.write().await;
-        let before = entries.len();
-        entries.retain(|entry| !(entry.id == id && entry.owner == owner));
-        if entries.len() == before {
-            return Err(memory_not_visible());
+        if expected_revision == 0 {
+            return Err(MemoryStoreError::InvalidInput);
         }
+        let mut entries = self.entries.write().await;
+        let Some(index) = entries
+            .iter()
+            .position(|entry| entry.id == id && entry.owner == owner)
+        else {
+            return Err(memory_not_visible());
+        };
+        if entries[index].revision != expected_revision {
+            return Err(MemoryStoreError::Conflict);
+        }
+        entries.remove(index);
         Ok(())
     }
 
@@ -538,7 +638,11 @@ impl MemoryStore for InMemoryMemoryStore {
         let entries = self.entries.read().await;
         Ok(entries
             .iter()
-            .find(|entry| entry.id == id && entry.owner == owner)
+            .find(|entry| {
+                entry.id == id
+                    && entry.owner == owner
+                    && is_active(entry, crate::session::now_secs())
+            })
             .cloned())
     }
 }
@@ -549,6 +653,9 @@ pub(super) fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreEr
         || append.tags.len() > MAX_MEMORY_TAGS
         || append.references.len() > MAX_MEMORY_REFERENCES
         || append.metadata.len() > MAX_MEMORY_METADATA_ENTRIES
+        || append
+            .expires_after_secs
+            .is_some_and(|ttl| ttl == 0 || ttl > MAX_MEMORY_TTL_SECONDS)
         || append
             .tags
             .iter()
@@ -575,7 +682,11 @@ pub(super) fn validate_memory_id(id: &str) -> Result<(), MemoryStoreError> {
 }
 
 pub(super) fn memory_not_visible() -> MemoryStoreError {
-    MemoryStoreError::AccessDenied
+    MemoryStoreError::NotFound
+}
+
+pub(super) fn is_active(entry: &MemoryEntry, now: i64) -> bool {
+    entry.superseded_by.is_none() && entry.expires_at.is_none_or(|expiry| expiry > now)
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +731,13 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(preference.revision, 1);
+        assert_eq!(preference.provenance.actor, MemoryActorKind::Worker);
+        assert_eq!(
+            preference.provenance.source,
+            MemoryProvenanceSource::Runtime
+        );
+        assert!(preference.provenance.trusted);
         store
             .append_relationship(
                 &ctx,
@@ -692,11 +810,11 @@ mod tests {
             .unwrap();
 
         let foreign = store
-            .delete_relationship(&bob, &entry.id)
+            .delete_relationship(&bob, &entry.id, entry.revision)
             .await
             .unwrap_err();
         let missing = store
-            .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000")
+            .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000", entry.revision)
             .await
             .unwrap_err();
         assert_eq!(foreign.to_string(), missing.to_string());
@@ -733,7 +851,7 @@ mod tests {
                 Err(MemoryStoreError::AccessDenied)
             ));
             assert!(matches!(
-                store.delete_relationship(&ctx, "valid-id").await,
+                store.delete_relationship(&ctx, "valid-id", 1).await,
                 Err(MemoryStoreError::AccessDenied)
             ));
         }
@@ -771,6 +889,14 @@ mod tests {
                 .await,
             Err(MemoryStoreError::InvalidInput)
         ));
+        for ttl in [0, MAX_MEMORY_TTL_SECONDS + 1] {
+            assert!(matches!(
+                store
+                    .append_relationship(&ctx, MemoryAppend::new("ttl").with_ttl(ttl))
+                    .await,
+                Err(MemoryStoreError::InvalidInput)
+            ));
+        }
         for key in [
             "provenance",
             "owner",
@@ -823,7 +949,16 @@ mod tests {
             .append_relationship(&ctx, MemoryAppend::new("drop"))
             .await
             .unwrap();
-        store.delete_relationship(&ctx, &entry.id).await.unwrap();
+        assert!(matches!(
+            store
+                .delete_relationship(&ctx, &entry.id, entry.revision + 1)
+                .await,
+            Err(MemoryStoreError::Conflict)
+        ));
+        store
+            .delete_relationship(&ctx, &entry.id, entry.revision)
+            .await
+            .unwrap();
         assert!(
             store
                 .get_relationship(&ctx, &entry.id)
