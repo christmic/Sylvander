@@ -160,7 +160,10 @@ finite and range-checked; unknown fields and configurations where
 `default_ttl_days` exceeds `max_ttl_days` fail startup.
 There is no unbounded or legacy-environment fallback. Runtime enforcement,
 scheduled backup, and restore are separate implementation batches and are not
-claimed by this configuration contract alone.
+claimed by this configuration contract alone. Backup cadence is finite: one
+day by default with seven retained copies, bounded to 1–7 days and 2–30 copies.
+The backup directory is derived beneath `data_dir`; configuration cannot route
+memory snapshots to an arbitrary filesystem path.
 
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and

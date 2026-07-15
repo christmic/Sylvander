@@ -20,6 +20,10 @@ max_ttl_days = 1825
 expired_grace_days = 7
 superseded_retention_days = 30
 
+[server.memory_maintenance.backup]
+interval_seconds = 86400
+retained_copies = 7
+
 [server.approval]
 enabled = true
 # persistent_store = "/var/lib/sylvander/approvals.json"
