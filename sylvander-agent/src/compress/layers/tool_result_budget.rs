@@ -105,6 +105,7 @@ impl ToolResultBudgetLayer {
             freed_tokens,
             details: Some(details),
             failure: None,
+            failure_code: None,
         }
     }
 }

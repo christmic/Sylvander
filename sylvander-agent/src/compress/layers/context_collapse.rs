@@ -170,6 +170,7 @@ impl CompressionLayer for ContextCollapseLayer {
                     "max_thinking_chars": self.max_thinking_chars,
                 })),
                 failure: None,
+                failure_code: None,
             }
         };
         Box::pin(async move { report })

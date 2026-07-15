@@ -10,6 +10,7 @@ use serde_json::json;
 use sylvander_llm_anthropic::api::types::{MessageParam, MessageRole, UserContent};
 
 use crate::compress::CompressContext;
+use crate::compress::error::{CompactionError, CompactionFailureCode};
 use crate::compress::layer::{CompressionLayer, LayerReport};
 
 /// Default trigger ratio (matches Claude Code).
@@ -77,7 +78,10 @@ impl CompressionLayer for AutoCompactLayer {
             }
 
             let Some(llm) = ctx.auto_compact_llm else {
-                return LayerReport::failed(self.name(), "auto_compact_llm not configured");
+                return LayerReport::failed_with(
+                    self.name(),
+                    CompactionError::new(CompactionFailureCode::UnsupportedBackend),
+                );
             };
 
             let keep_count = (self.keep_last_n_turns * 2).min(ctx.messages.len());
@@ -92,7 +96,7 @@ impl CompressionLayer for AutoCompactLayer {
             let summary = match llm.summarize(&to_summarize, ctx.model_info).await {
                 Ok(s) => s,
                 Err(e) => {
-                    return LayerReport::failed(self.name(), format!("summarize call failed: {e}"));
+                    return LayerReport::failed_with(self.name(), CompactionError::from_loop(&e));
                 }
             };
 
@@ -122,6 +126,7 @@ impl CompressionLayer for AutoCompactLayer {
                     "actual_used": used,
                 })),
                 failure: None,
+                failure_code: None,
             }
         })
     }
@@ -185,6 +190,10 @@ mod tests {
 
         let report = layer.apply(&mut ctx).await;
         assert!(report.failure.is_some());
+        assert_eq!(
+            report.failure_code,
+            Some(CompactionFailureCode::UnsupportedBackend)
+        );
         assert_eq!(ctx.messages.len(), 10);
     }
 
