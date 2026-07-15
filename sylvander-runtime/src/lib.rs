@@ -965,7 +965,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "Registry administration audit is unavailable",
             );
         };
-        let (operation, provider_id, version) = registry_admin_audit_target(&request);
+        let (operation, resource_kind, resource_id, version) =
+            registry_admin_audit_target(&request);
         let response = RegistryAdminService::new(registry)
             .dispatch(Some(principal), request)
             .await;
@@ -983,8 +984,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
             channel_instance_id: boundary.channel_instance_id.clone(),
             transport: boundary.transport.clone(),
             operation: operation.into(),
-            resource_kind: "provider".into(),
-            resource_digest: sha256_text(&provider_id),
+            resource_kind: resource_kind.into(),
+            resource_digest: sha256_text(&resource_id),
             version,
             outcome: outcome.into(),
             error_code,
@@ -1377,6 +1378,7 @@ fn registry_admin_error(
             code,
             message: message.into(),
             provider_id: None,
+            model_id: None,
             revision: None,
         },
     }
@@ -1384,19 +1386,43 @@ fn registry_admin_error(
 
 fn registry_admin_audit_target(
     request: &RegistryAdminRequest,
-) -> (&'static str, String, Option<u64>) {
+) -> (&'static str, &'static str, String, Option<u64>) {
     match request {
         RegistryAdminRequest::InspectProviderRevision {
             provider_id,
             revision,
         } => (
             "inspect_provider_revision",
+            "provider",
             provider_id.clone(),
             Some(*revision),
         ),
-        RegistryAdminRequest::ListProviderRevisions { provider_id, .. } => {
-            ("list_provider_revisions", provider_id.clone(), None)
-        }
+        RegistryAdminRequest::ListProviderRevisions { provider_id, .. } => (
+            "list_provider_revisions",
+            "provider",
+            provider_id.clone(),
+            None,
+        ),
+        RegistryAdminRequest::InspectModelRevision {
+            provider_id,
+            model_id,
+            revision,
+        } => (
+            "inspect_model_revision",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::ListModelRevisions {
+            provider_id,
+            model_id,
+            ..
+        } => (
+            "list_model_revisions",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            None,
+        ),
     }
 }
 
@@ -1405,6 +1431,7 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
         RegistryAdminErrorCode::Unauthorized => "unauthorized",
         RegistryAdminErrorCode::InvalidRequest => "invalid_request",
         RegistryAdminErrorCode::UnknownProvider => "unknown_provider",
+        RegistryAdminErrorCode::UnknownModel => "unknown_model",
         RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
         RegistryAdminErrorCode::StorageUnavailable => "storage_unavailable",
         RegistryAdminErrorCode::IntegrityFailure => "integrity_failure",

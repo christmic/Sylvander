@@ -137,6 +137,7 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
             code: RegistryAdminErrorCode::Unauthorized,
             message: "Registry administration service is unavailable".into(),
             provider_id: None,
+            model_id: None,
             revision: None,
         },
     }
