@@ -3081,6 +3081,7 @@ dependencies = [
  "sylvander-agent",
  "sylvander-channel",
  "sylvander-llm-anthropic",
+ "sylvander-llm-core",
  "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",
