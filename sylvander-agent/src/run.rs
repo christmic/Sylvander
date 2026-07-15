@@ -1773,6 +1773,26 @@ impl AgentRunInner {
             .system_prompt
             .as_deref()
             .unwrap_or_default();
+        let resolved_prompt = self
+            .prompt_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.resolve(&runtime.current, None, None).ok());
+        let (prompt_profile, system_prompt_sha256, prompt_manifest) = resolved_prompt.map_or_else(
+            || {
+                (
+                    None,
+                    format!("{:x}", Sha256::digest(prompt.as_bytes())),
+                    None,
+                )
+            },
+            |resolved| {
+                (
+                    resolved.profile_id,
+                    resolved.system_prompt_sha256,
+                    Some(resolved.manifest),
+                )
+            },
+        );
         sylvander_protocol::SessionEffectiveConfig {
             agent_id: self.id.clone(),
             agent_revision: 0,
@@ -1782,9 +1802,9 @@ impl AgentRunInner {
             model_revision: None,
             reasoning_effort: runtime.reasoning_effort,
             permissions: self.runtime_permissions.read().await.clone(),
-            prompt_profile: None,
-            system_prompt_sha256: format!("{:x}", Sha256::digest(prompt.as_bytes())),
-            prompt_manifest: None,
+            prompt_profile,
+            system_prompt_sha256,
+            prompt_manifest,
             agent_workspace: None,
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),
@@ -4047,6 +4067,16 @@ mod tests {
     async fn legacy_join_persists_an_auditable_effective_configuration() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
+        let resolver = Arc::new(
+            crate::prompt::PromptResolver::new(
+                "agent:test-agent@1".into(),
+                spec.persona.system_prompt.clone(),
+                Vec::new(),
+                None,
+                false,
+            )
+            .expect("resolver"),
+        );
         let store: Arc<dyn SessionStore> = Arc::new(
             crate::session_store::SqliteSessionStore::open_in_memory()
                 .await
@@ -4057,6 +4087,7 @@ mod tests {
         let run = AgentRun::builder(spec, client)
             .bus(bus)
             .session_store(store.clone())
+            .prompt_resolver(resolver)
             .build()
             .expect("build");
 
@@ -4069,6 +4100,7 @@ mod tests {
             .effective_config
             .expect("legacy session must snapshot runtime defaults");
         assert_eq!(effective.agent_id, run.id().clone());
+        assert!(effective.prompt_manifest.is_some());
         assert_eq!(effective.user_workspace.unwrap().path, metadata.workspace);
         assert_eq!(
             effective.provenance.model.kind,
