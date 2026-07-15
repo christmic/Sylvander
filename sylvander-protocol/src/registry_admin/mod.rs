@@ -9,7 +9,10 @@ mod error;
 mod request;
 mod view;
 
-pub use draft::{CredentialSecretReferenceDraft, ProviderDefinitionDraft};
+pub use draft::{
+    CredentialSecretReferenceDraft, ModelDefinitionDraft, ModelLifecycleDraft, ModelPricingDraft,
+    ProviderDefinitionDraft,
+};
 pub use error::{RegistryAdminError, RegistryAdminErrorCode, RegistryAdminErrorDetails};
 pub use request::{
     DEFAULT_REGISTRY_REVISION_PAGE_SIZE, MAX_REGISTRY_REVISION_PAGE_SIZE,
@@ -65,6 +68,18 @@ pub enum RegistryAdminResult {
         revisions: Vec<ModelRevisionView>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_before_revision: Option<u64>,
+    },
+    ModelCreated {
+        revision: ModelRevisionView,
+    },
+    ModelRevisionStaged {
+        revision: ModelRevisionView,
+    },
+    ModelRevisionActivated {
+        revision: ModelRevisionView,
+    },
+    ModelRevisionRolledBack {
+        revision: ModelRevisionView,
     },
     CredentialGenerationInspected {
         generation: CredentialGenerationView,

@@ -46,6 +46,7 @@ pub enum RegistryAdminErrorCode {
     UnknownRevision,
     UnknownGeneration,
     ProviderAlreadyExists,
+    ModelAlreadyExists,
     ActiveRevisionConflict,
     NonSequentialRevision,
     RevisionCollision,

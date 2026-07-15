@@ -682,6 +682,204 @@ fn provider_lifecycle_results_errors_and_schema_are_typed() {
     }
 }
 
+fn model_draft() -> ModelDefinitionDraft {
+    ModelDefinitionDraft {
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: vec!["tool_use".into()],
+        lifecycle: ModelLifecycleDraft::Active {},
+        pricing: Some(ModelPricingDraft {
+            input_usd_micros_per_million: 1,
+            output_usd_micros_per_million: 2,
+            cache_write_usd_micros_per_million: Some(3),
+            cache_read_usd_micros_per_million: Some(4),
+        }),
+    }
+}
+
+#[test]
+fn model_lifecycle_requests_validate_round_trip_and_require_v3() {
+    let requests = [
+        RegistryAdminRequest::CreateModel {
+            provider_id: "alpha".into(),
+            model_id: "model-a".into(),
+            definition: model_draft(),
+        },
+        RegistryAdminRequest::StageModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "model-a".into(),
+            revision: 2,
+            expected_active_revision: 1,
+            definition: model_draft(),
+        },
+        RegistryAdminRequest::ActivateModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "model-a".into(),
+            revision: 2,
+            expected_active_revision: 1,
+        },
+        RegistryAdminRequest::RollbackModelRevision {
+            provider_id: "alpha".into(),
+            model_id: "model-a".into(),
+            target_revision: 1,
+            expected_active_revision: 2,
+        },
+    ];
+    for request in requests {
+        request.validate().unwrap();
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RegistryAdminRequest>(wire).unwrap(),
+            request
+        );
+        assert_eq!(request.minimum_ui_protocol_version(), 3);
+    }
+}
+
+#[test]
+fn model_draft_is_strict_validated_and_fully_redacted_in_debug() {
+    for definition in [
+        ModelDefinitionDraft {
+            context_window: 0,
+            ..model_draft()
+        },
+        ModelDefinitionDraft {
+            max_output_tokens: 0,
+            ..model_draft()
+        },
+        ModelDefinitionDraft {
+            capabilities: vec![" ".into()],
+            ..model_draft()
+        },
+        ModelDefinitionDraft {
+            lifecycle: ModelLifecycleDraft::Deprecated {
+                replacement: Some(" ".into()),
+            },
+            ..model_draft()
+        },
+        ModelDefinitionDraft {
+            capabilities: vec!["tool_use".into(), "tool_use".into()],
+            ..model_draft()
+        },
+    ] {
+        let request = RegistryAdminRequest::CreateModel {
+            provider_id: "alpha".into(),
+            model_id: "model-a".into(),
+            definition,
+        };
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            RegistryAdminErrorCode::InvalidRequest
+        );
+    }
+    for request in [
+        RegistryAdminRequest::CreateModel {
+            provider_id: " ".into(),
+            model_id: "m".into(),
+            definition: model_draft(),
+        },
+        RegistryAdminRequest::CreateModel {
+            provider_id: "p".into(),
+            model_id: " ".into(),
+            definition: model_draft(),
+        },
+        RegistryAdminRequest::StageModelRevision {
+            provider_id: "p".into(),
+            model_id: "m".into(),
+            revision: 0,
+            expected_active_revision: 1,
+            definition: model_draft(),
+        },
+        RegistryAdminRequest::ActivateModelRevision {
+            provider_id: "p".into(),
+            model_id: "m".into(),
+            revision: 2,
+            expected_active_revision: 0,
+        },
+        RegistryAdminRequest::RollbackModelRevision {
+            provider_id: "p".into(),
+            model_id: "m".into(),
+            target_revision: 0,
+            expected_active_revision: 2,
+        },
+    ] {
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            RegistryAdminErrorCode::InvalidRequest
+        );
+    }
+    for debug in [
+        format!("{:?}", model_draft()),
+        format!(
+            "{:?}",
+            ModelLifecycleDraft::Deprecated {
+                replacement: Some("private-model".into())
+            }
+        ),
+        format!("{:?}", model_draft().pricing.unwrap()),
+    ] {
+        assert!(debug.contains("[REDACTED]"));
+        for private in ["tool_use", "private-model", "100000", "4096"] {
+            assert!(!debug.contains(private));
+        }
+    }
+    for invalid in [
+        json!({"context_window":1,"max_output_tokens":1,"capabilities":[],"lifecycle":{"status":"active"},"unexpected":true}),
+        json!({"context_window":1,"max_output_tokens":1,"capabilities":[],"lifecycle":{"status":"active","replacement":"x"}}),
+        json!({"context_window":1,"max_output_tokens":1,"capabilities":[],"lifecycle":{"status":"active"},"pricing":{"input_usd_micros_per_million":1,"output_usd_micros_per_million":2,"unexpected":3}}),
+    ] {
+        assert!(serde_json::from_value::<ModelDefinitionDraft>(invalid).is_err());
+    }
+    let deprecated: ModelLifecycleDraft =
+        serde_json::from_value(json!({"status":"deprecated"})).unwrap();
+    assert_eq!(
+        deprecated,
+        ModelLifecycleDraft::Deprecated { replacement: None }
+    );
+    assert_eq!(
+        serde_json::to_value(deprecated).unwrap(),
+        json!({"status":"deprecated"})
+    );
+}
+
+#[test]
+fn model_lifecycle_results_error_and_schema_are_typed_and_redacted() {
+    for result in [
+        RegistryAdminResult::ModelCreated {
+            revision: model_view(),
+        },
+        RegistryAdminResult::ModelRevisionStaged {
+            revision: model_view(),
+        },
+        RegistryAdminResult::ModelRevisionActivated {
+            revision: model_view(),
+        },
+        RegistryAdminResult::ModelRevisionRolledBack {
+            revision: model_view(),
+        },
+    ] {
+        let wire = serde_json::to_string(&RegistryAdminResponse::Success {
+            result: Box::new(result),
+        })
+        .unwrap();
+        assert!(wire.contains("pricing_sha256"));
+        assert!(!wire.contains("input_usd_micros_per_million"));
+    }
+    assert_eq!(
+        serde_json::to_value(RegistryAdminErrorCode::ModelAlreadyExists).unwrap(),
+        "model_already_exists"
+    );
+    let schema = serde_json::to_string(&schemars::schema_for!(RegistryAdminRequest)).unwrap();
+    for operation in [
+        "create_model",
+        "stage_model_revision",
+        "activate_model_revision",
+        "rollback_model_revision",
+    ] {
+        assert!(schema.contains(operation));
+    }
+}
+
 #[test]
 fn every_registry_request_has_an_explicit_minimum_protocol_version() {
     let reads = [
@@ -697,6 +895,10 @@ fn every_registry_request_has_an_explicit_minimum_protocol_version() {
         json!({"operation":"stage_provider_revision","provider_id":"p","revision":2,"expected_active_revision":1,"definition":{"kind":"anthropic_compatible","base_url":"https://example.test","credential_binding_id":"b"}}),
         json!({"operation":"activate_provider_revision","provider_id":"p","revision":2,"expected_active_revision":1}),
         json!({"operation":"rollback_provider_revision","provider_id":"p","target_revision":1,"expected_active_revision":2}),
+        json!({"operation":"create_model","provider_id":"p","model_id":"m","definition":{"context_window":1,"max_output_tokens":1,"capabilities":[],"lifecycle":{"status":"active"}}}),
+        json!({"operation":"stage_model_revision","provider_id":"p","model_id":"m","revision":2,"expected_active_revision":1,"definition":{"context_window":1,"max_output_tokens":1,"capabilities":[],"lifecycle":{"status":"active"}}}),
+        json!({"operation":"activate_model_revision","provider_id":"p","model_id":"m","revision":2,"expected_active_revision":1}),
+        json!({"operation":"rollback_model_revision","provider_id":"p","model_id":"m","target_revision":1,"expected_active_revision":2}),
         json!({"operation":"create_credential_binding","binding_id":"b","reference":{"source":"environment","name":"K"}}),
         json!({"operation":"stage_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1,"reference":{"source":"file","path":"/k"}}),
         json!({"operation":"activate_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1}),

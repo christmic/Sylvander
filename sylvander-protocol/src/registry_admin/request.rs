@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{CredentialSecretReferenceDraft, ProviderDefinitionDraft, RegistryAdminError};
+use super::{
+    CredentialSecretReferenceDraft, ModelDefinitionDraft, ModelLifecycleDraft,
+    ProviderDefinitionDraft, RegistryAdminError,
+};
 
 pub const DEFAULT_REGISTRY_REVISION_PAGE_SIZE: u16 = 50;
 pub const MAX_REGISTRY_REVISION_PAGE_SIZE: u16 = 100;
@@ -54,6 +57,30 @@ pub enum RegistryAdminRequest {
         #[serde(default = "default_page_size")]
         limit: u16,
     },
+    CreateModel {
+        provider_id: String,
+        model_id: String,
+        definition: ModelDefinitionDraft,
+    },
+    StageModelRevision {
+        provider_id: String,
+        model_id: String,
+        revision: u64,
+        expected_active_revision: u64,
+        definition: ModelDefinitionDraft,
+    },
+    ActivateModelRevision {
+        provider_id: String,
+        model_id: String,
+        revision: u64,
+        expected_active_revision: u64,
+    },
+    RollbackModelRevision {
+        provider_id: String,
+        model_id: String,
+        target_revision: u64,
+        expected_active_revision: u64,
+    },
     InspectCredentialGeneration {
         binding_id: String,
         generation: u64,
@@ -102,6 +129,10 @@ impl RegistryAdminRequest {
             | Self::StageProviderRevision { .. }
             | Self::ActivateProviderRevision { .. }
             | Self::RollbackProviderRevision { .. }
+            | Self::CreateModel { .. }
+            | Self::StageModelRevision { .. }
+            | Self::ActivateModelRevision { .. }
+            | Self::RollbackModelRevision { .. }
             | Self::CreateCredentialBinding { .. }
             | Self::StageCredentialGeneration { .. }
             | Self::ActivateCredentialGeneration { .. }
@@ -166,6 +197,42 @@ impl RegistryAdminRequest {
             } => validate_provider(provider_id)
                 .and_then(|()| validate_model(model_id))
                 .and_then(|()| validate_page(*before_revision, *limit)),
+            Self::CreateModel {
+                provider_id,
+                model_id,
+                definition,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_model(model_id))
+                .and_then(|()| validate_model_draft(definition)),
+            Self::StageModelRevision {
+                provider_id,
+                model_id,
+                revision,
+                expected_active_revision,
+                definition,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_model(model_id))
+                .and_then(|()| validate_revision(*revision))
+                .and_then(|()| validate_revision(*expected_active_revision))
+                .and_then(|()| validate_model_draft(definition)),
+            Self::ActivateModelRevision {
+                provider_id,
+                model_id,
+                revision,
+                expected_active_revision,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_model(model_id))
+                .and_then(|()| validate_revision(*revision))
+                .and_then(|()| validate_revision(*expected_active_revision)),
+            Self::RollbackModelRevision {
+                provider_id,
+                model_id,
+                target_revision,
+                expected_active_revision,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_model(model_id))
+                .and_then(|()| validate_revision(*target_revision))
+                .and_then(|()| validate_revision(*expected_active_revision)),
             Self::InspectCredentialGeneration {
                 binding_id,
                 generation,
@@ -211,6 +278,43 @@ fn validate_provider_draft(definition: &ProviderDefinitionDraft) -> Result<(), R
     definition.is_configured().then_some(()).ok_or_else(|| {
         RegistryAdminError::invalid_request("provider definition must be configured")
     })
+}
+
+fn validate_model_draft(definition: &ModelDefinitionDraft) -> Result<(), RegistryAdminError> {
+    if definition.context_window == 0 || definition.max_output_tokens == 0 {
+        return Err(RegistryAdminError::invalid_request(
+            "model token limits must be positive",
+        ));
+    }
+    if definition
+        .capabilities
+        .iter()
+        .any(|capability| capability.trim().is_empty())
+    {
+        return Err(RegistryAdminError::invalid_request(
+            "model capabilities must not be blank",
+        ));
+    }
+    let mut capabilities = std::collections::BTreeSet::new();
+    if definition
+        .capabilities
+        .iter()
+        .any(|capability| !capabilities.insert(capability))
+    {
+        return Err(RegistryAdminError::invalid_request(
+            "model capabilities must not contain duplicates",
+        ));
+    }
+    if matches!(
+        &definition.lifecycle,
+        ModelLifecycleDraft::Deprecated { replacement: Some(replacement) }
+            if replacement.trim().is_empty()
+    ) {
+        return Err(RegistryAdminError::invalid_request(
+            "deprecated model replacement must be set",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_provider(provider_id: &str) -> Result<(), RegistryAdminError> {

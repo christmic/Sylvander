@@ -23,6 +23,56 @@ impl std::fmt::Debug for ProviderDefinitionDraft {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelDefinitionDraft {
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub capabilities: Vec<String>,
+    pub lifecycle: ModelLifecycleDraft,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ModelPricingDraft>,
+}
+
+impl std::fmt::Debug for ModelDefinitionDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ModelDefinitionDraft([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ModelLifecycleDraft {
+    Active {},
+    Deprecated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replacement: Option<String>,
+    },
+}
+
+impl std::fmt::Debug for ModelLifecycleDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ModelLifecycleDraft([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPricingDraft {
+    pub input_usd_micros_per_million: u64,
+    pub output_usd_micros_per_million: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_usd_micros_per_million: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_usd_micros_per_million: Option<u64>,
+}
+
+impl std::fmt::Debug for ModelPricingDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ModelPricingDraft([REDACTED])")
+    }
+}
+
 /// Write-only credential locator. Secret values are never accepted by this contract.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
