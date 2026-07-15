@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
-    ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind, ProviderErrorPhase,
-    ProviderFuture,
+    ModelCapabilities, ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind,
+    ProviderErrorPhase, ProviderFuture, validate_model_request_capabilities,
 };
 
 use crate::agent_registry::AgentRegistry;
@@ -316,36 +316,36 @@ impl ModelProvider for RequestScopedAnthropicProvider {
 /// match the exact qualified allowlist before its Provider adapter is called.
 pub(crate) struct PinnedProviderRouter {
     routes: HashMap<String, Arc<dyn ModelProvider>>,
-    allowed_models: HashSet<ModelRef>,
+    model_catalog: HashMap<ModelRef, ModelCapabilities>,
 }
 
 impl PinnedProviderRouter {
     pub(crate) fn new(
         routes: HashMap<String, Arc<dyn ModelProvider>>,
-        allowed_models: HashSet<ModelRef>,
+        model_catalog: HashMap<ModelRef, ModelCapabilities>,
     ) -> Result<Self, ProviderRouterBuildError> {
         if routes.is_empty() {
             return Err(ProviderRouterBuildError::EmptyRoutes);
         }
-        if allowed_models.is_empty() {
+        if model_catalog.is_empty() {
             return Err(ProviderRouterBuildError::EmptyModels);
         }
         if routes
             .keys()
             .any(|provider_id| provider_id.trim().is_empty())
-            || allowed_models
-                .iter()
+            || model_catalog
+                .keys()
                 .any(|model| model.provider.trim().is_empty() || model.model.trim().is_empty())
         {
             return Err(ProviderRouterBuildError::IncompleteCatalog);
         }
 
-        let used_routes = allowed_models
-            .iter()
+        let used_routes = model_catalog
+            .keys()
             .map(|model| model.provider.as_str())
             .collect::<HashSet<_>>();
-        if allowed_models
-            .iter()
+        if model_catalog
+            .keys()
             .any(|model| !routes.contains_key(&model.provider))
             || routes
                 .keys()
@@ -356,7 +356,7 @@ impl PinnedProviderRouter {
 
         Ok(Self {
             routes,
-            allowed_models,
+            model_catalog,
         })
     }
 }
@@ -366,21 +366,22 @@ impl std::fmt::Debug for PinnedProviderRouter {
         formatter
             .debug_struct("PinnedProviderRouter")
             .field("route_count", &self.routes.len())
-            .field("model_count", &self.allowed_models.len())
+            .field("model_count", &self.model_catalog.len())
             .finish()
     }
 }
 
 impl ModelProvider for PinnedProviderRouter {
     fn complete_stream(&self, request: ModelRequest) -> ProviderFuture<'_> {
-        let route = self
-            .allowed_models
-            .contains(&request.model)
-            .then(|| self.routes.get(&request.model.provider))
-            .flatten()
-            .cloned();
+        let selected = self
+            .routes
+            .get(&request.model.provider)
+            .cloned()
+            .zip(self.model_catalog.get(&request.model).copied());
         Box::pin(async move {
-            let route = route.ok_or_else(router_rejection)?;
+            let (route, capabilities) = selected.ok_or_else(router_rejection)?;
+            validate_model_request_capabilities(&request, capabilities)
+                .map_err(|_| router_capability_rejection())?;
             route.complete_stream(request).await
         })
     }
@@ -424,6 +425,13 @@ fn router_rejection() -> ProviderError {
     provider_error(
         ProviderErrorKind::InvalidRequest,
         "requested model is unavailable for this Agent revision",
+    )
+}
+
+fn router_capability_rejection() -> ProviderError {
+    provider_error(
+        ProviderErrorKind::Unsupported,
+        "requested model does not support required capabilities",
     )
 }
 

@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sylvander_llm_core::{
-    ChatMessage, ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind,
-    ProviderErrorPhase,
+    ChatMessage, ModelCapabilities, ModelProvider, ModelRef, ModelRequest, ProviderError,
+    ProviderErrorKind, ProviderErrorPhase, ToolDefinition,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{header, method, path};
@@ -81,11 +81,42 @@ fn router(
     routes: impl IntoIterator<Item = (&'static str, Arc<RouteProbe>)>,
     models: impl IntoIterator<Item = ModelRef>,
 ) -> Result<PinnedProviderRouter, ProviderRouterBuildError> {
+    router_with_capabilities(
+        routes,
+        models.into_iter().map(|model| (model, all_capabilities())),
+    )
+}
+
+fn router_with_capabilities(
+    routes: impl IntoIterator<Item = (&'static str, Arc<RouteProbe>)>,
+    models: impl IntoIterator<Item = (ModelRef, ModelCapabilities)>,
+) -> Result<PinnedProviderRouter, ProviderRouterBuildError> {
     let routes = routes
         .into_iter()
         .map(|(provider_id, adapter)| (provider_id.to_string(), adapter as Arc<dyn ModelProvider>))
         .collect::<HashMap<_, _>>();
-    PinnedProviderRouter::new(routes, models.into_iter().collect::<HashSet<_>>())
+    PinnedProviderRouter::new(routes, models.into_iter().collect())
+}
+
+fn all_capabilities() -> ModelCapabilities {
+    ModelCapabilities::REASONING
+        | ModelCapabilities::PROMPT_CACHING
+        | ModelCapabilities::STRUCTURED_OUTPUT
+        | ModelCapabilities::TOOL_USE
+        | ModelCapabilities::VISION
+        | ModelCapabilities::DOCUMENT_INPUT
+}
+
+fn tool_request(provider: &str) -> ModelRequest {
+    let mut request = qualified_request(provider, "shared");
+    request.request_id = "secret-request-id".into();
+    request.tools.push(ToolDefinition {
+        name: "secret-tool".into(),
+        description: "secret-description".into(),
+        input_schema: serde_json::json!({"secret": true}),
+        cache_hint: None,
+    });
+    request
 }
 
 async fn expect_key(server: &MockServer, key: &str, count: u64) {
@@ -504,6 +535,73 @@ async fn router_routes_same_model_name_by_exact_provider() {
     assert_eq!(
         beta.requests.lock().unwrap().as_slice(),
         [ModelRef::new("beta", "shared")]
+    );
+}
+
+#[tokio::test]
+async fn missing_capability_is_rejected_before_credentials_or_adapter_open() {
+    let source = Arc::new(MockSource::new([]));
+    let adapter: Arc<dyn ModelProvider> = Arc::new(RequestScopedAnthropicProvider::new(
+        "alpha",
+        1,
+        "https://example.invalid",
+        "secret-binding",
+        source.clone(),
+    ));
+    let router = PinnedProviderRouter::new(
+        HashMap::from([("alpha".into(), adapter)]),
+        HashMap::from([(ModelRef::new("alpha", "shared"), ModelCapabilities::empty())]),
+    )
+    .unwrap();
+
+    let Err(error) = router.complete_stream(tool_request("alpha")).await else {
+        panic!("missing capability must be rejected");
+    };
+
+    assert_eq!(error.kind, ProviderErrorKind::Unsupported);
+    assert_eq!(error.phase, ProviderErrorPhase::Open);
+    assert!(!error.is_retryable());
+    assert_eq!(
+        error.message,
+        "requested model does not support required capabilities"
+    );
+    assert!(!error.to_string().contains("secret-request-id"));
+    assert!(!error.to_string().contains("secret-tool"));
+    assert!(!error.to_string().contains("secret-binding"));
+    assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+    assert!(source.bindings.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn same_model_id_capabilities_are_isolated_by_provider() {
+    let alpha = Arc::new(RouteProbe::named("alpha selected"));
+    let beta = Arc::new(RouteProbe::named("beta must not be called"));
+    let router = router_with_capabilities(
+        [("alpha", alpha.clone()), ("beta", beta.clone())],
+        [
+            (
+                ModelRef::new("alpha", "shared"),
+                ModelCapabilities::TOOL_USE,
+            ),
+            (ModelRef::new("beta", "shared"), ModelCapabilities::empty()),
+        ],
+    )
+    .unwrap();
+
+    let Err(supported) = router.complete_stream(tool_request("alpha")).await else {
+        panic!("supported request must reach the selected probe");
+    };
+    let Err(unsupported) = router.complete_stream(tool_request("beta")).await else {
+        panic!("provider-specific missing capability must be rejected");
+    };
+
+    assert_eq!(supported.message, "alpha selected");
+    assert_eq!(unsupported.kind, ProviderErrorKind::Unsupported);
+    assert_eq!(alpha.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(beta.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        alpha.requests.lock().unwrap().as_slice(),
+        [ModelRef::new("alpha", "shared")]
     );
 }
 
