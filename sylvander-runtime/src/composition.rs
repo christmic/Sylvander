@@ -1,6 +1,6 @@
 //! Production composition of configured Agent runs.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -16,6 +16,9 @@ use sylvander_agent::tools::{
 };
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 use sylvander_protocol::{
     ApprovalPolicy, FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort,
     SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
@@ -23,7 +26,14 @@ use sylvander_protocol::{
 };
 
 use crate::config::{
-    AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
+    AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver,
+    ServerConfig, SystemSecretResolver,
+};
+use crate::credential_registry::CredentialSecretResolver;
+use crate::registry_composition::RegistryCompositionSnapshot;
+use crate::registry_domain::ModelDefinition;
+use crate::request_scoped_provider::{
+    AnthropicProviderFactory, ProviderAdapterFactory, RegistryCredentialSource,
 };
 
 /// A configured run plus the metadata needed by protocol adapters.
@@ -87,40 +97,17 @@ pub(crate) fn build_agent(
     apply_default_prompt(definition, &mut spec)?;
 
     let memory = Arc::new(InMemoryMemoryStore::new());
-    let tools = ToolRegistry::new()
-        .register(ReadTool::new("/"))
-        .register(WriteTool::new("/"))
-        .register(EditTool::new("/"))
-        .register(MemoryReadTool::new(memory.clone()))
-        .register(AskUserTool::new())
-        .register(PresentPlanTool::new())
-        .register(UpdatePlanTool::new())
-        .register(StartBackgroundTaskTool::new());
+    let tools = default_tools(memory.clone());
 
-    let mut builder = AgentRun::builder(spec.clone(), client)
+    let builder = AgentRun::builder(spec.clone(), client)
         .bus(bus)
         .session_store(sessions)
         .memory(memory)
         .override_tools(tools)
         .available_models(models.clone())
-        .prompt_profiles(
-            definition
-                .prompt_profiles
-                .iter()
-                .map(|profile| (profile.id.clone(), profile.system_prompt.clone()))
-                .collect(),
-        )
+        .prompt_profiles(prompt_profiles(definition))
         .model_capabilities(primary.capabilities);
-    if let Some(path) = &config.server.workspace_journal {
-        builder = builder.workspace_journal(path);
-    }
-    if config.server.approval.enabled {
-        builder = builder.enable_approval();
-    }
-    if let Some(path) = &config.server.approval.persistent_store {
-        builder = builder.approval_store(path);
-    }
-    let run = builder
+    let run = apply_server_run_settings(config, builder)
         .build()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
 
@@ -130,12 +117,101 @@ pub(crate) fn build_agent(
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
-        execution_targets: config
-            .execution_targets
-            .iter()
-            .map(|target| target.id.clone())
-            .chain(std::iter::once("local".into()))
-            .collect(),
+        execution_targets: execution_targets(config),
+    })
+}
+
+/// Build one immutable registry revision while keeping credentials live.
+#[cfg_attr(not(test), expect(
+    dead_code,
+    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
+))]
+pub(crate) fn build_registry_agent(
+    config: &ServerConfig,
+    snapshot: RegistryCompositionSnapshot,
+    registry: crate::agent_registry::AgentRegistry,
+    bus: Arc<dyn MessageBus>,
+    sessions: Arc<dyn SessionStore>,
+) -> Result<ConfiguredAgent, CompositionError> {
+    build_registry_agent_with_resolver(
+        config,
+        snapshot,
+        registry,
+        bus,
+        sessions,
+        Arc::new(SystemSecretResolver),
+    )
+}
+
+#[cfg_attr(not(test), expect(
+    dead_code,
+    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
+))]
+fn build_registry_agent_with_resolver(
+    config: &ServerConfig,
+    snapshot: RegistryCompositionSnapshot,
+    registry: crate::agent_registry::AgentRegistry,
+    bus: Arc<dyn MessageBus>,
+    sessions: Arc<dyn SessionStore>,
+    resolver: Arc<dyn CredentialSecretResolver>,
+) -> Result<ConfiguredAgent, CompositionError> {
+    let RegistryCompositionSnapshot {
+        agent: definition,
+        provider,
+        models: definitions,
+        default_model_id,
+        credential_binding_id,
+    } = snapshot;
+    if credential_binding_id != provider.credential_binding_id {
+        return Err(CompositionError::RegistryBindingMismatch);
+    }
+    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
+    let provider_adapter = AnthropicProviderFactory
+        .create(provider.clone(), credentials)
+        .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
+    let (models, provider_models) = registry_model_catalog(&definitions)?;
+    let primary = provider_models
+        .iter()
+        .find(|model| model.reference.model == default_model_id)
+        .cloned()
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: provider.id.clone(),
+            model: default_model_id,
+        })?;
+    let mut spec = definition.spec.clone();
+    apply_default_prompt(&definition, &mut spec)?;
+
+    let memory = Arc::new(InMemoryMemoryStore::new());
+    let tools = default_tools(memory.clone());
+    let lifecycles = definitions
+        .iter()
+        .map(|model| (model.model_id.clone(), model.lifecycle.clone()))
+        .collect::<HashMap<_, _>>();
+    let pricing = definitions
+        .iter()
+        .filter_map(|model| model.pricing.map(|value| (model.model_id.clone(), value)))
+        .collect::<HashMap<_, _>>();
+    let mut builder = AgentRun::provider_builder(spec.clone(), provider_adapter, primary)
+        .bus(bus)
+        .session_store(sessions)
+        .memory(memory)
+        .override_tools(tools)
+        .available_provider_models(provider_models)
+        .model_lifecycles(lifecycles)
+        .model_pricing(pricing)
+        .prompt_profiles(prompt_profiles(&definition));
+    builder = apply_server_run_settings(config, builder);
+    let run = builder
+        .build()
+        .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
+
+    Ok(ConfiguredAgent {
+        spec,
+        run,
+        models,
+        approval_enabled: config.server.approval.enabled,
+        definition,
+        execution_targets: execution_targets(config),
     })
 }
 
@@ -250,7 +326,9 @@ pub fn resolve_session_config(
         agent_id: definition.spec.id.clone(),
         agent_revision: definition.revision,
         provider_id,
+        provider_revision: None,
         model_id,
+        model_revision: None,
         reasoning_effort,
         permissions,
         prompt_profile,
@@ -346,6 +424,125 @@ fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> Sessi
         path: workspace.path.clone().into(),
         read_only: workspace.read_only,
     }
+}
+
+fn default_tools(memory: Arc<InMemoryMemoryStore>) -> ToolRegistry {
+    ToolRegistry::new()
+        .register(ReadTool::new("/"))
+        .register(WriteTool::new("/"))
+        .register(EditTool::new("/"))
+        .register(MemoryReadTool::new(memory))
+        .register(AskUserTool::new())
+        .register(PresentPlanTool::new())
+        .register(UpdatePlanTool::new())
+        .register(StartBackgroundTaskTool::new())
+}
+
+fn prompt_profiles(definition: &AgentDefinitionConfig) -> HashMap<String, String> {
+    definition
+        .prompt_profiles
+        .iter()
+        .map(|profile| (profile.id.clone(), profile.system_prompt.clone()))
+        .collect()
+}
+
+fn execution_targets(config: &ServerConfig) -> HashSet<String> {
+    config
+        .execution_targets
+        .iter()
+        .map(|target| target.id.clone())
+        .chain(std::iter::once("local".into()))
+        .collect()
+}
+
+fn apply_server_run_settings(
+    config: &ServerConfig,
+    mut builder: sylvander_agent::run::AgentRunBuilder,
+) -> sylvander_agent::run::AgentRunBuilder {
+    if let Some(path) = &config.server.workspace_journal {
+        builder = builder.workspace_journal(path);
+    }
+    if config.server.approval.enabled {
+        builder = builder.enable_approval();
+    }
+    if let Some(path) = &config.server.approval.persistent_store {
+        builder = builder.approval_store(path);
+    }
+    builder
+}
+
+#[cfg_attr(not(test), expect(
+    dead_code,
+    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
+))]
+fn registry_model_catalog(
+    definitions: &[ModelDefinition],
+) -> Result<(Vec<ModelInfo>, Vec<ProviderModelInfo>), CompositionError> {
+    let mut shadows = Vec::with_capacity(definitions.len());
+    let mut exact = Vec::with_capacity(definitions.len());
+    for model in definitions {
+        let (shadow_capabilities, provider_capabilities) = registry_model_capabilities(model)?;
+        let shadow = ModelInfo::builder()
+            .id(&model.model_id)
+            .context_window(model.context_window)
+            .max_output_tokens(model.max_output_tokens)
+            .capabilities(shadow_capabilities)
+            .build()
+            .ok_or_else(|| CompositionError::InvalidModel(model.model_id.clone()))?;
+        shadows.push(shadow);
+        exact.push(ProviderModelInfo {
+            reference: ModelRef::new(&model.provider_id, &model.model_id),
+            context_window: model.context_window,
+            max_output_tokens: model.max_output_tokens,
+            capabilities: provider_capabilities,
+        });
+    }
+    Ok((shadows, exact))
+}
+
+#[cfg_attr(not(test), expect(
+    dead_code,
+    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
+))]
+fn registry_model_capabilities(
+    model: &ModelDefinition,
+) -> Result<(ModelCapabilities, ProviderModelCapabilities), CompositionError> {
+    let mut shadow = ModelCapabilities::empty();
+    let mut exact = ProviderModelCapabilities::empty();
+    for capability in &model.capabilities {
+        let (shadow_capability, exact_capability) = match capability.as_str() {
+            "extended_thinking" | "reasoning" => (
+                ModelCapabilities::EXTENDED_THINKING,
+                ProviderModelCapabilities::REASONING,
+            ),
+            "prompt_caching" => (
+                ModelCapabilities::PROMPT_CACHING,
+                ProviderModelCapabilities::PROMPT_CACHING,
+            ),
+            "structured_output" => (
+                ModelCapabilities::STRUCTURED_OUTPUT,
+                ProviderModelCapabilities::STRUCTURED_OUTPUT,
+            ),
+            "tool_use" => (
+                ModelCapabilities::TOOL_USE,
+                ProviderModelCapabilities::TOOL_USE,
+            ),
+            "vision" => (ModelCapabilities::VISION, ProviderModelCapabilities::VISION),
+            "document_input" => (
+                ModelCapabilities::DOCUMENT_INPUT,
+                ProviderModelCapabilities::DOCUMENT_INPUT,
+            ),
+            unknown => {
+                return Err(CompositionError::UnknownCapability {
+                    model: model.model_id.clone(),
+                    capability: unknown.to_string(),
+                });
+            }
+        };
+        shadow |= shadow_capability;
+        exact = exact | exact_capability;
+    }
+    Ok((shadow, exact))
 }
 
 fn source(kind: SessionConfigSourceKind, reference: &str) -> SessionConfigSource {
@@ -469,6 +666,10 @@ pub enum CompositionError {
     Secret(String, String),
     #[error("failed to create client for provider `{0}`: {1}")]
     Client(String, String),
+    #[error("registry credential binding does not match the pinned Provider")]
+    RegistryBindingMismatch,
+    #[error("failed to create pinned Provider: {0}")]
+    ProviderFactory(String),
     #[error("model `{0}` has invalid metadata")]
     InvalidModel(String),
     #[error("model `{model}` has unknown capability `{capability}`")]
@@ -715,3 +916,7 @@ path = "/tmp/sylvander-test.sock"
         assert!(matches!(error, CompositionError::SessionPromptDisabled));
     }
 }
+
+#[cfg(test)]
+#[path = "registry_agent_composition_tests.rs"]
+mod registry_agent_composition_tests;

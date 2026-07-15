@@ -17,7 +17,7 @@ use crate::agent_registry::AgentRegistry;
 use crate::credential_registry::{
     CredentialRegistryError, CredentialSecretResolver, ResolvedCredential,
 };
-use crate::registry_domain::{ProviderDefinition, StoredRevision};
+use crate::registry_domain::ProviderDefinition;
 
 pub(crate) type CredentialLeaseFuture<'a> = Pin<
     Box<
@@ -156,7 +156,7 @@ impl std::fmt::Debug for RequestScopedAnthropicProvider {
 pub(crate) trait ProviderAdapterFactory: Send + Sync {
     fn create(
         &self,
-        provider: StoredRevision<ProviderDefinition>,
+        provider: ProviderDefinition,
         credentials: Arc<dyn ActiveCredentialSource>,
     ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError>;
 }
@@ -167,27 +167,26 @@ pub(crate) struct AnthropicProviderFactory;
 impl ProviderAdapterFactory for AnthropicProviderFactory {
     fn create(
         &self,
-        provider: StoredRevision<ProviderDefinition>,
+        provider: ProviderDefinition,
         credentials: Arc<dyn ActiveCredentialSource>,
     ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
-        let definition = provider.definition;
-        if definition.kind != "anthropic_compatible" {
+        if provider.kind != "anthropic_compatible" {
             return Err(ProviderFactoryError::UnsupportedKind);
         }
-        definition
+        provider
             .validate()
             .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
         AnthropicClient::builder()
             .api_key("factory-validation-only")
-            .base_url(&definition.base_url)
+            .base_url(&provider.base_url)
             .build()
             .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
 
         Ok(Arc::new(RequestScopedAnthropicProvider::new(
-            definition.id,
-            definition.revision,
-            definition.base_url,
-            definition.credential_binding_id,
+            provider.id,
+            provider.revision,
+            provider.base_url,
+            provider.credential_binding_id,
             credentials,
         )))
     }
