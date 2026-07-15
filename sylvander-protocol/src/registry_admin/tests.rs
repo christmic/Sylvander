@@ -299,3 +299,202 @@ fn credential_error_identity_is_hashed_and_new_fields_default_for_legacy_errors(
     assert_eq!(legacy.binding_id_sha256, None);
     assert_eq!(legacy.generation, None);
 }
+
+#[test]
+fn credential_lifecycle_requests_have_stable_wire_shapes() {
+    let create: RegistryAdminRequest = serde_json::from_value(json!({
+        "operation": "create_credential_binding",
+        "binding_id": "credential/main",
+        "reference": {"source": "environment", "name": "PROVIDER_TOKEN"}
+    }))
+    .unwrap();
+    create.validate().unwrap();
+    let encoded = serde_json::to_value(&create).unwrap();
+    assert!(encoded.get("generation").is_none());
+    assert_eq!(
+        serde_json::from_value::<RegistryAdminRequest>(encoded).unwrap(),
+        create
+    );
+    assert!(
+        serde_json::from_value::<RegistryAdminRequest>(json!({
+            "operation": "create_credential_binding",
+            "binding_id": "credential/main",
+            "generation": 1,
+            "reference": {"source": "file", "path": "/run/key"}
+        }))
+        .is_err()
+    );
+
+    for request in [
+        RegistryAdminRequest::StageCredentialGeneration {
+            binding_id: "credential/main".into(),
+            generation: 2,
+            expected_active_generation: 1,
+            reference: CredentialSecretReferenceDraft::File {
+                path: "/run/key".into(),
+            },
+        },
+        RegistryAdminRequest::ActivateCredentialGeneration {
+            binding_id: "credential/main".into(),
+            generation: 2,
+            expected_active_generation: 1,
+        },
+        RegistryAdminRequest::RollbackCredentialGeneration {
+            binding_id: "credential/main".into(),
+            target_generation: 1,
+            expected_active_generation: 2,
+        },
+    ] {
+        request.validate().unwrap();
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RegistryAdminRequest>(encoded).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
+fn credential_lifecycle_validation_rejects_blank_references_and_zero_generations() {
+    for request in [
+        RegistryAdminRequest::CreateCredentialBinding {
+            binding_id: " ".into(),
+            reference: CredentialSecretReferenceDraft::Environment {
+                name: "TOKEN".into(),
+            },
+        },
+        RegistryAdminRequest::CreateCredentialBinding {
+            binding_id: "credential/main".into(),
+            reference: CredentialSecretReferenceDraft::Environment { name: " ".into() },
+        },
+        RegistryAdminRequest::CreateCredentialBinding {
+            binding_id: "credential/main".into(),
+            reference: CredentialSecretReferenceDraft::File { path: " ".into() },
+        },
+        RegistryAdminRequest::StageCredentialGeneration {
+            binding_id: "credential/main".into(),
+            generation: 0,
+            expected_active_generation: 1,
+            reference: CredentialSecretReferenceDraft::Environment {
+                name: "TOKEN".into(),
+            },
+        },
+        RegistryAdminRequest::StageCredentialGeneration {
+            binding_id: "credential/main".into(),
+            generation: 2,
+            expected_active_generation: 0,
+            reference: CredentialSecretReferenceDraft::Environment {
+                name: "TOKEN".into(),
+            },
+        },
+        RegistryAdminRequest::ActivateCredentialGeneration {
+            binding_id: "credential/main".into(),
+            generation: 0,
+            expected_active_generation: 1,
+        },
+        RegistryAdminRequest::RollbackCredentialGeneration {
+            binding_id: "credential/main".into(),
+            target_generation: 1,
+            expected_active_generation: 0,
+        },
+    ] {
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            RegistryAdminErrorCode::InvalidRequest
+        );
+    }
+}
+
+#[test]
+fn credential_reference_debug_and_wire_never_accept_secret_values() {
+    let reference = CredentialSecretReferenceDraft::Environment {
+        name: "PRIVATE_ENV_NAME".into(),
+    };
+    let debug = format!("{reference:?}");
+    assert_eq!(debug, "CredentialSecretReferenceDraft([REDACTED])");
+    assert!(!debug.contains("PRIVATE_ENV_NAME"));
+    assert!(
+        serde_json::from_value::<CredentialSecretReferenceDraft>(json!({
+            "source": "environment",
+            "name": "TOKEN",
+            "secret_value": "private"
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<CredentialSecretReferenceDraft>(json!({
+            "source": "literal",
+            "value": "private"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn credential_lifecycle_results_and_conflicts_are_typed_and_redacted() {
+    let generation = CredentialGenerationView {
+        binding_id_sha256: "binding-digest".into(),
+        generation: 1,
+        reference_kind: CredentialReferenceKind::Environment,
+        reference_configured: true,
+        reference_digest_sha256: "reference-digest".into(),
+        created_at_unix_secs: 10,
+        active: true,
+    };
+    for result in [
+        RegistryAdminResult::CredentialBindingCreated {
+            generation: generation.clone(),
+        },
+        RegistryAdminResult::CredentialGenerationStaged {
+            generation: generation.clone(),
+        },
+        RegistryAdminResult::CredentialGenerationActivated {
+            binding_id_sha256: "binding-digest".into(),
+            active_generation: 1,
+        },
+        RegistryAdminResult::CredentialGenerationRolledBack {
+            binding_id_sha256: "binding-digest".into(),
+            active_generation: 1,
+        },
+    ] {
+        let encoded = serde_json::to_string(&RegistryAdminResponse::Success {
+            result: Box::new(result),
+        })
+        .unwrap();
+        for private in [
+            "credential/main",
+            "PRIVATE_ENV_NAME",
+            "/run/key",
+            "secret_value",
+        ] {
+            assert!(!encoded.contains(private), "response exposed {private}");
+        }
+    }
+
+    let error: RegistryAdminError = serde_json::from_value(json!({
+        "code": "active_generation_conflict",
+        "message": "active generation changed",
+        "binding_id_sha256": "binding-digest",
+        "details": {
+            "kind": "active_generation_conflict",
+            "expected_active_generation": 1,
+            "actual_active_generation": 2
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        error.details.as_deref(),
+        Some(&RegistryAdminErrorDetails::ActiveGenerationConflict {
+            expected_active_generation: 1,
+            actual_active_generation: 2,
+        })
+    );
+    let legacy: RegistryAdminError = serde_json::from_value(json!({
+        "code": "unknown_generation",
+        "message": "unknown",
+        "binding_id_sha256": "binding-digest",
+        "generation": 1
+    }))
+    .unwrap();
+    assert_eq!(legacy.details, None);
+}

@@ -96,12 +96,23 @@ mod tests {
             "list_model_revisions",
             "inspect_credential_generation",
             "list_credential_generations",
+            "create_credential_binding",
+            "stage_credential_generation",
+            "activate_credential_generation",
+            "rollback_credential_generation",
             "base_url_sha256",
             "credential_binding_id_sha256",
             "pricing_sha256",
             "binding_id_sha256",
             "reference_digest_sha256",
             "CredentialReferenceKind",
+            "CredentialSecretReferenceDraft",
+            "credential_already_exists",
+            "active_generation_conflict",
+            "non_sequential_generation",
+            "generation_collision",
+            "invalid_rollback",
+            "credential_unavailable",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }
@@ -113,6 +124,7 @@ mod tests {
             "binding_id",
             "reference",
             "path",
+            "name",
             "secret_value",
         ] {
             assert!(!has_property(response, field), "response exposed {field}");

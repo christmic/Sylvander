@@ -6,7 +6,7 @@ pub struct RegistryAdminError {
     pub code: RegistryAdminErrorCode,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<String>,
+    pub provider_id: Option<Box<str>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<Box<str>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15,6 +15,8 @@ pub struct RegistryAdminError {
     pub revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Box<RegistryAdminErrorDetails>>,
 }
 
 impl RegistryAdminError {
@@ -28,6 +30,7 @@ impl RegistryAdminError {
             binding_id_sha256: None,
             revision: None,
             generation: None,
+            details: None,
         }
     }
 }
@@ -42,7 +45,33 @@ pub enum RegistryAdminErrorCode {
     UnknownCredentialBinding,
     UnknownRevision,
     UnknownGeneration,
+    CredentialAlreadyExists,
+    ActiveGenerationConflict,
+    NonSequentialGeneration,
+    GenerationCollision,
+    InvalidRollback,
+    CredentialUnavailable,
     StorageUnavailable,
     IntegrityFailure,
     Internal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RegistryAdminErrorDetails {
+    ActiveGenerationConflict {
+        expected_active_generation: u64,
+        actual_active_generation: u64,
+    },
+    NonSequentialGeneration {
+        expected_generation: u64,
+        actual_generation: u64,
+    },
+    GenerationCollision {
+        generation: u64,
+    },
+    InvalidRollback {
+        target_generation: u64,
+        actual_active_generation: u64,
+    },
 }

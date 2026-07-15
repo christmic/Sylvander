@@ -567,6 +567,7 @@ mod tests {
                     binding_id_sha256: None,
                     revision: None,
                     generation: None,
+                    details: None,
                 },
             },
         };
