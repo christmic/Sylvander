@@ -125,6 +125,8 @@ impl Default for MemoryBackupSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryRetentionSettings {
+    #[serde(default = "default_memory_retention_policy_revision")]
+    pub revision: u64,
     #[serde(default = "default_memory_ttl_days")]
     pub default_ttl_days: u32,
     #[serde(default = "default_memory_max_ttl_days")]
@@ -138,12 +140,17 @@ pub struct MemoryRetentionSettings {
 impl Default for MemoryRetentionSettings {
     fn default() -> Self {
         Self {
+            revision: default_memory_retention_policy_revision(),
             default_ttl_days: default_memory_ttl_days(),
             max_ttl_days: default_memory_max_ttl_days(),
             expired_grace_days: default_expired_memory_grace_days(),
             superseded_retention_days: default_superseded_memory_retention_days(),
         }
     }
+}
+
+const fn default_memory_retention_policy_revision() -> u64 {
+    1
 }
 
 const fn default_memory_ttl_days() -> u32 {
@@ -505,6 +512,12 @@ impl ServerConfig {
         }
         let memory = &self.server.memory_maintenance;
         let retention = &memory.retention;
+        if retention.revision == 0 || i64::try_from(retention.revision).is_err() {
+            errors.push(
+                "server memory_maintenance retention revision must be between 1 and 9223372036854775807"
+                    .into(),
+            );
+        }
         if !(1..=5 * 365).contains(&retention.default_ttl_days) {
             errors.push(
                 "server memory_maintenance retention default_ttl_days must be between 1 and 1825"
