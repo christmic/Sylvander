@@ -19,8 +19,8 @@ pub use background_task::StartBackgroundTaskTool;
 pub use edit::EditTool;
 pub use memory::{
     InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry, MemoryExecutionContext,
-    MemoryOwner, MemoryProvenance, MemoryProvenanceSource, MemoryScope, MemoryStore,
-    MemoryStoreError,
+    MemoryExpiryPatch, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
+    MemoryScope, MemoryStore, MemoryStoreError,
 };
 pub use memory_read::MemoryReadTool;
 pub use memory_sqlite::SqliteMemoryStore;
