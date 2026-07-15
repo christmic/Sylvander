@@ -215,7 +215,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | `sylvander-llm-core` defines the provider-neutral request, stream, response, error, usage, capability, and qualified identity contracts. `AnthropicProvider` implements the contract with one-request streaming and redacted failures. Production `AgentLoop` composition still uses its legacy Anthropic backend until the compatibility migration and registry router below are complete. |
+| A06 | Model providers | partial | Production Agent runs now use the provider-neutral request/stream contract, an immutable Provider/Model registry snapshot, request-scoped Credential resolution, and provider-backed compaction. The remaining gaps are public redacted registry administration, capability discovery, and validated cross-provider session switching. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -226,7 +226,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
 | A15 | Agent memory | defect | The server injects `InMemoryMemoryStore`; `MemoryStoreConfig` says SQLite is planned and rejects it. Agent memory is lost on restart. |
 | A16 | Public service protocol | complete | UI v2 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested with v1 negotiation and message defaults. |
-| A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, Agent revision, effective model/prompt/permissions/workspaces/executor, and channel ownership metadata. General mount sets and worktree leases remain P2/P3. |
+| A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
 | A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
 | A19 | DingTalk instances | partial | Configuration supports multiple credential-isolated bots; sender/conversation mappings, ownership, authorization, and outbound webhooks are instance-scoped. Interactive decisions, retry policy, and operational health remain in P4.2. |
 | A20 | Telegram instances | partial | The server constructs configured bots using the shared durable store, required webhook authentication, instance-scoped principals/chat mappings, authorization, and Unicode-safe chunking. Interactive decisions, retries, and operational health remain in P4.3. |
@@ -319,19 +319,28 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Migrate production `AgentLoop` through a compatibility-preserving dual
     backend; legacy history, events, tools, and builders remain valid, while
     provider streams are checked for one terminal completion and exact model
-    identity. Provider-backed compaction remains an explicit follow-up.
+    identity. Manual and automatic compaction use the same pinned provider
+    backend and return typed, redacted failures.
   - [x] Extend the existing `sessions.db` Agent registry SSOT with component
     migrations and immutable Provider/Model/Credential revision tables. Do not
     create a second registry database.
     Evidence: the component migration ledger plus integrity-checked registry
     domain loaders in `sylvander-runtime/src/agent_registry.rs` and
     `sylvander-runtime/src/registry_domain.rs`.
-  - [ ] Add true SQL compare-and-swap across multiple registry connections,
-    integrity validation, restart migration, lifecycle, pricing, and redacted
-    inspection/administration.
-  - [ ] Route active Provider/Model revisions dynamically while sessions pin
+  - [x] Add true SQL compare-and-swap across multiple registry connections,
+    integrity validation, restart migration, lifecycle, and pricing metadata.
+    Provider/Model/Credential heads use optimistic SQL updates and immutable
+    digest-checked definitions in the existing `sessions.db` SSOT.
+  - [x] Route active Provider/Model revisions dynamically while sessions pin
     definition revisions; credential bindings rotate live by generation and
     never persist resolved secret values.
+    Evidence: immutable Agent registry snapshots, exact production
+    `RuntimeRevisionProvider` composition, persisted Provider/Model session
+    pins, deterministic legacy closure, execution-boundary revalidation, and
+    request-scoped credential rotation tests in `sylvander-runtime`.
+  - [ ] Expose redacted Provider/Model/Credential inspection and lifecycle
+    administration through the public protocol with dual authorization and
+    durable content-free audit.
   - [ ] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
     isolation with deterministic local providers.
