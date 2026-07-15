@@ -92,11 +92,12 @@ use crate::agent_admin::{
 };
 use crate::agent_registry_snapshot::AgentSnapshotSelection;
 use crate::composition::{
-    ConfiguredAgent, build_agent, build_registry_agent, resolve_session_config,
+    ConfiguredAgent, build_agent, build_registry_agent_with_resolver, resolve_session_config,
 };
 use crate::config::{ServerConfig, SystemSecretResolver};
+use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
-use crate::registry_admin::RegistryAdminService;
+use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
@@ -153,6 +154,7 @@ struct RuntimeUiService {
     agents: HashMap<AgentId, ConfiguredAgent>,
     agent_registry: Option<AgentRegistry>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
+    credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     evidence: Option<EvidenceStore>,
     boundary: BoundaryGuard,
 }
@@ -163,6 +165,7 @@ struct RuntimeRevisionProvider {
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
+    credential_resolver: Arc<dyn CredentialSecretResolver>,
     configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
 }
 
@@ -192,12 +195,13 @@ impl RuntimeRevisionProvider {
             .resolve_registry_composition(agent_id, revision)
             .await
             .map_err(|error| RuntimeError::Composition(error.to_string()))?;
-        build_registry_agent(
+        build_registry_agent_with_resolver(
             &self.config,
             snapshot,
             self.registry.clone(),
             self.bus.clone(),
             self.sessions.clone(),
+            self.credential_resolver.clone(),
         )
         .map_err(|error| RuntimeError::Composition(error.to_string()))
     }
@@ -965,31 +969,57 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "Registry administration audit is unavailable",
             );
         };
-        let (operation, resource_kind, resource_id, version) =
-            registry_admin_audit_target(&request);
+        let target = registry_admin_audit_target(&request);
+        if registry_admin_is_mutation(&request) {
+            let Some(resolver) = self.credential_resolver.as_ref() else {
+                return registry_admin_error(
+                    RegistryAdminErrorCode::StorageUnavailable,
+                    "Credential mutation service is unavailable",
+                );
+            };
+            let audit_id = uuid::Uuid::new_v4().to_string();
+            let intent = registry_administration_audit(
+                audit_id.clone(),
+                boundary,
+                principal,
+                &target,
+                "pending",
+                None,
+            );
+            if store.begin_administration_mutation(intent).await.is_err() {
+                return registry_admin_error(
+                    RegistryAdminErrorCode::StorageUnavailable,
+                    "Registry administration audit is unavailable",
+                );
+            }
+            let response = CredentialRegistryMutationService::new(registry, resolver.as_ref())
+                .dispatch(Some(principal), request)
+                .await;
+            let (outcome, error_code) = registry_admin_outcome(&response);
+            if let Err(error) = store
+                .finish_administration_mutation(audit_id, outcome, error_code)
+                .await
+            {
+                warn!(%error, "failed to finish registry administration audit");
+                return registry_admin_error(
+                    RegistryAdminErrorCode::StorageUnavailable,
+                    "Registry administration audit is unavailable",
+                );
+            }
+            return response;
+        }
         let response = RegistryAdminService::new(registry)
             .dispatch(Some(principal), request)
             .await;
-        let (outcome, error_code) = match &response {
-            RegistryAdminResponse::Success { .. } => ("succeeded", None),
-            RegistryAdminResponse::Error { error } => {
-                ("failed", Some(registry_admin_error_code(error.code).into()))
-            }
-        };
-        let audit = AdministrationAudit {
-            id: uuid::Uuid::new_v4().to_string(),
-            occurred_at: sylvander_agent::session::now_secs(),
-            request_id: boundary.request_id.clone(),
-            principal_digest: sha256_text(&principal.id.0),
-            channel_instance_id: boundary.channel_instance_id.clone(),
-            transport: boundary.transport.clone(),
-            operation: operation.into(),
-            resource_kind: resource_kind.into(),
-            resource_digest: sha256_text(&resource_id),
-            version,
-            outcome: outcome.into(),
+        let (outcome, error_code) = registry_admin_outcome(&response);
+        let audit = registry_administration_audit(
+            uuid::Uuid::new_v4().to_string(),
+            boundary,
+            principal,
+            &target,
+            outcome,
             error_code,
-        };
+        );
         if store.record_administration_audit(audit).await.is_err() {
             return registry_admin_error(
                 RegistryAdminErrorCode::StorageUnavailable,
@@ -1382,13 +1412,57 @@ fn registry_admin_error(
             binding_id_sha256: None,
             revision: None,
             generation: None,
+            details: None,
         },
     }
 }
 
-fn registry_admin_audit_target(
-    request: &RegistryAdminRequest,
-) -> (&'static str, &'static str, String, Option<u64>) {
+type RegistryAdministrationTarget = (&'static str, &'static str, String, Option<u64>);
+
+fn registry_administration_audit(
+    id: String,
+    boundary: &sylvander_protocol::BoundaryContext,
+    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    target: &RegistryAdministrationTarget,
+    outcome: &'static str,
+    error_code: Option<String>,
+) -> AdministrationAudit {
+    AdministrationAudit {
+        id,
+        occurred_at: sylvander_agent::session::now_secs(),
+        request_id: boundary.request_id.clone(),
+        principal_digest: sha256_text(&principal.id.0),
+        channel_instance_id: boundary.channel_instance_id.clone(),
+        transport: boundary.transport.clone(),
+        operation: target.0.into(),
+        resource_kind: target.1.into(),
+        resource_digest: sha256_text(&target.2),
+        version: target.3,
+        outcome: outcome.into(),
+        error_code,
+    }
+}
+
+fn registry_admin_outcome(response: &RegistryAdminResponse) -> (&'static str, Option<String>) {
+    match response {
+        RegistryAdminResponse::Success { .. } => ("succeeded", None),
+        RegistryAdminResponse::Error { error } => {
+            ("failed", Some(registry_admin_error_code(error.code).into()))
+        }
+    }
+}
+
+const fn registry_admin_is_mutation(request: &RegistryAdminRequest) -> bool {
+    matches!(
+        request,
+        RegistryAdminRequest::CreateCredentialBinding { .. }
+            | RegistryAdminRequest::StageCredentialGeneration { .. }
+            | RegistryAdminRequest::ActivateCredentialGeneration { .. }
+            | RegistryAdminRequest::RollbackCredentialGeneration { .. }
+    )
+}
+
+fn registry_admin_audit_target(request: &RegistryAdminRequest) -> RegistryAdministrationTarget {
     match request {
         RegistryAdminRequest::InspectProviderRevision {
             provider_id,
@@ -1440,6 +1514,42 @@ fn registry_admin_audit_target(
             binding_id.clone(),
             None,
         ),
+        RegistryAdminRequest::CreateCredentialBinding { binding_id, .. } => (
+            "create_credential_binding",
+            "credential",
+            binding_id.clone(),
+            Some(1),
+        ),
+        RegistryAdminRequest::StageCredentialGeneration {
+            binding_id,
+            generation,
+            ..
+        } => (
+            "stage_credential_generation",
+            "credential",
+            binding_id.clone(),
+            Some(*generation),
+        ),
+        RegistryAdminRequest::ActivateCredentialGeneration {
+            binding_id,
+            generation,
+            ..
+        } => (
+            "activate_credential_generation",
+            "credential",
+            binding_id.clone(),
+            Some(*generation),
+        ),
+        RegistryAdminRequest::RollbackCredentialGeneration {
+            binding_id,
+            target_generation,
+            ..
+        } => (
+            "rollback_credential_generation",
+            "credential",
+            binding_id.clone(),
+            Some(*target_generation),
+        ),
     }
 }
 
@@ -1452,6 +1562,12 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
         RegistryAdminErrorCode::UnknownCredentialBinding => "unknown_credential_binding",
         RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
         RegistryAdminErrorCode::UnknownGeneration => "unknown_generation",
+        RegistryAdminErrorCode::CredentialAlreadyExists => "credential_already_exists",
+        RegistryAdminErrorCode::ActiveGenerationConflict => "active_generation_conflict",
+        RegistryAdminErrorCode::NonSequentialGeneration => "non_sequential_generation",
+        RegistryAdminErrorCode::GenerationCollision => "generation_collision",
+        RegistryAdminErrorCode::InvalidRollback => "invalid_rollback",
+        RegistryAdminErrorCode::CredentialUnavailable => "credential_unavailable",
         RegistryAdminErrorCode::StorageUnavailable => "storage_unavailable",
         RegistryAdminErrorCode::IntegrityFailure => "integrity_failure",
         RegistryAdminErrorCode::Internal => "internal",
@@ -1612,6 +1728,7 @@ impl Runtime {
             agents: configured_agents.clone(),
             agent_registry: None,
             revision_provider: None,
+            credential_resolver: None,
             evidence: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
@@ -1652,6 +1769,7 @@ impl Runtime {
         let agent_registry = AgentRegistry::open(session_db)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let credential_resolver: Arc<dyn CredentialSecretResolver> = Arc::new(SystemSecretResolver);
         agent_registry
             .bootstrap_registries(&config)
             .await
@@ -1739,12 +1857,13 @@ impl Runtime {
                 .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?;
             agents.push(
-                build_registry_agent(
+                build_registry_agent_with_resolver(
                     &config,
                     snapshot,
                     agent_registry.clone(),
                     bus.clone(),
                     session_store.clone(),
+                    credential_resolver.clone(),
                 )
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?,
             );
@@ -1760,6 +1879,7 @@ impl Runtime {
             bus: bus.clone(),
             sessions: session_store.clone(),
             ephemeral: ephemeral.clone(),
+            credential_resolver: credential_resolver.clone(),
             configured: RwLock::new(
                 configured_agents
                     .values()
@@ -1838,6 +1958,7 @@ impl Runtime {
             agents: configured_agents.clone(),
             agent_registry: Some(agent_registry.clone()),
             revision_provider: Some(revision_provider.clone()),
+            credential_resolver: Some(credential_resolver),
             evidence: Some(security_audit),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
@@ -3193,7 +3314,84 @@ model_name = "model-a"
             sylvander_protocol::RegistryAdminResponse::Error { error }
                 if error.code == sylvander_protocol::RegistryAdminErrorCode::UnknownRevision
         ));
-        let registry_audits = evidence.administration_audits(10).await.unwrap();
+        let binding_id = "credential/runtime-audit";
+        let create_credential = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+                binding_id: binding_id.into(),
+                reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
+                    path: secret.display().to_string(),
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            create_credential,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
+        let stage_credential = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::StageCredentialGeneration {
+                binding_id: binding_id.into(),
+                generation: 2,
+                expected_active_generation: 1,
+                reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
+                    path: secret.display().to_string(),
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            stage_credential,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
+        let activate_credential = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::ActivateCredentialGeneration {
+                binding_id: binding_id.into(),
+                generation: 2,
+                expected_active_generation: 1,
+            },
+        )
+        .await;
+        assert!(matches!(
+            activate_credential,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
+        let conflict = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
+                binding_id: binding_id.into(),
+                target_generation: 1,
+                expected_active_generation: 1,
+            },
+        )
+        .await;
+        assert!(matches!(
+            conflict,
+            sylvander_protocol::RegistryAdminResponse::Error { error }
+                if error.code
+                    == sylvander_protocol::RegistryAdminErrorCode::ActiveGenerationConflict
+        ));
+        let rollback_credential = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
+                binding_id: binding_id.into(),
+                target_generation: 1,
+                expected_active_generation: 2,
+            },
+        )
+        .await;
+        assert!(matches!(
+            rollback_credential,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
+        let registry_audits = evidence.administration_audits(20).await.unwrap();
         assert!(registry_audits.iter().any(|audit| {
             audit.operation == "inspect_provider_revision"
                 && audit.resource_kind == "provider"
@@ -3207,6 +3405,31 @@ model_name = "model-a"
                 && audit.outcome == "failed"
                 && audit.error_code.as_deref() == Some("unknown_revision")
         }));
+        for (operation, version, outcome) in [
+            ("create_credential_binding", 1, "succeeded"),
+            ("stage_credential_generation", 2, "succeeded"),
+            ("activate_credential_generation", 2, "succeeded"),
+            ("rollback_credential_generation", 1, "succeeded"),
+        ] {
+            assert!(registry_audits.iter().any(|audit| {
+                audit.operation == operation
+                    && audit.resource_kind == "credential"
+                    && audit.resource_digest != binding_id
+                    && audit.version == Some(version)
+                    && audit.outcome == outcome
+            }));
+        }
+        assert!(registry_audits.iter().any(|audit| {
+            audit.operation == "rollback_credential_generation"
+                && audit.version == Some(1)
+                && audit.outcome == "failed"
+                && audit.error_code.as_deref() == Some("active_generation_conflict")
+        }));
+        assert!(
+            registry_audits
+                .iter()
+                .all(|audit| audit.outcome != "pending")
+        );
         let admin_denials = evidence.authorization_denials(20).await.unwrap();
         assert!(
             admin_denials

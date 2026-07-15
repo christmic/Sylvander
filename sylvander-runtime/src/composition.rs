@@ -25,9 +25,10 @@ use sylvander_protocol::{
     SessionEffectiveConfig, SessionWorkspaceBinding,
 };
 
+#[cfg(test)]
+use crate::config::SystemSecretResolver;
 use crate::config::{
-    AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver,
-    ServerConfig, SystemSecretResolver,
+    AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
 use crate::registry_composition::RegistryCompositionSnapshot;
@@ -131,6 +132,7 @@ pub(crate) fn build_agent(
 }
 
 /// Build one immutable registry revision while keeping credentials live.
+#[cfg(test)]
 pub(crate) fn build_registry_agent(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
@@ -148,7 +150,7 @@ pub(crate) fn build_registry_agent(
     )
 }
 
-fn build_registry_agent_with_resolver(
+pub(crate) fn build_registry_agent_with_resolver(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
     registry: crate::agent_registry::AgentRegistry,

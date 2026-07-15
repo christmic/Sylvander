@@ -853,7 +853,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::config::SecretRef;
+    use crate::config::{SecretRef, SystemSecretResolver};
     use crate::registry_domain::CredentialBindingRevision;
 
     const RAW_URL: &str = "https://user:RAW_URL_SECRET@example.invalid/path?token=leak";
@@ -1241,5 +1241,138 @@ mod tests {
                     && error.binding_id_sha256.as_deref() == Some(sha256(RAW_BINDING).as_str())
                     && error.generation == Some(99)
         ));
+    }
+
+    #[tokio::test]
+    async fn credential_mutations_preflight_cas_and_redact_every_response() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.secret");
+        let second = directory.path().join("second.secret");
+        let missing = directory.path().join("missing.secret");
+        std::fs::write(&first, "first-value").unwrap();
+        std::fs::write(&second, "second-value").unwrap();
+        let binding_id = "credential/private-admin";
+        let registry = AgentRegistry::open(directory.path().join("registry.db"))
+            .await
+            .unwrap();
+        let service = CredentialRegistryMutationService::new(&registry, &SystemSecretResolver);
+
+        let created = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::CreateCredentialBinding {
+                    binding_id: binding_id.into(),
+                    reference: CredentialSecretReferenceDraft::File {
+                        path: first.display().to_string(),
+                    },
+                },
+            )
+            .await;
+        assert!(matches!(
+            created,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::CredentialBindingCreated {
+                    generation
+                } if generation.generation == 1 && generation.active)
+        ));
+
+        let staged = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::StageCredentialGeneration {
+                    binding_id: binding_id.into(),
+                    generation: 2,
+                    expected_active_generation: 1,
+                    reference: CredentialSecretReferenceDraft::File {
+                        path: second.display().to_string(),
+                    },
+                },
+            )
+            .await;
+        assert!(matches!(
+            staged,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::CredentialGenerationStaged {
+                    generation
+                } if generation.generation == 2 && !generation.active)
+        ));
+
+        let unavailable = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::StageCredentialGeneration {
+                    binding_id: binding_id.into(),
+                    generation: 3,
+                    expected_active_generation: 1,
+                    reference: CredentialSecretReferenceDraft::File {
+                        path: missing.display().to_string(),
+                    },
+                },
+            )
+            .await;
+        assert!(matches!(unavailable, RegistryAdminResponse::Success { .. }));
+        let unavailable = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::ActivateCredentialGeneration {
+                    binding_id: binding_id.into(),
+                    generation: 3,
+                    expected_active_generation: 1,
+                },
+            )
+            .await;
+        assert!(matches!(
+            unavailable,
+            RegistryAdminResponse::Error { ref error }
+                if error.code == RegistryAdminErrorCode::CredentialUnavailable
+                    && error.generation == Some(3)
+        ));
+
+        let activated = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::ActivateCredentialGeneration {
+                    binding_id: binding_id.into(),
+                    generation: 2,
+                    expected_active_generation: 1,
+                },
+            )
+            .await;
+        assert!(matches!(activated, RegistryAdminResponse::Success { .. }));
+        let conflict = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::RollbackCredentialGeneration {
+                    binding_id: binding_id.into(),
+                    target_generation: 1,
+                    expected_active_generation: 1,
+                },
+            )
+            .await;
+        assert!(matches!(
+            conflict,
+            RegistryAdminResponse::Error { ref error }
+                if error.code == RegistryAdminErrorCode::ActiveGenerationConflict
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::ActiveGenerationConflict {
+                            expected_active_generation: 1,
+                            actual_active_generation: 2,
+                        }
+                    ))
+        ));
+
+        for response in [&created, &staged, &unavailable, &activated, &conflict] {
+            let rendered = format!("{response:?} {}", serde_json::to_string(response).unwrap());
+            for secret in [
+                binding_id,
+                first.to_string_lossy().as_ref(),
+                second.to_string_lossy().as_ref(),
+                missing.to_string_lossy().as_ref(),
+                "first-value",
+                "second-value",
+            ] {
+                assert!(!rendered.contains(secret), "response leaked {secret}");
+            }
+        }
     }
 }
