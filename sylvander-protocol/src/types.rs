@@ -606,7 +606,7 @@ pub struct SessionConfigSource {
 
 /// Durable, user-controlled session overrides. Missing fields inherit from
 /// the Agent and channel definitions instead of copying their current values.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[serde(try_from = "SessionConfigOverridesWire")]
 pub struct SessionConfigOverrides {
@@ -629,6 +629,70 @@ pub struct SessionConfigOverrides {
     pub user_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_target: Option<String>,
+}
+
+impl std::fmt::Debug for SessionConfigOverrides {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionConfigOverrides")
+            .field("model", &self.model)
+            .field("model_id", &self.model_id)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("permissions", &self.permissions)
+            .field("prompt_profile", &self.prompt_profile)
+            .field(
+                "system_prompt",
+                &self.system_prompt.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("user_workspace", &self.user_workspace)
+            .field("execution_target", &self.execution_target)
+            .finish()
+    }
+}
+
+/// Read-only public projection of sparse overrides. Prompt input is write-only;
+/// its digest and size remain inspectable through the effective manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RedactedSessionConfigOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_workspace: Option<SessionWorkspaceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_target: Option<String>,
+}
+
+impl From<&SessionConfigOverrides> for RedactedSessionConfigOverrides {
+    fn from(value: &SessionConfigOverrides) -> Self {
+        Self {
+            model: value.model.clone(),
+            model_id: value.model_id.clone(),
+            reasoning_effort: value.reasoning_effort,
+            permissions: value.permissions.clone(),
+            prompt_profile: value.prompt_profile.clone(),
+            user_workspace: value.user_workspace.clone(),
+            execution_target: value.execution_target.clone(),
+        }
+    }
+}
+
+fn serialize_redacted_session_overrides<S>(
+    value: &SessionConfigOverrides,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    RedactedSessionConfigOverrides::from(value).serialize(serializer)
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -879,6 +943,8 @@ pub struct SessionConfigUpdateRequest {
 pub struct SessionConfigState {
     pub session_id: SessionId,
     pub revision: u64,
+    #[serde(serialize_with = "serialize_redacted_session_overrides")]
+    #[schemars(with = "RedactedSessionConfigOverrides")]
     pub overrides: SessionConfigOverrides,
     pub effective: SessionEffectiveConfig,
 }
@@ -1428,6 +1494,44 @@ mod tests {
         let round_trip: SessionEffectiveConfig =
             serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
         assert_eq!(round_trip.prompt_manifest.unwrap(), expected_manifest);
+    }
+
+    #[test]
+    fn session_config_state_keeps_prompt_input_write_only() {
+        let mut effective_json = effective_config_json();
+        effective_json["prompt_manifest"] = serde_json::json!({
+            "layers": [{
+                "kind": "session_input",
+                "reference": "session",
+                "sha256": "session-digest",
+                "byte_count": 24
+            }],
+            "aggregate_sha256": "aggregate",
+            "total_bytes": 24
+        });
+        let state = SessionConfigState {
+            session_id: SessionId::new("session-1"),
+            revision: 2,
+            overrides: SessionConfigOverrides {
+                prompt_profile: Some("coding".into()),
+                system_prompt: Some("private session sentinel".into()),
+                ..SessionConfigOverrides::default()
+            },
+            effective: serde_json::from_value(effective_json).unwrap(),
+        };
+        let debug = format!("{:?}", state.overrides);
+        assert!(!debug.contains("private session sentinel"));
+
+        let encoded = serde_json::to_value(&state).unwrap();
+        assert!(!encoded.to_string().contains("private session sentinel"));
+        assert!(encoded["overrides"].get("system_prompt").is_none());
+        assert_eq!(
+            encoded["effective"]["prompt_manifest"]["layers"][0]["sha256"],
+            "session-digest"
+        );
+        let decoded: SessionConfigState = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.overrides.prompt_profile.as_deref(), Some("coding"));
+        assert!(decoded.overrides.system_prompt.is_none());
     }
 
     #[test]
