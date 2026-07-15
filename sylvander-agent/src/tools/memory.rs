@@ -31,6 +31,10 @@ pub const MAX_MEMORY_METADATA_ENTRIES: usize = 32;
 pub const MAX_MEMORY_METADATA_KEY_BYTES: usize = 64;
 pub const MAX_MEMORY_METADATA_VALUE_BYTES: usize = 1024;
 pub const MAX_MEMORY_TTL_SECONDS: u64 = 5 * 365 * 24 * 60 * 60;
+pub const MAX_RETENTION_GRACE_DAYS: u32 = 365;
+pub const MAX_RETENTION_SUPERSEDED_DAYS: u32 = 5 * 365;
+pub const MAX_RETENTION_BATCH_LIMIT: u32 = 1_000;
+const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 const RESERVED_MEMORY_METADATA_KEYS: &[&str] = &[
     "access_count",
@@ -287,6 +291,107 @@ pub enum MemoryExpiryPatch {
     AfterSeconds(u64),
 }
 
+/// Validated relationship-memory lifecycle policy. Its revision identifies
+/// the exact policy used to derive each entry's effective expiry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationshipMemoryRetentionPolicy {
+    revision: u64,
+    default_ttl_days: u32,
+    max_ttl_days: u32,
+    expiry_grace_days: u32,
+    superseded_retention_days: u32,
+    batch_limit: u32,
+}
+
+impl RelationshipMemoryRetentionPolicy {
+    pub fn new(
+        revision: u64,
+        default_ttl_days: u32,
+        max_ttl_days: u32,
+        expiry_grace_days: u32,
+        superseded_retention_days: u32,
+        batch_limit: u32,
+    ) -> Result<Self, MemoryStoreError> {
+        if revision == 0
+            || i64::try_from(revision).is_err()
+            || default_ttl_days == 0
+            || default_ttl_days > max_ttl_days
+            || u64::from(max_ttl_days) * SECONDS_PER_DAY > MAX_MEMORY_TTL_SECONDS
+            || expiry_grace_days > MAX_RETENTION_GRACE_DAYS
+            || superseded_retention_days > MAX_RETENTION_SUPERSEDED_DAYS
+            || batch_limit == 0
+            || batch_limit > MAX_RETENTION_BATCH_LIMIT
+        {
+            return Err(MemoryStoreError::InvalidInput);
+        }
+        Ok(Self {
+            revision,
+            default_ttl_days,
+            max_ttl_days,
+            expiry_grace_days,
+            superseded_retention_days,
+            batch_limit,
+        })
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+    #[must_use]
+    pub const fn default_ttl_days(&self) -> u32 {
+        self.default_ttl_days
+    }
+    #[must_use]
+    pub const fn max_ttl_days(&self) -> u32 {
+        self.max_ttl_days
+    }
+    #[must_use]
+    pub const fn expiry_grace_days(&self) -> u32 {
+        self.expiry_grace_days
+    }
+    #[must_use]
+    pub const fn superseded_retention_days(&self) -> u32 {
+        self.superseded_retention_days
+    }
+    #[must_use]
+    pub const fn batch_limit(&self) -> u32 {
+        self.batch_limit
+    }
+
+    pub(super) fn apply_append(
+        &self,
+        mut append: MemoryAppend,
+    ) -> Result<MemoryAppend, MemoryStoreError> {
+        let requested = append
+            .expires_after_secs
+            .unwrap_or(u64::from(self.default_ttl_days) * SECONDS_PER_DAY);
+        if requested == 0 || requested > u64::from(self.max_ttl_days) * SECONDS_PER_DAY {
+            return Err(MemoryStoreError::InvalidInput);
+        }
+        append.expires_after_secs = Some(requested);
+        Ok(append)
+    }
+
+    pub(super) fn validate_patch(&self, patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
+        match patch.expiry {
+            Some(MemoryExpiryPatch::Never) => Err(MemoryStoreError::InvalidInput),
+            Some(MemoryExpiryPatch::AfterSeconds(seconds))
+                if seconds > u64::from(self.max_ttl_days) * SECONDS_PER_DAY =>
+            {
+                Err(MemoryStoreError::InvalidInput)
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Default for RelationshipMemoryRetentionPolicy {
+    fn default() -> Self {
+        Self::new(1, 180, 365, 7, 30, 100).expect("default retention policy must be valid")
+    }
+}
+
 /// Immutable origin recorded when a memory is created. These fields are
 /// derived from the runtime execution context, never from [`MemoryAppend`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +479,9 @@ pub struct MemoryEntry {
 
     /// Immutable runtime-derived creation provenance.
     pub provenance: MemoryProvenance,
+
+    /// Policy revision used to derive this entry's effective expiry.
+    pub retention_policy_revision: u64,
 }
 
 impl MemoryEntry {
@@ -382,6 +490,7 @@ impl MemoryEntry {
         owner: MemoryOwner,
         append: MemoryAppend,
         provenance: MemoryProvenance,
+        retention_policy_revision: u64,
         now: i64,
     ) -> Result<Self, MemoryStoreError> {
         let expires_at = match append.expires_after_secs {
@@ -408,6 +517,7 @@ impl MemoryEntry {
             expires_at,
             superseded_by: None,
             provenance,
+            retention_policy_revision,
         })
     }
 }
@@ -590,15 +700,33 @@ pub enum MemoryStoreError {
 ///
 /// Search is case-insensitive substring matching on `content`. M-B
 /// Phase 2 will replace this with FTS5 / embedding search.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InMemoryMemoryStore {
     entries: tokio::sync::RwLock<Vec<MemoryEntry>>,
+    retention_policy: RelationshipMemoryRetentionPolicy,
+}
+
+impl Default for InMemoryMemoryStore {
+    fn default() -> Self {
+        Self {
+            entries: tokio::sync::RwLock::new(Vec::new()),
+            retention_policy: RelationshipMemoryRetentionPolicy::default(),
+        }
+    }
 }
 
 impl InMemoryMemoryStore {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_retention_policy(policy: RelationshipMemoryRetentionPolicy) -> Self {
+        Self {
+            entries: tokio::sync::RwLock::new(Vec::new()),
+            retention_policy: policy,
+        }
     }
 }
 
@@ -610,12 +738,14 @@ impl MemoryStore for InMemoryMemoryStore {
         append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
+        let append = self.retention_policy.apply_append(append)?;
         validate_append(&append)?;
         let entry = MemoryEntry::materialize(
             uuid::Uuid::new_v4().to_string(),
             owner,
             append,
             ctx.provenance(),
+            self.retention_policy.revision(),
             crate::session::now_secs(),
         )?;
         self.entries.write().await.push(entry.clone());
@@ -664,6 +794,7 @@ impl MemoryStore for InMemoryMemoryStore {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
         validate_patch(&patch)?;
+        self.retention_policy.validate_patch(&patch)?;
         validate_revision(expected_revision)?;
         let now = crate::session::now_secs();
         let mut entries = self.entries.write().await;
@@ -687,6 +818,7 @@ impl MemoryStore for InMemoryMemoryStore {
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
+        let replacement = self.retention_policy.apply_append(replacement)?;
         validate_append(&replacement)?;
         validate_revision(expected_revision)?;
         let now = crate::session::now_secs();
@@ -695,6 +827,7 @@ impl MemoryStore for InMemoryMemoryStore {
             owner.clone(),
             replacement,
             ctx.provenance(),
+            self.retention_policy.revision(),
             now,
         )?;
         let mut entries = self.entries.write().await;
@@ -1168,7 +1301,7 @@ mod tests {
         let patch = MemoryPatch {
             content: Some("updated".into()),
             importance: Some(Importance::Critical),
-            expiry: Some(MemoryExpiryPatch::Never),
+            expiry: Some(MemoryExpiryPatch::AfterSeconds(30)),
             ..MemoryPatch::default()
         };
         assert!(matches!(
@@ -1184,7 +1317,7 @@ mod tests {
         assert_eq!(updated.revision, 2);
         assert_eq!(updated.content, "updated");
         assert_eq!(updated.importance, Importance::Critical);
-        assert_eq!(updated.expires_at, None);
+        assert!(updated.expires_at.is_some());
         assert_eq!(updated.provenance, original.provenance);
 
         let replacement = store
@@ -1256,5 +1389,50 @@ mod tests {
                 agent_id: AgentId::new("a1"),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn retention_policy_applies_default_and_rejects_unbounded_lifetimes() {
+        let policy = RelationshipMemoryRetentionPolicy::new(7, 2, 3, 1, 2, 10).unwrap();
+        let store = InMemoryMemoryStore::with_retention_policy(policy);
+        let ctx = worker(&session("alice", "a1", "s1"));
+        let defaulted = store
+            .append_relationship(&ctx, MemoryAppend::new("default"))
+            .await
+            .unwrap();
+        assert_eq!(defaulted.retention_policy_revision, 7);
+        assert_eq!(
+            defaulted.expires_at.unwrap() - defaulted.created_at,
+            2 * 24 * 60 * 60
+        );
+        assert!(
+            store
+                .append_relationship(&ctx, MemoryAppend::new("shorter").with_ttl(60))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            store
+                .append_relationship(
+                    &ctx,
+                    MemoryAppend::new("too long").with_ttl(4 * 24 * 60 * 60)
+                )
+                .await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
+        assert!(matches!(
+            store
+                .update_relationship(
+                    &ctx,
+                    &defaulted.id,
+                    defaulted.revision,
+                    MemoryPatch {
+                        expiry: Some(MemoryExpiryPatch::Never),
+                        ..MemoryPatch::default()
+                    },
+                )
+                .await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
     }
 }
