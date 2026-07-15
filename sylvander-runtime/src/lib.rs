@@ -44,6 +44,8 @@ mod model_registry_tests;
 mod provider_registry;
 #[cfg(test)]
 mod provider_registry_tests;
+#[allow(dead_code)] // production handler wiring follows the audited transport seam
+mod registry_admin;
 #[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
 mod registry_bootstrap;
 #[cfg(test)]
