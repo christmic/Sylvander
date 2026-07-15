@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use sylvander_agent::bus::MessageBus;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
-use sylvander_agent::run::AgentRun;
+use sylvander_agent::run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::tool::ToolRegistry;
@@ -56,6 +56,7 @@ struct RegistryRevisionBindings {
 pub struct ConfiguredAgent {
     pub spec: AgentSpec,
     pub run: AgentRun,
+    session_issuer: AgentSessionIssuer,
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
@@ -153,13 +154,14 @@ pub(crate) fn build_agent(
         .available_models(model_list)
         .prompt_resolver(prompt_resolver.clone())
         .model_capabilities(primary.capabilities);
-    let run = apply_server_run_settings(config, builder)
-        .build()
+    let (run, session_issuer) = apply_server_run_settings(config, builder)
+        .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
 
     Ok(ConfiguredAgent {
         spec,
         run,
+        session_issuer,
         models,
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
@@ -258,13 +260,14 @@ pub(crate) fn build_registry_agent_with_resolver(
         .model_pricing(pricing)
         .prompt_resolver(prompt_resolver.clone());
     builder = apply_server_run_settings(config, builder);
-    let run = builder
-        .build()
+    let (run, session_issuer) = builder
+        .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
 
     Ok(ConfiguredAgent {
         spec,
         run,
+        session_issuer,
         models,
         approval_enabled: config.server.approval.enabled,
         definition,
@@ -374,13 +377,14 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         .qualified_model_lifecycles(lifecycles)
         .qualified_model_pricing(pricing)
         .prompt_resolver(prompt_resolver.clone());
-    let run = apply_server_run_settings(config, builder)
-        .build()
+    let (run, session_issuer) = apply_server_run_settings(config, builder)
+        .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
 
     Ok(ConfiguredAgent {
         spec,
         run,
+        session_issuer,
         models,
         approval_enabled: config.server.approval.enabled,
         definition,
@@ -393,6 +397,15 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
 }
 
 impl ConfiguredAgent {
+    pub(crate) async fn attach_authenticated_session(
+        &self,
+        session_id: sylvander_protocol::SessionId,
+        metadata: sylvander_agent::session::SessionMetadata,
+    ) -> Result<AuthenticatedSession, AgentRunError> {
+        let lease = self.session_issuer.issue(session_id, metadata)?;
+        self.run.attach_authenticated_session(lease).await
+    }
+
     #[cfg(test)]
     pub(crate) fn uses_memory_store(&self, store: &Arc<dyn MemoryStore>) -> bool {
         Arc::ptr_eq(&self.memory_store, store)

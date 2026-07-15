@@ -2594,18 +2594,26 @@ mod tests {
             .build()
             .unwrap();
         let client = AnthropicClient::builder().api_key("test").build().unwrap();
-        let run = sylvander_agent::run::AgentRun::builder(spec, client)
+        let (run, issuer) = sylvander_agent::run::AgentRun::builder(spec, client)
             .bus(bus.clone())
             .workspace_journal(journal_dir.path())
-            .build()
+            .build_with_session_issuer()
             .unwrap();
-        let session_id = run
-            .join_session(sylvander_agent::session::SessionMetadata {
-                workspace: workspace.path().into(),
-                name: "test".into(),
-                user_id: "unix-client".into(),
-            })
-            .await;
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        run.attach_authenticated_session(
+            issuer
+                .issue(
+                    session_id.clone(),
+                    sylvander_agent::session::SessionMetadata {
+                        workspace: workspace.path().into(),
+                        name: "test".into(),
+                        user_id: "unix-client".into(),
+                    },
+                )
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         let journal = sylvander_agent::workspace_journal::WorkspaceJournal::new(journal_dir.path());
         let mutation = journal
             .prepare(

@@ -657,6 +657,17 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .save(&session)
             .await
             .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
+        if let Err(error) = agent
+            .attach_authenticated_session(session_id.clone(), metadata.clone())
+            .await
+        {
+            let _ = self.sessions.delete(&session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
         if let Err(error) = self
             .engine
             .attach_session(
@@ -2121,6 +2132,10 @@ impl Runtime {
                     .map_err(|error| RuntimeError::Store(error.to_string()))?;
             }
             session.effective_config = Some(closure.effective);
+            agent
+                .attach_authenticated_session(session.id.clone(), session.metadata.clone())
+                .await
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
             engine
                 .attach_session(
                     session.id.clone(),
@@ -2704,17 +2719,23 @@ id = "model-a"
         .unwrap()
     }
 
-    async fn attach_memory_session(runtime: &Runtime, agent: &str, user: &str) -> SessionId {
-        runtime
-            .configured_agent(&AgentId::new(agent))
-            .unwrap()
-            .run
-            .join_session(SessionMetadata {
-                workspace: PathBuf::from("/tmp"),
-                name: "memory-test".into(),
-                user_id: user.into(),
-            })
+    async fn attach_memory_session(
+        runtime: &Runtime,
+        agent: &str,
+        user: &str,
+    ) -> sylvander_agent::run::AuthenticatedSession {
+        let configured = runtime.configured_agent(&AgentId::new(agent)).unwrap();
+        configured
+            .attach_authenticated_session(
+                SessionId::new(uuid::Uuid::new_v4().to_string()),
+                SessionMetadata {
+                    workspace: PathBuf::from("/tmp"),
+                    name: "memory-test".into(),
+                    user_id: user.into(),
+                },
+            )
             .await
+            .unwrap()
     }
 
     #[test]
