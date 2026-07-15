@@ -45,6 +45,11 @@ pub enum RegistryAdminErrorCode {
     UnknownCredentialBinding,
     UnknownRevision,
     UnknownGeneration,
+    ProviderAlreadyExists,
+    ActiveRevisionConflict,
+    NonSequentialRevision,
+    RevisionCollision,
+    InvalidRevisionRollback,
     CredentialAlreadyExists,
     ActiveGenerationConflict,
     NonSequentialGeneration,
@@ -59,6 +64,21 @@ pub enum RegistryAdminErrorCode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RegistryAdminErrorDetails {
+    ActiveRevisionConflict {
+        expected_active_revision: u64,
+        actual_active_revision: u64,
+    },
+    NonSequentialRevision {
+        expected_revision: u64,
+        actual_revision: u64,
+    },
+    RevisionCollision {
+        revision: u64,
+    },
+    InvalidRevisionRollback {
+        target_revision: u64,
+        actual_active_revision: u64,
+    },
     ActiveGenerationConflict {
         expected_active_generation: u64,
         actual_active_generation: u64,

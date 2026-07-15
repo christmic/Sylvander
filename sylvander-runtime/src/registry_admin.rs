@@ -1,10 +1,10 @@
-//! Privileged, read-only administration of immutable runtime registries.
+//! Privileged administration of immutable runtime registries.
 
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{
     AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind,
-    CredentialSecretReferenceDraft, ModelRevisionView, ProviderRevisionView,
-    RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
+    CredentialSecretReferenceDraft, ModelRevisionView, ProviderDefinitionDraft,
+    ProviderRevisionView, RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
     RegistryAdminErrorCode, RegistryAdminErrorDetails, RegistryAdminRequest, RegistryAdminResponse,
     RegistryAdminResult,
 };
@@ -55,6 +55,35 @@ impl<'a> RegistryAdminService<'a> {
                 before_revision,
                 limit,
             } => self.list(provider_id, before_revision, limit).await,
+            RegistryAdminRequest::CreateProvider {
+                provider_id,
+                definition,
+            } => self.create_provider(provider_id, definition).await,
+            RegistryAdminRequest::StageProviderRevision {
+                provider_id,
+                revision,
+                expected_active_revision,
+                definition,
+            } => {
+                self.stage_provider(provider_id, revision, expected_active_revision, definition)
+                    .await
+            }
+            RegistryAdminRequest::ActivateProviderRevision {
+                provider_id,
+                revision,
+                expected_active_revision,
+            } => {
+                self.activate_provider(provider_id, revision, expected_active_revision)
+                    .await
+            }
+            RegistryAdminRequest::RollbackProviderRevision {
+                provider_id,
+                target_revision,
+                expected_active_revision,
+            } => {
+                self.rollback_provider(provider_id, target_revision, expected_active_revision)
+                    .await
+            }
             RegistryAdminRequest::InspectModelRevision {
                 provider_id,
                 model_id,
@@ -112,6 +141,76 @@ impl<'a> RegistryAdminService<'a> {
         }
     }
 
+    async fn create_provider(
+        &self,
+        provider_id: String,
+        definition: ProviderDefinitionDraft,
+    ) -> RegistryAdminResponse {
+        let definition = provider_definition(provider_id.clone(), 1, definition);
+        match self.registry.create_provider(definition).await {
+            Ok(stored) => success(RegistryAdminResult::ProviderCreated {
+                revision: redact_provider_revision(&stored),
+            }),
+            Err(source) => failure(map_provider_error(source, provider_id, Some(1))),
+        }
+    }
+
+    async fn stage_provider(
+        &self,
+        provider_id: String,
+        revision: u64,
+        expected_active: u64,
+        definition: ProviderDefinitionDraft,
+    ) -> RegistryAdminResponse {
+        let definition = provider_definition(provider_id.clone(), revision, definition);
+        match self
+            .registry
+            .stage_provider(expected_active, definition)
+            .await
+        {
+            Ok(stored) => success(RegistryAdminResult::ProviderRevisionStaged {
+                revision: redact_provider_revision(&stored),
+            }),
+            Err(source) => failure(map_provider_error(source, provider_id, Some(revision))),
+        }
+    }
+
+    async fn activate_provider(
+        &self,
+        provider_id: String,
+        revision: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .activate_provider(&provider_id, revision, expected_active)
+            .await
+        {
+            Ok(stored) => success(RegistryAdminResult::ProviderRevisionActivated {
+                revision: redact_provider_revision(&stored),
+            }),
+            Err(source) => failure(map_provider_error(source, provider_id, Some(revision))),
+        }
+    }
+
+    async fn rollback_provider(
+        &self,
+        provider_id: String,
+        target: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .rollback_provider(&provider_id, target, expected_active)
+            .await
+        {
+            Ok(stored) => success(RegistryAdminResult::ProviderRevisionRolledBack {
+                revision: redact_provider_revision(&stored),
+            }),
+            Err(source) => failure(map_provider_error(source, provider_id, Some(target))),
+        }
+    }
+
     async fn list(
         &self,
         provider_id: String,
@@ -133,7 +232,7 @@ impl<'a> RegistryAdminService<'a> {
                     .collect(),
                 next_before_revision: page.next_before_revision,
             }),
-            Err(source) => failure(map_provider_error(source, provider_id)),
+            Err(source) => failure(map_provider_error(source, provider_id, None)),
         }
     }
 
@@ -446,6 +545,20 @@ fn secret_reference(reference: CredentialSecretReferenceDraft) -> SecretRef {
     match reference {
         CredentialSecretReferenceDraft::Environment { name } => SecretRef::Env { name },
         CredentialSecretReferenceDraft::File { path } => SecretRef::File { path: path.into() },
+    }
+}
+
+fn provider_definition(
+    provider_id: String,
+    revision: u64,
+    draft: ProviderDefinitionDraft,
+) -> ProviderDefinition {
+    ProviderDefinition {
+        id: provider_id,
+        revision,
+        kind: draft.kind,
+        base_url: draft.base_url,
+        credential_binding_id: draft.credential_binding_id,
     }
 }
 
@@ -762,8 +875,24 @@ fn model_error(
     }
 }
 
-fn map_provider_error(source: ProviderRegistryError, provider_id: String) -> RegistryAdminError {
+fn map_provider_error(
+    source: ProviderRegistryError,
+    provider_id: String,
+    requested_revision: Option<u64>,
+) -> RegistryAdminError {
     match source {
+        ProviderRegistryError::InvalidDefinition => error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "provider revision is invalid",
+            Some(provider_id),
+            requested_revision,
+        ),
+        ProviderRegistryError::AlreadyExists { .. } => error(
+            RegistryAdminErrorCode::ProviderAlreadyExists,
+            "provider already exists",
+            Some(provider_id),
+            requested_revision,
+        ),
         ProviderRegistryError::UnknownProvider(_) => error(
             RegistryAdminErrorCode::UnknownProvider,
             "provider is unknown",
@@ -776,13 +905,61 @@ fn map_provider_error(source: ProviderRegistryError, provider_id: String) -> Reg
             Some(provider_id),
             Some(revision),
         ),
-        ProviderRegistryError::Registry(source) => map_registry_error(source, provider_id, None),
-        _ => error(
-            RegistryAdminErrorCode::Internal,
-            "provider registry operation failed",
-            Some(provider_id),
-            None,
+        ProviderRegistryError::Conflict {
+            expected, actual, ..
+        } => provider_error_details(
+            RegistryAdminErrorCode::ActiveRevisionConflict,
+            "provider active revision changed",
+            provider_id,
+            requested_revision,
+            RegistryAdminErrorDetails::ActiveRevisionConflict {
+                expected_active_revision: expected,
+                actual_active_revision: actual,
+            },
         ),
+        ProviderRegistryError::NonSequential {
+            expected, actual, ..
+        } => provider_error_details(
+            RegistryAdminErrorCode::NonSequentialRevision,
+            "provider revision is not sequential",
+            provider_id,
+            Some(actual),
+            RegistryAdminErrorDetails::NonSequentialRevision {
+                expected_revision: expected,
+                actual_revision: actual,
+            },
+        ),
+        ProviderRegistryError::RevisionCollision { revision, .. } => provider_error_details(
+            RegistryAdminErrorCode::RevisionCollision,
+            "provider revision has different content",
+            provider_id,
+            Some(revision),
+            RegistryAdminErrorDetails::RevisionCollision { revision },
+        ),
+        ProviderRegistryError::InvalidRollback { target, actual } => provider_error_details(
+            RegistryAdminErrorCode::InvalidRevisionRollback,
+            "provider rollback target is invalid",
+            provider_id,
+            Some(target),
+            RegistryAdminErrorDetails::InvalidRevisionRollback {
+                target_revision: target,
+                actual_active_revision: actual,
+            },
+        ),
+        ProviderRegistryError::Registry(source) => map_registry_error(source, provider_id, None),
+    }
+}
+
+fn provider_error_details(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+    provider_id: String,
+    revision: Option<u64>,
+    details: RegistryAdminErrorDetails,
+) -> RegistryAdminError {
+    RegistryAdminError {
+        details: Some(Box::new(details)),
+        ..error(code, message, Some(provider_id), revision)
     }
 }
 

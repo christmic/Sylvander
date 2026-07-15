@@ -971,11 +971,16 @@ impl sylvander_channel::UiService for RuntimeUiService {
         };
         let target = registry_admin_audit_target(&request);
         if registry_admin_is_mutation(&request) {
-            let Some(resolver) = self.credential_resolver.as_ref() else {
-                return registry_admin_error(
-                    RegistryAdminErrorCode::StorageUnavailable,
-                    "Credential mutation service is unavailable",
-                );
+            let credential_resolver = if registry_admin_is_credential_mutation(&request) {
+                let Some(resolver) = self.credential_resolver.as_ref() else {
+                    return registry_admin_error(
+                        RegistryAdminErrorCode::StorageUnavailable,
+                        "Credential mutation service is unavailable",
+                    );
+                };
+                Some(resolver.as_ref())
+            } else {
+                None
             };
             let audit_id = uuid::Uuid::new_v4().to_string();
             let intent = registry_administration_audit(
@@ -992,9 +997,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     "Registry administration audit is unavailable",
                 );
             }
-            let response = CredentialRegistryMutationService::new(registry, resolver.as_ref())
-                .dispatch(Some(principal), request)
-                .await;
+            let response = if let Some(resolver) = credential_resolver {
+                CredentialRegistryMutationService::new(registry, resolver)
+                    .dispatch(Some(principal), request)
+                    .await
+            } else {
+                RegistryAdminService::new(registry)
+                    .dispatch(Some(principal), request)
+                    .await
+            };
             let (outcome, error_code) = registry_admin_outcome(&response);
             if let Err(error) = store
                 .finish_administration_mutation(audit_id, outcome, error_code)
@@ -1455,6 +1466,20 @@ fn registry_admin_outcome(response: &RegistryAdminResponse) -> (&'static str, Op
 const fn registry_admin_is_mutation(request: &RegistryAdminRequest) -> bool {
     matches!(
         request,
+        RegistryAdminRequest::CreateProvider { .. }
+            | RegistryAdminRequest::StageProviderRevision { .. }
+            | RegistryAdminRequest::ActivateProviderRevision { .. }
+            | RegistryAdminRequest::RollbackProviderRevision { .. }
+            | RegistryAdminRequest::CreateCredentialBinding { .. }
+            | RegistryAdminRequest::StageCredentialGeneration { .. }
+            | RegistryAdminRequest::ActivateCredentialGeneration { .. }
+            | RegistryAdminRequest::RollbackCredentialGeneration { .. }
+    )
+}
+
+const fn registry_admin_is_credential_mutation(request: &RegistryAdminRequest) -> bool {
+    matches!(
+        request,
         RegistryAdminRequest::CreateCredentialBinding { .. }
             | RegistryAdminRequest::StageCredentialGeneration { .. }
             | RegistryAdminRequest::ActivateCredentialGeneration { .. }
@@ -1478,6 +1503,39 @@ fn registry_admin_audit_target(request: &RegistryAdminRequest) -> RegistryAdmini
             "provider",
             provider_id.clone(),
             None,
+        ),
+        RegistryAdminRequest::CreateProvider { provider_id, .. } => {
+            ("create_provider", "provider", provider_id.clone(), Some(1))
+        }
+        RegistryAdminRequest::StageProviderRevision {
+            provider_id,
+            revision,
+            ..
+        } => (
+            "stage_provider_revision",
+            "provider",
+            provider_id.clone(),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::ActivateProviderRevision {
+            provider_id,
+            revision,
+            ..
+        } => (
+            "activate_provider_revision",
+            "provider",
+            provider_id.clone(),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::RollbackProviderRevision {
+            provider_id,
+            target_revision,
+            ..
+        } => (
+            "rollback_provider_revision",
+            "provider",
+            provider_id.clone(),
+            Some(*target_revision),
         ),
         RegistryAdminRequest::InspectModelRevision {
             provider_id,
@@ -1562,6 +1620,11 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
         RegistryAdminErrorCode::UnknownCredentialBinding => "unknown_credential_binding",
         RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
         RegistryAdminErrorCode::UnknownGeneration => "unknown_generation",
+        RegistryAdminErrorCode::ProviderAlreadyExists => "provider_already_exists",
+        RegistryAdminErrorCode::ActiveRevisionConflict => "active_revision_conflict",
+        RegistryAdminErrorCode::NonSequentialRevision => "non_sequential_revision",
+        RegistryAdminErrorCode::RevisionCollision => "revision_collision",
+        RegistryAdminErrorCode::InvalidRevisionRollback => "invalid_revision_rollback",
         RegistryAdminErrorCode::CredentialAlreadyExists => "credential_already_exists",
         RegistryAdminErrorCode::ActiveGenerationConflict => "active_generation_conflict",
         RegistryAdminErrorCode::NonSequentialGeneration => "non_sequential_generation",
