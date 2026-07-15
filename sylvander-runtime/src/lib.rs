@@ -81,11 +81,13 @@ use tracing::{info, warn};
 
 use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
+use sylvander_agent::run::AgentRun;
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
+use sylvander_agent::tools::{InMemoryMemoryStore, MemoryStore, SqliteMemoryStore};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
@@ -102,7 +104,8 @@ use crate::agent_admin::{
 };
 use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 use crate::composition::{
-    ConfiguredAgent, build_registry_agent_versioned_with_resolver, resolve_session_config,
+    ConfiguredAgent, build_registry_agent_versioned_with_resolver, default_tools,
+    resolve_session_config,
 };
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
@@ -138,6 +141,8 @@ pub struct Runtime {
     pub engine: Arc<AgentRunEngine>,
     /// Session persistence backend.
     pub session_store: Arc<dyn SessionStore>,
+    /// Runtime-owned long-term memory shared by every Agent revision.
+    pub memory_store: Arc<dyn MemoryStore>,
     /// Ephemeral sessions (tracked in memory, not persisted).
     ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     /// Shared message bus.
@@ -174,6 +179,7 @@ struct RuntimeRevisionProvider {
     registry: AgentRegistry,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
     ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     credential_resolver: Arc<dyn CredentialSecretResolver>,
     configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
@@ -196,6 +202,7 @@ impl RuntimeRevisionProvider {
             self.registry.clone(),
             self.bus.clone(),
             self.sessions.clone(),
+            self.memory.clone(),
             self.credential_resolver.clone(),
         )
         .map_err(|error| RuntimeError::Composition(error.to_string()))
@@ -1802,11 +1809,21 @@ impl Runtime {
                 .await
                 .map_err(|e| RuntimeError::Store(format!("open session store: {e}")))?,
         );
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(InMemoryMemoryStore::new());
 
         // Spawn agents
         for spec in &config.agents {
+            let run = AgentRun::builder(spec.clone(), default_client.clone())
+                .bus(bus.clone())
+                .session_store(session_store.clone())
+                .memory(memory_store.clone())
+                .override_tools(default_tools(memory_store.clone()))
+                .build()
+                .map_err(|error| {
+                    RuntimeError::Engine(format!("build {} failed: {error}", spec.id))
+                })?;
             engine
-                .spawn(spec.clone(), default_client.clone())
+                .spawn_run(spec.clone(), run)
                 .await
                 .map_err(|e| RuntimeError::Engine(format!("spawn {} failed: {e}", spec.id)))?;
         }
@@ -1866,6 +1883,7 @@ impl Runtime {
         Ok(Self {
             engine,
             session_store,
+            memory_store,
             ephemeral: Arc::new(RwLock::new(HashMap::new())),
             bus,
             configured_agents,
@@ -1889,9 +1907,22 @@ impl Runtime {
             .session_db
             .as_ref()
             .expect("resolved session database");
+        let memory_db = config
+            .server
+            .memory_db
+            .as_ref()
+            .expect("resolved memory database")
+            .clone();
         if let Some(parent) = session_db.parent() {
             std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
                 operation: "create session database directory",
+                path: parent.display().to_string(),
+                message: error.to_string(),
+            })?;
+        }
+        if let Some(parent) = memory_db.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+                operation: "create memory database directory",
                 path: parent.display().to_string(),
                 message: error.to_string(),
             })?;
@@ -1950,6 +1981,12 @@ impl Runtime {
                 .await
                 .map_err(|error| RuntimeError::Store(error.to_string()))?,
         );
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(
+            tokio::task::spawn_blocking(move || SqliteMemoryStore::open(memory_db))
+                .await
+                .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
+                .map_err(|error| RuntimeError::Store(error.to_string()))?,
+        );
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
         let evidence_path = config
@@ -1998,6 +2035,7 @@ impl Runtime {
                     agent_registry.clone(),
                     bus.clone(),
                     session_store.clone(),
+                    memory_store.clone(),
                     credential_resolver.clone(),
                 )
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?,
@@ -2013,6 +2051,7 @@ impl Runtime {
             registry: agent_registry.clone(),
             bus: bus.clone(),
             sessions: session_store.clone(),
+            memory: memory_store.clone(),
             ephemeral: ephemeral.clone(),
             credential_resolver: credential_resolver.clone(),
             configured: RwLock::new(
@@ -2101,6 +2140,7 @@ impl Runtime {
         Ok(Self {
             engine,
             session_store,
+            memory_store,
             ephemeral,
             bus,
             configured_agents,
@@ -2515,6 +2555,7 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use sylvander_agent::tools::{MemoryAppend, MemoryExecutionContext};
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2864,6 +2905,89 @@ model_name = "shared"
         let pins = closed.effective.require_revision_pins().unwrap();
         assert_eq!(pins.provider_revision, 1);
         assert_eq!(pins.model_revision, 1);
+    }
+
+    #[tokio::test]
+    async fn configured_memory_is_shared_across_recomposition_and_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let secret = directory.path().join("provider.key");
+        std::fs::write(&secret, "test-secret").unwrap();
+        let config = ServerConfig::from_toml(&format!(
+            r#"
+schema_version = 1
+[server]
+data_dir = "{}"
+
+[[model_providers]]
+id = "primary"
+base_url = "https://models.invalid"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "model-a"
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Sylvander"
+[agents.spec.model]
+provider = "primary"
+model_name = "model-a"
+"#,
+            directory.path().display(),
+            secret.display()
+        ))
+        .unwrap();
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let provider = runtime.revision_provider.as_ref().unwrap();
+        assert!(Arc::ptr_eq(&runtime.memory_store, &provider.memory));
+        assert!(
+            runtime
+                .configured_agent(&AgentId::new("assistant"))
+                .unwrap()
+                .uses_memory_store(&runtime.memory_store)
+        );
+        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "user-a",
+            "assistant",
+            "memory-session",
+        ));
+        let entry = runtime
+            .memory_store
+            .append_relationship(&context, MemoryAppend::new("durable shared memory"))
+            .await
+            .unwrap();
+        provider.configured.write().await.clear();
+        assert!(
+            provider
+                .configured_revision(&AgentId::new("assistant"), 1)
+                .await
+                .unwrap()
+                .uses_memory_store(&runtime.memory_store)
+        );
+        assert!(
+            provider
+                .revalidate_revision(&AgentId::new("assistant"), 1)
+                .await
+                .unwrap()
+                .uses_memory_store(&runtime.memory_store)
+        );
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let restarted = Runtime::boot_config(config).await.unwrap();
+        assert_eq!(
+            restarted
+                .memory_store
+                .get_relationship(&context, &entry.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "durable shared memory"
+        );
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -3944,7 +4068,7 @@ model_name = "model-a"
         );
         let mut original_probe = sylvander_protocol::BusMessage::user_chat(
             created.session_id.clone(),
-            "operator",
+            "test-user",
             "revision-one-probe",
         );
         original_probe.recipient =

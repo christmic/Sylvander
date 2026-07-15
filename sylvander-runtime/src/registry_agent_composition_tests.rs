@@ -6,6 +6,7 @@ use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
+use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_protocol::{
     AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
     SessionConfigOverrides, SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
@@ -237,8 +238,15 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
     let sessions: Arc<dyn SessionStore> = store.clone();
-    let agent =
-        build_registry_agent(&config, snapshot.clone(), registry.clone(), bus, sessions).unwrap();
+    let agent = build_registry_agent(
+        &config,
+        snapshot.clone(),
+        registry.clone(),
+        bus,
+        sessions,
+        Arc::new(InMemoryMemoryStore::new()),
+    )
+    .unwrap();
     let runtime = agent.run.runtime_model_info().await;
     assert_eq!(runtime.current_model, "model-a");
     assert_eq!(runtime.models.len(), 2);
@@ -442,6 +450,7 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         registry.clone(),
         bus,
         sessions,
+        Arc::new(InMemoryMemoryStore::new()),
         Arc::new(SystemSecretResolver),
     )
     .unwrap();
