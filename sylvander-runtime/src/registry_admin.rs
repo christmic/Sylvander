@@ -2,14 +2,16 @@
 
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{
-    AuthenticatedPrincipal, ProviderRevisionView, RedactedProviderDefinition, RegistryAdminError,
-    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RegistryAdminResult,
+    AuthenticatedPrincipal, ModelRevisionView, ProviderRevisionView, RedactedModelDefinition,
+    RedactedProviderDefinition, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
+    RegistryAdminResponse, RegistryAdminResult,
 };
 
 use crate::agent_admin::is_agent_administrator;
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
+use crate::model_registry::ModelRegistryError;
 use crate::provider_registry::ProviderRegistryError;
-use crate::registry_domain::{ProviderDefinition, StoredRevision};
+use crate::registry_domain::{ModelDefinition, ProviderDefinition, StoredRevision};
 
 pub(crate) struct RegistryAdminService<'a> {
     registry: &'a AgentRegistry,
@@ -47,6 +49,20 @@ impl<'a> RegistryAdminService<'a> {
                 before_revision,
                 limit,
             } => self.list(provider_id, before_revision, limit).await,
+            RegistryAdminRequest::InspectModelRevision {
+                provider_id,
+                model_id,
+                revision,
+            } => self.inspect_model(provider_id, model_id, revision).await,
+            RegistryAdminRequest::ListModelRevisions {
+                provider_id,
+                model_id,
+                before_revision,
+                limit,
+            } => {
+                self.list_models(provider_id, model_id, before_revision, limit)
+                    .await
+            }
         }
     }
 
@@ -116,6 +132,105 @@ impl<'a> RegistryAdminService<'a> {
             Err(source) => failure(map_provider_error(source, provider_id)),
         }
     }
+
+    async fn inspect_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+        revision: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .load_model_revision(&provider_id, &model_id, revision)
+            .await
+        {
+            Ok(Some(stored)) => match redact_model_revision(&stored) {
+                Ok(revision) => success(RegistryAdminResult::ModelRevisionInspected { revision }),
+                Err(source) => failure(map_model_storage_error(
+                    source,
+                    provider_id,
+                    model_id,
+                    Some(revision),
+                )),
+            },
+            Ok(None) => failure(model_error(
+                RegistryAdminErrorCode::UnknownRevision,
+                "model revision is unknown",
+                provider_id,
+                model_id,
+                Some(revision),
+            )),
+            Err(source) => failure(map_model_storage_error(
+                source,
+                provider_id,
+                model_id,
+                Some(revision),
+            )),
+        }
+    }
+
+    async fn list_models(
+        &self,
+        provider_id: String,
+        model_id: String,
+        before: Option<u64>,
+        limit: u16,
+    ) -> RegistryAdminResponse {
+        match self.registry.inspect_model((&provider_id, &model_id)).await {
+            Ok(stored) if stored.is_empty() => failure(model_error(
+                RegistryAdminErrorCode::UnknownModel,
+                "model is unknown",
+                provider_id,
+                model_id,
+                None,
+            )),
+            Ok(stored) => {
+                let Some(active_revision) = stored
+                    .iter()
+                    .find(|revision| revision.active)
+                    .map(|revision| revision.definition.revision)
+                else {
+                    return failure(model_error(
+                        RegistryAdminErrorCode::IntegrityFailure,
+                        "model registry integrity check failed",
+                        provider_id,
+                        model_id,
+                        None,
+                    ));
+                };
+                let mut eligible = stored.iter().filter(|revision| {
+                    before.is_none_or(|value| revision.definition.revision < value)
+                });
+                let revisions = eligible
+                    .by_ref()
+                    .take(usize::from(limit))
+                    .map(redact_model_revision)
+                    .collect::<Result<Vec<_>, _>>();
+                let revisions = match revisions {
+                    Ok(revisions) => revisions,
+                    Err(source) => {
+                        return failure(map_model_storage_error(
+                            source,
+                            provider_id,
+                            model_id,
+                            None,
+                        ));
+                    }
+                };
+                let next_before_revision = eligible
+                    .next()
+                    .and_then(|_| revisions.last().map(|item| item.definition.revision));
+                success(RegistryAdminResult::ModelRevisionsListed {
+                    provider_id,
+                    model_id,
+                    active_revision,
+                    revisions,
+                    next_before_revision,
+                })
+            }
+            Err(source) => failure(map_model_error(source, provider_id, model_id)),
+        }
+    }
 }
 
 #[must_use]
@@ -138,6 +253,125 @@ pub(crate) fn redact_provider_revision(
         digest_sha256: revision.digest.clone(),
         created_at_unix_secs: revision.created_at,
         active: revision.active,
+    }
+}
+
+fn redact_model_revision(
+    revision: &StoredRevision<ModelDefinition>,
+) -> Result<ModelRevisionView, AgentRegistryError> {
+    let pricing_sha256 = revision
+        .definition
+        .pricing
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(AgentRegistryError::serde)?
+        .as_deref()
+        .map(sha256);
+    Ok(ModelRevisionView {
+        definition: RedactedModelDefinition {
+            provider_id: revision.definition.provider_id.clone(),
+            model_id: revision.definition.model_id.clone(),
+            revision: revision.definition.revision,
+            context_window: revision.definition.context_window,
+            max_output_tokens: revision.definition.max_output_tokens,
+            capabilities: revision.definition.capabilities.iter().cloned().collect(),
+            lifecycle: revision.definition.lifecycle.clone(),
+            pricing_sha256,
+        },
+        digest_sha256: revision.digest.clone(),
+        created_at_unix_secs: revision.created_at,
+        active: revision.active,
+    })
+}
+
+fn map_model_error(
+    source: ModelRegistryError,
+    provider_id: String,
+    model_id: String,
+) -> RegistryAdminError {
+    match source {
+        ModelRegistryError::UnknownProvider(_) => model_error(
+            RegistryAdminErrorCode::UnknownProvider,
+            "provider is unknown",
+            provider_id,
+            model_id,
+            None,
+        ),
+        ModelRegistryError::UnknownModel(_) => model_error(
+            RegistryAdminErrorCode::UnknownModel,
+            "model is unknown",
+            provider_id,
+            model_id,
+            None,
+        ),
+        ModelRegistryError::UnknownRevision { revision, .. } => model_error(
+            RegistryAdminErrorCode::UnknownRevision,
+            "model revision is unknown",
+            provider_id,
+            model_id,
+            Some(revision),
+        ),
+        ModelRegistryError::Registry(source) => {
+            map_model_storage_error(source, provider_id, model_id, None)
+        }
+        ModelRegistryError::InvalidDefinition => model_error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "model revision is invalid",
+            provider_id,
+            model_id,
+            None,
+        ),
+        _ => model_error(
+            RegistryAdminErrorCode::Internal,
+            "model registry operation failed",
+            provider_id,
+            model_id,
+            None,
+        ),
+    }
+}
+
+fn map_model_storage_error(
+    source: AgentRegistryError,
+    provider_id: String,
+    model_id: String,
+    revision: Option<u64>,
+) -> RegistryAdminError {
+    let (code, message) = match source {
+        AgentRegistryError::Storage(_) | AgentRegistryError::Task(_) => (
+            RegistryAdminErrorCode::StorageUnavailable,
+            "model registry is unavailable",
+        ),
+        AgentRegistryError::Serialization(_) | AgentRegistryError::Integrity(_) => (
+            RegistryAdminErrorCode::IntegrityFailure,
+            "model registry integrity check failed",
+        ),
+        AgentRegistryError::Invalid(_) => (
+            RegistryAdminErrorCode::InvalidRequest,
+            "model revision is invalid",
+        ),
+        _ => (
+            RegistryAdminErrorCode::Internal,
+            "model registry operation failed",
+        ),
+    };
+    model_error(code, message, provider_id, model_id, revision)
+}
+
+fn model_error(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+    provider_id: String,
+    model_id: String,
+    revision: Option<u64>,
+) -> RegistryAdminError {
+    RegistryAdminError {
+        code,
+        message: message.into(),
+        provider_id: Some(provider_id),
+        model_id: Some(model_id),
+        revision,
     }
 }
 
@@ -211,6 +445,7 @@ fn error(
         code,
         message: message.into(),
         provider_id,
+        model_id: None,
         revision,
     }
 }
@@ -221,7 +456,11 @@ fn sha256(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use sylvander_protocol::{AuthenticationMethod, RegistryAdminErrorCode};
+    use std::collections::BTreeSet;
+
+    use sylvander_protocol::{
+        AuthenticationMethod, ModelLifecycle, ModelPricing, RegistryAdminErrorCode,
+    };
 
     use super::*;
     use crate::config::SecretRef;
@@ -237,6 +476,24 @@ mod tests {
             kind: "anthropic_compatible".into(),
             base_url: base_url.into(),
             credential_binding_id: RAW_BINDING.into(),
+        }
+    }
+
+    fn model(revision: u64) -> ModelDefinition {
+        ModelDefinition {
+            provider_id: "alpha".into(),
+            model_id: "shared".into(),
+            revision,
+            context_window: 100_000 + u32::try_from(revision).unwrap(),
+            max_output_tokens: 4096,
+            capabilities: BTreeSet::from(["tool_use".into()]),
+            lifecycle: ModelLifecycle::Active,
+            pricing: Some(ModelPricing {
+                input_usd_micros_per_million: revision * 100,
+                output_usd_micros_per_million: revision * 200,
+                cache_write_usd_micros_per_million: None,
+                cache_read_usd_micros_per_million: None,
+            }),
         }
     }
 
@@ -393,6 +650,98 @@ mod tests {
             RegistryAdminResponse::Error { error }
                 if error.code == RegistryAdminErrorCode::UnknownRevision
                     && error.message == "provider revision is unknown"
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_reads_are_pinned_paginated_and_pricing_redacted() {
+        let registry = registry().await;
+        registry.seed_model(model(1)).await.unwrap();
+        registry.stage_model(1, model(2)).await.unwrap();
+        registry.stage_model(1, model(3)).await.unwrap();
+        registry
+            .activate_model(("alpha", "shared"), 3, 1)
+            .await
+            .unwrap();
+        let service = RegistryAdminService::new(&registry);
+
+        let inspected = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::InspectModelRevision {
+                    provider_id: "alpha".into(),
+                    model_id: "shared".into(),
+                    revision: 1,
+                },
+            )
+            .await;
+        let encoded = serde_json::to_string(&inspected).unwrap();
+        for raw_price in [
+            "input_usd_micros_per_million",
+            "output_usd_micros_per_million",
+        ] {
+            assert!(!encoded.contains(raw_price));
+        }
+        let RegistryAdminResponse::Success { result } = inspected else {
+            panic!("expected model inspection");
+        };
+        let RegistryAdminResult::ModelRevisionInspected { revision } = *result else {
+            panic!("expected model revision");
+        };
+        assert_eq!(revision.definition.revision, 1);
+        assert!(!revision.active);
+        assert!(revision.definition.pricing_sha256.is_some());
+
+        let first = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::ListModelRevisions {
+                    provider_id: "alpha".into(),
+                    model_id: "shared".into(),
+                    before_revision: None,
+                    limit: 2,
+                },
+            )
+            .await;
+        let RegistryAdminResponse::Success { result } = first else {
+            panic!("expected model list");
+        };
+        let RegistryAdminResult::ModelRevisionsListed {
+            active_revision,
+            revisions,
+            next_before_revision,
+            ..
+        } = *result
+        else {
+            panic!("expected model revisions");
+        };
+        assert_eq!(active_revision, 3);
+        assert_eq!(
+            revisions
+                .iter()
+                .map(|item| item.definition.revision)
+                .collect::<Vec<_>>(),
+            [3, 2]
+        );
+        assert_eq!(next_before_revision, Some(2));
+
+        let unknown = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::ListModelRevisions {
+                    provider_id: "alpha".into(),
+                    model_id: "missing".into(),
+                    before_revision: None,
+                    limit: 1,
+                },
+            )
+            .await;
+        assert!(matches!(
+            unknown,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::UnknownModel
+                    && error.provider_id.as_deref() == Some("alpha")
+                    && error.model_id.as_deref() == Some("missing")
         ));
     }
 }
