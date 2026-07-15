@@ -32,6 +32,9 @@ use crate::config::{
     AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
+use crate::prompt_limits::{
+    validate_identity, validate_prompt, validate_resolved_prompt, validate_session_prompt,
+};
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -369,6 +372,8 @@ pub fn resolve_session_config(
     legacy_workspace: Option<&std::path::Path>,
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
+    validate_prompt(&definition.spec.persona.system_prompt)
+        .map_err(|_| CompositionError::InvalidPrompt)?;
     let catalog = agent.models.keys().cloned().collect::<Vec<_>>();
     let selection = overrides
         .resolve_model_selection(&catalog)
@@ -428,6 +433,9 @@ pub fn resolve_session_config(
         .prompt_profile
         .clone()
         .or_else(|| definition.default_prompt_profile.clone());
+    if let Some(profile_id) = &prompt_profile {
+        validate_identity(profile_id).map_err(|_| CompositionError::InvalidPrompt)?;
+    }
     let mut system_prompt = definition.spec.persona.system_prompt.clone();
     if let Some(profile_id) = &prompt_profile {
         let profile = definition
@@ -447,14 +455,17 @@ pub fn resolve_session_config(
                 model: model_id.clone(),
             });
         }
+        validate_prompt(&profile.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
         system_prompt.clone_from(&profile.system_prompt);
     }
     if let Some(prompt) = &overrides.system_prompt {
+        validate_session_prompt(prompt).map_err(|_| CompositionError::InvalidPrompt)?;
         if !definition.allow_session_prompt {
             return Err(CompositionError::SessionPromptDisabled);
         }
         system_prompt.clone_from(prompt);
     }
+    validate_resolved_prompt(&system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
 
     let agent_workspace = definition.agent_workspace.as_ref().map(workspace_binding);
     let user_workspace = overrides
@@ -797,9 +808,13 @@ fn apply_default_prompt(
     definition: &AgentDefinitionConfig,
     spec: &mut AgentSpec,
 ) -> Result<(), CompositionError> {
+    validate_prompt(&spec.persona.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
     let Some(profile_id) = &definition.default_prompt_profile else {
+        validate_resolved_prompt(&spec.persona.system_prompt)
+            .map_err(|_| CompositionError::InvalidPrompt)?;
         return Ok(());
     };
+    validate_identity(profile_id).map_err(|_| CompositionError::InvalidPrompt)?;
     let profile = definition
         .prompt_profiles
         .iter()
@@ -817,9 +832,12 @@ fn apply_default_prompt(
             model: spec.model.model_name.clone(),
         });
     }
+    validate_prompt(&profile.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
     spec.persona
         .system_prompt
         .clone_from(&profile.system_prompt);
+    validate_resolved_prompt(&spec.persona.system_prompt)
+        .map_err(|_| CompositionError::InvalidPrompt)?;
     Ok(())
 }
 
@@ -867,6 +885,8 @@ pub enum CompositionError {
     ApprovalDisabled,
     #[error("session system prompt overrides are disabled")]
     SessionPromptDisabled,
+    #[error("prompt configuration is invalid")]
+    InvalidPrompt,
     #[error("prompt profile `{profile}` does not support {provider}/{model}")]
     IncompatiblePromptProfile {
         profile: String,
@@ -1276,7 +1296,7 @@ path = "/tmp/sylvander-test.sock"
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
 
-        let agents =
+        let mut agents =
             build_agents(&config, bus, sessions, &crate::config::SystemSecretResolver).unwrap();
 
         assert_eq!(agents.len(), 1);
@@ -1380,6 +1400,28 @@ path = "/tmp/sylvander-test.sock"
         )
         .unwrap_err();
         assert!(matches!(error, CompositionError::SessionPromptDisabled));
+
+        agents[0].definition.allow_session_prompt = true;
+        for invalid in [
+            String::new(),
+            "x".repeat(crate::prompt_limits::MAX_SESSION_PROMPT_BYTES + 1),
+            "private\0prompt".into(),
+        ] {
+            let error = resolve_session_config(
+                &agents[0],
+                &SessionConfigOverrides {
+                    system_prompt: Some(invalid.clone()),
+                    ..SessionConfigOverrides::default()
+                },
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(error, CompositionError::InvalidPrompt));
+            if !invalid.is_empty() {
+                assert!(!error.to_string().contains(&invalid));
+            }
+        }
     }
 }
 

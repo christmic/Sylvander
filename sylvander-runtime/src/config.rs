@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sylvander_agent::spec::AgentSpec;
 
+use crate::prompt_limits::{
+    MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
+    validate_prompt, validate_unique_identities,
+};
+
 mod legacy;
 mod secret;
 
@@ -565,6 +570,7 @@ fn validate_agent_shape_and_environment(
     require_text("Agent name", &agent.spec.name, errors);
     require_text("Agent default provider", &agent.spec.model.provider, errors);
     require_text("Agent default model", &agent.spec.model.model_name, errors);
+    validate_agent_prompts(agent, errors);
     if let Some(workspace) = &agent.agent_workspace {
         validate_workspace(workspace, targets, "Agent workspace", errors);
     }
@@ -601,6 +607,44 @@ fn validate_agent_shape_and_environment(
     }
     for role in &agent.access.allowed_roles {
         require_text("Agent allowed role", role, errors);
+    }
+}
+
+fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String>) {
+    let result = validate_profile_count(agent.prompt_profiles.len())
+        .and_then(|()| validate_prompt(&agent.spec.persona.system_prompt))
+        .and_then(|()| {
+            validate_unique_identities(
+                agent
+                    .prompt_profiles
+                    .iter()
+                    .map(|profile| profile.id.as_str()),
+                MAX_PROMPT_PROFILES,
+            )
+        })
+        .and_then(|()| match agent.default_prompt_profile.as_deref() {
+            Some(default) => validate_identity(default),
+            None => Ok(()),
+        })
+        .and_then(|()| {
+            for profile in &agent.prompt_profiles {
+                validate_prompt(&profile.system_prompt)?;
+                validate_unique_identities(
+                    profile.providers.iter().map(String::as_str),
+                    MAX_PROMPT_SELECTORS_PER_KIND,
+                )?;
+                validate_unique_identities(
+                    profile.models.iter().map(String::as_str),
+                    MAX_PROMPT_SELECTORS_PER_KIND,
+                )?;
+            }
+            Ok(())
+        });
+    if let Err(issue) = result {
+        errors.push(format!(
+            "Agent {} prompt configuration is invalid: {issue}",
+            agent.spec.id
+        ));
     }
 }
 

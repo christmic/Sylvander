@@ -27,6 +27,10 @@ use crate::config::{
     AgentAccessConfig, AgentDefinitionConfig, PromptProfileConfig, ServerConfig,
     WorkspaceBindingConfig,
 };
+use crate::prompt_limits::{
+    MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
+    validate_prompt, validate_unique_identities,
+};
 
 pub(crate) const MAX_REVISION_PAGE_SIZE: u16 = 100;
 const SECRET_REF_PREFIX: &str = "sylvander-secret-ref:v1:";
@@ -563,10 +567,7 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     {
         return Err(invalid_definition("workspace path must be valid UTF-8"));
     }
-    unique_non_empty(
-        draft.prompt_profiles.iter().map(|item| item.id.as_str()),
-        "prompt profile",
-    )?;
+    validate_prompt_draft(draft)?;
     unique_non_empty(
         draft.ui_commands.iter().map(|item| item.id.as_str()),
         "UI command",
@@ -607,6 +608,39 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
         }
     }
     Ok(())
+}
+
+fn validate_prompt_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
+    let result = validate_profile_count(draft.prompt_profiles.len())
+        .and_then(|()| validate_prompt(&draft.system_prompt))
+        .and_then(|()| {
+            validate_unique_identities(
+                draft
+                    .prompt_profiles
+                    .iter()
+                    .map(|profile| profile.id.as_str()),
+                MAX_PROMPT_PROFILES,
+            )
+        })
+        .and_then(|()| match draft.default_prompt_profile.as_deref() {
+            Some(default) => validate_identity(default),
+            None => Ok(()),
+        })
+        .and_then(|()| {
+            for profile in &draft.prompt_profiles {
+                validate_prompt(&profile.system_prompt)?;
+                validate_unique_identities(
+                    profile.providers.iter().map(String::as_str),
+                    MAX_PROMPT_SELECTORS_PER_KIND,
+                )?;
+                validate_unique_identities(
+                    profile.models.iter().map(String::as_str),
+                    MAX_PROMPT_SELECTORS_PER_KIND,
+                )?;
+            }
+            Ok(())
+        });
+    result.map_err(|issue| invalid_definition(format!("prompt configuration is invalid: {issue}")))
 }
 
 fn unique_non_empty<'a>(
@@ -994,6 +1028,42 @@ model_name = "sonnet"
                 ..
             }
         ));
+        assert!(
+            registry
+                .inspect(&AgentId::new("oraculo"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_prompt_update_is_content_free_and_never_reaches_storage() {
+        let catalog = catalog();
+        let directory = tempfile::tempdir().unwrap();
+        let registry = AgentRegistry::open(directory.path().join("agents.db"))
+            .await
+            .unwrap();
+        let mut principal = AuthenticatedPrincipal::user("system", AuthenticationMethod::Internal);
+        principal.kind = PrincipalKind::System;
+        let mut candidate = draft();
+        candidate.system_prompt = "private\0prompt".into();
+
+        let dispatch = AgentAdminService::new(&registry, &catalog)
+            .dispatch(
+                Some(&principal),
+                AgentAdminRequest::UpdateDefinition {
+                    expected_active_revision: 1,
+                    definition: Box::new(candidate),
+                },
+            )
+            .await;
+        let AgentAdminDispatch::Response(AgentAdminResponse::Error { error }) = dispatch else {
+            panic!("invalid prompt must return a public error before staging");
+        };
+        assert_eq!(error.code, AgentAdminErrorCode::InvalidDefinition);
+        assert!(error.message.contains("prompt configuration is invalid"));
+        assert!(!error.message.contains("private"));
         assert!(
             registry
                 .inspect(&AgentId::new("oraculo"))
