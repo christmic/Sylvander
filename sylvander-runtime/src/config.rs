@@ -438,7 +438,8 @@ impl ServerConfig {
             &mut errors,
         );
         for agent in &self.agents {
-            validate_agent(agent, &provider_models, &target_ids, &mut errors);
+            validate_agent_shape_and_environment(agent, &target_ids, &mut errors);
+            validate_agent_model_catalog(agent, &provider_models, &mut errors);
         }
 
         unique_ids(
@@ -459,6 +460,27 @@ impl ServerConfig {
             validate_channel(channel, &mut errors);
         }
 
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(ConfigError { errors })
+        }
+    }
+
+    /// Validate one Agent without requiring its qualified Models to be in the
+    /// boot-time provider catalog. Runtime administration uses this boundary
+    /// because provider discovery may make additional Models available later.
+    pub(crate) fn validate_agent_shape_and_environment(
+        &self,
+        agent: &AgentDefinitionConfig,
+    ) -> Result<(), ConfigError> {
+        let targets = self
+            .execution_targets
+            .iter()
+            .map(|target| target.id.trim().to_string())
+            .collect();
+        let mut errors = Vec::new();
+        validate_agent_shape_and_environment(agent, &targets, &mut errors);
         if errors.is_empty() {
             Ok(())
         } else {
@@ -532,9 +554,8 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
     }
 }
 
-fn validate_agent(
+fn validate_agent_shape_and_environment(
     agent: &AgentDefinitionConfig,
-    providers: &HashMap<String, HashSet<String>>,
     targets: &HashSet<String>,
     errors: &mut Vec<String>,
 ) {
@@ -542,7 +563,37 @@ fn validate_agent(
         errors.push(format!("Agent {} revision must be positive", agent.spec.id));
     }
     require_text("Agent name", &agent.spec.name, errors);
+    require_text("Agent default provider", &agent.spec.model.provider, errors);
     require_text("Agent default model", &agent.spec.model.model_name, errors);
+    if let Some(workspace) = &agent.agent_workspace {
+        validate_workspace(workspace, targets, "Agent workspace", errors);
+    }
+    let profiles = unique_ids(
+        &format!("prompt profile for Agent {}", agent.spec.id),
+        agent.prompt_profiles.iter().map(|item| item.id.as_str()),
+        errors,
+    );
+    if let Some(default) = &agent.default_prompt_profile
+        && !profiles.contains(default.trim())
+    {
+        errors.push(format!(
+            "Agent {} references unknown prompt profile {default}",
+            agent.spec.id
+        ));
+    }
+    for principal in &agent.access.allowed_principals {
+        require_text("Agent allowed principal", principal, errors);
+    }
+    for role in &agent.access.allowed_roles {
+        require_text("Agent allowed role", role, errors);
+    }
+}
+
+fn validate_agent_model_catalog(
+    agent: &AgentDefinitionConfig,
+    providers: &HashMap<String, HashSet<String>>,
+    errors: &mut Vec<String>,
+) {
     let provider = agent.spec.model.provider.trim();
     if !providers.contains_key(provider) {
         errors.push(format!(
@@ -592,28 +643,6 @@ fn validate_agent(
                 agent.spec.id, agent.spec.model.provider, agent.spec.model.model_name
             ));
         }
-    }
-    if let Some(workspace) = &agent.agent_workspace {
-        validate_workspace(workspace, targets, "Agent workspace", errors);
-    }
-    let profiles = unique_ids(
-        &format!("prompt profile for Agent {}", agent.spec.id),
-        agent.prompt_profiles.iter().map(|item| item.id.as_str()),
-        errors,
-    );
-    if let Some(default) = &agent.default_prompt_profile
-        && !profiles.contains(default.trim())
-    {
-        errors.push(format!(
-            "Agent {} references unknown prompt profile {default}",
-            agent.spec.id
-        ));
-    }
-    for principal in &agent.access.allowed_principals {
-        require_text("Agent allowed principal", principal, errors);
-    }
-    for role in &agent.access.allowed_roles {
-        require_text("Agent allowed role", role, errors);
     }
 }
 
