@@ -9,8 +9,9 @@ sylvander
 ```
 
 When the variable is absent, the server converts the legacy environment
-contract into the same in-memory schema. This compatibility path is intended
-for migration; new deployments should use TOML.
+contract into the same in-memory schema. This retained path is an explicitly
+approved, bounded migration exception; it is not precedent for new fallback or
+automatic migration behavior. New deployments should use TOML.
 
 The maintained example is
 [`config/sylvander.example.toml`](../config/sylvander.example.toml).
