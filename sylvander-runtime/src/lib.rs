@@ -46,6 +46,7 @@ pub mod evidence;
 mod model_registry;
 #[cfg(test)]
 mod model_registry_tests;
+mod prompt_limits;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]
@@ -3046,6 +3047,32 @@ model_name = "model-a"
             "unix",
             "request-create",
         );
+        let before_invalid_create = runtime.session_store.list_persistent().await.unwrap().len();
+        let invalid_create = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &owner,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "invalid prompt must not persist".into(),
+                channel_id: Some("tui-local".into()),
+                overrides: SessionConfigOverrides {
+                    system_prompt: Some(String::new()),
+                    ..SessionConfigOverrides::default()
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            invalid_create
+                .message
+                .contains("prompt configuration is invalid")
+        );
+        assert_eq!(
+            runtime.session_store.list_persistent().await.unwrap().len(),
+            before_invalid_create,
+            "invalid session prompt must fail before session persistence"
+        );
         let created = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
             &owner,
@@ -3071,6 +3098,34 @@ model_name = "model-a"
         assert_eq!(stored.effective_config, Some(created.effective));
         assert_eq!(stored.metadata.user_id, "test-user");
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
+        let invalid_update = sylvander_channel::UiService::update_session_config(
+            runtime.ui_service.as_ref(),
+            &owner,
+            SessionConfigUpdateRequest {
+                session_id: created.session_id.clone(),
+                expected_revision: created.revision,
+                overrides: SessionConfigOverrides {
+                    system_prompt: Some("private\0prompt".into()),
+                    ..SessionConfigOverrides::default()
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            invalid_update
+                .message
+                .contains("prompt configuration is invalid")
+        );
+        assert!(!invalid_update.message.contains("private"));
+        let unchanged = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.config_revision, created.revision);
+        assert!(unchanged.config_overrides.system_prompt.is_none());
         assert!(
             runtime
                 .revision_provider

@@ -130,6 +130,46 @@ fn secret_values_cannot_be_embedded_inline() {
 }
 
 #[test]
+fn boot_rejects_noncanonical_and_oversized_prompt_inputs() {
+    let mut cases = Vec::new();
+
+    let mut spaced_id = ServerConfig::from_toml(&valid_toml()).unwrap();
+    spaced_id.agents[0].prompt_profiles[0].id = " model-a".into();
+    cases.push(spaced_id);
+
+    let mut duplicate_selector = ServerConfig::from_toml(&valid_toml()).unwrap();
+    duplicate_selector.agents[0].prompt_profiles[0].providers =
+        vec!["primary".into(), "primary".into()];
+    cases.push(duplicate_selector);
+
+    let mut too_many_profiles = ServerConfig::from_toml(&valid_toml()).unwrap();
+    let profile = too_many_profiles.agents[0].prompt_profiles[0].clone();
+    too_many_profiles.agents[0].prompt_profiles = (0..33)
+        .map(|index| PromptProfileConfig {
+            id: format!("profile-{index}"),
+            ..profile.clone()
+        })
+        .collect();
+    too_many_profiles.agents[0].default_prompt_profile = None;
+    cases.push(too_many_profiles);
+
+    let mut oversized = ServerConfig::from_toml(&valid_toml()).unwrap();
+    oversized.agents[0].spec.persona.system_prompt = "x".repeat(64 * 1024 + 1);
+    cases.push(oversized);
+
+    let mut forbidden_control = ServerConfig::from_toml(&valid_toml()).unwrap();
+    forbidden_control.agents[0].prompt_profiles[0].system_prompt = "private\0prompt".into();
+    cases.push(forbidden_control);
+
+    for config in cases {
+        let error = config.validate().unwrap_err();
+        let rendered = error.errors.join("\n");
+        assert!(rendered.contains("prompt configuration is invalid"));
+        assert!(!rendered.contains("private\0prompt"));
+    }
+}
+
+#[test]
 fn invalid_schema_and_empty_secret_reference_are_rejected() {
     let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
     config.schema_version = 99;
