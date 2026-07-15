@@ -8,9 +8,9 @@
 //! - **importance**: low/medium/high/critical — drives recall priority
 //! - **owner identity**: which user/agent/session wrote it
 //!
-//! The trait takes `&SessionContext` so the store can enforce per-user
-//! isolation. Adding a new field to `MemoryEntry` (e.g. `confidence`,
-//! `decay`) never breaks the trait — only the implementation.
+//! Every operation takes a runtime-derived [`MemoryExecutionContext`]. A
+//! relationship-memory caller supplies only [`MemoryAppend`]; ownership,
+//! identity, timestamps, and provenance remain store-controlled.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +26,28 @@ pub const MAX_MEMORY_TAGS: usize = 32;
 pub const MAX_MEMORY_TAG_BYTES: usize = 64;
 pub const MAX_MEMORY_REFERENCES: usize = 32;
 pub const MAX_MEMORY_RESULTS: usize = 50;
+pub const MAX_MEMORY_METADATA_ENTRIES: usize = 32;
+pub const MAX_MEMORY_METADATA_KEY_BYTES: usize = 64;
+pub const MAX_MEMORY_METADATA_VALUE_BYTES: usize = 1024;
+
+const RESERVED_MEMORY_METADATA_KEYS: &[&str] = &[
+    "access_count",
+    "actor",
+    "agent_id",
+    "created_at",
+    "expires_at",
+    "id",
+    "last_accessed",
+    "owner",
+    "provenance",
+    "revision",
+    "scope",
+    "session_id",
+    "supersedes",
+    "trace_id",
+    "updated_at",
+    "user_id",
+];
 
 /// Stable ownership domain for a memory record. Session state and user
 /// profiles are intentionally stored by their own services.
@@ -59,20 +81,6 @@ impl MemoryOwner {
             Self::WorkspaceKnowledge { .. } => MemoryScope::WorkspaceKnowledge,
         }
     }
-
-    #[must_use]
-    pub fn relationship(ctx: &SessionContext) -> Self {
-        Self::Relationship {
-            user_id: ctx.identity.user_id.clone(),
-            agent_id: ctx.identity.agent_id.clone(),
-        }
-    }
-}
-
-impl From<SessionContext> for MemoryOwner {
-    fn from(ctx: SessionContext) -> Self {
-        Self::relationship(&ctx)
-    }
 }
 
 /// Runtime actor class. Guardian is deliberately distinct from a generic
@@ -85,16 +93,17 @@ pub enum MemoryActorKind {
     SystemService,
 }
 
-/// Identity snapshot issued by the runtime for one memory operation. It is not
-/// part of any model-facing tool schema.
+/// Identity snapshot derived by the trusted runtime call path for one memory
+/// operation. Rust callers can construct a Worker from a [`SessionContext`];
+/// the security boundary is that remote model input never supplies this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryExecutionContext {
-    pub actor: MemoryActorKind,
-    pub user_id: Option<UserId>,
-    pub agent_id: Option<AgentId>,
-    pub session_id: Option<SessionId>,
-    pub authorized_workspace_ids: Vec<String>,
-    pub trace_id: Option<String>,
+    actor: MemoryActorKind,
+    user_id: Option<UserId>,
+    agent_id: Option<AgentId>,
+    session_id: Option<SessionId>,
+    authorized_workspace_ids: Vec<String>,
+    trace_id: Option<String>,
 }
 
 impl MemoryExecutionContext {
@@ -112,21 +121,113 @@ impl MemoryExecutionContext {
 
     pub fn relationship_owner(&self) -> Result<MemoryOwner, MemoryStoreError> {
         if self.actor != MemoryActorKind::Worker {
-            return Err(MemoryStoreError::AccessDenied(
-                "actor cannot derive worker relationship ownership".into(),
-            ));
+            return Err(MemoryStoreError::AccessDenied);
         }
-        let (Some(user_id), Some(agent_id), Some(_session_id)) =
+        let (Some(user_id), Some(agent_id), Some(session_id)) =
             (&self.user_id, &self.agent_id, &self.session_id)
         else {
-            return Err(MemoryStoreError::AccessDenied(
-                "worker memory context is incomplete".into(),
-            ));
+            return Err(MemoryStoreError::AccessDenied);
         };
+        if user_id.0.is_empty() || agent_id.0.is_empty() || session_id.0.is_empty() {
+            return Err(MemoryStoreError::AccessDenied);
+        }
         Ok(MemoryOwner::Relationship {
             user_id: user_id.clone(),
             agent_id: agent_id.clone(),
         })
+    }
+
+    #[must_use]
+    pub const fn actor(&self) -> MemoryActorKind {
+        self.actor
+    }
+
+    #[must_use]
+    pub fn user_id(&self) -> Option<&UserId> {
+        self.user_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&AgentId> {
+        self.agent_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> Option<&SessionId> {
+        self.session_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn authorized_workspace_ids(&self) -> &[String] {
+        &self.authorized_workspace_ids
+    }
+
+    #[must_use]
+    pub fn trace_id(&self) -> Option<&str> {
+        self.trace_id.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn privileged_for_test(actor: MemoryActorKind) -> Self {
+        Self {
+            actor,
+            user_id: Some(UserId::new("alice")),
+            agent_id: Some(AgentId::new("agent-a")),
+            session_id: Some(SessionId::new("session")),
+            authorized_workspace_ids: Vec::new(),
+            trace_id: None,
+        }
+    }
+}
+
+/// Caller-controlled fields for a new relationship memory. Store-controlled
+/// identity, ownership, timestamps, counters, and provenance are deliberately
+/// absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryAppend {
+    pub kind: MemoryKind,
+    pub content: String,
+    pub references: Vec<MemoryReference>,
+    pub tags: Vec<String>,
+    pub importance: Importance,
+    pub metadata: HashMap<String, String>,
+}
+
+impl MemoryAppend {
+    #[must_use]
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            kind: MemoryKind::AgentNote,
+            content: content.into(),
+            references: Vec::new(),
+            tags: Vec::new(),
+            importance: Importance::Medium,
+            metadata: HashMap::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_kind(mut self, kind: MemoryKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_reference(mut self, reference: MemoryReference) -> Self {
+        self.references.push(reference);
+        self
+    }
+
+    #[must_use]
+    pub fn with_importance(mut self, importance: Importance) -> Self {
+        self.importance = importance;
+        self
     }
 }
 
@@ -185,56 +286,20 @@ pub struct MemoryEntry {
 }
 
 impl MemoryEntry {
-    /// Convenience: minimal entry with just an id, content, and
-    /// owning session context. Kind defaults to `AgentNote`;
-    /// importance to `Medium`.
-    #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        content: impl Into<String>,
-        owner: impl Into<MemoryOwner>,
-    ) -> Self {
+    pub(super) fn materialize(id: String, owner: MemoryOwner, append: MemoryAppend) -> Self {
         Self {
-            id: id.into(),
-            owner: owner.into(),
-            kind: MemoryKind::AgentNote,
-            content: content.into(),
-            references: Vec::new(),
-            tags: Vec::new(),
-            importance: Importance::Medium,
+            id,
+            owner,
+            kind: append.kind,
+            content: append.content,
+            references: append.references,
+            tags: append.tags,
+            importance: append.importance,
             created_at: crate::session::now_secs(),
             last_accessed: None,
             access_count: 0,
-            metadata: HashMap::new(),
+            metadata: append.metadata,
         }
-    }
-
-    /// Builder-style: set the kind.
-    #[must_use]
-    pub fn with_kind(mut self, kind: MemoryKind) -> Self {
-        self.kind = kind;
-        self
-    }
-
-    /// Builder-style: add a tag.
-    #[must_use]
-    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
-        self.tags.push(tag.into());
-        self
-    }
-
-    /// Builder-style: add a single reference.
-    #[must_use]
-    pub fn with_reference(mut self, r: MemoryReference) -> Self {
-        self.references.push(r);
-        self
-    }
-
-    /// Builder-style: set importance.
-    #[must_use]
-    pub fn with_importance(mut self, importance: Importance) -> Self {
-        self.importance = importance;
-        self
     }
 }
 
@@ -319,29 +384,32 @@ pub enum Importance {
 /// the calling `ctx` (or has been explicitly shared).
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
-    /// Search for entries owned by the calling identity and matching
-    /// the query. Results are filtered by kind / importance if set.
-    async fn search(
+    /// Append a relationship entry whose owner is derived from `ctx`.
+    async fn append_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
+        append: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError>;
+
+    /// Search relationship entries owned by the calling identity.
+    async fn search_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError>;
 
-    /// Store a new entry. The entry's `owner` is what gets persisted;
-    /// the `ctx` is just for authorization.
-    async fn store(&self, ctx: &SessionContext, entry: MemoryEntry)
-    -> Result<(), MemoryStoreError>;
-
-    /// Delete an entry by ID. Refuses if the entry's owner doesn't
-    /// match `ctx`.
-    async fn delete(&self, ctx: &SessionContext, id: &str) -> Result<(), MemoryStoreError>;
-
-    /// Get a single entry by ID. Refuses if the entry's owner
-    /// doesn't match `ctx`.
-    async fn get(
+    /// Delete a relationship entry without revealing another owner's entry.
+    async fn delete_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+    ) -> Result<(), MemoryStoreError>;
+
+    /// Get one relationship entry without revealing another owner's entry.
+    async fn get_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
         id: &str,
     ) -> Result<Option<MemoryEntry>, MemoryStoreError>;
 }
@@ -374,8 +442,8 @@ pub enum MemoryStoreError {
     #[error("delete error: {0}")]
     Delete(String),
     /// Entry exists but the caller is not allowed to see it.
-    #[error("access denied: {0}")]
-    AccessDenied(String),
+    #[error("memory access denied")]
+    AccessDenied,
 }
 
 // ---------------------------------------------------------------------------
@@ -402,12 +470,25 @@ impl InMemoryMemoryStore {
 
 #[async_trait]
 impl MemoryStore for InMemoryMemoryStore {
-    async fn search(
+    async fn append_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
+        append: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_append(&append)?;
+        let entry = MemoryEntry::materialize(uuid::Uuid::new_v4().to_string(), owner, append);
+        self.entries.write().await.push(entry.clone());
+        Ok(entry)
+    }
+
+    async fn search_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
         if query.len() > MAX_MEMORY_QUERY_BYTES
             || filter
                 .limit
@@ -419,7 +500,7 @@ impl MemoryStore for InMemoryMemoryStore {
         let entries = self.entries.read().await;
         let mut results: Vec<MemoryEntry> = entries
             .iter()
-            .filter(|e| same_owner(&e.owner, ctx))
+            .filter(|entry| entry.owner == owner)
             .filter(|e| query.is_empty() || e.content.to_lowercase().contains(&query_lower))
             .filter(|e| filter.kind.as_ref().is_none_or(|k| &e.kind == k))
             .filter(|e| filter.min_importance.is_none_or(|i| e.importance >= i))
@@ -431,80 +512,70 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(results)
     }
 
-    async fn store(
+    async fn delete_relationship(
         &self,
-        ctx: &SessionContext,
-        entry: MemoryEntry,
+        ctx: &MemoryExecutionContext,
+        id: &str,
     ) -> Result<(), MemoryStoreError> {
-        validate_entry(&entry)?;
-        if !same_owner(&entry.owner, ctx) {
-            return Err(MemoryStoreError::AccessDenied(
-                "memory owner does not match the runtime context".into(),
-            ));
-        }
-        let mut entries = self.entries.write().await;
-        if entries
-            .iter()
-            .any(|existing| existing.id == entry.id && same_owner(&existing.owner, ctx))
-        {
-            return Err(MemoryStoreError::Store(
-                "memory identity already exists".into(),
-            ));
-        }
-        entries.push(entry);
-        Ok(())
-    }
-
-    async fn delete(&self, ctx: &SessionContext, id: &str) -> Result<(), MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_memory_id(id)?;
         let mut entries = self.entries.write().await;
         let before = entries.len();
-        entries.retain(|e| !(e.id == id && same_owner(&e.owner, ctx)));
+        entries.retain(|entry| !(entry.id == id && entry.owner == owner));
         if entries.len() == before {
-            // Either not found, or not owned by ctx. Distinguish?
-            // MVP: treat as access denied.
-            return Err(MemoryStoreError::AccessDenied(format!(
-                "no memory {id} visible to {}",
-                ctx.identity.user_id
-            )));
+            return Err(memory_not_visible());
         }
         Ok(())
     }
 
-    async fn get(
+    async fn get_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
         id: &str,
     ) -> Result<Option<MemoryEntry>, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_memory_id(id)?;
         let entries = self.entries.read().await;
         Ok(entries
             .iter()
-            .find(|entry| entry.id == id && same_owner(&entry.owner, ctx))
+            .find(|entry| entry.id == id && entry.owner == owner)
             .cloned())
     }
 }
 
-pub(super) fn validate_entry(entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
-    if entry.id.is_empty()
-        || entry.id.len() > 128
-        || entry.content.is_empty()
-        || entry.content.len() > MAX_MEMORY_CONTENT_BYTES
-        || entry.tags.len() > MAX_MEMORY_TAGS
-        || entry.references.len() > MAX_MEMORY_REFERENCES
-        || entry
+pub(super) fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreError> {
+    if append.content.is_empty()
+        || append.content.len() > MAX_MEMORY_CONTENT_BYTES
+        || append.tags.len() > MAX_MEMORY_TAGS
+        || append.references.len() > MAX_MEMORY_REFERENCES
+        || append.metadata.len() > MAX_MEMORY_METADATA_ENTRIES
+        || append
             .tags
             .iter()
             .any(|tag| tag.is_empty() || tag.len() > MAX_MEMORY_TAG_BYTES)
+        || append.metadata.iter().any(|(key, value)| {
+            let normalized = key.to_ascii_lowercase();
+            key.is_empty()
+                || key.len() > MAX_MEMORY_METADATA_KEY_BYTES
+                || value.len() > MAX_MEMORY_METADATA_VALUE_BYTES
+                || normalized.starts_with("sylvander.")
+                || RESERVED_MEMORY_METADATA_KEYS.contains(&normalized.as_str())
+        })
     {
         return Err(MemoryStoreError::InvalidInput);
     }
     Ok(())
 }
 
-/// Two memories "belong to" the same identity if user + agent
-/// match. (Session id is intentionally excluded — memories persist
-/// across sessions by design.)
-pub(super) fn same_owner(owner: &MemoryOwner, ctx: &SessionContext) -> bool {
-    owner == &MemoryOwner::relationship(ctx)
+pub(super) fn validate_memory_id(id: &str) -> Result<(), MemoryStoreError> {
+    if id.is_empty() || id.len() > 128 {
+        return Err(MemoryStoreError::InvalidInput);
+    }
+    Ok(())
+}
+
+pub(super) fn memory_not_visible() -> MemoryStoreError {
+    MemoryStoreError::AccessDenied
 }
 
 // ---------------------------------------------------------------------------
@@ -514,269 +585,214 @@ pub(super) fn same_owner(owner: &MemoryOwner, ctx: &SessionContext) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_protocol::types::{AgentId, UserId};
 
-    fn alice_session() -> SessionContext {
-        SessionContext::new(
-            UserId::new("alice"),
-            AgentId::new("a1"),
-            SessionId::new("s1"),
-        )
+    fn session(user: &str, agent: &str, session: &str) -> SessionContext {
+        SessionContext::new(user, agent, session)
     }
 
-    fn bob_session() -> SessionContext {
-        SessionContext::new(UserId::new("bob"), AgentId::new("a1"), SessionId::new("s2"))
+    fn worker(session: &SessionContext) -> MemoryExecutionContext {
+        MemoryExecutionContext::worker(session)
     }
 
-    fn alice_other_agent_session() -> SessionContext {
-        SessionContext::new(
-            UserId::new("alice"),
-            AgentId::new("a2"),
-            SessionId::new("s3"),
-        )
-    }
-
-    #[tokio::test]
-    async fn store_and_search() {
-        let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        store
-            .store(
-                &ctx,
-                MemoryEntry::new("1", "The user prefers Rust", ctx.clone()),
-            )
-            .await
-            .expect("store");
-
-        let results = store
-            .search(&ctx, "rust", MemoryFilter::default())
-            .await
-            .expect("search");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].content, "The user prefers Rust");
-    }
-
-    #[tokio::test]
-    async fn search_is_case_insensitive() {
-        let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        store
-            .store(&ctx, MemoryEntry::new("1", "RUST IS GREAT", ctx.clone()))
-            .await
-            .expect("store");
-        let results = store
-            .search(&ctx, "rust", MemoryFilter::default())
-            .await
-            .expect("search");
-        assert_eq!(results.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn search_respects_limit() {
-        let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        for i in 0..10 {
-            store
-                .store(
-                    &ctx,
-                    MemoryEntry::new(format!("{i}"), format!("item {i}"), ctx.clone()),
-                )
-                .await
-                .expect("store");
+    fn privileged(actor: MemoryActorKind) -> MemoryExecutionContext {
+        MemoryExecutionContext {
+            actor,
+            user_id: Some(UserId::new("alice")),
+            agent_id: Some(AgentId::new("a1")),
+            session_id: Some(SessionId::new("s1")),
+            authorized_workspace_ids: Vec::new(),
+            trace_id: None,
         }
-        let results = store
-            .search(
-                &ctx,
-                "item",
-                MemoryFilter {
-                    limit: Some(3),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect("search");
-        assert_eq!(results.len(), 3);
     }
 
     #[tokio::test]
-    async fn search_filters_by_kind() {
+    async fn relationship_append_search_and_filters() {
         let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        store
-            .store(
+        let alice = session("alice", "a1", "s1");
+        let ctx = worker(&alice);
+        let preference = store
+            .append_relationship(
                 &ctx,
-                MemoryEntry::new("1", "user likes dark mode", ctx.clone())
-                    .with_kind(MemoryKind::Preference),
+                MemoryAppend::new("The user prefers Rust")
+                    .with_kind(MemoryKind::Preference)
+                    .with_tag("language")
+                    .with_importance(Importance::High),
             )
             .await
             .unwrap();
         store
-            .store(
+            .append_relationship(
                 &ctx,
-                MemoryEntry::new("2", "we chose tokio", ctx.clone())
-                    .with_kind(MemoryKind::Decision),
+                MemoryAppend::new("we chose tokio").with_kind(MemoryKind::Decision),
             )
             .await
             .unwrap();
 
-        let prefs = store
-            .search(
+        let results = store
+            .search_relationship(
                 &ctx,
-                "",
+                "RUST",
                 MemoryFilter {
                     kind: Some(MemoryKind::Preference),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(prefs.len(), 1);
-        assert_eq!(prefs[0].id, "1");
-    }
-
-    #[tokio::test]
-    async fn search_filters_by_min_importance() {
-        let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        store
-            .store(
-                &ctx,
-                MemoryEntry::new("1", "low", ctx.clone()).with_importance(Importance::Low),
-            )
-            .await
-            .unwrap();
-        store
-            .store(
-                &ctx,
-                MemoryEntry::new("2", "high", ctx.clone()).with_importance(Importance::High),
-            )
-            .await
-            .unwrap();
-
-        let high = store
-            .search(
-                &ctx,
-                "",
-                MemoryFilter {
                     min_importance: Some(Importance::High),
-                    ..Default::default()
+                    limit: Some(1),
                 },
             )
             .await
             .unwrap();
-        assert_eq!(high.len(), 1);
-        assert_eq!(high[0].id, "2");
+        assert_eq!(results, [preference]);
     }
 
     #[tokio::test]
-    async fn search_isolates_per_user() {
+    async fn relationship_operations_isolate_user_and_agent() {
         let store = InMemoryMemoryStore::new();
-        let alice = alice_session();
-        let bob = bob_session();
-        store
-            .store(&alice, MemoryEntry::new("1", "alice secret", alice.clone()))
-            .await
-            .unwrap();
-        store
-            .store(&bob, MemoryEntry::new("2", "bob secret", bob.clone()))
+        let alice = worker(&session("alice", "a1", "s1"));
+        let bob = worker(&session("bob", "a1", "s2"));
+        let other_agent = worker(&session("alice", "a2", "s3"));
+        let entry = store
+            .append_relationship(&alice, MemoryAppend::new("alice secret"))
             .await
             .unwrap();
 
-        // Alice sees only her own.
-        let alice_sees = store
-            .search(&alice, "", MemoryFilter::default())
-            .await
-            .unwrap();
-        assert_eq!(alice_sees.len(), 1);
-        assert_eq!(alice_sees[0].id, "1");
-
-        // Bob sees only his own.
-        let bob_sees = store
-            .search(&bob, "", MemoryFilter::default())
-            .await
-            .unwrap();
-        assert_eq!(bob_sees.len(), 1);
-        assert_eq!(bob_sees[0].id, "2");
-    }
-
-    #[tokio::test]
-    async fn store_rejects_forged_user_or_agent_ownership() {
-        let store = InMemoryMemoryStore::new();
-        let alice = alice_session();
-        for forged_owner in [bob_session(), alice_other_agent_session()] {
-            let result = store
-                .store(
-                    &alice,
-                    MemoryEntry::new("forged", "must not persist", forged_owner),
-                )
-                .await;
-            assert!(matches!(result, Err(MemoryStoreError::AccessDenied(_))));
+        for outsider in [&bob, &other_agent] {
+            assert!(
+                store
+                    .search_relationship(outsider, "", MemoryFilter::default())
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                store
+                    .get_relationship(outsider, &entry.id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
         }
+        assert_eq!(
+            store
+                .get_relationship(&alice, &entry.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "alice secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn foreign_and_missing_deletes_are_indistinguishable() {
+        let store = InMemoryMemoryStore::new();
+        let alice = worker(&session("alice", "a1", "s1"));
+        let bob = worker(&session("bob", "a1", "s2"));
+        let entry = store
+            .append_relationship(&alice, MemoryAppend::new("keep"))
+            .await
+            .unwrap();
+
+        let foreign = store
+            .delete_relationship(&bob, &entry.id)
+            .await
+            .unwrap_err();
+        let missing = store
+            .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000")
+            .await
+            .unwrap_err();
+        assert_eq!(foreign.to_string(), missing.to_string());
         assert!(
             store
-                .search(&alice, "", MemoryFilter::default())
+                .get_relationship(&alice, &entry.id)
                 .await
                 .unwrap()
-                .is_empty()
+                .is_some()
         );
     }
 
     #[tokio::test]
-    async fn same_id_is_isolated_by_user_and_agent_owner() {
+    async fn guardian_and_system_fail_closed_for_relationship_operations() {
         let store = InMemoryMemoryStore::new();
-        let alice = alice_session();
-        let bob = bob_session();
-        let other_agent = alice_other_agent_session();
-        for (owner, content) in [
-            (&alice, "alice a1"),
-            (&bob, "bob a1"),
-            (&other_agent, "alice a2"),
+        for ctx in [
+            privileged(MemoryActorKind::Guardian),
+            privileged(MemoryActorKind::SystemService),
         ] {
-            store
-                .store(owner, MemoryEntry::new("shared-id", content, owner.clone()))
-                .await
-                .unwrap();
+            assert!(matches!(
+                store
+                    .append_relationship(&ctx, MemoryAppend::new("forbidden"))
+                    .await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
+            assert!(matches!(
+                store
+                    .search_relationship(&ctx, "", MemoryFilter::default())
+                    .await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
+            assert!(matches!(
+                store.get_relationship(&ctx, "valid-id").await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
+            assert!(matches!(
+                store.delete_relationship(&ctx, "valid-id").await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
         }
-        assert_eq!(
+    }
+
+    #[tokio::test]
+    async fn incomplete_worker_context_fails_closed() {
+        let store = InMemoryMemoryStore::new();
+        let ctx = MemoryExecutionContext {
+            actor: MemoryActorKind::Worker,
+            user_id: Some(UserId::new("alice")),
+            agent_id: Some(AgentId::new("a1")),
+            session_id: None,
+            authorized_workspace_ids: Vec::new(),
+            trace_id: None,
+        };
+        assert!(matches!(
             store
-                .get(&alice, "shared-id")
-                .await
-                .unwrap()
-                .unwrap()
-                .content,
-            "alice a1"
-        );
-        assert_eq!(
-            store.get(&bob, "shared-id").await.unwrap().unwrap().content,
-            "bob a1"
-        );
-        assert_eq!(
-            store
-                .get(&other_agent, "shared-id")
-                .await
-                .unwrap()
-                .unwrap()
-                .content,
-            "alice a2"
-        );
+                .append_relationship(&ctx, MemoryAppend::new("forbidden"))
+                .await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
     }
 
     #[tokio::test]
     async fn public_memory_bounds_fail_closed() {
         let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        let oversized = MemoryEntry::new(
-            "oversized",
-            "x".repeat(MAX_MEMORY_CONTENT_BYTES + 1),
-            ctx.clone(),
-        );
-        assert!(matches!(
-            store.store(&ctx, oversized).await,
-            Err(MemoryStoreError::InvalidInput)
-        ));
+        let ctx = worker(&session("alice", "a1", "s1"));
         assert!(matches!(
             store
-                .search(
+                .append_relationship(
+                    &ctx,
+                    MemoryAppend::new("x".repeat(MAX_MEMORY_CONTENT_BYTES + 1))
+                )
+                .await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
+        for key in [
+            "provenance",
+            "owner",
+            "scope",
+            "revision",
+            "actor",
+            "user_id",
+            "agent_id",
+            "session_id",
+            "trace_id",
+            "SYLVANDER.audit",
+        ] {
+            let mut append = MemoryAppend::new("forged metadata");
+            append.metadata.insert(key.into(), "attacker".into());
+            assert!(matches!(
+                store.append_relationship(&ctx, append).await,
+                Err(MemoryStoreError::InvalidInput)
+            ));
+        }
+        assert!(matches!(
+            store
+                .search_relationship(
                     &ctx,
                     &"q".repeat(MAX_MEMORY_QUERY_BYTES + 1),
                     MemoryFilter::default()
@@ -786,7 +802,7 @@ mod tests {
         ));
         assert!(matches!(
             store
-                .search(
+                .search_relationship(
                     &ctx,
                     "",
                     MemoryFilter {
@@ -802,76 +818,46 @@ mod tests {
     #[tokio::test]
     async fn delete_owned_entry() {
         let store = InMemoryMemoryStore::new();
-        let ctx = alice_session();
-        store
-            .store(&ctx, MemoryEntry::new("1", "keep", ctx.clone()))
+        let ctx = worker(&session("alice", "a1", "s1"));
+        let entry = store
+            .append_relationship(&ctx, MemoryAppend::new("drop"))
             .await
             .unwrap();
-        store
-            .store(&ctx, MemoryEntry::new("2", "drop", ctx.clone()))
-            .await
-            .unwrap();
-        store.delete(&ctx, "2").await.expect("delete");
-        let left: Vec<_> = store
-            .search(&ctx, "", MemoryFilter::default())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|e| e.id)
-            .collect();
-        assert_eq!(left, vec!["1".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn delete_other_users_entry_is_denied() {
-        let store = InMemoryMemoryStore::new();
-        let alice = alice_session();
-        let bob = bob_session();
-        store
-            .store(&alice, MemoryEntry::new("1", "alice", alice.clone()))
-            .await
-            .unwrap();
-        // Bob tries to delete Alice's entry — should fail.
-        let result = store.delete(&bob, "1").await;
-        assert!(matches!(result, Err(MemoryStoreError::AccessDenied(_))));
-        // Alice's entry is still there.
-        let found = store.get(&alice, "1").await.unwrap();
-        assert!(found.is_some());
-    }
-
-    #[tokio::test]
-    async fn get_returns_none_for_other_user() {
-        let store = InMemoryMemoryStore::new();
-        let alice = alice_session();
-        let bob = bob_session();
-        store
-            .store(&alice, MemoryEntry::new("1", "alice", alice.clone()))
-            .await
-            .unwrap();
-        let found = store.get(&bob, "1").await.unwrap();
-        assert!(found.is_none());
+        store.delete_relationship(&ctx, &entry.id).await.unwrap();
+        assert!(
+            store
+                .get_relationship(&ctx, &entry.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
-    fn memory_entry_with_kind_and_reference() {
-        let ctx = alice_session();
-        let entry = MemoryEntry::new("1", "we chose Rust", ctx)
+    fn append_builders_preserve_caller_fields_only() {
+        let append = MemoryAppend::new("we chose Rust")
             .with_kind(MemoryKind::Decision)
             .with_tag("architecture")
             .with_importance(Importance::High)
             .with_reference(MemoryReference::File {
                 path: "/Cargo.toml".into(),
             });
-        assert_eq!(entry.kind, MemoryKind::Decision);
-        assert_eq!(entry.importance, Importance::High);
-        assert_eq!(entry.references.len(), 1);
-        assert_eq!(entry.tags, ["architecture"]);
+        assert_eq!(append.kind, MemoryKind::Decision);
+        assert_eq!(append.importance, Importance::High);
+        assert_eq!(append.references.len(), 1);
+        assert_eq!(append.tags, ["architecture"]);
     }
 
     #[test]
-    fn runtime_context_derives_only_worker_relationship_ownership() {
-        let session = alice_session();
+    fn runtime_context_has_read_only_identity_accessors() {
+        let session = session("alice", "a1", "s1").with_trace_id("trace");
         let worker = MemoryExecutionContext::worker(&session);
+        assert_eq!(worker.actor(), MemoryActorKind::Worker);
+        assert_eq!(worker.user_id(), Some(&UserId::new("alice")));
+        assert_eq!(worker.agent_id(), Some(&AgentId::new("a1")));
+        assert_eq!(worker.session_id(), Some(&SessionId::new("s1")));
+        assert_eq!(worker.trace_id(), Some("trace"));
+        assert!(worker.authorized_workspace_ids().is_empty());
         assert_eq!(
             worker.relationship_owner().unwrap(),
             MemoryOwner::Relationship {
@@ -879,11 +865,5 @@ mod tests {
                 agent_id: AgentId::new("a1"),
             }
         );
-        let mut guardian = worker;
-        guardian.actor = MemoryActorKind::Guardian;
-        assert!(matches!(
-            guardian.relationship_owner(),
-            Err(MemoryStoreError::AccessDenied(_))
-        ));
     }
 }

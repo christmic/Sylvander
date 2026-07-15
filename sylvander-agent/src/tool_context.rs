@@ -58,6 +58,10 @@ pub struct ToolContext {
 
     /// Optional durable workspace mutation journal owned by the Agent runtime.
     pub workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+
+    /// Runtime-derived identity used by every memory-store operation. It is
+    /// intentionally not replaceable through a public builder or model input.
+    memory_context: crate::tools::memory::MemoryExecutionContext,
 }
 
 impl ToolContext {
@@ -65,11 +69,13 @@ impl ToolContext {
     /// default surface (no capabilities granted).
     #[must_use]
     pub fn new(session: SessionContext) -> Self {
+        let memory_context = crate::tools::memory::MemoryExecutionContext::worker(&session);
         Self {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
             workspace_journal: None,
+            memory_context,
         }
     }
 
@@ -107,6 +113,12 @@ impl ToolContext {
     #[must_use]
     pub fn into_arc(self) -> Arc<Self> {
         Arc::new(self)
+    }
+
+    /// Runtime-derived memory identity for this invocation.
+    #[must_use]
+    pub fn memory_context(&self) -> &crate::tools::memory::MemoryExecutionContext {
+        &self.memory_context
     }
 
     // ---- identity shortcuts ----

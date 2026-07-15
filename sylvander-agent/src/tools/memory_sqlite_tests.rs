@@ -1,61 +1,85 @@
-use std::collections::HashMap;
-
 use super::*;
-use crate::tools::memory::{MemoryKind, MemoryReference};
-use sylvander_protocol::types::SessionId;
+use crate::tools::memory::{
+    Importance, MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryKind,
+    MemoryReference,
+};
+use sylvander_protocol::SessionContext;
 
-fn session(user: &str, agent: &str) -> SessionContext {
-    SessionContext::new(
-        UserId::new(user),
-        AgentId::new(agent),
-        SessionId::new("session"),
-    )
+fn worker(user: &str, agent: &str) -> MemoryExecutionContext {
+    MemoryExecutionContext::worker(&SessionContext::new(user, agent, "session"))
 }
 
 #[tokio::test]
 async fn roundtrips_restarts_and_isolates_relationships() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let alice = session("alice", "agent-a");
-    let bob = session("bob", "agent-a");
-    let mut entry = MemoryEntry::new("same", "Rust workspace", alice.clone())
+    let alice = worker("alice", "agent-a");
+    let bob = worker("bob", "agent-a");
+    let other_agent = worker("alice", "agent-b");
+    let mut append = MemoryAppend::new("Rust workspace")
         .with_kind(MemoryKind::ProjectFact)
         .with_tag("architecture")
         .with_importance(Importance::Critical)
         .with_reference(MemoryReference::File {
             path: "Cargo.toml".into(),
         });
-    entry.created_at = 42;
-    entry.last_accessed = Some(51);
-    entry.access_count = 7;
-    entry.metadata = HashMap::from([("source".into(), "user".into())]);
+    append.metadata.insert("source".into(), "user".into());
 
     let store = SqliteMemoryStore::open(file.path()).unwrap();
-    store.store(&alice, entry.clone()).await.unwrap();
-    store
-        .store(&bob, MemoryEntry::new("same", "Bob value", bob.clone()))
+    let entry = store.append_relationship(&alice, append).await.unwrap();
+    let bob_entry = store
+        .append_relationship(&bob, MemoryAppend::new("Bob value"))
         .await
         .unwrap();
     drop(store);
 
     let reopened = SqliteMemoryStore::open(file.path()).unwrap();
-    assert_eq!(reopened.get(&alice, "same").await.unwrap(), Some(entry));
     assert_eq!(
-        reopened.get(&bob, "same").await.unwrap().unwrap().content,
+        reopened.get_relationship(&alice, &entry.id).await.unwrap(),
+        Some(entry.clone())
+    );
+    assert_eq!(
+        reopened
+            .get_relationship(&bob, &bob_entry.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .content,
         "Bob value"
     );
     assert!(
         reopened
-            .get(&session("alice", "agent-b"), "same")
+            .get_relationship(&other_agent, &entry.id)
             .await
             .unwrap()
             .is_none()
     );
-    reopened.delete(&alice, "same").await.unwrap();
+
+    let foreign = reopened
+        .delete_relationship(&bob, &entry.id)
+        .await
+        .unwrap_err();
+    let missing = reopened
+        .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000")
+        .await
+        .unwrap_err();
+    assert_eq!(foreign.to_string(), missing.to_string());
+    assert!(
+        reopened
+            .get_relationship(&alice, &entry.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    reopened
+        .delete_relationship(&alice, &entry.id)
+        .await
+        .unwrap();
     drop(reopened);
     assert!(
         SqliteMemoryStore::open(file.path())
             .unwrap()
-            .get(&alice, "same")
+            .get_relationship(&alice, &entry.id)
             .await
             .unwrap()
             .is_none()
@@ -63,21 +87,21 @@ async fn roundtrips_restarts_and_isolates_relationships() {
 }
 
 #[tokio::test]
-async fn search_is_stable_bounded_and_future_schema_fails_closed() {
+async fn search_is_bounded_and_future_schema_fails_closed() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let ctx = session("alice", "agent-a");
+    let ctx = worker("alice", "agent-a");
     let store = SqliteMemoryStore::open(file.path()).unwrap();
-    for (id, importance) in [
-        ("low", Importance::Low),
-        ("z", Importance::High),
-        ("a", Importance::High),
-    ] {
-        let mut entry = MemoryEntry::new(id, "Needle", ctx.clone()).with_importance(importance);
-        entry.created_at = 10;
-        store.store(&ctx, entry).await.unwrap();
+    for importance in [Importance::Low, Importance::High, Importance::High] {
+        store
+            .append_relationship(
+                &ctx,
+                MemoryAppend::new("Needle").with_importance(importance),
+            )
+            .await
+            .unwrap();
     }
     let found = store
-        .search(
+        .search_relationship(
             &ctx,
             "needle",
             MemoryFilter {
@@ -87,12 +111,11 @@ async fn search_is_stable_bounded_and_future_schema_fails_closed() {
         )
         .await
         .unwrap();
-    assert_eq!(
+    assert_eq!(found.len(), 2);
+    assert!(
         found
             .iter()
-            .map(|entry| entry.id.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "z"]
+            .all(|entry| entry.importance == Importance::High)
     );
     drop(store);
 
@@ -108,6 +131,26 @@ async fn search_is_stable_bounded_and_future_schema_fails_closed() {
         SqliteMemoryStore::open(file.path()),
         Err(MemoryStoreError::Store(_))
     ));
+}
+
+#[tokio::test]
+async fn guardian_and_system_relationship_access_fails_closed() {
+    let store = SqliteMemoryStore::open_in_memory().unwrap();
+    for actor in [MemoryActorKind::Guardian, MemoryActorKind::SystemService] {
+        let ctx = MemoryExecutionContext::privileged_for_test(actor);
+        assert!(matches!(
+            store
+                .append_relationship(&ctx, MemoryAppend::new("forbidden"))
+                .await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+        assert!(matches!(
+            store
+                .search_relationship(&ctx, "", MemoryFilter::default())
+                .await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+    }
 }
 
 #[test]

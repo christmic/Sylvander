@@ -93,8 +93,8 @@ impl Tool for MemoryReadTool {
 
         let results = self
             .store
-            .search(
-                &ctx.session,
+            .search_relationship(
+                ctx.memory_context(),
                 query,
                 super::memory::MemoryFilter {
                     kind: kind_filter,
@@ -156,7 +156,7 @@ fn parse_importance(s: Option<&str>) -> Result<Option<super::memory::Importance>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::memory::{InMemoryMemoryStore, MemoryEntry};
+    use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend};
 
     use crate::tool_context::ToolContext;
     fn ctx() -> ToolContext {
@@ -200,17 +200,14 @@ mod tests {
         let store = test_store();
         let c = ctx();
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("1", "User prefers dark mode", c.session.as_ref().clone()),
+            .append_relationship(
+                c.memory_context(),
+                MemoryAppend::new("User prefers dark mode"),
             )
             .await
             .expect("store");
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("2", "Project uses Rust", c.session.as_ref().clone()),
-            )
+            .append_relationship(c.memory_context(), MemoryAppend::new("Project uses Rust"))
             .await
             .expect("store");
 
@@ -252,10 +249,7 @@ mod tests {
         let store = test_store();
         let c = ctx();
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("1", "some content", c.session.as_ref().clone()),
-            )
+            .append_relationship(c.memory_context(), MemoryAppend::new("some content"))
             .await
             .expect("store");
 

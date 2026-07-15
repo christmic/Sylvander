@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
-use sylvander_protocol::SessionContext;
 use sylvander_protocol::types::{AgentId, UserId};
 
 use super::memory::{
-    Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryEntry, MemoryFilter, MemoryOwner,
-    MemoryStore, MemoryStoreError, same_owner, validate_entry,
+    Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
+    MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryStore, MemoryStoreError,
+    memory_not_visible, validate_append, validate_memory_id,
 };
 
 const COMPONENT: &str = "relationship_memory";
@@ -81,9 +81,34 @@ impl SqliteMemoryStore {
 
 #[async_trait]
 impl MemoryStore for SqliteMemoryStore {
-    async fn search(
+    async fn append_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
+        append: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_append(&append)?;
+        let entry = MemoryEntry::materialize(uuid::Uuid::new_v4().to_string(), owner, append);
+        let MemoryOwner::Relationship { user_id, agent_id } = &entry.owner else {
+            unreachable!("relationship context returned another scope")
+        };
+        let kind = encode(&entry.kind)?;
+        let references = encode(&entry.references)?;
+        let tags = encode(&entry.tags)?;
+        let metadata = encode(&entry.metadata)?;
+        self.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO relationship_memories (owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![user_id.0, agent_id.0, entry.id, kind, entry.content, references, tags, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, metadata],
+            ).map_err(store_error)?;
+            Ok(())
+        })?;
+        Ok(entry)
+    }
+
+    async fn search_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
@@ -94,7 +119,7 @@ impl MemoryStore for SqliteMemoryStore {
         {
             return Err(MemoryStoreError::InvalidInput);
         }
-        let owner = MemoryOwner::relationship(ctx);
+        let owner = ctx.relationship_owner()?;
         let MemoryOwner::Relationship { user_id, agent_id } = owner else {
             unreachable!("relationship constructor returned another scope")
         };
@@ -126,45 +151,15 @@ impl MemoryStore for SqliteMemoryStore {
         })
     }
 
-    async fn store(
+    async fn delete_relationship(
         &self,
-        ctx: &SessionContext,
-        entry: MemoryEntry,
+        ctx: &MemoryExecutionContext,
+        id: &str,
     ) -> Result<(), MemoryStoreError> {
-        validate_entry(&entry)?;
-        if !same_owner(&entry.owner, ctx) {
-            return Err(MemoryStoreError::AccessDenied(
-                "memory owner does not match the runtime context".into(),
-            ));
-        }
-        let MemoryOwner::Relationship { user_id, agent_id } = &entry.owner else {
-            return Err(MemoryStoreError::AccessDenied(
-                "only relationship memory is accepted by this store".into(),
-            ));
-        };
-        let kind = encode(&entry.kind)?;
-        let references = encode(&entry.references)?;
-        let tags = encode(&entry.tags)?;
-        let metadata = encode(&entry.metadata)?;
-        self.with_connection(|connection| {
-            connection.execute(
-                "INSERT INTO relationship_memories (owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![user_id.0, agent_id.0, entry.id, kind, entry.content, references, tags, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, metadata],
-            ).map_err(|error| {
-                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
-                    MemoryStoreError::Store("memory identity already exists".into())
-                } else {
-                    store_error(error)
-                }
-            })?;
-            Ok(())
-        })
-    }
-
-    async fn delete(&self, ctx: &SessionContext, id: &str) -> Result<(), MemoryStoreError> {
-        let MemoryOwner::Relationship { user_id, agent_id } = MemoryOwner::relationship(ctx) else {
+        let MemoryOwner::Relationship { user_id, agent_id } = ctx.relationship_owner()? else {
             unreachable!("relationship constructor returned another scope")
         };
+        validate_memory_id(id)?;
         self.with_connection(|connection| {
             let changed = connection
                 .execute(
@@ -173,20 +168,21 @@ impl MemoryStore for SqliteMemoryStore {
                 )
                 .map_err(delete_error)?;
             if changed == 0 {
-                return Err(MemoryStoreError::AccessDenied("memory is not visible".into()));
+                return Err(memory_not_visible());
             }
             Ok(())
         })
     }
 
-    async fn get(
+    async fn get_relationship(
         &self,
-        ctx: &SessionContext,
+        ctx: &MemoryExecutionContext,
         id: &str,
     ) -> Result<Option<MemoryEntry>, MemoryStoreError> {
-        let MemoryOwner::Relationship { user_id, agent_id } = MemoryOwner::relationship(ctx) else {
+        let MemoryOwner::Relationship { user_id, agent_id } = ctx.relationship_owner()? else {
             unreachable!("relationship constructor returned another scope")
         };
+        validate_memory_id(id)?;
         self.with_connection(|connection| {
             connection
                 .query_row(

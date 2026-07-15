@@ -126,10 +126,10 @@ pub mod prelude {
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
-        EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryEntry, MemoryExecutionContext,
-        MemoryOwner, MemoryReadTool, MemoryScope, MemoryStore, MemoryStoreError, MemoryWriteTool,
-        PresentPlanTool, ReadTool, SqliteMemoryStore, StartBackgroundTaskTool, UpdatePlanTool,
-        WriteTool,
+        EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry,
+        MemoryExecutionContext, MemoryOwner, MemoryReadTool, MemoryScope, MemoryStore,
+        MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool, SqliteMemoryStore,
+        StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;

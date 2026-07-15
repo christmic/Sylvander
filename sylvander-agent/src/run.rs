@@ -55,7 +55,9 @@ use crate::task_gate::TaskGate;
 use crate::tool::{Tool, ToolRegistry};
 use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
-use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
+use crate::tools::memory::{
+    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryStore, MemoryStoreError,
+};
 
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
@@ -1096,6 +1098,7 @@ impl AgentRun {
     /// System-driven memory write (NOT a tool).
     pub async fn remember(
         &self,
+        ctx: &MemoryExecutionContext,
         content: impl Into<String>,
         tags: &[&str],
     ) -> Result<MemoryEntry, MemoryStoreError> {
@@ -1104,16 +1107,10 @@ impl AgentRun {
             .memory
             .as_ref()
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
-        let entry = MemoryEntry::new(
-            uuid::Uuid::new_v4().to_string(),
-            content,
-            self.tool_context().session.as_ref().clone(),
-        );
-        let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag));
-        store
-            .store(&self.tool_context().session, entry.clone())
-            .await?;
-        Ok(entry)
+        let append = tags.iter().fold(MemoryAppend::new(content), |append, tag| {
+            append.with_tag(*tag)
+        });
+        store.append_relationship(ctx, append).await
     }
 }
 
@@ -4241,18 +4238,54 @@ mod tests {
             .memory(store.clone())
             .build()
             .expect("build");
-        run.remember("User prefers dark mode", &["preference"])
-            .await
-            .expect("remember");
+        run.remember(
+            run.tool_context().memory_context(),
+            "User prefers dark mode",
+            &["preference"],
+        )
+        .await
+        .expect("remember");
         let results = store
-            .search(
-                &run.tool_context().session,
+            .search_relationship(
+                run.tool_context().memory_context(),
                 "dark mode",
                 crate::tools::memory::MemoryFilter::default(),
             )
             .await
             .expect("search");
         assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remember_uses_explicit_runtime_identity_not_builder_identity() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store.clone())
+            .build()
+            .expect("build");
+        let caller_session = sylvander_protocol::SessionContext::new(
+            "actual-user",
+            run.id().clone(),
+            "actual-session",
+        );
+        let caller = MemoryExecutionContext::worker(&caller_session);
+        let entry = run.remember(&caller, "caller-owned", &[]).await.unwrap();
+
+        assert_eq!(entry.owner, caller.relationship_owner().unwrap());
+        assert!(
+            store
+                .search_relationship(
+                    run.tool_context().memory_context(),
+                    "caller-owned",
+                    crate::tools::memory::MemoryFilter::default(),
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4263,7 +4296,10 @@ mod tests {
             .bus(bus)
             .build()
             .expect("build");
-        let err = run.remember("something", &[]).await.unwrap_err();
+        let err = run
+            .remember(run.tool_context().memory_context(), "something", &[])
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("no memory store"));
     }
 
