@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{CredentialSecretReferenceDraft, RegistryAdminError};
+use super::{CredentialSecretReferenceDraft, ProviderDefinitionDraft, RegistryAdminError};
 
 pub const DEFAULT_REGISTRY_REVISION_PAGE_SIZE: u16 = 50;
 pub const MAX_REGISTRY_REVISION_PAGE_SIZE: u16 = 100;
@@ -20,6 +20,26 @@ pub enum RegistryAdminRequest {
         before_revision: Option<u64>,
         #[serde(default = "default_page_size")]
         limit: u16,
+    },
+    CreateProvider {
+        provider_id: String,
+        definition: ProviderDefinitionDraft,
+    },
+    StageProviderRevision {
+        provider_id: String,
+        revision: u64,
+        expected_active_revision: u64,
+        definition: ProviderDefinitionDraft,
+    },
+    ActivateProviderRevision {
+        provider_id: String,
+        revision: u64,
+        expected_active_revision: u64,
+    },
+    RollbackProviderRevision {
+        provider_id: String,
+        target_revision: u64,
+        expected_active_revision: u64,
     },
     InspectModelRevision {
         provider_id: String,
@@ -78,7 +98,11 @@ impl RegistryAdminRequest {
             | Self::ListModelRevisions { .. }
             | Self::InspectCredentialGeneration { .. }
             | Self::ListCredentialGenerations { .. } => REGISTRY_ADMIN_READ_MIN_UI_PROTOCOL_VERSION,
-            Self::CreateCredentialBinding { .. }
+            Self::CreateProvider { .. }
+            | Self::StageProviderRevision { .. }
+            | Self::ActivateProviderRevision { .. }
+            | Self::RollbackProviderRevision { .. }
+            | Self::CreateCredentialBinding { .. }
             | Self::StageCredentialGeneration { .. }
             | Self::ActivateCredentialGeneration { .. }
             | Self::RollbackCredentialGeneration { .. } => {
@@ -100,6 +124,33 @@ impl RegistryAdminRequest {
                 limit,
             } => validate_provider(provider_id)
                 .and_then(|()| validate_page(*before_revision, *limit)),
+            Self::CreateProvider {
+                provider_id,
+                definition,
+            } => validate_provider(provider_id).and_then(|()| validate_provider_draft(definition)),
+            Self::StageProviderRevision {
+                provider_id,
+                revision,
+                expected_active_revision,
+                definition,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_revision(*revision))
+                .and_then(|()| validate_revision(*expected_active_revision))
+                .and_then(|()| validate_provider_draft(definition)),
+            Self::ActivateProviderRevision {
+                provider_id,
+                revision,
+                expected_active_revision,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_revision(*revision))
+                .and_then(|()| validate_revision(*expected_active_revision)),
+            Self::RollbackProviderRevision {
+                provider_id,
+                target_revision,
+                expected_active_revision,
+            } => validate_provider(provider_id)
+                .and_then(|()| validate_revision(*target_revision))
+                .and_then(|()| validate_revision(*expected_active_revision)),
             Self::InspectModelRevision {
                 provider_id,
                 model_id,
@@ -154,6 +205,12 @@ impl RegistryAdminRequest {
                 .and_then(|()| validate_generation(*expected_active_generation)),
         }
     }
+}
+
+fn validate_provider_draft(definition: &ProviderDefinitionDraft) -> Result<(), RegistryAdminError> {
+    definition.is_configured().then_some(()).ok_or_else(|| {
+        RegistryAdminError::invalid_request("provider definition must be configured")
+    })
 }
 
 fn validate_provider(provider_id: &str) -> Result<(), RegistryAdminError> {
