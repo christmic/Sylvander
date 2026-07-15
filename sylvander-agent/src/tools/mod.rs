@@ -18,8 +18,8 @@ pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;
 pub use edit::EditTool;
 pub use memory::{
-    InMemoryMemoryStore, MemoryActorKind, MemoryEntry, MemoryExecutionContext, MemoryOwner,
-    MemoryScope, MemoryStore, MemoryStoreError,
+    InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry, MemoryExecutionContext,
+    MemoryOwner, MemoryScope, MemoryStore, MemoryStoreError,
 };
 pub use memory_read::MemoryReadTool;
 pub use memory_sqlite::SqliteMemoryStore;

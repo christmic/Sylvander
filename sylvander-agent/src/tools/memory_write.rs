@@ -13,7 +13,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
-use super::memory::{MemoryEntry, MemoryStore};
+use super::memory::{MemoryAppend, MemoryStore};
 
 /// Tool that lets the model write to its long-term memory.
 ///
@@ -71,23 +71,20 @@ impl Tool for MemoryWriteTool {
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;
 
-        let mut entry = MemoryEntry::new(
-            uuid::Uuid::new_v4().to_string(),
-            content,
-            ctx.session.as_ref().clone(),
-        );
+        let mut append = MemoryAppend::new(content);
 
         // Parse optional tags
         if let Some(tags) = input["tags"].as_array() {
             for tag in tags {
                 if let Some(tag_str) = tag.as_str() {
-                    entry = entry.with_tag(tag_str);
+                    append = append.with_tag(tag_str);
                 }
             }
         }
 
-        self.store
-            .store(&ctx.session, entry.clone())
+        let entry = self
+            .store
+            .append_relationship(ctx.memory_context(), append)
             .await
             .map_err(|e| ToolError::Other(format!("memory write failed: {e}")))?;
 
@@ -134,6 +131,9 @@ mod tests {
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
+        for server_owned in ["owner", "scope", "id", "created_at", "provenance"] {
+            assert!(props.get(server_owned).is_none());
+        }
         let required = schema.schema.get("required").expect("has required");
         assert!(
             required
@@ -165,8 +165,8 @@ mod tests {
 
         // Verify it was actually stored
         let results = store
-            .search(
-                &c.session,
+            .search_relationship(
+                c.memory_context(),
                 "tabs over spaces",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -200,8 +200,8 @@ mod tests {
         assert!(!result.is_error);
 
         let results = store
-            .search(
-                &c.session,
+            .search_relationship(
+                c.memory_context(),
                 "minimal entry",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -209,5 +209,39 @@ mod tests {
             .expect("search");
         assert_eq!(results.len(), 1);
         assert!(results[0].metadata.is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_input_cannot_override_runtime_owner() {
+        let store = test_store();
+        let tool = MemoryWriteTool::new(store.clone());
+        let c = ctx();
+        tool.execute(
+            &c,
+            json!({
+                "content": "runtime owned",
+                "owner": {"scope": "relationship", "user_id": "attacker", "agent_id": "other"},
+                "id": "attacker-controlled",
+                "created_at": 0
+            }),
+        )
+        .await
+        .unwrap();
+
+        let results = store
+            .search_relationship(
+                c.memory_context(),
+                "runtime owned",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_ne!(results[0].id, "attacker-controlled");
+        assert!(results[0].created_at > 0);
+        assert_eq!(
+            results[0].owner,
+            c.memory_context().relationship_owner().unwrap()
+        );
     }
 }
