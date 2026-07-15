@@ -3,13 +3,14 @@
 //! Provider configuration is pinned by the caller. Only the credential head
 //! is resolved for each newly opened request; no client or secret is cached.
 
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
 use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
-    ModelProvider, ModelRequest, ProviderError, ProviderErrorKind, ProviderErrorPhase,
+    ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind, ProviderErrorPhase,
     ProviderFuture,
 };
 
@@ -246,6 +247,93 @@ impl ModelProvider for RequestScopedAnthropicProvider {
     }
 }
 
+/// Immutable, fail-closed routing table for one pinned Agent revision.
+///
+/// The router never chooses an alternate Provider or Model. A request must
+/// match the exact qualified allowlist before its Provider adapter is called.
+pub(crate) struct PinnedProviderRouter {
+    routes: HashMap<String, Arc<dyn ModelProvider>>,
+    allowed_models: HashSet<ModelRef>,
+}
+
+impl PinnedProviderRouter {
+    pub(crate) fn new(
+        routes: HashMap<String, Arc<dyn ModelProvider>>,
+        allowed_models: HashSet<ModelRef>,
+    ) -> Result<Self, ProviderRouterBuildError> {
+        if routes.is_empty() {
+            return Err(ProviderRouterBuildError::EmptyRoutes);
+        }
+        if allowed_models.is_empty() {
+            return Err(ProviderRouterBuildError::EmptyModels);
+        }
+        if routes
+            .keys()
+            .any(|provider_id| provider_id.trim().is_empty())
+            || allowed_models
+                .iter()
+                .any(|model| model.provider.trim().is_empty() || model.model.trim().is_empty())
+        {
+            return Err(ProviderRouterBuildError::IncompleteCatalog);
+        }
+
+        let used_routes = allowed_models
+            .iter()
+            .map(|model| model.provider.as_str())
+            .collect::<HashSet<_>>();
+        if allowed_models
+            .iter()
+            .any(|model| !routes.contains_key(&model.provider))
+            || routes
+                .keys()
+                .any(|provider_id| !used_routes.contains(provider_id.as_str()))
+        {
+            return Err(ProviderRouterBuildError::IncompleteCatalog);
+        }
+
+        Ok(Self {
+            routes,
+            allowed_models,
+        })
+    }
+}
+
+impl std::fmt::Debug for PinnedProviderRouter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PinnedProviderRouter")
+            .field("route_count", &self.routes.len())
+            .field("model_count", &self.allowed_models.len())
+            .finish()
+    }
+}
+
+impl ModelProvider for PinnedProviderRouter {
+    fn complete_stream(&self, request: ModelRequest) -> ProviderFuture<'_> {
+        let route = self
+            .allowed_models
+            .contains(&request.model)
+            .then(|| self.routes.get(&request.model.provider))
+            .flatten()
+            .cloned();
+        Box::pin(async move {
+            let route = route.ok_or_else(router_rejection)?;
+            route.complete_stream(request).await
+        })
+    }
+}
+
+/// Content-free construction failures safe for logs and protocol mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum ProviderRouterBuildError {
+    #[error("provider router requires at least one route")]
+    EmptyRoutes,
+    #[error("provider router requires at least one qualified Model")]
+    EmptyModels,
+    #[error("provider router catalog is incomplete")]
+    IncompleteCatalog,
+}
+
 fn map_credential_error(error: CredentialAccessError) -> ProviderError {
     match error {
         CredentialAccessError::Unavailable | CredentialAccessError::InvalidEncoding => {
@@ -267,6 +355,13 @@ fn map_credential_error(error: CredentialAccessError) -> ProviderError {
 
 fn provider_error(kind: ProviderErrorKind, message: &'static str) -> ProviderError {
     ProviderError::new(kind, ProviderErrorPhase::Open, message)
+}
+
+fn router_rejection() -> ProviderError {
+    provider_error(
+        ProviderErrorKind::InvalidRequest,
+        "requested model is unavailable for this Agent revision",
+    )
 }
 
 #[cfg(test)]
