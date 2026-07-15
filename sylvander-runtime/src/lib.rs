@@ -2555,7 +2555,9 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use sylvander_agent::tools::{MemoryAppend, MemoryExecutionContext};
+    use sylvander_agent::tools::{
+        MemoryActorKind, MemoryAppend, MemoryExecutionContext, MemoryProvenanceSource,
+    };
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2636,6 +2638,51 @@ mod tests {
             name: "test".into(),
             user_id: "user-1".into(),
         }
+    }
+
+    fn configured_memory_test_config(
+        directory: &tempfile::TempDir,
+        agent_ids: &[&str],
+    ) -> ServerConfig {
+        let secret = directory.path().join("provider.key");
+        std::fs::write(&secret, "test-secret").unwrap();
+        let agents = agent_ids.iter().fold(String::new(), |mut output, id| {
+            use std::fmt::Write as _;
+            write!(
+                output,
+                r#"
+[[agents]]
+[agents.spec]
+id = "{id}"
+name = "Agent {id}"
+[agents.spec.model]
+provider = "primary"
+model_name = "model-a"
+"#
+            )
+            .expect("write Agent test configuration");
+            output
+        });
+        ServerConfig::from_toml(&format!(
+            r#"
+schema_version = 1
+[server]
+data_dir = "{}"
+
+[[model_providers]]
+id = "primary"
+base_url = "https://models.invalid"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "model-a"
+{agents}
+"#,
+            directory.path().display(),
+            secret.display()
+        ))
+        .unwrap()
     }
 
     #[test]
@@ -2905,6 +2952,174 @@ model_name = "shared"
         let pins = closed.effective.require_revision_pins().unwrap();
         assert_eq!(pins.provider_revision, 1);
         assert_eq!(pins.model_revision, 1);
+    }
+
+    #[tokio::test]
+    async fn production_boot_rejects_old_and_unknown_memory_schemas_without_fallback() {
+        for version in [1_i64, 999_i64] {
+            let directory = tempfile::tempdir().unwrap();
+            let memory_db = directory.path().join("memory.db");
+            let connection = rusqlite::Connection::open(&memory_db).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE memory_schema_migrations (\
+                     component TEXT PRIMARY KEY, version INTEGER NOT NULL);",
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO memory_schema_migrations(component, version) \
+                     VALUES ('relationship_memory', ?1)",
+                    [version],
+                )
+                .unwrap();
+            drop(connection);
+            let mut config = configured_memory_test_config(&directory, &["assistant"]);
+            config.server.memory_db = Some(memory_db.clone());
+
+            let error = match Runtime::boot_config(config).await {
+                Ok(runtime) => {
+                    runtime.shutdown().await.unwrap();
+                    panic!("unsupported memory schema must fail production boot")
+                }
+                Err(error) => error,
+            };
+            assert!(matches!(error, RuntimeError::Store(_)));
+            assert_eq!(
+                error.to_string(),
+                "store error: store error: unsupported relationship memory schema"
+            );
+            assert!(!error.to_string().contains(&memory_db.display().to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn production_memory_isolates_same_user_across_agent_owners() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured_memory_test_config(&directory, &["agent-a", "agent-b"]);
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let agent_a = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "same-user",
+            "agent-a",
+            "session-a",
+        ));
+        let agent_b = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "same-user",
+            "agent-b",
+            "session-b",
+        ));
+
+        let entry_a = runtime
+            .memory_store
+            .append_relationship(&agent_a, MemoryAppend::new("agent A only"))
+            .await
+            .unwrap();
+        let entry_b = runtime
+            .memory_store
+            .append_relationship(&agent_b, MemoryAppend::new("agent B only"))
+            .await
+            .unwrap();
+
+        assert!(
+            runtime
+                .configured_agent(&AgentId::new("agent-a"))
+                .unwrap()
+                .uses_memory_store(&runtime.memory_store)
+        );
+        assert!(
+            runtime
+                .configured_agent(&AgentId::new("agent-b"))
+                .unwrap()
+                .uses_memory_store(&runtime.memory_store)
+        );
+        assert_eq!(
+            runtime
+                .memory_store
+                .get_relationship(&agent_a, &entry_a.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "agent A only"
+        );
+        assert_eq!(
+            runtime
+                .memory_store
+                .get_relationship(&agent_b, &entry_b.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "agent B only"
+        );
+        assert!(
+            runtime
+                .memory_store
+                .get_relationship(&agent_a, &entry_b.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .memory_store
+                .get_relationship(&agent_b, &entry_a.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_memory_preserves_revision_provenance_and_expiry_across_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured_memory_test_config(&directory, &["assistant"]);
+        let session =
+            sylvander_protocol::SessionContext::new("user-a", "assistant", "memory-session")
+                .with_trace_id("trace-before-restart");
+        let context = MemoryExecutionContext::worker(&session);
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let entry = runtime
+            .memory_store
+            .append_relationship(
+                &context,
+                MemoryAppend::new("restart field fidelity").with_ttl(3600),
+            )
+            .await
+            .unwrap();
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let restarted = Runtime::boot_config(config).await.unwrap();
+        let restored = restarted
+            .memory_store
+            .get_relationship(&context, &entry.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.revision, 1);
+        assert_eq!(restored.revision, entry.revision);
+        assert_eq!(restored.expires_at, entry.expires_at);
+        assert!(restored.expires_at.is_some());
+        assert_eq!(restored.provenance.actor, MemoryActorKind::Worker);
+        assert_eq!(restored.provenance.user_id.as_ref().unwrap().0, "user-a");
+        assert_eq!(
+            restored.provenance.agent_id.as_ref().unwrap().0,
+            "assistant"
+        );
+        assert_eq!(
+            restored.provenance.session_id.as_ref().unwrap().0,
+            "memory-session"
+        );
+        assert_eq!(
+            restored.provenance.trace_id.as_deref(),
+            Some("trace-before-restart")
+        );
+        assert_eq!(restored.provenance.source, MemoryProvenanceSource::Runtime);
+        assert!(restored.provenance.trusted);
+        assert_eq!(restored.provenance, entry.provenance);
+        restarted.shutdown().await.unwrap();
     }
 
     #[tokio::test]
