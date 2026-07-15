@@ -192,6 +192,11 @@ pub(crate) fn build_registry_agent_with_resolver(
     if credential_binding_id != provider.credential_binding_id {
         return Err(CompositionError::RegistryBindingMismatch);
     }
+    for model in &definitions {
+        AnthropicProviderFactory
+            .preflight(&provider, model)
+            .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
+    }
     let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
     let provider_adapter = AnthropicProviderFactory
         .create(provider.clone(), credentials)
@@ -260,6 +265,14 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         default_model,
     } = snapshot;
     let revision_bindings = versioned_registry_revision_bindings(&providers, &model_definitions)?;
+    for (selection, model) in &model_definitions {
+        let provider = providers
+            .get(&selection.provider_id)
+            .ok_or_else(|| CompositionError::MissingProvider(selection.provider_id.clone()))?;
+        AnthropicProviderFactory
+            .preflight(provider, model)
+            .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
+    }
     let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
     let mut adapters_by_provider =
         HashMap::<String, Arc<dyn ModelProvider>>::with_capacity(providers.len());
@@ -1143,6 +1156,46 @@ model_name = "shared"
             Err(CompositionError::ModelSelection(
                 ModelSelectionResolutionError::LegacyAmbiguous { model_id, provider_ids }
             )) if model_id == "shared" && provider_ids == vec!["alpha", "beta"]
+        ));
+    }
+
+    #[tokio::test]
+    async fn versioned_builder_preflights_every_model_before_router_construction() {
+        let config = versioned_config();
+        let mut snapshot = versioned_snapshot(&config);
+        snapshot
+            .models
+            .get_mut(&ModelSelection {
+                provider_id: "beta".into(),
+                model_id: "shared".into(),
+            })
+            .unwrap()
+            .capabilities = ["future_secret_capability".into()].into();
+        let directory = tempfile::tempdir().unwrap();
+        let registry =
+            crate::agent_registry::AgentRegistry::open(directory.path().join("registry.db"))
+                .await
+                .unwrap();
+        let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
+        let sessions: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+
+        let result = build_registry_agent_versioned_with_resolver(
+            &config,
+            snapshot,
+            registry,
+            bus,
+            sessions,
+            Arc::new(crate::config::SystemSecretResolver),
+        );
+        let Err(error) = result else {
+            panic!("unsupported model capability must fail before router construction");
+        };
+
+        assert!(matches!(
+            error,
+            CompositionError::ProviderFactory(message)
+                if message == "model capability is unsupported by provider adapter"
         ));
     }
 
