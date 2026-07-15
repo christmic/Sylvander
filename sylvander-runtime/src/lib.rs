@@ -1379,7 +1379,9 @@ fn registry_admin_error(
             message: message.into(),
             provider_id: None,
             model_id: None,
+            binding_id_sha256: None,
             revision: None,
+            generation: None,
         },
     }
 }
@@ -1423,6 +1425,21 @@ fn registry_admin_audit_target(
             format!("{provider_id}/{model_id}"),
             None,
         ),
+        RegistryAdminRequest::InspectCredentialGeneration {
+            binding_id,
+            generation,
+        } => (
+            "inspect_credential_generation",
+            "credential",
+            binding_id.clone(),
+            Some(*generation),
+        ),
+        RegistryAdminRequest::ListCredentialGenerations { binding_id, .. } => (
+            "list_credential_generations",
+            "credential",
+            binding_id.clone(),
+            None,
+        ),
     }
 }
 
@@ -1432,7 +1449,9 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
         RegistryAdminErrorCode::InvalidRequest => "invalid_request",
         RegistryAdminErrorCode::UnknownProvider => "unknown_provider",
         RegistryAdminErrorCode::UnknownModel => "unknown_model",
+        RegistryAdminErrorCode::UnknownCredentialBinding => "unknown_credential_binding",
         RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
+        RegistryAdminErrorCode::UnknownGeneration => "unknown_generation",
         RegistryAdminErrorCode::StorageUnavailable => "storage_unavailable",
         RegistryAdminErrorCode::IntegrityFailure => "integrity_failure",
         RegistryAdminErrorCode::Internal => "internal",

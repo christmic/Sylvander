@@ -138,7 +138,9 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
             message: "Registry administration service is unavailable".into(),
             provider_id: None,
             model_id: None,
+            binding_id_sha256: None,
             revision: None,
+            generation: None,
         },
     }
 }
