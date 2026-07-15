@@ -728,6 +728,37 @@ pub struct SessionRevisionPins {
     pub model_revision: u64,
 }
 
+/// Stable role of one prompt layer in the exact order used for composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptLayerKind {
+    SharedSafety,
+    ProviderModelProfile,
+    Agent,
+    SessionInput,
+}
+
+/// Content-free digest for one prompt layer. `reference` identifies a public
+/// profile or definition revision; it must never contain prompt text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptLayerDigest {
+    pub kind: PromptLayerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+    pub sha256: String,
+    pub byte_count: u64,
+}
+
+/// Ordered, content-free manifest of the effective prompt composition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PromptManifest {
+    pub layers: Vec<PromptLayerDigest>,
+    pub aggregate_sha256: String,
+    pub total_bytes: u64,
+}
+
 /// A legacy effective configuration can be decoded without revision pins, but
 /// it cannot execute until the runtime resolves and persists both revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -765,6 +796,10 @@ pub struct SessionEffectiveConfig {
     pub prompt_profile: Option<String>,
     /// Digest of the resolved prompt, never the prompt or credentials.
     pub system_prompt_sha256: String,
+    /// Optional for backward compatibility with sessions created before
+    /// prompt-layer provenance was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_manifest: Option<PromptManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1343,6 +1378,7 @@ mod tests {
             serde_json::from_value(effective_config_json()).expect("legacy config");
         assert_eq!(config.provider_revision, None);
         assert_eq!(config.model_revision, None);
+        assert_eq!(config.prompt_manifest, None);
         assert_eq!(
             config.require_revision_pins(),
             Err(SessionRevisionPinError::MissingProviderRevision)
@@ -1351,6 +1387,47 @@ mod tests {
         let encoded = serde_json::to_value(config).expect("serialize legacy config");
         assert!(encoded.get("provider_revision").is_none());
         assert!(encoded.get("model_revision").is_none());
+        assert!(encoded.get("prompt_manifest").is_none());
+    }
+
+    #[test]
+    fn prompt_manifest_round_trips_in_composition_order() {
+        let mut json = effective_config_json();
+        json["prompt_manifest"] = serde_json::json!({
+            "layers": [
+                {
+                    "kind": "shared_safety",
+                    "reference": "safety-v2",
+                    "sha256": "aaa",
+                    "byte_count": 12
+                },
+                {
+                    "kind": "agent",
+                    "reference": "agent-1@3",
+                    "sha256": "bbb",
+                    "byte_count": 34
+                },
+                {
+                    "kind": "session_input",
+                    "sha256": "ccc",
+                    "byte_count": 5
+                }
+            ],
+            "aggregate_sha256": "aggregate",
+            "total_bytes": 51
+        });
+
+        let config: SessionEffectiveConfig = serde_json::from_value(json).unwrap();
+        let manifest = config.prompt_manifest.as_ref().unwrap();
+        assert_eq!(manifest.layers[0].kind, PromptLayerKind::SharedSafety);
+        assert_eq!(manifest.layers[1].kind, PromptLayerKind::Agent);
+        assert_eq!(manifest.layers[2].kind, PromptLayerKind::SessionInput);
+        assert_eq!(manifest.total_bytes, 51);
+        let expected_manifest = manifest.clone();
+
+        let round_trip: SessionEffectiveConfig =
+            serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+        assert_eq!(round_trip.prompt_manifest.unwrap(), expected_manifest);
     }
 
     #[test]

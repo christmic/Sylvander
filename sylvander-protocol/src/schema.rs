@@ -72,6 +72,21 @@ mod tests {
                 "schema omitted {capability_contract}"
             );
         }
+        for prompt_contract in [
+            "prompt_manifest",
+            "PromptManifest",
+            "PromptLayerDigest",
+            "shared_safety",
+            "provider_model_profile",
+            "session_input",
+            "aggregate_sha256",
+            "total_bytes",
+        ] {
+            assert!(
+                encoded.contains(prompt_contract),
+                "schema omitted {prompt_contract}"
+            );
+        }
     }
 
     #[test]

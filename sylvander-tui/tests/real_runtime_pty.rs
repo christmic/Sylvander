@@ -232,6 +232,7 @@ impl HarnessUiService {
                 }),
             prompt_profile: request.overrides.prompt_profile.clone(),
             system_prompt_sha256: "0".repeat(64),
+            prompt_manifest: None,
             agent_workspace: None,
             user_workspace: request.overrides.user_workspace.clone(),
             execution_target: request

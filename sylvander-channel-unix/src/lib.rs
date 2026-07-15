@@ -42,6 +42,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{
     BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
 };
+use sylvander_agent::session_store::SessionMetadataPatch;
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
@@ -1150,23 +1151,25 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::RenameSession { session_id, label } => {
             let session_id = SessionId::new(session_id);
-            match ctx.sessions.get(&session_id).await {
-                Ok(Some(mut session)) => {
-                    session.name = label.clone();
-                    session.metadata.name = label.clone();
-                    match ctx.sessions.save(&session).await {
-                        Ok(()) => {
-                            let _ = tx.send(ServerMsg::SessionUpdated {
-                                session_id: session_id.0,
-                                label: Some(label),
-                                archived: false,
-                            });
-                        }
-                        Err(error) => warn!(%error, "unix: failed to rename session"),
-                    }
+            match ctx
+                .sessions
+                .patch_metadata(
+                    &session_id,
+                    SessionMetadataPatch {
+                        name: Some(label.clone()),
+                        external_meta: std::collections::HashMap::new(),
+                    },
+                )
+                .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: Some(label),
+                        archived: false,
+                    });
                 }
-                Ok(None) => warn!(%session_id, "unix: rename session not found"),
-                Err(error) => warn!(%error, "unix: failed to get session for rename"),
+                Err(error) => warn!(%error, "unix: failed to rename session"),
             }
         }
         ClientMsg::ArchiveSession { session_id } => {
