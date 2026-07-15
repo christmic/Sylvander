@@ -48,6 +48,10 @@ mod provider_registry_tests;
 mod registry_bootstrap;
 #[cfg(test)]
 mod registry_bootstrap_tests;
+#[allow(dead_code)] // composed by the registry-backed Runtime revision provider
+mod registry_composition;
+#[cfg(test)]
+mod registry_composition_tests;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
