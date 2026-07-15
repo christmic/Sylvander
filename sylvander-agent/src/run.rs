@@ -89,6 +89,8 @@ pub(crate) struct AgentRunInner {
     session_store: Option<Arc<dyn SessionStore>>,
     /// Long-term memory store.
     memory: Option<Arc<dyn MemoryStore>>,
+    /// Truth about how the active memory backend was selected.
+    memory_source: MemorySource,
     /// Whether bus-based approval is enabled (opt-in, off by default).
     approval_enabled: bool,
     /// Static approval rules (auto-approve/auto-reject).
@@ -112,6 +114,12 @@ pub(crate) struct AgentRunInner {
     /// Tool invocation context (session identity + budget + surface).
     /// Used by system-driven ops like `remember` to attribute writes.
     tool_context: ToolContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemorySource {
+    None,
+    RuntimeInjected,
 }
 
 struct PendingApproval {
@@ -536,49 +544,35 @@ impl AgentRun {
             })
             .collect::<Vec<_>>();
 
-        if self.inner.spec.memory_stores.is_empty() {
-            if self.inner.memory.is_some() {
-                features.push(PlatformFeature {
-                    kind: PlatformFeatureKind::Memory,
-                    name: "runtime memory".into(),
-                    status: PlatformFeatureStatus::Active,
-                    summary: "long-term memory is available".into(),
-                    source: Some("runtime injection".into()),
-                    trust: Some(PlatformTrust::BuiltIn),
-                    auth: PlatformAuthStatus::NotRequired,
-                    capabilities: vec!["search".into(), "system_write".into()],
-                    reloadable: false,
-                });
-            }
-        } else {
-            features.extend(self.inner.spec.memory_stores.iter().enumerate().map(
-                |(index, store)| {
-                    let active = index == 0 && self.inner.memory.is_some();
-                    PlatformFeature {
-                        kind: PlatformFeatureKind::Memory,
-                        name: store.store_type.clone(),
-                        status: if active {
-                            PlatformFeatureStatus::Active
-                        } else {
-                            PlatformFeatureStatus::Unavailable
-                        },
-                        summary: if active {
-                            "long-term memory is available".into()
-                        } else {
-                            "memory store could not be activated".into()
-                        },
-                        source: Some("agent configuration".into()),
-                        trust: Some(PlatformTrust::BuiltIn),
-                        auth: PlatformAuthStatus::NotRequired,
-                        capabilities: if active {
-                            vec!["search".into(), "system_write".into()]
-                        } else {
-                            Vec::new()
-                        },
-                        reloadable: false,
-                    }
+        if self.inner.memory_source == MemorySource::RuntimeInjected {
+            features.push(PlatformFeature {
+                kind: PlatformFeatureKind::Memory,
+                name: "runtime memory".into(),
+                status: PlatformFeatureStatus::Active,
+                summary: "long-term memory is available".into(),
+                source: Some("runtime injection".into()),
+                trust: Some(PlatformTrust::BuiltIn),
+                auth: PlatformAuthStatus::NotRequired,
+                capabilities: vec!["search".into(), "system_write".into()],
+                reloadable: false,
+            });
+        }
+        for store in &self.inner.spec.memory_stores {
+            features.push(PlatformFeature {
+                kind: PlatformFeatureKind::Memory,
+                name: store.store_type.clone(),
+                status: PlatformFeatureStatus::Configured,
+                summary: if self.inner.memory_source == MemorySource::RuntimeInjected {
+                    "declared; runtime memory is active".into()
+                } else {
+                    "declared; not activated by runtime".into()
                 },
-            ));
+                source: Some("agent configuration".into()),
+                trust: Some(PlatformTrust::BuiltIn),
+                auth: PlatformAuthStatus::NotRequired,
+                capabilities: Vec::new(),
+                reloadable: false,
+            });
         }
 
         let commands = self
@@ -2793,13 +2787,9 @@ impl AgentRunBuilder {
             .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
 
         let approval_memory = ApprovalMemory::load(self.approval_store_path.clone())?;
-        let memory = if self.memory.is_some() {
-            self.memory
-        } else {
-            self.spec
-                .memory_stores
-                .first()
-                .and_then(|cfg| cfg.build().ok())
+        let (memory, memory_source) = match self.memory {
+            Some(store) => (Some(store), MemorySource::RuntimeInjected),
+            None => (None, MemorySource::None),
         };
 
         let provider_backend = !matches!(&self.backend, AgentRunModelBackend::Legacy(_));
@@ -2964,6 +2954,7 @@ impl AgentRunBuilder {
                 sessions: RwLock::new(HashMap::new()),
                 session_store: self.session_store,
                 memory,
+                memory_source,
                 approval_enabled: self.approval_enabled,
                 approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -3536,10 +3527,114 @@ mod tests {
             snapshot.features[1].kind,
             sylvander_protocol::PlatformFeatureKind::Memory
         );
+        assert_eq!(snapshot.features[1].name, "runtime memory");
+        assert_eq!(
+            snapshot.features[1].status,
+            sylvander_protocol::PlatformFeatureStatus::Active
+        );
+        assert_eq!(
+            snapshot.features[1].source.as_deref(),
+            Some("runtime injection")
+        );
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("super-secret"));
         assert!(!json.contains("also-secret"));
         assert!(!json.contains("/opt/bin"));
+    }
+
+    #[test]
+    fn platform_snapshot_reports_runtime_override_without_activating_declarations() {
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("test-model")
+            .memory_store(crate::spec::MemoryStoreConfig {
+                store_type: "sqlite".into(),
+                path: PathBuf::from("/private/sentinel-memory.db"),
+            })
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .unwrap();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()))
+            .build()
+            .unwrap();
+
+        let snapshot = run.platform_snapshot();
+        let memory = snapshot
+            .features
+            .iter()
+            .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+            .collect::<Vec<_>>();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(
+            memory
+                .iter()
+                .filter(|feature| {
+                    feature.status == sylvander_protocol::PlatformFeatureStatus::Active
+                })
+                .count(),
+            1
+        );
+        assert_eq!(memory[0].name, "runtime memory");
+        assert_eq!(memory[1].name, "sqlite");
+        assert_eq!(
+            memory[1].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+        assert_eq!(memory[1].source.as_deref(), Some("agent configuration"));
+        assert!(memory[1].capabilities.is_empty());
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("sentinel-memory")
+        );
+    }
+
+    #[test]
+    fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("test-model")
+            .memory_store(crate::spec::MemoryStoreConfig {
+                store_type: "unsupported-future-store".into(),
+                path: PathBuf::from("/private/never-open-this-store"),
+            })
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .unwrap();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build()
+            .unwrap();
+
+        assert!(run.inner.memory.is_none());
+        let snapshot = run.platform_snapshot();
+        let memory = snapshot
+            .features
+            .iter()
+            .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+            .collect::<Vec<_>>();
+        assert_eq!(memory.len(), 1);
+        assert_eq!(
+            memory[0].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+        assert_eq!(memory[0].summary, "declared; not activated by runtime");
+        assert!(memory[0].capabilities.is_empty());
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("never-open-this-store")
+        );
     }
 
     #[tokio::test(start_paused = true)]
