@@ -564,7 +564,9 @@ mod tests {
                     message: "registry unavailable".into(),
                     provider_id: None,
                     model_id: None,
+                    binding_id_sha256: None,
                     revision: None,
+                    generation: None,
                 },
             },
         };
