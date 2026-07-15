@@ -42,6 +42,7 @@ mod credential_registry;
 #[cfg(test)]
 mod credential_registry_tests;
 pub mod evidence;
+mod memory_maintenance;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
 mod model_registry;
 #[cfg(test)]
@@ -110,6 +111,9 @@ use crate::composition::{
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use crate::memory_maintenance::{
+    MemoryMaintenanceTask, RuntimeMemoryMaintenancePolicy, catch_up as memory_maintenance_catch_up,
+};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
@@ -152,6 +156,7 @@ pub struct Runtime {
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
+    memory_maintenance: Option<MemoryMaintenanceTask>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
     channel_exit_tx: tokio::sync::mpsc::UnboundedSender<String>,
     channel_exits: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
@@ -1890,6 +1895,7 @@ impl Runtime {
             revision_provider: None,
             ui_service,
             evidence: None,
+            memory_maintenance: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
             channel_exits: tokio::sync::Mutex::new(channel_exits),
@@ -1981,12 +1987,18 @@ impl Runtime {
                 .await
                 .map_err(|error| RuntimeError::Store(error.to_string()))?,
         );
-        let memory_store: Arc<dyn MemoryStore> = Arc::new(
-            tokio::task::spawn_blocking(move || SqliteMemoryStore::open(memory_db))
-                .await
-                .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
-                .map_err(|error| RuntimeError::Store(error.to_string()))?,
-        );
+        let memory_policy =
+            RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)?;
+        let retention_policy = memory_policy.retention.clone();
+        let sqlite_memory = tokio::task::spawn_blocking(move || {
+            SqliteMemoryStore::open_with_retention_policy(memory_db, retention_policy)
+        })
+        .await
+        .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
+        .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let memory_maintenance_handle = sqlite_memory.maintenance();
+        memory_maintenance_catch_up(&memory_maintenance_handle, &memory_policy).await?;
+        let memory_store: Arc<dyn MemoryStore> = Arc::new(sqlite_memory);
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
         let evidence_path = config
@@ -2137,6 +2149,10 @@ impl Runtime {
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
+        let memory_maintenance = Some(MemoryMaintenanceTask::start(
+            memory_maintenance_handle,
+            memory_policy,
+        ));
         Ok(Self {
             engine,
             session_store,
@@ -2147,6 +2163,7 @@ impl Runtime {
             revision_provider: Some(revision_provider),
             ui_service,
             evidence,
+            memory_maintenance,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
             channel_exits: tokio::sync::Mutex::new(channel_exits),
@@ -2393,6 +2410,9 @@ impl Runtime {
             && let Err(error) = evidence.shutdown().await
         {
             first_error.get_or_insert_with(|| RuntimeError::Evidence(error.to_string()));
+        }
+        if let Some(maintenance) = &self.memory_maintenance {
+            maintenance.shutdown().await;
         }
         info!("runtime shut down");
         first_error.map_or(Ok(()), Err)
@@ -3131,6 +3151,214 @@ model_name = "shared"
         assert!(restored.provenance.trusted);
         assert_eq!(restored.provenance, entry.provenance);
         restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn production_memory_catch_up_is_bounded_restart_safe_and_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.server.memory_maintenance.batch_size = 1;
+        config.server.memory_maintenance.max_batches_per_run = 2;
+        config
+            .server
+            .memory_maintenance
+            .retention
+            .expired_grace_days = 0;
+        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "user",
+            "assistant",
+            "session",
+        ));
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        assert!(runtime.memory_maintenance.is_some());
+        for content in ["one", "two", "three"] {
+            runtime
+                .memory_store
+                .append_relationship(&context, MemoryAppend::new(content))
+                .await
+                .unwrap();
+        }
+        runtime.shutdown().await.unwrap();
+        assert!(
+            runtime
+                .memory_maintenance
+                .as_ref()
+                .unwrap()
+                .is_stopped()
+                .await
+        );
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let memory_db = directory.path().join("memory.db");
+        let connection = rusqlite::Connection::open(&memory_db).unwrap();
+        connection
+            .execute(
+                "UPDATE relationship_memories SET expires_at = unixepoch() - 1",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let restarted = Runtime::boot_config(config.clone()).await.unwrap();
+        restarted.shutdown().await.unwrap();
+        drop(restarted);
+        let counts = || {
+            let connection = rusqlite::Connection::open(&memory_db).unwrap();
+            connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM relationship_memories), (SELECT COUNT(*) FROM relationship_memory_audit WHERE operation = 'purge_expired')",
+                    [],
+                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(counts(), (1, 2));
+
+        let restarted = Runtime::boot_config(config.clone()).await.unwrap();
+        restarted.shutdown().await.unwrap();
+        drop(restarted);
+        assert_eq!(counts(), (0, 3));
+        let restarted = Runtime::boot_config(config).await.unwrap();
+        restarted.shutdown().await.unwrap();
+        drop(restarted);
+        assert_eq!(counts(), (0, 3));
+    }
+
+    #[tokio::test]
+    async fn maintenance_failure_keeps_the_concrete_durable_store_content_safely() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config
+            .server
+            .memory_maintenance
+            .retention
+            .expired_grace_days = 0;
+        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "user",
+            "assistant",
+            "session",
+        ));
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        runtime
+            .memory_store
+            .append_relationship(&context, MemoryAppend::new("must remain durable"))
+            .await
+            .unwrap();
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+        let memory_db = directory.path().join("memory.db");
+        let policy =
+            RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
+                .unwrap();
+        let store =
+            SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
+                .unwrap();
+        let connection = rusqlite::Connection::open(&memory_db).unwrap();
+        connection
+            .execute_batch(
+                "UPDATE relationship_memories SET expires_at = unixepoch() - 1; \
+                 CREATE TRIGGER reject_runtime_purge BEFORE INSERT ON relationship_memory_audit \
+                 WHEN NEW.operation LIKE 'purge_%' BEGIN SELECT RAISE(ABORT, 'private'); END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let error = memory_maintenance_catch_up(&store.maintenance(), &policy)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "store error: memory retention catch-up failed"
+        );
+        assert!(!error.to_string().contains("private"));
+        assert_eq!(
+            store
+                .search_relationship(
+                    &context,
+                    "durable",
+                    sylvander_agent::tools::memory::MemoryFilter::default(),
+                )
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
+        let count: u32 = rusqlite::Connection::open(memory_db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn periodic_memory_maintenance_runs_and_shutdown_joins_the_single_worker() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config
+            .server
+            .memory_maintenance
+            .retention
+            .expired_grace_days = 0;
+        config.server.memory_maintenance.batch_size = 1;
+        config.server.memory_maintenance.max_batches_per_run = 100;
+        let policy =
+            RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
+                .unwrap()
+                .with_interval(std::time::Duration::from_millis(10));
+        let memory_db = directory.path().join("periodic-memory.db");
+        let store =
+            SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
+                .unwrap();
+        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
+            "user",
+            "assistant",
+            "session",
+        ));
+        let maintenance = MemoryMaintenanceTask::start(store.maintenance(), policy);
+        for index in 0..25 {
+            store
+                .append_relationship(&context, MemoryAppend::new(format!("periodic-{index}")))
+                .await
+                .unwrap();
+        }
+        rusqlite::Connection::open(&memory_db)
+            .unwrap()
+            .execute(
+                "UPDATE relationship_memories SET expires_at = unixepoch() - 1",
+                [],
+            )
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let count: u32 = rusqlite::Connection::open(&memory_db)
+                    .unwrap()
+                    .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                if count < 25 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        maintenance.shutdown().await;
+        assert!(maintenance.is_stopped().await);
+        let remaining: u32 = rusqlite::Connection::open(&memory_db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!((1..25).contains(&remaining));
+        maintenance.shutdown().await;
     }
 
     #[tokio::test]
