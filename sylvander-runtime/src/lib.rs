@@ -88,19 +88,20 @@ use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RegistryAdminError,
-    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionEffectiveConfig, SessionRevisionPinError,
+    AgentDescriptor, ModelSelection, RegistryAdminError, RegistryAdminErrorCode,
+    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
+    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
+    SessionRevisionPinError,
 };
 
 use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
     redact_revision,
 };
-use crate::agent_registry_snapshot::AgentSnapshotSelection;
+use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
 use crate::composition::{
-    ConfiguredAgent, build_agent, build_registry_agent_with_resolver, resolve_session_config,
+    ConfiguredAgent, build_agent, build_registry_agent_versioned_with_resolver,
+    resolve_session_config,
 };
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
@@ -200,10 +201,10 @@ impl RuntimeRevisionProvider {
     ) -> Result<ConfiguredAgent, RuntimeError> {
         let snapshot = self
             .registry
-            .resolve_registry_composition(agent_id, revision)
+            .resolve_registry_composition_versioned(agent_id, revision)
             .await
             .map_err(|error| RuntimeError::Composition(error.to_string()))?;
-        build_registry_agent_with_resolver(
+        build_registry_agent_versioned_with_resolver(
             &self.config,
             snapshot,
             self.registry.clone(),
@@ -295,38 +296,39 @@ impl RuntimeRevisionProvider {
 fn active_snapshot_selection(
     config: &ServerConfig,
     definition: &crate::config::AgentDefinitionConfig,
-) -> Result<AgentSnapshotSelection, RuntimeError> {
+) -> Result<AgentSnapshotSelectionV3, RuntimeError> {
     let provider_id = &definition.spec.model.provider;
     let provider = config
         .model_providers
         .iter()
         .find(|candidate| &candidate.id == provider_id)
         .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
-    let allowed_model_ids = if definition.spec.model.allowed_models.is_empty() {
+    let allowed_models = if definition.spec.model.allowed_models.is_empty() {
         provider
             .models
             .iter()
-            .map(|model| model.id.clone())
+            .map(|model| ModelSelection {
+                provider_id: provider_id.clone(),
+                model_id: model.id.clone(),
+            })
             .collect::<BTreeSet<_>>()
     } else {
-        let mut allowed = BTreeSet::new();
-        for model in &definition.spec.model.allowed_models {
-            if model.provider_id != *provider_id {
-                return Err(RuntimeError::Config(format!(
-                    "cross-Provider Agent snapshot `{}/{}` requires the versioned snapshot format",
-                    model.provider_id, model.model_id
-                )));
-            }
-            allowed.insert(model.model_id.clone());
-        }
-        allowed
+        definition
+            .spec
+            .model
+            .allowed_models
+            .iter()
+            .cloned()
+            .collect()
     };
-    Ok(AgentSnapshotSelection {
+    Ok(AgentSnapshotSelectionV3 {
         agent_id: definition.spec.id.to_string(),
         agent_revision: definition.revision,
-        provider_id: provider_id.clone(),
-        allowed_model_ids,
-        default_model_id: definition.spec.model.model_name.clone(),
+        default_model: ModelSelection {
+            provider_id: provider_id.clone(),
+            model_id: definition.spec.model.model_name.clone(),
+        },
+        allowed_models,
     })
 }
 
@@ -382,7 +384,7 @@ async fn close_session_revision_pins(
         (effective, true)
     };
     let snapshot = registry
-        .load_agent_snapshot(&effective.agent_id.0, effective.agent_revision)
+        .load_agent_snapshot_versioned(&effective.agent_id.0, effective.agent_revision)
         .await
         .map_err(|_| SessionBindingError::Snapshot)?
         .ok_or_else(|| SessionBindingError::MissingSnapshot {
@@ -392,31 +394,49 @@ async fn close_session_revision_pins(
     snapshot
         .validate()
         .map_err(|_| SessionBindingError::Snapshot)?;
-    if snapshot.provider_id != effective.provider_id {
-        return Err(SessionBindingError::ProviderMismatch {
-            expected: snapshot.provider_id,
-            actual: effective.provider_id,
-        });
+    let pinned_agent = registry
+        .load(&effective.agent_id, effective.agent_revision)
+        .await
+        .map_err(|_| SessionBindingError::Registry)?
+        .ok_or_else(|| SessionBindingError::MissingAgentRevision {
+            agent_id: effective.agent_id.clone(),
+            revision: effective.agent_revision,
+        })?;
+    let configured_default = ModelSelection {
+        provider_id: pinned_agent.definition.spec.model.provider.clone(),
+        model_id: pinned_agent.definition.spec.model.model_name.clone(),
+    };
+    if snapshot.default_model != configured_default {
+        return Err(SessionBindingError::Snapshot);
     }
+    let provider_revision = snapshot
+        .providers
+        .get(&effective.provider_id)
+        .copied()
+        .ok_or_else(|| SessionBindingError::MissingProvider {
+            provider_id: effective.provider_id.clone(),
+        })?;
+    let selection = ModelSelection {
+        provider_id: effective.provider_id.clone(),
+        model_id: effective.model_id.clone(),
+    };
     let model = snapshot
         .models
         .iter()
-        .find(|model| {
-            model.provider_id == effective.provider_id && model.model_id == effective.model_id
-        })
+        .find(|model| model.model == selection)
         .ok_or_else(|| SessionBindingError::MissingModel {
             provider_id: effective.provider_id.clone(),
             model_id: effective.model_id.clone(),
         })?;
     match effective.provider_revision {
-        Some(actual) if actual != snapshot.provider_revision => {
+        Some(actual) if actual != provider_revision => {
             return Err(SessionBindingError::ProviderRevisionMismatch {
-                expected: snapshot.provider_revision,
+                expected: provider_revision,
                 actual,
             });
         }
         None => {
-            effective.provider_revision = Some(snapshot.provider_revision);
+            effective.provider_revision = Some(provider_revision);
             changed = true;
         }
         Some(_) => {}
@@ -535,35 +555,14 @@ impl sylvander_channel::UiService for RuntimeUiService {
             let agent = self
                 .active_agent(agent_id, boundary, "discover_agents")
                 .await?;
+            let runtime_models = agent.run.runtime_model_info().await;
             agents.push(AgentDescriptor {
                 id: agent.spec.id.clone(),
                 revision: agent.definition.revision,
                 name: agent.spec.name.clone(),
                 provider_id: agent.spec.model.provider.clone(),
                 default_model_id: agent.spec.model.model_name.clone(),
-                models: agent
-                    .models
-                    .iter()
-                    .map(|model| ModelDescriptor {
-                        id: model.id.clone(),
-                        provider: agent.spec.model.provider.clone(),
-                        capabilities: model.capabilities.bits(),
-                        reasoning_efforts: if model.capabilities.contains(
-                            sylvander_llm_anthropic::api::model::ModelCapabilities::EXTENDED_THINKING,
-                        ) {
-                            vec![
-                                ReasoningEffort::Off,
-                                ReasoningEffort::Low,
-                                ReasoningEffort::Medium,
-                                ReasoningEffort::High,
-                            ]
-                        } else {
-                            vec![ReasoningEffort::Off]
-                        },
-                        lifecycle: ModelLifecycle::Active,
-                        pricing: None,
-                    })
-                    .collect(),
+                models: runtime_models.models,
                 default_prompt_profile: agent.definition.default_prompt_profile.clone(),
                 agent_workspace: agent.definition.agent_workspace.as_ref().map(|workspace| {
                     sylvander_protocol::SessionWorkspaceBinding {
@@ -865,7 +864,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     .await
                 {
                     Ok(stored) => {
-                        if registry.stage_agent_snapshot(selection).await.is_err()
+                        if registry.stage_agent_snapshot_v3(selection).await.is_err()
                             || provider
                                 .configured_revision(
                                     &stored.definition.spec.id,
@@ -1931,13 +1930,13 @@ impl Runtime {
         })?;
         for definition in &config.agents {
             let existing = agent_registry
-                .load_agent_snapshot(&definition.spec.id.0, definition.revision)
+                .load_agent_snapshot_versioned(&definition.spec.id.0, definition.revision)
                 .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?;
             if existing.is_none() {
                 let selection = active_snapshot_selection(&config, definition)?;
                 agent_registry
-                    .stage_agent_snapshot(selection)
+                    .stage_agent_snapshot_v3(selection)
                     .await
                     .map_err(|error| RuntimeError::Composition(error.to_string()))?;
             }
@@ -1986,11 +1985,11 @@ impl Runtime {
         let mut agents = Vec::with_capacity(config.agents.len());
         for definition in &config.agents {
             let snapshot = agent_registry
-                .resolve_registry_composition(&definition.spec.id, definition.revision)
+                .resolve_registry_composition_versioned(&definition.spec.id, definition.revision)
                 .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?;
             agents.push(
-                build_registry_agent_with_resolver(
+                build_registry_agent_versioned_with_resolver(
                     &config,
                     snapshot,
                     agent_registry.clone(),
@@ -2409,6 +2408,8 @@ pub enum SessionBindingError {
     },
     #[error("Agent {0} has no active immutable revision")]
     MissingActiveAgent(AgentId),
+    #[error("Agent {agent_id}@{revision} has no immutable revision")]
+    MissingAgentRevision { agent_id: AgentId, revision: u64 },
     #[error("active Agent {agent_id} revision is {expected}, not composed revision {actual}")]
     ActiveAgentMismatch {
         agent_id: AgentId,
@@ -2419,6 +2420,8 @@ pub enum SessionBindingError {
     MissingSnapshot { agent_id: AgentId, revision: u64 },
     #[error("session Provider is {actual}, not snapshot Provider {expected}")]
     ProviderMismatch { expected: String, actual: String },
+    #[error("snapshot does not contain Provider {provider_id}")]
+    MissingProvider { provider_id: String },
     #[error("snapshot does not contain Model {provider_id}/{model_id}")]
     MissingModel {
         provider_id: String,
@@ -2733,6 +2736,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_boot_closes_pins_from_a_qualified_versioned_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("qualified.db");
+        let secret = directory.path().join("provider.key");
+        std::fs::write(&secret, "test-secret").unwrap();
+        let input = format!(
+            r#"
+schema_version = 1
+[server]
+data_dir = "{}"
+session_db = "{}"
+
+[[model_providers]]
+id = "alpha"
+base_url = "https://alpha.invalid"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "shared"
+
+[[model_providers]]
+id = "beta"
+base_url = "https://beta.invalid"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "shared"
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Assistant"
+[agents.spec.model]
+provider = "alpha"
+model_name = "shared"
+"#,
+            directory.path().display(),
+            database.display(),
+            secret.display(),
+            secret.display()
+        );
+        let mut config = ServerConfig::from_toml(&input).unwrap();
+        config.agents[0].spec.model.allowed_models = vec![
+            ModelSelection {
+                provider_id: "alpha".into(),
+                model_id: "shared".into(),
+            },
+            ModelSelection {
+                provider_id: "beta".into(),
+                model_id: "shared".into(),
+            },
+        ];
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let agent = runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap();
+        let mut effective = resolve_session_config(
+            agent,
+            &SessionConfigOverrides {
+                model: Some(ModelSelection {
+                    provider_id: "beta".into(),
+                    model_id: "shared".into(),
+                }),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        effective.provider_revision = None;
+        effective.model_revision = None;
+        let mut session = StoredSession::new(
+            SessionId::new("qualified-pins"),
+            "qualified pins",
+            SessionLifetime::Persistent,
+            test_metadata(),
+            vec![AgentId::new("assistant")],
+        );
+        session.effective_config = Some(effective);
+
+        let closed = close_session_revision_pins(
+            runtime.ui_service.agent_registry.as_ref().unwrap(),
+            &session,
+            agent,
+        )
+        .await
+        .unwrap();
+
+        assert!(closed.changed);
+        assert_eq!(closed.effective.provider_id, "beta");
+        let pins = closed.effective.require_revision_pins().unwrap();
+        assert_eq!(pins.provider_revision, 1);
+        assert_eq!(pins.model_revision, 1);
+    }
+
+    #[tokio::test]
     async fn configured_boot_restores_database_session_after_agent_spawn() {
         let model_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2816,8 +2917,11 @@ model_name = "model-a"
         }];
         let explicit_selection = active_snapshot_selection(&config, &explicit_definition).unwrap();
         assert_eq!(
-            explicit_selection.allowed_model_ids,
-            BTreeSet::from(["model-a".into()])
+            explicit_selection.allowed_models,
+            BTreeSet::from([ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "model-a".into(),
+            }])
         );
         config.agents[0].spec.persona.system_prompt = "revision one prompt".into();
         let restart_config = config.clone();
@@ -3299,6 +3403,16 @@ model_name = "model-a"
         next_definition.revision += 1;
         next_definition.spec.name = "Sylvander revised".into();
         next_definition.spec.model.model_name = "model-b".into();
+        next_definition.spec.model.allowed_models = vec![
+            ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "model-a".into(),
+            },
+            ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "model-b".into(),
+            },
+        ];
         next_definition.spec.persona.system_prompt = "revision two prompt".into();
         next_definition.access = crate::config::AgentAccessConfig::default();
         let administrator = sylvander_protocol::BoundaryContext::authenticated(
