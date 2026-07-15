@@ -3,6 +3,15 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::registry_domain::{ModelDefinition, StoredRevision, canonical_definition};
 
+const MAX_MODEL_PAGE_SIZE: u16 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelRevisionPage {
+    pub active_revision: u64,
+    pub revisions: Vec<StoredRevision<ModelDefinition>>,
+    pub next_before_revision: Option<u64>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ModelRegistryError {
     #[error("invalid Model definition")]
@@ -201,6 +210,146 @@ impl AgentRegistry {
         }
         Ok(stored)
     }
+
+    /// Inspect one bounded page for an exact qualified Model identity.
+    pub(crate) async fn inspect_model_page(
+        &self,
+        key: (&str, &str),
+        before_revision: Option<u64>,
+        limit: u16,
+    ) -> Result<ModelRevisionPage, ModelRegistryError> {
+        if !(1..=MAX_MODEL_PAGE_SIZE).contains(&limit) || before_revision == Some(0) {
+            return Err(ModelRegistryError::InvalidDefinition);
+        }
+        let provider_id = key.0.to_owned();
+        let model_id = key.1.to_owned();
+        let before = before_revision.map(sql_index).transpose()?;
+        let sql_limit = i64::from(limit) + 1;
+        self.run_with(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "WITH state AS (
+                       SELECT
+                         (SELECT active_revision FROM model_registry_heads
+                          WHERE provider_id=?1 AND model_id=?2) AS active_revision,
+                         EXISTS(SELECT 1 FROM model_definitions
+                                WHERE provider_id=?1 AND model_id=?2) AS has_revisions,
+                         EXISTS(
+                           SELECT 1 FROM model_registry_heads h
+                           JOIN model_definitions d
+                             ON d.provider_id=h.provider_id AND d.model_id=h.model_id
+                            AND d.revision=h.active_revision
+                           WHERE h.provider_id=?1 AND h.model_id=?2
+                         ) AS active_exists
+                     )
+                     SELECT state.active_revision, state.has_revisions, state.active_exists,
+                            d.revision, d.definition_json, d.digest, d.created_at
+                     FROM state
+                     LEFT JOIN model_definitions d
+                       ON d.provider_id=?1 AND d.model_id=?2
+                      AND (?3 IS NULL OR d.revision < ?3)
+                     ORDER BY d.revision DESC
+                     LIMIT ?4",
+                )
+                .map_err(storage)?;
+            let mut rows = statement
+                .query(params![provider_id, model_id, before, sql_limit])
+                .map_err(storage)?;
+            let mut active_revision = None;
+            let mut revisions = Vec::with_capacity(usize::from(limit) + 1);
+            while let Some(row) = rows.next().map_err(storage)? {
+                let active = row.get::<_, Option<i64>>(0).map_err(storage)?;
+                let has_revisions = row.get::<_, bool>(1).map_err(storage)?;
+                let active_exists = row.get::<_, bool>(2).map_err(storage)?;
+                let Some(active) = active else {
+                    return if has_revisions {
+                        Err(
+                            AgentRegistryError::Integrity("Model registry head is missing".into())
+                                .into(),
+                        )
+                    } else {
+                        Err(ModelRegistryError::UnknownModel(identity(
+                            &provider_id,
+                            &model_id,
+                        )))
+                    };
+                };
+                if !active_exists {
+                    return Err(AgentRegistryError::Integrity(
+                        "Model active revision is missing".into(),
+                    )
+                    .into());
+                }
+                let active = sql_revision(active)?;
+                active_revision = Some(active);
+                let Some(revision) = row.get::<_, Option<i64>>(3).map_err(storage)? else {
+                    continue;
+                };
+                revisions.push(decode_page_revision(
+                    &provider_id,
+                    &model_id,
+                    revision,
+                    required_column(row.get(4).map_err(storage)?)?,
+                    required_column(row.get(5).map_err(storage)?)?,
+                    required_column(row.get(6).map_err(storage)?)?,
+                    active,
+                )?);
+            }
+            let active_revision = active_revision.ok_or_else(|| {
+                ModelRegistryError::UnknownModel(identity(&provider_id, &model_id))
+            })?;
+            let next_before_revision = (revisions.len() > usize::from(limit))
+                .then(|| revisions[usize::from(limit) - 1].definition.revision);
+            revisions.truncate(usize::from(limit));
+            Ok(ModelRevisionPage {
+                active_revision,
+                revisions,
+                next_before_revision,
+            })
+        })
+        .await
+    }
+}
+
+fn required_column<T>(value: Option<T>) -> Result<T, ModelRegistryError> {
+    value.ok_or_else(|| {
+        AgentRegistryError::Integrity("Model revision row is incomplete".into()).into()
+    })
+}
+
+fn decode_page_revision(
+    provider_id: &str,
+    model_id: &str,
+    revision: i64,
+    definition_json: String,
+    stored_digest: String,
+    created_at: i64,
+    active_revision: u64,
+) -> Result<StoredRevision<ModelDefinition>, ModelRegistryError> {
+    let revision = sql_revision(revision)?;
+    let definition: ModelDefinition =
+        serde_json::from_str(&definition_json).map_err(AgentRegistryError::serde)?;
+    if definition.provider_id != provider_id
+        || definition.model_id != model_id
+        || definition.revision != revision
+        || definition.validate().is_err()
+    {
+        return Err(
+            AgentRegistryError::Integrity("stored Model identity is invalid".into()).into(),
+        );
+    }
+    let (_, expected_digest) = canonical_definition(&definition)?;
+    if stored_digest != expected_digest {
+        return Err(
+            AgentRegistryError::Integrity("Model definition digest mismatch".into()).into(),
+        );
+    }
+    Ok(StoredRevision {
+        definition,
+        digest: stored_digest,
+        created_at,
+        active: revision == active_revision,
+    })
 }
 
 async fn set_head(
