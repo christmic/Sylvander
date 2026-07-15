@@ -77,8 +77,7 @@ read_only = false
 
 [[agents.prompt_profiles]]
 id = "claude"
-providers = ["primary"]
-models = ["claude-sonnet"]
+qualified_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
 system_prompt = "You are Sylvander, a careful and capable coding Agent."
 
 [[channels]]

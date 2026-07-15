@@ -160,8 +160,13 @@ pub struct AgentUiCommandDraft {
 #[serde(deny_unknown_fields)]
 pub struct AgentPromptProfileDraft {
     pub id: String,
+    /// Exact Provider/Model selectors. New definitions should use this field.
+    #[serde(default)]
+    pub qualified_models: Vec<ModelSelection>,
+    /// Legacy singleton Provider selector retained for wire compatibility.
     #[serde(default)]
     pub providers: Vec<String>,
+    /// Legacy singleton Model selector retained for wire compatibility.
     #[serde(default)]
     pub models: Vec<String>,
     /// Write-only in the public contract.
@@ -173,6 +178,7 @@ impl fmt::Debug for AgentPromptProfileDraft {
         formatter
             .debug_struct("AgentPromptProfileDraft")
             .field("id", &self.id)
+            .field("qualified_model_count", &self.qualified_models.len())
             .field("providers", &self.providers)
             .field("models", &self.models)
             .field("system_prompt", &"[REDACTED]")
@@ -299,6 +305,8 @@ pub struct RedactedAgentUiCommand {
 #[serde(deny_unknown_fields)]
 pub struct RedactedAgentPromptProfile {
     pub id: String,
+    #[serde(default)]
+    pub qualified_models: Vec<ModelSelection>,
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
@@ -501,12 +509,17 @@ mod tests {
     fn write_draft_debug_redacts_raw_prompts() {
         let profile = AgentPromptProfileDraft {
             id: "private-profile".into(),
-            providers: vec!["provider-1".into()],
-            models: vec!["model-1".into()],
+            qualified_models: vec![ModelSelection {
+                provider_id: "provider-1".into(),
+                model_id: "model-1".into(),
+            }],
+            providers: Vec::new(),
+            models: Vec::new(),
             system_prompt: "profile prompt must never reach logs".into(),
         };
         let profile_debug = format!("{profile:?}");
         assert!(profile_debug.contains("[REDACTED]"));
+        assert!(profile_debug.contains("qualified_model_count"));
         assert!(!profile_debug.contains("profile prompt must never reach logs"));
 
         let definition: AgentDefinitionDraft = serde_json::from_value(serde_json::json!({

@@ -29,7 +29,7 @@ use crate::config::{
 };
 use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
-    validate_prompt, validate_unique_identities,
+    validate_profile_selectors, validate_prompt, validate_unique_identities,
 };
 
 pub(crate) const MAX_REVISION_PAGE_SIZE: u16 = 100;
@@ -274,6 +274,7 @@ pub(crate) fn definition_from_draft(
             .into_iter()
             .map(|profile| PromptProfileConfig {
                 id: profile.id,
+                qualified_models: profile.qualified_models,
                 providers: profile.providers,
                 models: profile.models,
                 system_prompt: profile.system_prompt,
@@ -417,6 +418,7 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .iter()
                 .map(|profile| RedactedAgentPromptProfile {
                     id: profile.id.clone(),
+                    qualified_models: profile.qualified_models.clone(),
                     providers: profile.providers.clone(),
                     models: profile.models.clone(),
                     system_prompt_sha256: digest(&profile.system_prompt),
@@ -629,6 +631,11 @@ fn validate_prompt_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminE
         .and_then(|()| {
             for profile in &draft.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
+                validate_profile_selectors(
+                    &profile.qualified_models,
+                    &profile.providers,
+                    &profile.models,
+                )?;
                 validate_unique_identities(
                     profile.providers.iter().map(String::as_str),
                     MAX_PROMPT_SELECTORS_PER_KIND,
@@ -722,6 +729,7 @@ fn command_to_draft(command: &UiCommandConfig) -> AgentUiCommandDraft {
 fn profile_to_draft(profile: &PromptProfileConfig) -> AgentPromptProfileDraft {
     AgentPromptProfileDraft {
         id: profile.id.clone(),
+        qualified_models: profile.qualified_models.clone(),
         providers: profile.providers.clone(),
         models: profile.models.clone(),
         system_prompt: profile.system_prompt.clone(),
@@ -921,6 +929,55 @@ id = "sonnet"
 
         validate_against_catalog(&catalog(), &definition).unwrap();
         assert_eq!(definition.spec.model.allowed_models.len(), 2);
+    }
+
+    #[test]
+    fn qualified_prompt_profiles_round_trip_without_exposing_content() {
+        let mut candidate = draft();
+        candidate.prompt_profiles = vec![AgentPromptProfileDraft {
+            id: "secondary-shared".into(),
+            qualified_models: vec![model("secondary", "sonnet")],
+            providers: Vec::new(),
+            models: Vec::new(),
+            system_prompt: "secondary private prompt".into(),
+        }];
+        let definition = definition_from_draft(candidate).unwrap();
+        let revision = AgentRevision {
+            definition: definition.clone(),
+            digest: "definition-digest".into(),
+            created_at: 7,
+            active: false,
+        };
+        let view = redact_revision(&revision);
+        assert_eq!(
+            view.definition.prompt_profiles[0].qualified_models,
+            vec![model("secondary", "sonnet")]
+        );
+        assert!(
+            !serde_json::to_string(&view)
+                .unwrap()
+                .contains("secondary private prompt")
+        );
+        assert_eq!(
+            draft_from_definition(&definition)
+                .unwrap()
+                .prompt_profiles
+                .len(),
+            1
+        );
+
+        let mut ambiguous = draft();
+        ambiguous.prompt_profiles = vec![AgentPromptProfileDraft {
+            id: "legacy-cross-product".into(),
+            qualified_models: Vec::new(),
+            providers: vec!["primary".into(), "secondary".into()],
+            models: vec!["sonnet".into()],
+            system_prompt: "private".into(),
+        }];
+        assert_eq!(
+            definition_from_draft(ambiguous).unwrap_err().code,
+            AgentAdminErrorCode::InvalidDefinition
+        );
     }
 
     #[test]
