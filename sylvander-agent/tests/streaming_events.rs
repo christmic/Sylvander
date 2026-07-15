@@ -540,13 +540,6 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(json!({
-            "system": [{
-                "type": "text",
-                "text": "session profile",
-                "cache_control": {"type": "ephemeral"}
-            }]
-        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_configured",
             "type": "message",
@@ -593,6 +586,31 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         user_workspace: source.clone(),
         execution_target: source,
     };
+    let prompt_policy = std::sync::Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:stream-test@1".into(),
+            spec.persona.system_prompt.clone(),
+            vec![sylvander_agent::prompt::PromptProfile {
+                id: "session".into(),
+                providers: vec![spec.model.provider.clone()],
+                models: vec![spec.model.model_name.clone()],
+                system_prompt: "session profile".into(),
+            }],
+            None,
+            false,
+        )
+        .expect("prompt policy"),
+    );
+    let composed = prompt_policy
+        .resolve(
+            &sylvander_protocol::ModelSelection {
+                provider_id: spec.model.provider.clone(),
+                model_id: spec.model.model_name.clone(),
+            },
+            Some("session"),
+            None,
+        )
+        .expect("configured prompt");
     let effective_config = SessionEffectiveConfig {
         agent_id: spec.id.clone(),
         agent_revision: 1,
@@ -603,8 +621,8 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         reasoning_effort: ReasoningEffort::Off,
         permissions: PermissionProfile::default(),
         prompt_profile: Some("session".into()),
-        system_prompt_sha256: "test-digest".into(),
-        prompt_manifest: None,
+        system_prompt_sha256: composed.system_prompt_sha256,
+        prompt_manifest: Some(composed.manifest),
         agent_workspace: None,
         user_workspace: None,
         execution_target: "local".into(),
@@ -614,10 +632,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     let agent = AgentRun::builder(spec, mock_client(&server))
         .bus(bus)
         .session_store(store.clone())
-        .prompt_profiles(std::collections::HashMap::from([(
-            "session".into(),
-            "session profile".into(),
-        )]))
+        .prompt_resolver(prompt_policy)
         .build()
         .expect("build");
     let session_id = agent.join_session(metadata.clone()).await;
@@ -628,12 +643,23 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         metadata,
         vec![agent.id().clone()],
     );
+    stored.config_overrides.prompt_profile = Some("session".into());
     stored.effective_config = Some(effective_config);
     store.save(&stored).await.expect("save session");
     agent
         .handle_message(BusMessage::user_chat(session_id, "user-1", "use my config"))
         .await
         .expect("configured turn");
+    let requests = server.received_requests().await.expect("provider requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("provider request body");
+    assert_eq!(
+        body["system"][0]["text"],
+        format!(
+            "{}\n\nsession profile",
+            sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+        )
+    );
 
     let connection = rusqlite::Connection::open(database).expect("inspect database");
     let turn_count: i64 = connection

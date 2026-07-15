@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
 use sylvander_agent::bus::MessageBus;
+use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::run::AgentRun;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::AgentSpec;
@@ -32,9 +32,6 @@ use crate::config::{
     AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
-use crate::prompt_limits::{
-    validate_identity, validate_prompt, validate_resolved_prompt, validate_session_prompt,
-};
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -63,6 +60,7 @@ pub struct ConfiguredAgent {
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
     pub execution_targets: HashSet<String>,
+    prompt_resolver: Arc<PromptResolver>,
     revision_bindings: Option<RegistryRevisionBindings>,
 }
 
@@ -128,8 +126,9 @@ pub(crate) fn build_agent(
             provider: provider.id.clone(),
             model: definition.spec.model.model_name.clone(),
         })?;
+    let prompt_resolver = configured_prompt_resolver(definition)?;
     let mut spec = definition.spec.clone();
-    apply_default_prompt(definition, &mut spec)?;
+    apply_default_prompt(&prompt_resolver, definition, &default_selection, &mut spec)?;
 
     let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
@@ -140,7 +139,7 @@ pub(crate) fn build_agent(
         .memory(memory)
         .override_tools(tools)
         .available_models(model_list)
-        .prompt_profiles(prompt_profiles(definition))
+        .prompt_resolver(prompt_resolver.clone())
         .model_capabilities(primary.capabilities);
     let run = apply_server_run_settings(config, builder)
         .build()
@@ -153,6 +152,7 @@ pub(crate) fn build_agent(
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
         execution_targets: execution_targets(config),
+        prompt_resolver,
         revision_bindings: None,
     })
 }
@@ -212,10 +212,15 @@ pub(crate) fn build_registry_agent_with_resolver(
         .cloned()
         .ok_or_else(|| CompositionError::MissingModel {
             provider: provider.id.clone(),
-            model: default_model_id,
+            model: default_model_id.clone(),
         })?;
+    let default_selection = ModelSelection {
+        provider_id: provider.id.clone(),
+        model_id: default_model_id.clone(),
+    };
+    let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
-    apply_default_prompt(&definition, &mut spec)?;
+    apply_default_prompt(&prompt_resolver, &definition, &default_selection, &mut spec)?;
 
     let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
@@ -235,7 +240,7 @@ pub(crate) fn build_registry_agent_with_resolver(
         .available_provider_models(provider_models)
         .model_lifecycles(lifecycles)
         .model_pricing(pricing)
-        .prompt_profiles(prompt_profiles(&definition));
+        .prompt_resolver(prompt_resolver.clone());
     builder = apply_server_run_settings(config, builder);
     let run = builder
         .build()
@@ -248,6 +253,7 @@ pub(crate) fn build_registry_agent_with_resolver(
         approval_enabled: config.server.approval.enabled,
         definition,
         execution_targets: execution_targets(config),
+        prompt_resolver,
         revision_bindings: Some(revision_bindings),
     })
 }
@@ -310,8 +316,9 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
     let router = PinnedProviderRouter::new(adapters_by_provider, model_catalog)
         .map_err(|error| CompositionError::ProviderRouter(error.to_string()))?;
 
+    let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
-    apply_default_prompt(&definition, &mut spec)?;
+    apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
     let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
     let lifecycles = definitions
@@ -348,7 +355,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         .available_provider_models(provider_models)
         .qualified_model_lifecycles(lifecycles)
         .qualified_model_pricing(pricing)
-        .prompt_profiles(prompt_profiles(&definition));
+        .prompt_resolver(prompt_resolver.clone());
     let run = apply_server_run_settings(config, builder)
         .build()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -360,6 +367,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         approval_enabled: config.server.approval.enabled,
         definition,
         execution_targets: execution_targets(config),
+        prompt_resolver,
         revision_bindings: Some(revision_bindings),
     })
 }
@@ -372,8 +380,6 @@ pub fn resolve_session_config(
     legacy_workspace: Option<&std::path::Path>,
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
-    validate_prompt(&definition.spec.persona.system_prompt)
-        .map_err(|_| CompositionError::InvalidPrompt)?;
     let catalog = agent.models.keys().cloned().collect::<Vec<_>>();
     let selection = overrides
         .resolve_model_selection(&catalog)
@@ -429,43 +435,14 @@ pub fn resolve_session_config(
         return Err(CompositionError::ApprovalDisabled);
     }
 
-    let prompt_profile = overrides
-        .prompt_profile
-        .clone()
-        .or_else(|| definition.default_prompt_profile.clone());
-    if let Some(profile_id) = &prompt_profile {
-        validate_identity(profile_id).map_err(|_| CompositionError::InvalidPrompt)?;
-    }
-    let mut system_prompt = definition.spec.persona.system_prompt.clone();
-    if let Some(profile_id) = &prompt_profile {
-        let profile = definition
-            .prompt_profiles
-            .iter()
-            .find(|profile| &profile.id == profile_id)
-            .ok_or_else(|| CompositionError::MissingPromptProfile {
-                agent: definition.spec.id.to_string(),
-                profile: profile_id.clone(),
-            })?;
-        if (!profile.providers.is_empty() && !profile.providers.contains(&provider_id))
-            || (!profile.models.is_empty() && !profile.models.contains(&model_id))
-        {
-            return Err(CompositionError::IncompatiblePromptProfile {
-                profile: profile_id.clone(),
-                provider: provider_id.clone(),
-                model: model_id.clone(),
-            });
-        }
-        validate_prompt(&profile.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
-        system_prompt.clone_from(&profile.system_prompt);
-    }
-    if let Some(prompt) = &overrides.system_prompt {
-        validate_session_prompt(prompt).map_err(|_| CompositionError::InvalidPrompt)?;
-        if !definition.allow_session_prompt {
-            return Err(CompositionError::SessionPromptDisabled);
-        }
-        system_prompt.clone_from(prompt);
-    }
-    validate_resolved_prompt(&system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
+    let resolved_prompt = agent
+        .prompt_resolver
+        .resolve(
+            &selection,
+            overrides.prompt_profile.as_deref(),
+            overrides.system_prompt.as_deref(),
+        )
+        .map_err(|error| map_prompt_error(error, definition, &selection, overrides))?;
 
     let agent_workspace = definition.agent_workspace.as_ref().map(workspace_binding);
     let user_workspace = overrides
@@ -514,9 +491,9 @@ pub fn resolve_session_config(
         model_revision,
         reasoning_effort,
         permissions,
-        prompt_profile,
-        system_prompt_sha256: format!("{:x}", Sha256::digest(system_prompt.as_bytes())),
-        prompt_manifest: None,
+        prompt_profile: resolved_prompt.profile_id,
+        system_prompt_sha256: resolved_prompt.system_prompt_sha256,
+        prompt_manifest: Some(resolved_prompt.manifest),
         agent_workspace,
         user_workspace,
         execution_target,
@@ -594,12 +571,27 @@ fn default_tools(memory: Arc<InMemoryMemoryStore>) -> ToolRegistry {
         .register(StartBackgroundTaskTool::new())
 }
 
-fn prompt_profiles(definition: &AgentDefinitionConfig) -> HashMap<String, String> {
-    definition
-        .prompt_profiles
-        .iter()
-        .map(|profile| (profile.id.clone(), profile.system_prompt.clone()))
-        .collect()
+fn configured_prompt_resolver(
+    definition: &AgentDefinitionConfig,
+) -> Result<Arc<PromptResolver>, CompositionError> {
+    PromptResolver::new(
+        format!("agent:{}@{}", definition.spec.id, definition.revision),
+        definition.spec.persona.system_prompt.clone(),
+        definition
+            .prompt_profiles
+            .iter()
+            .map(|profile| PromptProfile {
+                id: profile.id.clone(),
+                providers: profile.providers.clone(),
+                models: profile.models.clone(),
+                system_prompt: profile.system_prompt.clone(),
+            })
+            .collect(),
+        definition.default_prompt_profile.clone(),
+        definition.allow_session_prompt,
+    )
+    .map(Arc::new)
+    .map_err(|_| CompositionError::InvalidPrompt)
 }
 
 fn execution_targets(config: &ServerConfig) -> HashSet<String> {
@@ -805,40 +797,50 @@ fn choose(
 }
 
 fn apply_default_prompt(
+    resolver: &PromptResolver,
     definition: &AgentDefinitionConfig,
+    selection: &ModelSelection,
     spec: &mut AgentSpec,
 ) -> Result<(), CompositionError> {
-    validate_prompt(&spec.persona.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
-    let Some(profile_id) = &definition.default_prompt_profile else {
-        validate_resolved_prompt(&spec.persona.system_prompt)
-            .map_err(|_| CompositionError::InvalidPrompt)?;
-        return Ok(());
-    };
-    validate_identity(profile_id).map_err(|_| CompositionError::InvalidPrompt)?;
-    let profile = definition
-        .prompt_profiles
-        .iter()
-        .find(|profile| &profile.id == profile_id)
-        .ok_or_else(|| CompositionError::MissingPromptProfile {
-            agent: spec.id.to_string(),
-            profile: profile_id.clone(),
-        })?;
-    if (!profile.providers.is_empty() && !profile.providers.contains(&spec.model.provider))
-        || (!profile.models.is_empty() && !profile.models.contains(&spec.model.model_name))
-    {
-        return Err(CompositionError::IncompatiblePromptProfile {
-            profile: profile.id.clone(),
-            provider: spec.model.provider.clone(),
-            model: spec.model.model_name.clone(),
-        });
-    }
-    validate_prompt(&profile.system_prompt).map_err(|_| CompositionError::InvalidPrompt)?;
-    spec.persona
-        .system_prompt
-        .clone_from(&profile.system_prompt);
-    validate_resolved_prompt(&spec.persona.system_prompt)
-        .map_err(|_| CompositionError::InvalidPrompt)?;
+    let composed = resolver.resolve(selection, None, None).map_err(|error| {
+        map_prompt_error(
+            error,
+            definition,
+            selection,
+            &SessionConfigOverrides::default(),
+        )
+    })?;
+    spec.persona.system_prompt = composed.system_prompt;
     Ok(())
+}
+
+fn map_prompt_error(
+    error: PromptResolveError,
+    definition: &AgentDefinitionConfig,
+    selection: &ModelSelection,
+    overrides: &SessionConfigOverrides,
+) -> CompositionError {
+    match error {
+        PromptResolveError::Invalid => CompositionError::InvalidPrompt,
+        PromptResolveError::MissingProfile => CompositionError::MissingPromptProfile {
+            agent: definition.spec.id.to_string(),
+            profile: overrides
+                .prompt_profile
+                .clone()
+                .or_else(|| definition.default_prompt_profile.clone())
+                .unwrap_or_else(|| "unknown".into()),
+        },
+        PromptResolveError::IncompatibleProfile => CompositionError::IncompatiblePromptProfile {
+            profile: overrides
+                .prompt_profile
+                .clone()
+                .or_else(|| definition.default_prompt_profile.clone())
+                .unwrap_or_else(|| "unknown".into()),
+            provider: selection.provider_id.clone(),
+            model: selection.model_id.clone(),
+        },
+        PromptResolveError::SessionPromptDisabled => CompositionError::SessionPromptDisabled,
+    }
 }
 
 fn model_catalog(provider: &ModelProviderConfig) -> Result<Vec<ModelInfo>, CompositionError> {
@@ -1302,7 +1304,10 @@ path = "/tmp/sylvander-test.sock"
         assert_eq!(agents.len(), 1);
         assert_eq!(
             agents[0].spec.persona.system_prompt,
-            "Optimized system prompt"
+            format!(
+                "{}\n\nOptimized system prompt",
+                sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+            )
         );
         assert!(
             agents[0]
@@ -1335,6 +1340,7 @@ path = "/tmp/sylvander-test.sock"
             SessionConfigSourceKind::LegacyMigration
         );
         assert_eq!(effective.system_prompt_sha256.len(), 64);
+        assert!(effective.prompt_manifest.is_some());
 
         let qualified = resolve_session_config(
             &agents[0],
@@ -1404,7 +1410,7 @@ path = "/tmp/sylvander-test.sock"
         agents[0].definition.allow_session_prompt = true;
         for invalid in [
             String::new(),
-            "x".repeat(crate::prompt_limits::MAX_SESSION_PROMPT_BYTES + 1),
+            "x".repeat(sylvander_agent::prompt::MAX_SESSION_PROMPT_BYTES + 1),
             "private\0prompt".into(),
         ] {
             let error = resolve_session_config(
