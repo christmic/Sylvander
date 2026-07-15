@@ -42,6 +42,8 @@ mod provider_registry;
 mod provider_registry_tests;
 #[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
 mod registry_bootstrap;
+#[cfg(test)]
+mod registry_bootstrap_tests;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
@@ -1311,6 +1313,10 @@ impl Runtime {
         let agent_registry = AgentRegistry::open(session_db)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        agent_registry
+            .bootstrap_registries(&config)
+            .await
+            .map_err(|error| RuntimeError::Config(error.to_string()))?;
         agent_registry
             .seed(&config)
             .await

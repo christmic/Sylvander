@@ -4,7 +4,11 @@ use std::collections::BTreeSet;
 
 use sylvander_protocol::ModelLifecycle;
 
+use crate::agent_registry::AgentRegistry;
 use crate::config::{ConfigError, ServerConfig};
+use crate::credential_registry::CredentialRegistryError;
+use crate::model_registry::ModelRegistryError;
+use crate::provider_registry::ProviderRegistryError;
 use crate::registry_domain::{CredentialBindingRevision, ModelDefinition, ProviderDefinition};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -89,6 +93,102 @@ impl RegistryBootstrapPlan {
     }
 }
 
+impl AgentRegistry {
+    pub(crate) async fn bootstrap_registries(
+        &self,
+        config: &ServerConfig,
+    ) -> Result<RegistryBootstrapReport, RegistryBootstrapError> {
+        let plan = RegistryBootstrapPlan::from_config(config)?;
+        let mut report = RegistryBootstrapReport::default();
+        for seed in plan.credentials {
+            let identity = seed.binding_id.clone();
+            let existing = self.load_active_credential(&identity).await?;
+            let active = self.seed_credential(seed).await?.definition.generation;
+            report.entries.push(BootstrapEntry::new(
+                RegistrySeedKind::Credential,
+                identity,
+                1,
+                active,
+                existing.is_some(),
+            ));
+        }
+        for seed in plan.providers {
+            let identity = seed.id.clone();
+            let existing = self.load_active_provider(&identity).await?;
+            let active = self.seed_provider(seed).await?.definition.revision;
+            report.entries.push(BootstrapEntry::new(
+                RegistrySeedKind::Provider,
+                identity,
+                1,
+                active,
+                existing.is_some(),
+            ));
+        }
+        for seed in plan.models {
+            let key = (seed.provider_id.as_str(), seed.model_id.as_str());
+            let identity = format!("{}/{}", key.0, key.1);
+            let existing = self.load_active_model(key).await?;
+            let active = self.seed_model(seed).await?.definition.revision;
+            report.entries.push(BootstrapEntry::new(
+                RegistrySeedKind::Model,
+                identity,
+                1,
+                active,
+                existing.is_some(),
+            ));
+        }
+        Ok(report)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RegistrySeedKind {
+    Credential,
+    Provider,
+    Model,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BootstrapOutcome {
+    Seeded { active_version: u64 },
+    ExistingPreserved { active_version: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BootstrapEntry {
+    pub kind: RegistrySeedKind,
+    pub identity: String,
+    pub configured_version: u64,
+    pub outcome: BootstrapOutcome,
+}
+
+impl BootstrapEntry {
+    fn new(
+        kind: RegistrySeedKind,
+        identity: String,
+        configured_version: u64,
+        active_version: u64,
+        existed: bool,
+    ) -> Self {
+        let outcome = if existed {
+            BootstrapOutcome::ExistingPreserved { active_version }
+        } else {
+            BootstrapOutcome::Seeded { active_version }
+        };
+        Self {
+            kind,
+            identity,
+            configured_version,
+            outcome,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RegistryBootstrapReport {
+    pub entries: Vec<BootstrapEntry>,
+}
+
 fn credential_binding_id(provider_id: &str) -> String {
     format!("provider:{provider_id}:api_key")
 }
@@ -126,112 +226,14 @@ pub(crate) enum BootstrapPlanError {
     },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::SecretRef;
-
-    fn config() -> ServerConfig {
-        ServerConfig::from_toml(
-            r#"
-schema_version = 1
-
-[[model_providers]]
-id = "zeta"
-base_url = "https://zeta.invalid"
-[model_providers.api_key]
-source = "env"
-name = "ZETA_SUPER_SECRET_VARIABLE"
-[[model_providers.models]]
-id = "shared"
-context_window = 200
-max_output_tokens = 20
-capabilities = ["tool_use", "reasoning", "tool_use"]
-
-[[model_providers]]
-id = "alpha"
-base_url = "https://alpha.invalid"
-[model_providers.api_key]
-source = "file"
-path = "/private/alpha-secret"
-[[model_providers.models]]
-id = "shared"
-context_window = 100
-max_output_tokens = 10
-capabilities = ["vision"]
-"#,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn projection_is_sorted_qualified_and_normalized() {
-        let mut reversed = config();
-        let expected = RegistryBootstrapPlan::from_config(&reversed).unwrap();
-        reversed.model_providers.reverse();
-        assert_eq!(
-            RegistryBootstrapPlan::from_config(&reversed).unwrap(),
-            expected
-        );
-
-        assert_eq!(
-            expected
-                .credentials
-                .iter()
-                .map(|seed| seed.binding_id.as_str())
-                .collect::<Vec<_>>(),
-            ["provider:alpha:api_key", "provider:zeta:api_key"]
-        );
-        assert!(expected.credentials.iter().all(|seed| seed.generation == 1));
-        assert_eq!(
-            expected
-                .models
-                .iter()
-                .map(|seed| (seed.provider_id.as_str(), seed.model_id.as_str()))
-                .collect::<Vec<_>>(),
-            [("alpha", "shared"), ("zeta", "shared")]
-        );
-        let zeta = &expected.models[1];
-        assert_eq!(zeta.revision, 1);
-        assert_eq!(
-            zeta.capabilities,
-            BTreeSet::from(["extended_thinking".into(), "tool_use".into()])
-        );
-        assert_eq!(zeta.lifecycle, ModelLifecycle::Active);
-        assert!(zeta.pricing.is_none());
-        assert!(expected.providers.iter().all(|seed| seed.revision == 1));
-    }
-
-    #[test]
-    fn debug_redacts_credential_references() {
-        let plan = RegistryBootstrapPlan::from_config(&config()).unwrap();
-        let debug = format!("{plan:?}");
-        assert!(!debug.contains("ZETA_SUPER_SECRET_VARIABLE"));
-        assert!(!debug.contains("/private/alpha-secret"));
-        assert!(debug.contains("provider:alpha:api_key"));
-        assert!(matches!(
-            &plan.credentials[0].reference,
-            SecretRef::File { path } if path.to_string_lossy() == "/private/alpha-secret"
-        ));
-    }
-
-    #[test]
-    fn unknown_capability_is_typed_and_does_not_expose_credentials() {
-        let mut config = config();
-        config.model_providers[0].models[0]
-            .capabilities
-            .push("telepathy".into());
-        let error = RegistryBootstrapPlan::from_config(&config).unwrap_err();
-        assert!(matches!(
-            &error,
-            BootstrapPlanError::UnknownCapability {
-                provider_id,
-                model_id,
-                capability
-            } if provider_id == "zeta" && model_id == "shared" && capability == "telepathy"
-        ));
-        let display = error.to_string();
-        assert!(!display.contains("ZETA_SUPER_SECRET_VARIABLE"));
-        assert!(!display.contains("/private/alpha-secret"));
-    }
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RegistryBootstrapError {
+    #[error(transparent)]
+    Plan(#[from] BootstrapPlanError),
+    #[error(transparent)]
+    Credential(#[from] CredentialRegistryError),
+    #[error(transparent)]
+    Provider(#[from] ProviderRegistryError),
+    #[error(transparent)]
+    Model(#[from] ModelRegistryError),
 }
