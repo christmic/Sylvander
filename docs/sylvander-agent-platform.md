@@ -243,7 +243,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A12 | AGENTS.md | missing | Repository guides exist for developers, but the running Agent does not discover or assemble workspace instructions. |
 | A13 | Skills | missing | Protocol/UI placeholders can display Skills, but the Agent has no Skill discovery, trust, activation, or instruction loading runtime. |
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
-| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`, and revision, expiry, and immutable provenance survive restart. The latest schema is fail-closed and never falls back to InMemory. CAS update, supersede, retention/purge governance, backup/recovery, and the corresponding exact mutation-audit acceptance remain. |
+| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`, and revision, expiry, and immutable provenance survive restart. The latest schema is fail-closed and never falls back to InMemory. CAS update and atomic supersession are implemented with transaction-coupled audit; retention/purge governance, backup/recovery, exact schema-integrity attestation, and public error redaction remain. |
 | A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
 | A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
@@ -410,9 +410,9 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Enforce the exact latest relationship-memory schema. Unmanaged, older,
     future, missing-trigger, or malformed schemas fail startup without repair;
     restart tests preserve owner isolation, revision, provenance, and expiry.
-  - [ ] Add public/internal compare-and-swap update with immutable origin,
+  - [x] Add public/internal compare-and-swap update with immutable origin,
     monotonic revision, atomic audit, conflict tests, and no partial mutation.
-  - [ ] Add an atomic supersede transition that links old and replacement
+  - [x] Add an atomic supersede transition that links old and replacement
     records, hides the old record from ordinary recall, and records both sides
     without a visibility gap.
   - [ ] Implement configured retention and physical purge/deletion governance,
@@ -425,8 +425,9 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   `e0ebfaae5` (SQLite persistence and contract tests), `1d11d8fc9` (one store
   across revisions), `0977357ec` (truthful activation reporting), `75d280b15`
   and `c5c4efc73` (latest schema, append/delete audit, and fail-closed schema
-  tests), and `ccc8b75ab` (production boot, owner isolation, and restart field
-  fidelity). G0 must not be marked complete until every remaining P1.4 gate
+  tests), `ccc8b75ab` (production boot, owner isolation, and restart field
+  fidelity), and `6b245d052` plus `7251f8336` (CAS update, atomic supersession,
+  audit rollback, and inactive-record isolation). G0 must not be marked complete until every remaining P1.4 gate
   above has implementation and acceptance evidence.
 - [ ] **P1.5 Optional Provider catalog synchronization:** let adapters that
   expose a remote model catalog enumerate it, reconcile discovered metadata
