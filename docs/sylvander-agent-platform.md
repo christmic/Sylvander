@@ -215,7 +215,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | Production Agent runs now use the provider-neutral request/stream contract, an immutable Provider/Model registry snapshot, request-scoped Credential resolution, and provider-backed compaction. Redacted, admin-only Provider/Model/Credential revision inspection is public, database-bounded, and durably audited. Lifecycle mutations, capability discovery, and validated cross-provider session switching remain. |
+| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Redacted Provider/Model/Credential reads and optimistic Credential create/stage/activate/rollback are public, transport-authorized, database-bounded, and durably audited. Provider/Model lifecycle writes, capability discovery, and validated cross-provider session switching remain. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -225,7 +225,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A13 | Skills | missing | Protocol/UI placeholders can display Skills, but the Agent has no Skill discovery, trust, activation, or instruction loading runtime. |
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
 | A15 | Agent memory | defect | The server injects `InMemoryMemoryStore`; `MemoryStoreConfig` says SQLite is planned and rejects it. Agent memory is lost on restart. |
-| A16 | Public service protocol | complete | UI v2 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested with v1 negotiation and message defaults. |
+| A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
 | A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
 | A19 | DingTalk instances | partial | Configuration supports multiple credential-isolated bots; sender/conversation mappings, ownership, authorization, and outbound webhooks are instance-scoped. Interactive decisions, retry policy, and operational health remain in P4.2. |
@@ -236,7 +236,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A24 | Feedback | complete | Typed positive/negative feedback is accepted through the public UI service and persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
 | A25 | Self-improvement | missing | There is no evidence selection, evaluation corpus, proposal, experiment, comparison, or human merge gate. |
 | A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
-| A27 | Secrets | partial | Core credentials come from environment variables and debug formatting avoids the API key. There is no secret-reference abstraction, rotation, or per-channel isolation. |
+| A27 | Secrets | partial | Typed environment/file references, bounded zeroizing values, request-scoped Provider resolution, immutable generations, live rotation, activation preflight, and redacted administration are implemented. External secret backends, lease renewal, and uniform channel-credential rotation remain. |
 | A28 | Database migrations | partial | SQLite uses create-if-missing and targeted column checks. There is no explicit schema version, ordered migration ledger, backup/restore verification, or downgrade policy. |
 | A29 | Shutdown and recovery | partial | Runtime boot restores durable sessions and interrupted evidence, and shutdown uses bounded cooperative channel/Agent drain. Full crash orchestration, executor leases, and per-instance recovery policy remain incomplete. |
 | A30 | Observability and operations | partial | Structured tracing and health endpoints exist. Metrics, readiness dependencies, per-instance health, queue/backpressure visibility, audit export, and operational diagnostics are incomplete. |
@@ -274,13 +274,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   model/prompt/permission selection is used before the provider or tools run.
   The configured execution-target identity is durable here; backend-neutral
   filesystem/process execution remains deliberately tracked by P3.1/P3.2.
-- [x] **P0.4 Public protocol v2:** move service messages into
+- [x] **P0.4 Public protocol v3:** move service messages into
   `sylvander-protocol`; add Agent discovery, session create/update/effective
   state, feedback, and optimistic concurrency; generate and compatibility-test
   the schema. Evidence: one shared `UiClientMessage`/`UiServerMessage` contract
   across Unix, WebSocket, and TUI; runtime-owned `UiService`; durable configured
   session creation and optimistic updates; evidence-linked feedback; Schemars
-  v2 generation; and v1/v2 negotiation plus schema compatibility tests.
+  v3 generation; and v1/v2/v3 negotiation plus schema compatibility tests.
 - [x] **P0.5 Boundary authorization:** authenticated principals, Agent/session
   ownership, channel-instance identity, policy checks, safe defaults, rate and
   payload limits, and auditable denials. Evidence: protocol-owned boundary
@@ -342,8 +342,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     the public protocol with transport authorization, service authorization,
     immutable exact-version reads, bounded database pagination, and durable
     content-free audit.
-  - [ ] Expose Provider/Model/Credential lifecycle administration with
-    optimistic concurrency and durable content-free mutation audit.
+  - [x] Expose Credential create/stage/activate/rollback with strict immutable
+    generations, optimistic head concurrency, exact-generation availability
+    preflight, typed redacted failures, durable pre-mutation intent and terminal
+    audit, UI protocol v3 capability discovery, and Unix/WebSocket round trips.
+  - [ ] Expose Provider/Model lifecycle administration with prospective
+    composition validation, optimistic concurrency, and durable content-free
+    mutation audit.
   - [ ] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
     isolation with deterministic local providers.
