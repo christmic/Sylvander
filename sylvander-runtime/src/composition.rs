@@ -35,9 +35,10 @@ use crate::credential_registry::CredentialSecretResolver;
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
+#[doc(hidden)]
+pub use crate::registry_domain::ModelCapabilityIssue;
 use crate::registry_domain::{
-    CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
-    parse_model_capabilities,
+    CanonicalModelCapability, ModelDefinition, ProviderDefinition, parse_model_capabilities,
 };
 use crate::request_scoped_provider::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
@@ -727,9 +728,9 @@ fn registry_model_capabilities(
     model: &ModelDefinition,
 ) -> Result<(ModelCapabilities, ProviderModelCapabilities), CompositionError> {
     let capabilities = parse_model_capabilities(&model.capabilities).map_err(|error| {
-        CompositionError::UnknownCapability {
+        CompositionError::InvalidModelCapability {
             model: model.model_id.clone(),
-            capability: rejected_capability(error),
+            issue: error.issue(),
         }
     })?;
     Ok(canonical_model_capability_bits(capabilities))
@@ -770,16 +771,6 @@ fn canonical_model_capability_bits(
         exact = exact | exact_capability;
     }
     (shadow, exact)
-}
-
-fn rejected_capability(error: ModelCapabilityError) -> String {
-    match error {
-        ModelCapabilityError::Blank => String::new(),
-        ModelCapabilityError::SurroundingWhitespace(capability)
-        | ModelCapabilityError::NotLowercase(capability)
-        | ModelCapabilityError::Unknown(capability) => capability,
-        ModelCapabilityError::Duplicate(capability) => capability.to_string(),
-    }
 }
 
 fn source(kind: SessionConfigSourceKind, reference: &str) -> SessionConfigSource {
@@ -851,9 +842,9 @@ fn model_capabilities(
     model: &ModelDefinitionConfig,
 ) -> Result<ModelCapabilities, CompositionError> {
     let capabilities = parse_model_capabilities(&model.capabilities).map_err(|error| {
-        CompositionError::UnknownCapability {
+        CompositionError::InvalidModelCapability {
             model: model.id.clone(),
-            capability: rejected_capability(error),
+            issue: error.issue(),
         }
     })?;
     Ok(canonical_model_capability_bits(capabilities).0)
@@ -907,8 +898,11 @@ pub enum CompositionError {
     ProviderRouter(String),
     #[error("model `{0}` has invalid metadata")]
     InvalidModel(String),
-    #[error("model `{model}` has unknown capability `{capability}`")]
-    UnknownCapability { model: String, capability: String },
+    #[error("model `{model}` has invalid capability metadata: {issue}")]
+    InvalidModelCapability {
+        model: String,
+        issue: ModelCapabilityIssue,
+    },
     #[error("Agent `{agent}` has no prompt profile `{profile}`")]
     MissingPromptProfile { agent: String, profile: String },
     #[error("failed to build Agent `{0}`: {1}")]
@@ -983,9 +977,17 @@ mod tests {
         model.capabilities = vec!["telepathy".into()];
         assert!(matches!(
             model_capabilities(&model),
-            Err(CompositionError::UnknownCapability { model, capability })
-                if model == "model" && capability == "telepathy"
+            Err(CompositionError::InvalidModelCapability {
+                model,
+                issue: ModelCapabilityIssue::Unknown
+            }) if model == "model"
         ));
+
+        let raw = "secret_future_capability";
+        model.capabilities = vec![raw.into()];
+        let error = model_capabilities(&model).unwrap_err();
+        assert!(!error.to_string().contains(raw));
+        assert!(!format!("{error:?}").contains(raw));
     }
 
     fn versioned_config() -> ServerConfig {
