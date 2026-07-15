@@ -1,10 +1,11 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sylvander_llm_core::{
-    ChatMessage, ModelProvider, ModelRef, ModelRequest, ProviderErrorKind, ProviderErrorPhase,
+    ChatMessage, ModelProvider, ModelRef, ModelRequest, ProviderError, ProviderErrorKind,
+    ProviderErrorPhase,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{header, method, path};
@@ -27,9 +28,13 @@ data: {\"type\":\"message_stop\"}
 ";
 
 fn request(provider: &str) -> ModelRequest {
+    qualified_request(provider, "claude-test")
+}
+
+fn qualified_request(provider: &str, model: &str) -> ModelRequest {
     ModelRequest {
         request_id: "request-1".into(),
-        model: ModelRef::new(provider, "claude-test"),
+        model: ModelRef::new(provider, model),
         system: Vec::new(),
         messages: vec![ChatMessage::user("hello")],
         tools: Vec::new(),
@@ -37,6 +42,50 @@ fn request(provider: &str) -> ModelRequest {
         reasoning: None,
         output_schema: None,
     }
+}
+
+struct RouteProbe {
+    calls: AtomicUsize,
+    requests: Mutex<Vec<ModelRef>>,
+    failure: ProviderError,
+}
+
+impl RouteProbe {
+    fn named(message: &'static str) -> Self {
+        Self::failing(ProviderError::new(
+            ProviderErrorKind::Other,
+            ProviderErrorPhase::Open,
+            message,
+        ))
+    }
+
+    fn failing(error: ProviderError) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            failure: error,
+        }
+    }
+}
+
+impl ModelProvider for RouteProbe {
+    fn complete_stream(&self, request: ModelRequest) -> ProviderFuture<'_> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(request.model.clone());
+        let failure = self.failure.clone();
+        Box::pin(async move { Err(failure) })
+    }
+}
+
+fn router(
+    routes: impl IntoIterator<Item = (&'static str, Arc<RouteProbe>)>,
+    models: impl IntoIterator<Item = ModelRef>,
+) -> Result<PinnedProviderRouter, ProviderRouterBuildError> {
+    let routes = routes
+        .into_iter()
+        .map(|(provider_id, adapter)| (provider_id.to_string(), adapter as Arc<dyn ModelProvider>))
+        .collect::<HashMap<_, _>>();
+    PinnedProviderRouter::new(routes, models.into_iter().collect::<HashSet<_>>())
 }
 
 async fn expect_key(server: &MockServer, key: &str, count: u64) {
@@ -349,4 +398,144 @@ fn factory_preflight_is_redacted_and_never_resolves_credentials() {
     factory.create(valid, source.clone()).unwrap();
     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
     assert!(source.bindings.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn router_routes_same_model_name_by_exact_provider() {
+    let alpha = Arc::new(RouteProbe::named("alpha selected"));
+    let beta = Arc::new(RouteProbe::named("beta selected"));
+    let router = router(
+        [("alpha", alpha.clone()), ("beta", beta.clone())],
+        [
+            ModelRef::new("alpha", "shared"),
+            ModelRef::new("beta", "shared"),
+        ],
+    )
+    .unwrap();
+
+    let Err(alpha_error) = router
+        .complete_stream(qualified_request("alpha", "shared"))
+        .await
+    else {
+        panic!("alpha route should return its probe error");
+    };
+    let Err(beta_error) = router
+        .complete_stream(qualified_request("beta", "shared"))
+        .await
+    else {
+        panic!("beta route should return its probe error");
+    };
+
+    assert_eq!(alpha_error.message, "alpha selected");
+    assert_eq!(beta_error.message, "beta selected");
+    assert_eq!(alpha.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(beta.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        alpha.requests.lock().unwrap().as_slice(),
+        [ModelRef::new("alpha", "shared")]
+    );
+    assert_eq!(
+        beta.requests.lock().unwrap().as_slice(),
+        [ModelRef::new("beta", "shared")]
+    );
+}
+
+#[tokio::test]
+async fn router_rejects_unknown_and_disallowed_models_before_adapter_calls() {
+    let alpha = Arc::new(RouteProbe::named("alpha must not be called"));
+    let beta = Arc::new(RouteProbe::named("beta must not be called"));
+    let router = router(
+        [("alpha", alpha.clone()), ("beta", beta.clone())],
+        [
+            ModelRef::new("alpha", "shared"),
+            ModelRef::new("beta", "shared"),
+        ],
+    )
+    .unwrap();
+
+    let Err(unknown) = router
+        .complete_stream(qualified_request("missing", "shared"))
+        .await
+    else {
+        panic!("unknown route must be rejected");
+    };
+    let Err(disallowed) = router
+        .complete_stream(qualified_request("alpha", "other"))
+        .await
+    else {
+        panic!("disallowed model must be rejected");
+    };
+
+    assert_eq!(unknown, disallowed);
+    assert_eq!(unknown.kind, ProviderErrorKind::InvalidRequest);
+    assert_eq!(unknown.phase, ProviderErrorPhase::Open);
+    assert!(!unknown.kind.is_retryable());
+    assert_eq!(alpha.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(beta.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn router_never_falls_back_after_selected_provider_error() {
+    let failure = ProviderError::new(
+        ProviderErrorKind::Unavailable,
+        ProviderErrorPhase::Open,
+        "selected route unavailable",
+    );
+    let alpha = Arc::new(RouteProbe::failing(failure.clone()));
+    let beta = Arc::new(RouteProbe::named("beta must not be called"));
+    let router = router(
+        [("alpha", alpha.clone()), ("beta", beta.clone())],
+        [
+            ModelRef::new("alpha", "shared"),
+            ModelRef::new("beta", "shared"),
+        ],
+    )
+    .unwrap();
+
+    let Err(error) = router
+        .complete_stream(qualified_request("alpha", "shared"))
+        .await
+    else {
+        panic!("selected route must propagate its error");
+    };
+
+    assert_eq!(error, failure);
+    assert_eq!(alpha.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(beta.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn router_construction_rejects_partial_catalogs_and_debug_shows_only_counts() {
+    let alpha = Arc::new(RouteProbe::named("alpha"));
+    let beta = Arc::new(RouteProbe::named("beta"));
+    assert!(matches!(
+        router(
+            [("alpha", alpha.clone())],
+            [
+                ModelRef::new("alpha", "shared"),
+                ModelRef::new("beta", "shared")
+            ]
+        ),
+        Err(ProviderRouterBuildError::IncompleteCatalog)
+    ));
+    assert!(matches!(
+        router(
+            [("alpha", alpha.clone()), ("beta", beta.clone())],
+            [ModelRef::new("alpha", "shared")]
+        ),
+        Err(ProviderRouterBuildError::IncompleteCatalog)
+    ));
+
+    let complete = router(
+        [("alpha", alpha), ("beta", beta)],
+        [
+            ModelRef::new("alpha", "shared"),
+            ModelRef::new("beta", "shared"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        format!("{complete:?}"),
+        "PinnedProviderRouter { route_count: 2, model_count: 2 }"
+    );
 }
