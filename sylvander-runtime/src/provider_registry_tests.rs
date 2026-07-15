@@ -4,7 +4,9 @@ use tempfile::tempdir;
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
 use crate::provider_registry::ProviderRegistryError;
-use crate::registry_domain::{ProviderDefinition, canonical_secret_reference};
+use crate::registry_domain::{
+    ProviderDefinition, canonical_definition, canonical_secret_reference,
+};
 
 fn provider(revision: u64, base_url: &str) -> ProviderDefinition {
     ProviderDefinition {
@@ -62,6 +64,108 @@ async fn provider_row_counts(registry: &AgentRegistry) -> (i64, i64) {
         })
         .await
         .unwrap()
+}
+
+async fn prepared_provider(path: &std::path::Path) -> AgentRegistry {
+    let registry = AgentRegistry::open(path).await.unwrap();
+    install_credential(&registry).await;
+    registry
+        .seed_provider(provider(1, "https://one.invalid"))
+        .await
+        .unwrap();
+    registry
+        .stage_provider(1, provider(2, "https://two.invalid"))
+        .await
+        .unwrap();
+    registry
+}
+
+async fn provider_head(registry: &AgentRegistry) -> u64 {
+    registry
+        .run(|connection| {
+            connection
+                .query_row(
+                    "SELECT active_revision FROM provider_registry_heads \
+                     WHERE provider_id='provider/main'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap()
+        .try_into()
+        .unwrap()
+}
+
+async fn tamper_provider(registry: &AgentRegistry, revision: u64, kind: &str) {
+    let kind = kind.to_owned();
+    let sql_revision = i64::try_from(revision).unwrap();
+    registry
+        .run(move |connection| {
+            match kind.as_str() {
+                "json" => connection.execute(
+                    "UPDATE provider_definitions SET definition_json='{' \
+                    WHERE provider_id='provider/main' AND revision=?1",
+                    [sql_revision],
+                )
+                .map_err(AgentRegistryError::sqlite)?,
+                "digest" => connection.execute(
+                    "UPDATE provider_definitions SET digest='tampered' \
+                    WHERE provider_id='provider/main' AND revision=?1",
+                    [sql_revision],
+                )
+                .map_err(AgentRegistryError::sqlite)?,
+                "identity" | "revision" => {
+                    let mut mismatched = provider(revision, "https://mismatch.invalid");
+                    if kind == "identity" {
+                        mismatched.id = "provider/other".into();
+                    } else {
+                        mismatched.revision += 10;
+                    }
+                    let (json, digest) = canonical_definition(&mismatched)?;
+                    connection
+                        .execute(
+                        "UPDATE provider_definitions SET definition_json=?2,digest=?3 \
+                         WHERE provider_id='provider/main' AND revision=?1",
+                        params![sql_revision, json, digest],
+                    )
+                        .map_err(AgentRegistryError::sqlite)?
+                }
+                "credential" => {
+                    connection
+                        .execute_batch("PRAGMA foreign_keys=OFF;")
+                        .map_err(AgentRegistryError::sqlite)?;
+                    let changed = connection
+                        .execute(
+                            "UPDATE provider_definitions SET credential_binding_id='credential/other' \
+                         WHERE provider_id='provider/main' AND revision=?1",
+                            [sql_revision],
+                        )
+                        .map_err(AgentRegistryError::sqlite)?;
+                    connection
+                        .execute_batch("PRAGMA foreign_keys=ON;")
+                        .map_err(AgentRegistryError::sqlite)?;
+                    changed
+                }
+                _ => unreachable!(),
+            };
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+fn assert_stored_corruption<T: std::fmt::Debug>(result: Result<T, ProviderRegistryError>) {
+    assert!(
+        matches!(
+            result,
+            Err(ProviderRegistryError::Registry(
+                AgentRegistryError::Integrity(_) | AgentRegistryError::Serialization(_)
+            ))
+        ),
+        "expected stored Provider corruption, got {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -157,10 +261,10 @@ async fn strict_create_fails_closed_for_definition_only_or_head_only_state() {
     assert_eq!(provider_row_counts(&head_only).await, (0, 1));
 }
 
-fn assert_one_conflict(
+fn assert_one_conflict<T>(
     results: (
-        Result<(), ProviderRegistryError>,
-        Result<(), ProviderRegistryError>,
+        Result<T, ProviderRegistryError>,
+        Result<T, ProviderRegistryError>,
     ),
 ) {
     let values = [results.0, results.1];
@@ -218,10 +322,12 @@ async fn provider_lifecycle_is_immutable_and_survives_restart() {
         .stage_provider(1, provider(3, "https://three.invalid"))
         .await
         .unwrap();
-    registry
+    let activated = registry
         .activate_provider("provider/main", 2, 1)
         .await
         .unwrap();
+    assert!(activated.active);
+    assert_eq!(activated.definition.revision, 2);
     assert!(matches!(
         registry.activate_provider("provider/main", 3, 1).await,
         Err(ProviderRegistryError::Conflict {
@@ -262,10 +368,12 @@ async fn provider_lifecycle_is_immutable_and_survives_restart() {
             == 2
     );
 
-    registry
+    let rolled_back = registry
         .rollback_provider("provider/main", 1, 2)
         .await
         .unwrap();
+    assert!(rolled_back.active);
+    assert_eq!(rolled_back.definition.revision, 1);
     assert!(matches!(
         registry.activate_provider("provider/main", 99, 1).await,
         Err(ProviderRegistryError::UnknownRevision { revision: 99, .. })
@@ -280,6 +388,49 @@ async fn provider_lifecycle_is_immutable_and_survives_restart() {
             .revision,
         1
     );
+}
+
+#[tokio::test]
+async fn lifecycle_rejects_corrupt_revisions_without_moving_the_head() {
+    let directory = tempdir().unwrap();
+    for kind in ["json", "digest", "identity", "revision", "credential"] {
+        let stage = prepared_provider(&directory.path().join(format!("stage-{kind}.db"))).await;
+        tamper_provider(&stage, 2, kind).await;
+        assert_stored_corruption(
+            stage
+                .stage_provider(1, provider(2, "https://two.invalid"))
+                .await,
+        );
+        assert_eq!(
+            provider_head(&stage).await,
+            1,
+            "stage moved head for {kind}"
+        );
+
+        let activate =
+            prepared_provider(&directory.path().join(format!("activate-{kind}.db"))).await;
+        tamper_provider(&activate, 2, kind).await;
+        assert_stored_corruption(activate.activate_provider("provider/main", 2, 1).await);
+        assert_eq!(
+            provider_head(&activate).await,
+            1,
+            "activate moved head for {kind}"
+        );
+
+        let rollback =
+            prepared_provider(&directory.path().join(format!("rollback-{kind}.db"))).await;
+        rollback
+            .activate_provider("provider/main", 2, 1)
+            .await
+            .unwrap();
+        tamper_provider(&rollback, 1, kind).await;
+        assert_stored_corruption(rollback.rollback_provider("provider/main", 1, 2).await);
+        assert_eq!(
+            provider_head(&rollback).await,
+            2,
+            "rollback moved head for {kind}"
+        );
+    }
 }
 
 #[tokio::test]
