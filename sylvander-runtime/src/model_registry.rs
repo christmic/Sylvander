@@ -1,7 +1,12 @@
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::registry_domain::{ModelDefinition, StoredRevision, canonical_definition};
+use crate::registry_domain::{
+    ModelDefinition, ProviderDefinition, StoredRevision, canonical_definition,
+};
+use crate::request_scoped_provider::{
+    AnthropicProviderFactory, ProviderAdapterFactory, ProviderFactoryError,
+};
 
 const MAX_MODEL_PAGE_SIZE: u16 = 100;
 
@@ -16,6 +21,8 @@ pub(crate) struct ModelRevisionPage {
 pub(crate) enum ModelRegistryError {
     #[error("invalid Model definition")]
     InvalidDefinition,
+    #[error("Model is incompatible with its active Provider")]
+    IncompatibleProvider(#[source] ProviderFactoryError),
     #[error("Model `{identity}` already exists")]
     AlreadyExists { identity: String },
     #[error("unknown Provider `{0}`")]
@@ -71,7 +78,7 @@ impl AgentRegistry {
                     identity: identity(&provider_id, &model_id),
                 });
             }
-            require_provider(&transaction, &provider_id)?;
+            preflight_against_active_provider(&transaction, &definition)?;
             insert_definition(&transaction, &definition, &json, &digest)?;
             transaction
                 .execute(
@@ -159,6 +166,7 @@ impl AgentRegistry {
                     actual,
                 });
             }
+            preflight_against_active_provider(&transaction, &definition)?;
             if let Some(existing) =
                 verified_model_revision(&transaction, &provider_id, &model_id, revision)?
             {
@@ -437,6 +445,7 @@ async fn set_head(
                         identity: identity(&provider_id, &model_id),
                         revision: target,
                     })?;
+            preflight_against_active_provider(&transaction, &target_revision.definition)?;
             let changed = transaction
                 .execute(
                     "UPDATE model_registry_heads SET active_revision=?3,updated_at=unixepoch() \
@@ -499,6 +508,46 @@ fn insert_definition(
         )
         .map_err(storage)?;
     Ok(())
+}
+
+fn preflight_against_active_provider(
+    connection: &Connection,
+    model: &ModelDefinition,
+) -> Result<(), ModelRegistryError> {
+    let row = connection
+        .query_row(
+            "SELECT d.definition_json,d.digest,d.revision \
+             FROM provider_registry_heads h JOIN provider_definitions d \
+             ON d.provider_id=h.provider_id AND d.revision=h.active_revision \
+             WHERE h.provider_id=?1",
+            [&model.provider_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or_else(|| ModelRegistryError::UnknownProvider(model.provider_id.clone()))?;
+    let provider: ProviderDefinition =
+        serde_json::from_str(&row.0).map_err(AgentRegistryError::serde)?;
+    let revision = sql_revision(row.2)?;
+    let (canonical, digest) = canonical_definition(&provider)?;
+    if provider.id != model.provider_id
+        || provider.revision != revision
+        || canonical != row.0
+        || digest != row.1
+    {
+        return Err(
+            AgentRegistryError::Integrity("active Provider definition is invalid".into()).into(),
+        );
+    }
+    AnthropicProviderFactory
+        .preflight(&provider, model)
+        .map_err(ModelRegistryError::IncompatibleProvider)
 }
 
 fn require_provider(connection: &Connection, provider_id: &str) -> Result<(), ModelRegistryError> {

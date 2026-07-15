@@ -126,6 +126,98 @@ async fn model_head(registry: &AgentRegistry) -> u64 {
     u64::try_from(revision).unwrap()
 }
 
+#[tokio::test]
+async fn create_and_stage_preflight_the_active_provider_before_mutation() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_providers(&registry).await;
+    let unsupported = ProviderDefinition {
+        id: "legacy".into(),
+        revision: 1,
+        kind: "unsupported".into(),
+        base_url: "https://legacy.invalid".into(),
+        credential_binding_id: "credential/main".into(),
+    };
+    registry.create_provider(unsupported).await.unwrap();
+    let mut existing = model("legacy", 1, 100_000);
+    existing.provider_id = "legacy".into();
+    registry.seed_model(existing.clone()).await.unwrap();
+
+    let mut created = model("legacy", 1, 100_000);
+    created.provider_id = "legacy".into();
+    created.model_id = "new".into();
+    assert!(matches!(
+        registry.create_model(created).await,
+        Err(ModelRegistryError::IncompatibleProvider(_))
+    ));
+    assert!(
+        registry
+            .load_active_model(("legacy", "new"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    existing.revision = 2;
+    assert!(matches!(
+        registry.stage_model(1, existing).await,
+        Err(ModelRegistryError::IncompatibleProvider(_))
+    ));
+    assert_eq!(
+        registry
+            .inspect_model(("legacy", "shared"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn model_head_changes_recheck_the_current_provider_before_mutation() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_providers(&registry).await;
+    registry
+        .create_model(model("alpha", 1, 100_000))
+        .await
+        .unwrap();
+    registry
+        .stage_model(1, model("alpha", 2, 120_000))
+        .await
+        .unwrap();
+    let unsupported = ProviderDefinition {
+        id: "alpha".into(),
+        revision: 2,
+        kind: "unsupported".into(),
+        base_url: "https://alpha-v2.invalid".into(),
+        credential_binding_id: "credential/main".into(),
+    };
+    registry.stage_provider(1, unsupported).await.unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute(
+                    "UPDATE provider_registry_heads SET active_revision=2 WHERE provider_id='alpha'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        registry.activate_model(("alpha", "shared"), 2, 1).await,
+        Err(ModelRegistryError::IncompatibleProvider(_))
+    ));
+    assert_eq!(model_head(&registry).await, 1);
+}
+
 #[derive(Clone, Copy, Debug)]
 enum ModelTamper {
     Json,

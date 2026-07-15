@@ -1031,6 +1031,13 @@ fn map_model_error(
             model_id,
             requested_revision,
         ),
+        ModelRegistryError::IncompatibleProvider(_) => model_error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "model revision is not supported by the active provider",
+            provider_id,
+            model_id,
+            requested_revision,
+        ),
         ModelRegistryError::AlreadyExists { .. } => model_error(
             RegistryAdminErrorCode::ModelAlreadyExists,
             "model already exists",
@@ -1179,6 +1186,12 @@ fn map_provider_error(
         ProviderRegistryError::InvalidDefinition => error(
             RegistryAdminErrorCode::InvalidRequest,
             "provider revision is invalid",
+            Some(provider_id),
+            requested_revision,
+        ),
+        ProviderRegistryError::IncompatibleModel(_) => error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "provider revision is not supported by its active models",
             Some(provider_id),
             requested_revision,
         ),
@@ -1339,6 +1352,7 @@ mod tests {
     use super::*;
     use crate::config::{SecretRef, SystemSecretResolver};
     use crate::registry_domain::CredentialBindingRevision;
+    use crate::request_scoped_provider::ProviderFactoryError;
 
     const RAW_URL: &str = "https://user:RAW_URL_SECRET@example.invalid/path?token=leak";
     const RAW_BINDING: &str = "RAW_BINDING_SECRET";
@@ -1408,6 +1422,28 @@ mod tests {
             .unwrap();
         registry.seed_provider(provider(1, RAW_URL)).await.unwrap();
         registry
+    }
+
+    #[test]
+    fn compatibility_failures_map_to_fixed_redacted_protocol_errors() {
+        let model = map_model_error(
+            ModelRegistryError::IncompatibleProvider(ProviderFactoryError::UnsupportedKind),
+            "provider-secret".into(),
+            "model-secret".into(),
+            Some(2),
+        );
+        let provider = map_provider_error(
+            ProviderRegistryError::IncompatibleModel(ProviderFactoryError::InvalidModelDefinition),
+            "provider-secret".into(),
+            Some(2),
+        );
+        assert_eq!(model.code, RegistryAdminErrorCode::InvalidRequest);
+        assert_eq!(provider.code, RegistryAdminErrorCode::InvalidRequest);
+        for response in [failure(model), failure(provider)] {
+            let wire = serde_json::to_string(&response).unwrap();
+            assert!(!wire.contains("UnsupportedKind"));
+            assert!(!wire.contains("InvalidModelDefinition"));
+        }
     }
 
     fn admin() -> AuthenticatedPrincipal {

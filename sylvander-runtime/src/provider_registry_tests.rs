@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
+
 use rusqlite::params;
+use sylvander_protocol::ModelLifecycle;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
 use crate::provider_registry::ProviderRegistryError;
 use crate::registry_domain::{
-    ProviderDefinition, canonical_definition, canonical_secret_reference,
+    ModelDefinition, ProviderDefinition, canonical_definition, canonical_secret_reference,
 };
 
 fn provider(revision: u64, base_url: &str) -> ProviderDefinition {
@@ -96,6 +99,66 @@ async fn provider_head(registry: &AgentRegistry) -> u64 {
         .unwrap()
         .try_into()
         .unwrap()
+}
+
+fn active_model() -> ModelDefinition {
+    ModelDefinition {
+        provider_id: "provider/main".into(),
+        model_id: "model/main".into(),
+        revision: 1,
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: BTreeSet::from(["tool_use".into()]),
+        lifecycle: ModelLifecycle::Active,
+        pricing: None,
+    }
+}
+
+#[tokio::test]
+async fn provider_head_changes_preflight_active_models_in_the_mutation_transaction() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_credential(&registry).await;
+    registry
+        .create_provider(provider(1, "https://valid.invalid"))
+        .await
+        .unwrap();
+    registry.seed_model(active_model()).await.unwrap();
+    let mut unsupported = provider(2, "https://valid.invalid");
+    unsupported.kind = "unsupported".into();
+    registry.stage_provider(1, unsupported).await.unwrap();
+
+    assert!(matches!(
+        registry.activate_provider("provider/main", 2, 1).await,
+        Err(ProviderRegistryError::IncompatibleModel(_))
+    ));
+    assert_eq!(provider_head(&registry).await, 1);
+
+    let rollback_directory = tempdir().unwrap();
+    let rollback = AgentRegistry::open(rollback_directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_credential(&rollback).await;
+    let mut legacy = provider(1, "https://valid.invalid");
+    legacy.kind = "unsupported".into();
+    rollback.create_provider(legacy).await.unwrap();
+    rollback
+        .stage_provider(1, provider(2, "https://valid.invalid"))
+        .await
+        .unwrap();
+    rollback
+        .activate_provider("provider/main", 2, 1)
+        .await
+        .unwrap();
+    rollback.seed_model(active_model()).await.unwrap();
+
+    assert!(matches!(
+        rollback.rollback_provider("provider/main", 1, 2).await,
+        Err(ProviderRegistryError::IncompatibleModel(_))
+    ));
+    assert_eq!(provider_head(&rollback).await, 2);
 }
 
 async fn tamper_provider(registry: &AgentRegistry, revision: u64, kind: &str) {
