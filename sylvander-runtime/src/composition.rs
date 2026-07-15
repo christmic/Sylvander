@@ -1,6 +1,6 @@
 //! Production composition of configured Agent runs.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -17,7 +17,8 @@ use sylvander_agent::tools::{
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_core::{
-    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelProvider,
+    ModelRef,
 };
 use sylvander_protocol::{
     ApprovalPolicy, FileAccess, ModelSelection, NetworkAccess, PermissionProfile, ReasoningEffort,
@@ -32,16 +33,17 @@ use crate::config::{
 };
 use crate::credential_registry::CredentialSecretResolver;
 use crate::registry_composition::RegistryCompositionSnapshot;
+use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
 use crate::registry_domain::{ModelDefinition, ProviderDefinition};
 use crate::request_scoped_provider::{
-    AnthropicProviderFactory, ProviderAdapterFactory, RegistryCredentialSource,
+    AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
+    RegistryCredentialSource,
 };
 
 /// A configured run plus the metadata needed by protocol adapters.
 #[derive(Clone)]
 struct RegistryRevisionBindings {
-    provider_id: String,
-    provider_revision: u64,
+    provider_revisions: HashMap<String, u64>,
     model_revisions: HashMap<ModelSelection, u64>,
 }
 
@@ -220,6 +222,110 @@ pub(crate) fn build_registry_agent_with_resolver(
     })
 }
 
+/// Build one complete versioned registry closure around an immutable router.
+#[allow(dead_code)] // wired into revision composition after the staged router batches
+pub(crate) fn build_registry_agent_versioned_with_resolver(
+    config: &ServerConfig,
+    snapshot: VersionedRegistryCompositionSnapshot,
+    registry: crate::agent_registry::AgentRegistry,
+    bus: Arc<dyn MessageBus>,
+    sessions: Arc<dyn SessionStore>,
+    resolver: Arc<dyn CredentialSecretResolver>,
+) -> Result<ConfiguredAgent, CompositionError> {
+    let VersionedRegistryCompositionSnapshot {
+        agent: definition,
+        providers,
+        models: model_definitions,
+        default_model,
+    } = snapshot;
+    let revision_bindings = versioned_registry_revision_bindings(&providers, &model_definitions)?;
+    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
+    let mut adapters_by_provider =
+        HashMap::<String, Arc<dyn ModelProvider>>::with_capacity(providers.len());
+    for (provider_id, provider) in providers {
+        if provider.id != provider_id {
+            return Err(CompositionError::InvalidRegistryRevisionBinding);
+        }
+        let adapter = AnthropicProviderFactory
+            .create(provider, credentials.clone())
+            .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
+        adapters_by_provider.insert(provider_id, adapter);
+    }
+
+    let definitions = model_definitions.into_values().collect::<Vec<_>>();
+    let (models, provider_models) = registry_model_catalog(&definitions)?;
+    let primary = provider_models
+        .iter()
+        .find(|model| {
+            model.reference.provider == default_model.provider_id
+                && model.reference.model == default_model.model_id
+        })
+        .cloned()
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: default_model.provider_id.clone(),
+            model: default_model.model_id.clone(),
+        })?;
+    let allowed_models = provider_models
+        .iter()
+        .map(|model| model.reference.clone())
+        .collect::<HashSet<_>>();
+    let router = PinnedProviderRouter::new(adapters_by_provider, allowed_models)
+        .map_err(|error| CompositionError::ProviderRouter(error.to_string()))?;
+
+    let mut spec = definition.spec.clone();
+    apply_default_prompt(&definition, &mut spec)?;
+    let memory = Arc::new(InMemoryMemoryStore::new());
+    let tools = default_tools(memory.clone());
+    let lifecycles = definitions
+        .iter()
+        .map(|model| {
+            (
+                ModelSelection {
+                    provider_id: model.provider_id.clone(),
+                    model_id: model.model_id.clone(),
+                },
+                model.lifecycle.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let pricing = definitions
+        .iter()
+        .filter_map(|model| {
+            model.pricing.map(|value| {
+                (
+                    ModelSelection {
+                        provider_id: model.provider_id.clone(),
+                        model_id: model.model_id.clone(),
+                    },
+                    value,
+                )
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    let builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
+        .bus(bus)
+        .session_store(sessions)
+        .memory(memory)
+        .override_tools(tools)
+        .available_provider_models(provider_models)
+        .qualified_model_lifecycles(lifecycles)
+        .qualified_model_pricing(pricing)
+        .prompt_profiles(prompt_profiles(&definition));
+    let run = apply_server_run_settings(config, builder)
+        .build()
+        .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
+
+    Ok(ConfiguredAgent {
+        spec,
+        run,
+        models,
+        approval_enabled: config.server.approval.enabled,
+        definition,
+        execution_targets: execution_targets(config),
+        revision_bindings: Some(revision_bindings),
+    })
+}
+
 /// Resolve sparse session overrides against one immutable Agent definition.
 pub fn resolve_session_config(
     agent: &ConfiguredAgent,
@@ -242,16 +348,17 @@ pub fn resolve_session_config(
     let (provider_revision, model_revision) = match &agent.revision_bindings {
         None => (None, None),
         Some(bindings) => {
-            if bindings.provider_id != provider_id {
-                return Err(CompositionError::RegistryProviderBindingMismatch);
-            }
+            let provider_revision = bindings
+                .provider_revisions
+                .get(&provider_id)
+                .ok_or(CompositionError::RegistryProviderBindingMismatch)?;
             let model_revision = bindings.model_revisions.get(&selection).ok_or_else(|| {
                 CompositionError::MissingRegistryModelBinding {
                     provider: provider_id.clone(),
                     model: model_id.clone(),
                 }
             })?;
-            (Some(bindings.provider_revision), Some(*model_revision))
+            (Some(*provider_revision), Some(*model_revision))
         }
     };
     let reasoning_effort = overrides.reasoning_effort.unwrap_or_default();
@@ -529,8 +636,42 @@ fn registry_revision_bindings(
         }
     }
     Ok(RegistryRevisionBindings {
-        provider_id: provider.id.clone(),
-        provider_revision: provider.revision,
+        provider_revisions: HashMap::from([(provider.id.clone(), provider.revision)]),
+        model_revisions,
+    })
+}
+
+fn versioned_registry_revision_bindings(
+    providers: &BTreeMap<String, ProviderDefinition>,
+    models: &BTreeMap<ModelSelection, ModelDefinition>,
+) -> Result<RegistryRevisionBindings, CompositionError> {
+    let mut provider_revisions = HashMap::with_capacity(providers.len());
+    for (provider_id, provider) in providers {
+        if provider_id.trim().is_empty()
+            || provider.id != *provider_id
+            || provider.revision == 0
+            || provider_revisions
+                .insert(provider_id.clone(), provider.revision)
+                .is_some()
+        {
+            return Err(CompositionError::InvalidRegistryRevisionBinding);
+        }
+    }
+    let mut model_revisions = HashMap::with_capacity(models.len());
+    for (selection, model) in models {
+        if selection.provider_id != model.provider_id
+            || selection.model_id != model.model_id
+            || model.revision == 0
+            || !provider_revisions.contains_key(&selection.provider_id)
+            || model_revisions
+                .insert(selection.clone(), model.revision)
+                .is_some()
+        {
+            return Err(CompositionError::InvalidRegistryRevisionBinding);
+        }
+    }
+    Ok(RegistryRevisionBindings {
+        provider_revisions,
         model_revisions,
     })
 }
@@ -740,6 +881,8 @@ pub enum CompositionError {
     MissingRegistryModelBinding { provider: String, model: String },
     #[error("failed to create pinned Provider: {0}")]
     ProviderFactory(String),
+    #[error("failed to create pinned Provider router: {0}")]
+    ProviderRouter(String),
     #[error("model `{0}` has invalid metadata")]
     InvalidModel(String),
     #[error("model `{model}` has unknown capability `{capability}`")]
@@ -765,6 +908,156 @@ mod tests {
             capabilities: ModelCapabilities::TOOL_USE,
             cache_ttl: Vec::new(),
         }]
+    }
+
+    fn versioned_config() -> ServerConfig {
+        ServerConfig::from_toml(
+            r#"
+schema_version = 1
+
+[[model_providers]]
+id = "alpha"
+base_url = "https://alpha.invalid"
+[model_providers.api_key]
+source = "env"
+name = "ALPHA_KEY"
+[[model_providers.models]]
+id = "shared"
+
+[[model_providers]]
+id = "beta"
+base_url = "https://beta.invalid"
+[model_providers.api_key]
+source = "env"
+name = "BETA_KEY"
+[[model_providers.models]]
+id = "shared"
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Assistant"
+[agents.spec.model]
+provider = "alpha"
+model_name = "shared"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn versioned_snapshot(config: &ServerConfig) -> VersionedRegistryCompositionSnapshot {
+        let selection = |provider_id: &str| ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: "shared".into(),
+        };
+        let model = |provider_id: &str, lifecycle| ModelDefinition {
+            provider_id: provider_id.into(),
+            model_id: "shared".into(),
+            revision: 3,
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: ["tool_use".into()].into(),
+            lifecycle,
+            pricing: None,
+        };
+        VersionedRegistryCompositionSnapshot {
+            agent: config.agents[0].clone(),
+            providers: BTreeMap::from([
+                (
+                    "alpha".into(),
+                    ProviderDefinition {
+                        id: "alpha".into(),
+                        revision: 2,
+                        kind: "anthropic_compatible".into(),
+                        base_url: "https://alpha.invalid".into(),
+                        credential_binding_id: "alpha-key".into(),
+                    },
+                ),
+                (
+                    "beta".into(),
+                    ProviderDefinition {
+                        id: "beta".into(),
+                        revision: 4,
+                        kind: "anthropic_compatible".into(),
+                        base_url: "https://beta.invalid".into(),
+                        credential_binding_id: "beta-key".into(),
+                    },
+                ),
+            ]),
+            models: BTreeMap::from([
+                (
+                    selection("alpha"),
+                    model("alpha", sylvander_protocol::ModelLifecycle::Active),
+                ),
+                (
+                    selection("beta"),
+                    model(
+                        "beta",
+                        sylvander_protocol::ModelLifecycle::Deprecated { replacement: None },
+                    ),
+                ),
+            ]),
+            default_model: selection("alpha"),
+        }
+    }
+
+    #[tokio::test]
+    async fn versioned_builder_preserves_the_full_qualified_catalog() {
+        let config = versioned_config();
+        let directory = tempfile::tempdir().unwrap();
+        let registry =
+            crate::agent_registry::AgentRegistry::open(directory.path().join("registry.db"))
+                .await
+                .unwrap();
+        let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
+        let sessions: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+
+        let configured = build_registry_agent_versioned_with_resolver(
+            &config,
+            versioned_snapshot(&config),
+            registry,
+            bus,
+            sessions,
+            Arc::new(crate::config::SystemSecretResolver),
+        )
+        .unwrap();
+        let info = configured.run.runtime_model_info().await;
+
+        assert_eq!(
+            info.models
+                .iter()
+                .map(|model| (model.provider.as_str(), model.id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("alpha", "shared"), ("beta", "shared")]
+        );
+        assert!(matches!(
+            info.models[1].lifecycle,
+            sylvander_protocol::ModelLifecycle::Deprecated { .. }
+        ));
+        configured
+            .run
+            .select_qualified_model(
+                ModelSelection {
+                    provider_id: "beta".into(),
+                    model_id: "shared".into(),
+                },
+                ReasoningEffort::Off,
+            )
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn versioned_bindings_reject_a_partial_provider_closure() {
+        let config = versioned_config();
+        let mut snapshot = versioned_snapshot(&config);
+        snapshot.providers.remove("beta");
+
+        assert!(matches!(
+            versioned_registry_revision_bindings(&snapshot.providers, &snapshot.models),
+            Err(CompositionError::InvalidRegistryRevisionBinding)
+        ));
     }
 
     #[test]
