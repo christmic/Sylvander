@@ -6,12 +6,16 @@ use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
-use sylvander_protocol::{BusMessage, SessionConfigOverrides, SessionMetadata};
+use sylvander_protocol::{
+    AgentId, AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, BusMessage,
+    SessionConfigOverrides, SessionConfigUpdateRequest, SessionCreateRequest, SessionMetadata,
+};
 use tempfile::tempdir;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::Runtime;
 use crate::agent_registry::AgentRegistry;
 use crate::agent_registry_snapshot::AgentSnapshotSelection;
 use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
@@ -515,6 +519,157 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
     beta_pinned.verify().await;
     assert!(alpha_new.received_requests().await.unwrap().is_empty());
     assert!(beta_new.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn public_session_override_survives_restart_and_never_falls_back() {
+    let directory = tempdir().unwrap();
+    let alpha_secret = directory.path().join("alpha.secret");
+    let beta_secret = directory.path().join("beta.secret");
+    std::fs::write(&alpha_secret, "alpha-key\n").unwrap();
+    std::fs::write(&beta_secret, "beta-key\n").unwrap();
+    let alpha = MockServer::start().await;
+    let beta = MockServer::start().await;
+    let success_stream = TEXT_STREAM.replace("model-a", "shared");
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", "Bearer alpha-key"))
+        .and(body_partial_json(json!({"model": "shared"})))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(success_stream, "text/event-stream"))
+        .expect(1)
+        .mount(&alpha)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", "Bearer beta-key"))
+        .and(body_partial_json(json!({"model": "shared"})))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "type": "error",
+            "error": {"type": "authentication_error", "message": "denied"}
+        })))
+        .expect(1)
+        .mount(&beta)
+        .await;
+
+    let mut config = dual_provider_config(&alpha.uri(), &alpha_secret, &beta.uri(), &beta_secret);
+    config.server.data_dir = Some(directory.path().into());
+    config.server.session_db = Some(directory.path().join("runtime.db"));
+    let mut principal = AuthenticatedPrincipal::user("user", AuthenticationMethod::Internal);
+    principal.roles.push("admin".into());
+    let boundary =
+        BoundaryContext::authenticated(principal, "test", "runtime-test", "p1.2-session-model");
+    let beta_selection = ModelSelection {
+        provider_id: "beta".into(),
+        model_id: "shared".into(),
+    };
+
+    let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+    let created = sylvander_channel::UiService::create_session(
+        runtime.ui_service.as_ref(),
+        &boundary,
+        SessionCreateRequest {
+            agent_id: AgentId::new("assistant"),
+            label: "beta session".into(),
+            channel_id: None,
+            overrides: SessionConfigOverrides::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let updated = sylvander_channel::UiService::update_session_config(
+        runtime.ui_service.as_ref(),
+        &boundary,
+        SessionConfigUpdateRequest {
+            session_id: created.session_id.clone(),
+            expected_revision: created.revision,
+            overrides: SessionConfigOverrides {
+                model: Some(beta_selection.clone()),
+                ..SessionConfigOverrides::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.effective.model_selection(), beta_selection);
+    runtime.shutdown().await.unwrap();
+
+    let restarted = Runtime::boot_config(config).await.unwrap();
+    let restored = sylvander_channel::UiService::session_config(
+        restarted.ui_service.as_ref(),
+        &boundary,
+        &created.session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.revision, updated.revision);
+    assert_eq!(restored.overrides, updated.overrides);
+    assert_eq!(restored.effective.model_selection(), beta_selection);
+
+    let agent = restarted
+        .configured_agent(&AgentId::new("assistant"))
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while agent.run.get_session(&created.session_id).await.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restored session join must reach the revision worker");
+    let beta_error = agent
+        .run
+        .handle_message(BusMessage::user_chat(
+            created.session_id.clone(),
+            "user",
+            "beta request",
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+        &beta_error,
+        sylvander_agent::run::AgentRunError::Loop(
+            sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
+        ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
+        ),
+        "unexpected beta failure: {beta_error:?}"
+    );
+
+    let alpha_session = sylvander_channel::UiService::create_session(
+        restarted.ui_service.as_ref(),
+        &boundary,
+        SessionCreateRequest {
+            agent_id: AgentId::new("assistant"),
+            label: "alpha session".into(),
+            channel_id: None,
+            overrides: SessionConfigOverrides::default(),
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while agent
+            .run
+            .get_session(&alpha_session.session_id)
+            .await
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("new session join must reach the revision worker");
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(
+            alpha_session.session_id.clone(),
+            "user",
+            "alpha request",
+        ))
+        .await
+        .unwrap();
+    restarted.shutdown().await.unwrap();
+    beta.verify().await;
+    alpha.verify().await;
 }
 
 #[test]

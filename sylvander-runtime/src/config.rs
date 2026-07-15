@@ -581,6 +581,21 @@ fn validate_agent_shape_and_environment(
             agent.spec.id
         ));
     }
+    if let Some(default) = &agent.default_prompt_profile
+        && let Some(profile) = agent
+            .prompt_profiles
+            .iter()
+            .find(|profile| profile.id.trim() == default.trim())
+        && ((!profile.providers.is_empty()
+            && !profile.providers.contains(&agent.spec.model.provider))
+            || (!profile.models.is_empty()
+                && !profile.models.contains(&agent.spec.model.model_name)))
+    {
+        errors.push(format!(
+            "Agent {} default prompt profile {default} is incompatible with its default Model",
+            agent.spec.id
+        ));
+    }
     for principal in &agent.access.allowed_principals {
         require_text("Agent allowed principal", principal, errors);
     }

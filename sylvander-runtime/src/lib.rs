@@ -1923,10 +1923,14 @@ impl Runtime {
                 })?;
             active_definitions.push(active.definition);
         }
+        for definition in &active_definitions {
+            config
+                .validate_agent_shape_and_environment(definition)
+                .map_err(|error| {
+                    RuntimeError::Config(format!("active Agent registry is incompatible: {error}"))
+                })?;
+        }
         config.agents = active_definitions;
-        config.validate().map_err(|error| {
-            RuntimeError::Config(format!("active Agent registry is incompatible: {error}"))
-        })?;
         for definition in &config.agents {
             let existing = agent_registry
                 .load_agent_snapshot_versioned(&definition.spec.id.0, definition.revision)

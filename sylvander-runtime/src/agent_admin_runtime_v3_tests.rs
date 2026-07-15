@@ -1,6 +1,7 @@
 use sylvander_protocol::{
     AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, ModelSelection,
+    RegistryAdminResponse,
 };
 use tempfile::TempDir;
 
@@ -237,6 +238,156 @@ async fn cross_provider_update_pins_native_v3_and_survives_head_drift() {
             )
     ));
     fixture.runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn dynamic_registry_catalog_and_active_agent_survive_original_config_restart() {
+    let directory = TempDir::new().unwrap();
+    let secret = directory.path().join("provider.key");
+    std::fs::write(&secret, "test-secret").unwrap();
+    let mut config = ServerConfig::from_toml(&format!(
+        r#"
+schema_version = 1
+
+[server]
+data_dir = "{}"
+session_db = "{}"
+
+[[model_providers]]
+id = "alpha"
+base_url = "https://alpha.invalid"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "shared"
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Assistant"
+[agents.spec.model]
+provider = "alpha"
+model_name = "shared"
+"#,
+        directory.path().display(),
+        directory.path().join("runtime.db").display(),
+        secret.display(),
+    ))
+    .unwrap();
+    config.agents[0].spec.model.allowed_models = vec![model("alpha")];
+    let original = config.clone();
+    let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+    let mut principal = AuthenticatedPrincipal::user("operator", AuthenticationMethod::Internal);
+    principal.roles.push("admin".into());
+    let administrator =
+        BoundaryContext::authenticated(principal, "admin-test", "internal", "dynamic-restart");
+    let registry = runtime.ui_service.agent_registry.as_ref().unwrap();
+    let binding_id = registry
+        .load_active_provider("alpha")
+        .await
+        .unwrap()
+        .unwrap()
+        .definition
+        .credential_binding_id;
+
+    let provider = sylvander_channel::UiService::registry_admin(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        sylvander_protocol::RegistryAdminRequest::CreateProvider {
+            provider_id: "beta".into(),
+            definition: sylvander_protocol::ProviderDefinitionDraft {
+                kind: "anthropic_compatible".into(),
+                base_url: "https://beta.invalid".into(),
+                credential_binding_id: binding_id,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(provider, RegistryAdminResponse::Success { .. }));
+    let model_response = sylvander_channel::UiService::registry_admin(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        sylvander_protocol::RegistryAdminRequest::CreateModel {
+            provider_id: "beta".into(),
+            model_id: "shared".into(),
+            definition: sylvander_protocol::ModelDefinitionDraft {
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities: vec!["tool_use".into()],
+                lifecycle: sylvander_protocol::ModelLifecycleDraft::Active {},
+                pricing: None,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(
+        model_response,
+        RegistryAdminResponse::Success { .. }
+    ));
+
+    let mut next = config.agents[0].clone();
+    next.revision = 2;
+    next.spec.model.provider = "beta".into();
+    next.spec.model.model_name = "shared".into();
+    next.spec.model.allowed_models = vec![model("beta")];
+    let updated = sylvander_channel::UiService::agent_admin(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        AgentAdminRequest::UpdateDefinition {
+            expected_active_revision: 1,
+            definition: Box::new(crate::agent_admin::draft_from_definition(&next).unwrap()),
+        },
+    )
+    .await;
+    assert!(matches!(updated, AgentAdminResponse::Success { .. }));
+    assert!(matches!(
+        sylvander_channel::UiService::agent_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            AgentAdminRequest::ActivateRevision {
+                agent_id: AgentId::new("assistant"),
+                revision: 2,
+                expected_active_revision: 1,
+            },
+        )
+        .await,
+        AgentAdminResponse::Success { .. }
+    ));
+    runtime.shutdown().await.unwrap();
+
+    let restarted = Runtime::boot_config(original).await.unwrap();
+    let active = restarted
+        .ui_service
+        .agent_registry
+        .as_ref()
+        .unwrap()
+        .load_active(&AgentId::new("assistant"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.definition.revision, 2);
+    assert_eq!(active.definition.spec.model.provider, "beta");
+    let snapshot = restarted
+        .ui_service
+        .agent_registry
+        .as_ref()
+        .unwrap()
+        .load_agent_snapshot_v3("assistant", 2)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.providers, [("beta".into(), 1)].into());
+    assert_eq!(snapshot.models[0].model, model("beta"));
+    assert_eq!(snapshot.models[0].revision, 1);
+    assert_eq!(
+        restarted.configured_agents[&AgentId::new("assistant")]
+            .spec
+            .model
+            .provider,
+        "beta"
+    );
+    restarted.shutdown().await.unwrap();
 }
 
 enum Corruption {
