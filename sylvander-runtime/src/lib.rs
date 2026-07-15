@@ -46,7 +46,6 @@ pub mod evidence;
 mod model_registry;
 #[cfg(test)]
 mod model_registry_tests;
-mod prompt_limits;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]
@@ -3963,12 +3962,18 @@ model_name = "model-a"
         assert!(revision_requests.contains(&(
             "revision-one-probe".into(),
             "model-a".into(),
-            "revision one prompt".into(),
+            format!(
+                "{}\n\nrevision one prompt",
+                sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+            ),
         )));
         assert!(revision_requests.contains(&(
             "revision-two-probe".into(),
             "model-b".into(),
-            "revision two prompt".into(),
+            format!(
+                "{}\n\nrevision two prompt",
+                sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+            ),
         )));
 
         let stale_activation = sylvander_channel::UiService::agent_admin(

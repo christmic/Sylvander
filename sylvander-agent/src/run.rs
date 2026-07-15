@@ -44,6 +44,7 @@ use crate::compress::layer::CompressionLayer;
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
+use crate::prompt::PromptResolver;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -73,7 +74,7 @@ pub(crate) struct AgentRunInner {
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
-    prompt_profiles: HashMap<String, String>,
+    prompt_resolver: Option<Arc<PromptResolver>>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
@@ -1609,6 +1610,12 @@ impl TaskGate for BusTaskGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    fn inner_prompt_resolver(&self) -> Result<&PromptResolver, AgentRunError> {
+        self.prompt_resolver
+            .as_deref()
+            .ok_or_else(prompt_integrity_error)
+    }
+
     fn prepare_loop_snapshot(
         &self,
         model: &RuntimeModel,
@@ -1969,6 +1976,23 @@ impl AgentRunInner {
         let mut loop_config = self.prepare_loop_snapshot(&selected_model, selected_effort)?;
         let selected_pricing = selected_model.pricing;
 
+        if let (Some(stored), Some(effective)) = (&stored_session, &effective_config) {
+            let prompt_policy = self.inner_prompt_resolver()?;
+            let resolved_prompt = prompt_policy
+                .resolve(
+                    &selected_model.selection,
+                    stored.config_overrides.prompt_profile.as_deref(),
+                    stored.config_overrides.system_prompt.as_deref(),
+                )
+                .map_err(|_| prompt_integrity_error())?;
+            if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
+                || effective.prompt_manifest.as_ref() != Some(&resolved_prompt.manifest)
+            {
+                return Err(prompt_integrity_error());
+            }
+            loop_config.system_prompt = Some(resolved_prompt.system_prompt);
+        }
+
         // 1. Persist the immutable turn boundary before provider or tool work.
         let session_metadata = {
             let sessions = self.sessions.read().await;
@@ -2039,18 +2063,6 @@ impl AgentRunInner {
                 ))
             };
             loop_config.approval_gate = Some(gate);
-        }
-        if let Some(stored) = &stored_session {
-            let resolved_prompt = stored.config_overrides.system_prompt.clone().or_else(|| {
-                effective_config
-                    .as_ref()
-                    .and_then(|config| config.prompt_profile.as_ref())
-                    .and_then(|profile| self.prompt_profiles.get(profile))
-                    .cloned()
-            });
-            if let Some(prompt) = resolved_prompt {
-                loop_config.system_prompt = (!prompt.is_empty()).then_some(prompt);
-            }
         }
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
@@ -2544,7 +2556,7 @@ pub struct AgentRunBuilder {
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
     qualified_model_pricing:
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
-    prompt_profiles: HashMap<String, String>,
+    prompt_resolver: Option<Arc<PromptResolver>>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -2606,7 +2618,7 @@ impl AgentRunBuilder {
             legacy_model_pricing: HashMap::new(),
             qualified_model_lifecycles: HashMap::new(),
             qualified_model_pricing: HashMap::new(),
-            prompt_profiles: HashMap::new(),
+            prompt_resolver: None,
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -2703,10 +2715,10 @@ impl AgentRunBuilder {
         self
     }
 
-    /// Attach validated prompt profiles for per-session resolution.
+    /// Attach the same immutable prompt resolver used by session composition.
     #[must_use]
-    pub fn prompt_profiles(mut self, profiles: HashMap<String, String>) -> Self {
-        self.prompt_profiles = profiles;
+    pub fn prompt_resolver(mut self, resolver: Arc<PromptResolver>) -> Self {
+        self.prompt_resolver = Some(resolver);
         self
     }
 
@@ -2921,7 +2933,7 @@ impl AgentRunBuilder {
                 loop_config,
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
-                prompt_profiles: self.prompt_profiles,
+                prompt_resolver: self.prompt_resolver,
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 bus,
@@ -2946,6 +2958,10 @@ impl AgentRunBuilder {
 // ---------------------------------------------------------------------------
 // AgentRunError
 // ---------------------------------------------------------------------------
+
+fn prompt_integrity_error() -> AgentRunError {
+    AgentRunError::Configuration("prompt integrity verification failed".into())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentRunError {

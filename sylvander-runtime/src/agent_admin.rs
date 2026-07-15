@@ -27,7 +27,7 @@ use crate::config::{
     AgentAccessConfig, AgentDefinitionConfig, PromptProfileConfig, ServerConfig,
     WorkspaceBindingConfig,
 };
-use crate::prompt_limits::{
+use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
     validate_prompt, validate_unique_identities,
 };
