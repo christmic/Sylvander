@@ -18,6 +18,8 @@ pub(crate) struct ProviderRevisionPage {
 pub(crate) enum ProviderRegistryError {
     #[error("invalid Provider definition")]
     InvalidDefinition,
+    #[error("Provider `{provider_id}` already exists")]
+    AlreadyExists { provider_id: String },
     #[error("unknown Provider `{0}`")]
     UnknownProvider(String),
     #[error("unknown Provider revision `{provider_id}`@{revision}")]
@@ -45,6 +47,47 @@ pub(crate) enum ProviderRegistryError {
 }
 
 impl AgentRegistry {
+    /// Create a new Provider at revision one without bootstrap idempotency.
+    pub(crate) async fn create_provider(
+        &self,
+        definition: ProviderDefinition,
+    ) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
+        validate(&definition)?;
+        if definition.revision != 1 {
+            return Err(ProviderRegistryError::NonSequential {
+                provider_id: definition.id,
+                expected: 1,
+                actual: definition.revision,
+            });
+        }
+        let provider_id = definition.id.clone();
+        let result_provider_id = provider_id.clone();
+        let (json, digest) = canonical_definition(&definition)?;
+        self.run_with(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            if provider_exists(&transaction, &provider_id)? {
+                return Err(ProviderRegistryError::AlreadyExists { provider_id });
+            }
+            insert_definition(&transaction, &definition, &json, &digest)?;
+            transaction
+                .execute(
+                    "INSERT INTO provider_registry_heads(provider_id,active_revision,updated_at) \
+                     VALUES (?1,1,?2)",
+                    params![provider_id, now()],
+                )
+                .map_err(storage)?;
+            transaction.commit().map_err(storage)
+        })
+        .await?;
+        self.load_active_provider(&result_provider_id)
+            .await?
+            .ok_or_else(|| {
+                AgentRegistryError::Integrity("created Provider disappeared".into()).into()
+            })
+    }
+
     pub(crate) async fn seed_provider(
         &self,
         definition: ProviderDefinition,
@@ -452,6 +495,20 @@ fn latest_revision(
         )
         .map_err(storage)?;
     value.map_or(Ok(0), sql_revision)
+}
+
+fn provider_exists(
+    connection: &Connection,
+    provider_id: &str,
+) -> Result<bool, ProviderRegistryError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_registry_heads WHERE provider_id=?1) \
+                    OR EXISTS(SELECT 1 FROM provider_definitions WHERE provider_id=?1)",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .map_err(storage)
 }
 
 fn definition_digest(

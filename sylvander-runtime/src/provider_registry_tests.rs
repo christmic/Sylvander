@@ -48,6 +48,115 @@ async fn open_pair(path: &std::path::Path) -> (AgentRegistry, AgentRegistry) {
     (first, second)
 }
 
+async fn provider_row_counts(registry: &AgentRegistry) -> (i64, i64) {
+    registry
+        .run(|connection| {
+            connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM provider_definitions), \
+                            (SELECT COUNT(*) FROM provider_registry_heads)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn strict_create_requires_revision_one_and_never_reuses_an_identity() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_credential(&registry).await;
+    assert!(matches!(
+        registry
+            .create_provider(provider(2, "https://two.invalid"))
+            .await,
+        Err(ProviderRegistryError::NonSequential {
+            expected: 1,
+            actual: 2,
+            ..
+        })
+    ));
+
+    let created = registry
+        .create_provider(provider(1, "https://one.invalid"))
+        .await
+        .unwrap();
+    assert!(created.active);
+    assert_eq!(created.definition.revision, 1);
+    for duplicate in ["https://one.invalid", "https://different.invalid"] {
+        assert!(matches!(
+            registry.create_provider(provider(1, duplicate)).await,
+            Err(ProviderRegistryError::AlreadyExists { provider_id })
+                if provider_id == "provider/main"
+        ));
+    }
+    let stored = registry
+        .load_active_provider("provider/main")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.definition.base_url, "https://one.invalid");
+    assert_eq!(provider_row_counts(&registry).await, (1, 1));
+}
+
+#[tokio::test]
+async fn strict_create_fails_closed_for_definition_only_or_head_only_state() {
+    let directory = tempdir().unwrap();
+    let definition_only = AgentRegistry::open(directory.path().join("definition-only.db"))
+        .await
+        .unwrap();
+    install_credential(&definition_only).await;
+    definition_only
+        .seed_provider(provider(1, "https://original.invalid"))
+        .await
+        .unwrap();
+    definition_only
+        .run(|connection| {
+            connection
+                .execute("DELETE FROM provider_registry_heads", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        definition_only
+            .create_provider(provider(1, "https://replacement.invalid"))
+            .await,
+        Err(ProviderRegistryError::AlreadyExists { .. })
+    ));
+    assert_eq!(provider_row_counts(&definition_only).await, (1, 0));
+
+    let head_only = AgentRegistry::open(directory.path().join("head-only.db"))
+        .await
+        .unwrap();
+    install_credential(&head_only).await;
+    head_only
+        .seed_provider(provider(1, "https://original.invalid"))
+        .await
+        .unwrap();
+    head_only
+        .run(|connection| {
+            connection
+                .execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM provider_definitions;")
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        head_only
+            .create_provider(provider(1, "https://replacement.invalid"))
+            .await,
+        Err(ProviderRegistryError::AlreadyExists { .. })
+    ));
+    assert_eq!(provider_row_counts(&head_only).await, (0, 1));
+}
+
 fn assert_one_conflict(
     results: (
         Result<(), ProviderRegistryError>,
