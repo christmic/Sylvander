@@ -99,6 +99,7 @@ pub fn validate_unique_identities<'a>(
 #[derive(Clone)]
 pub struct PromptProfile {
     pub id: String,
+    pub qualified_models: Vec<ModelSelection>,
     pub providers: Vec<String>,
     pub models: Vec<String>,
     pub system_prompt: String,
@@ -164,6 +165,12 @@ impl PromptResolver {
         for profile in profiles {
             validate_identity(&profile.id).map_err(|_| PromptResolveError::Invalid)?;
             validate_prompt(&profile.system_prompt).map_err(|_| PromptResolveError::Invalid)?;
+            validate_profile_selectors(
+                &profile.qualified_models,
+                &profile.providers,
+                &profile.models,
+            )
+            .map_err(|_| PromptResolveError::Invalid)?;
             validate_unique_identities(
                 profile.providers.iter().map(String::as_str),
                 MAX_PROMPT_SELECTORS_PER_KIND,
@@ -274,9 +281,45 @@ impl PromptResolver {
 
 impl PromptProfile {
     fn matches(&self, selection: &ModelSelection) -> bool {
-        (self.providers.is_empty() || self.providers.contains(&selection.provider_id))
-            && (self.models.is_empty() || self.models.contains(&selection.model_id))
+        if !self.qualified_models.is_empty() {
+            return self.qualified_models.contains(selection);
+        }
+        self.providers.is_empty()
+            || (self.providers.first() == Some(&selection.provider_id)
+                && self.models.first() == Some(&selection.model_id))
     }
+}
+
+pub fn validate_profile_selectors(
+    qualified: &[ModelSelection],
+    legacy_providers: &[String],
+    legacy_models: &[String],
+) -> Result<(), PromptValidationIssue> {
+    if qualified.len() > MAX_PROMPT_SELECTORS_PER_KIND {
+        return Err(PromptValidationIssue::TooManySelectors);
+    }
+    let mut seen = HashSet::with_capacity(qualified.len());
+    for selection in qualified {
+        validate_identity(&selection.provider_id)?;
+        validate_identity(&selection.model_id)?;
+        if !seen.insert((&selection.provider_id, &selection.model_id)) {
+            return Err(PromptValidationIssue::DuplicateIdentity);
+        }
+    }
+    if !qualified.is_empty() {
+        if !legacy_providers.is_empty() || !legacy_models.is_empty() {
+            return Err(PromptValidationIssue::InvalidIdentity);
+        }
+        return Ok(());
+    }
+    if legacy_providers.is_empty() && legacy_models.is_empty() {
+        return Ok(());
+    }
+    if legacy_providers.len() != 1 || legacy_models.len() != 1 {
+        return Err(PromptValidationIssue::InvalidIdentity);
+    }
+    validate_identity(&legacy_providers[0])?;
+    validate_identity(&legacy_models[0])
 }
 
 fn push_layer(
@@ -396,8 +439,9 @@ mod tests {
             "agent instructions".into(),
             vec![PromptProfile {
                 id: "alpha-coding".into(),
-                providers: vec!["alpha".into()],
-                models: vec!["shared".into()],
+                qualified_models: vec![selection("alpha", "shared")],
+                providers: Vec::new(),
+                models: Vec::new(),
                 system_prompt: "profile instructions".into(),
             }],
             Some("alpha-coding".into()),
@@ -454,8 +498,9 @@ mod tests {
             "a".repeat(MAX_PROMPT_BYTES),
             vec![PromptProfile {
                 id: "alpha".into(),
-                providers: vec!["alpha".into()],
-                models: vec!["model-a".into()],
+                qualified_models: vec![selection("alpha", "model-a")],
+                providers: Vec::new(),
+                models: Vec::new(),
                 system_prompt: "p".repeat(MAX_PROMPT_BYTES),
             }],
             Some("alpha".into()),
@@ -473,6 +518,46 @@ mod tests {
         assert_eq!(
             resolver.resolve(&selection("alpha", "model-a"), None, None),
             Err(PromptResolveError::Invalid)
+        );
+    }
+
+    #[test]
+    fn qualified_profiles_do_not_cross_same_named_models() {
+        let prompt_policy = PromptResolver::new(
+            "agent:sylvander@2".into(),
+            "agent".into(),
+            vec![
+                PromptProfile {
+                    id: "alpha".into(),
+                    qualified_models: vec![selection("alpha", "shared")],
+                    providers: Vec::new(),
+                    models: Vec::new(),
+                    system_prompt: "alpha profile".into(),
+                },
+                PromptProfile {
+                    id: "beta".into(),
+                    qualified_models: vec![selection("beta", "shared")],
+                    providers: Vec::new(),
+                    models: Vec::new(),
+                    system_prompt: "beta profile".into(),
+                },
+            ],
+            None,
+            false,
+        )
+        .unwrap();
+        let beta = prompt_policy
+            .resolve(&selection("beta", "shared"), Some("beta"), None)
+            .unwrap();
+        assert!(beta.system_prompt.contains("beta profile"));
+        assert!(!beta.system_prompt.contains("alpha profile"));
+        assert_eq!(
+            prompt_policy.resolve(&selection("beta", "shared"), Some("alpha"), None),
+            Err(PromptResolveError::IncompatibleProfile)
+        );
+        assert!(
+            validate_profile_selectors(&[], &["alpha".into(), "beta".into()], &["shared".into()])
+                .is_err()
         );
     }
 }

@@ -3486,6 +3486,7 @@ model_name = "model-a"
         let mut uncomposable = next_definition.clone();
         uncomposable.prompt_profiles = vec![crate::config::PromptProfileConfig {
             id: "wrong-provider".into(),
+            qualified_models: Vec::new(),
             providers: vec!["another-provider".into()],
             models: Vec::new(),
             system_prompt: "must not persist".into(),

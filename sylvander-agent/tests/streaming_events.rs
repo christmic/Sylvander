@@ -592,6 +592,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
             spec.persona.system_prompt.clone(),
             vec![sylvander_agent::prompt::PromptProfile {
                 id: "session".into(),
+                qualified_models: Vec::new(),
                 providers: vec![spec.model.provider.clone()],
                 models: vec![spec.model.model_name.clone()],
                 system_prompt: "session profile".into(),

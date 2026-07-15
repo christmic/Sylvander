@@ -12,7 +12,7 @@ use sylvander_agent::spec::AgentSpec;
 
 use sylvander_agent::prompt::{
     MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
-    validate_prompt, validate_unique_identities,
+    validate_profile_selectors, validate_prompt, validate_unique_identities,
 };
 
 mod legacy;
@@ -251,6 +251,9 @@ pub struct WorkspaceBindingConfig {
 #[serde(deny_unknown_fields)]
 pub struct PromptProfileConfig {
     pub id: String,
+    #[serde(default)]
+    pub qualified_models: Vec<sylvander_protocol::ModelSelection>,
+    /// Legacy singleton selectors retained for schema-v1 compatibility.
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
@@ -592,10 +595,11 @@ fn validate_agent_shape_and_environment(
             .prompt_profiles
             .iter()
             .find(|profile| profile.id.trim() == default.trim())
-        && ((!profile.providers.is_empty()
-            && !profile.providers.contains(&agent.spec.model.provider))
-            || (!profile.models.is_empty()
-                && !profile.models.contains(&agent.spec.model.model_name)))
+        && !prompt_profile_matches(
+            profile,
+            &agent.spec.model.provider,
+            &agent.spec.model.model_name,
+        )
     {
         errors.push(format!(
             "Agent {} default prompt profile {default} is incompatible with its default Model",
@@ -608,6 +612,21 @@ fn validate_agent_shape_and_environment(
     for role in &agent.access.allowed_roles {
         require_text("Agent allowed role", role, errors);
     }
+}
+
+fn prompt_profile_matches(profile: &PromptProfileConfig, provider: &str, model: &str) -> bool {
+    if !profile.qualified_models.is_empty() {
+        return profile
+            .qualified_models
+            .iter()
+            .any(|selection| selection.provider_id == provider && selection.model_id == model);
+    }
+    profile.providers.is_empty()
+        || (profile
+            .providers
+            .first()
+            .is_some_and(|value| value == provider)
+            && profile.models.first().is_some_and(|value| value == model))
 }
 
 fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String>) {
@@ -629,6 +648,11 @@ fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String
         .and_then(|()| {
             for profile in &agent.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
+                validate_profile_selectors(
+                    &profile.qualified_models,
+                    &profile.providers,
+                    &profile.models,
+                )?;
                 validate_unique_identities(
                     profile.providers.iter().map(String::as_str),
                     MAX_PROMPT_SELECTORS_PER_KIND,

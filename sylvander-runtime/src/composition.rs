@@ -582,6 +582,7 @@ fn configured_prompt_resolver(
             .iter()
             .map(|profile| PromptProfile {
                 id: profile.id.clone(),
+                qualified_models: profile.qualified_models.clone(),
                 providers: profile.providers.clone(),
                 models: profile.models.clone(),
                 system_prompt: profile.system_prompt.clone(),
@@ -1279,8 +1280,7 @@ model_name = "model-a"
 
 [[agents.prompt_profiles]]
 id = "optimized"
-providers = ["primary"]
-models = ["model-a"]
+qualified_models = [{{ provider_id = "primary", model_id = "model-a" }}]
 system_prompt = "Optimized system prompt"
 
 [[channels]]

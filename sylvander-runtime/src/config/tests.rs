@@ -58,8 +58,7 @@ read_only = false
 
 [[agents.prompt_profiles]]
 id = "model-a"
-providers = ["primary"]
-models = ["model-a"]
+qualified_models = [{ provider_id = "primary", model_id = "model-a" }]
 system_prompt = "Model-specific prompt"
 
 [[channels]]
