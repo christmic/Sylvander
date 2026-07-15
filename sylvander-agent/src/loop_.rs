@@ -1453,15 +1453,18 @@ impl AgentLoop {
         provider_request: Option<ModelRequest>,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<LoopModelStream, AgentLoopError> {
-        if let ModelBackend::Provider { model, .. } = &self.backend {
-            let provider_request = provider_request.as_ref().ok_or_else(|| {
-                AgentLoopError::Validation("provider request was not built".into())
-            })?;
-            sylvander_llm_core::validate_model_request_capabilities(
-                provider_request,
-                model.capabilities,
-            )
-            .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
+        match &self.backend {
+            ModelBackend::LegacyAnthropic { .. } => self.validate_capabilities(request)?,
+            ModelBackend::Provider { model, .. } => {
+                let provider_request = provider_request.as_ref().ok_or_else(|| {
+                    AgentLoopError::Validation("provider request was not built".into())
+                })?;
+                sylvander_llm_core::validate_model_request_capabilities(
+                    provider_request,
+                    model.capabilities,
+                )
+                .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
+            }
         }
         let max_attempts = self.max_retries + 1;
         for attempt in 0..max_attempts {
@@ -1566,28 +1569,65 @@ impl AgentLoop {
 
     /// Validate the request against the model's capabilities.
     fn validate_capabilities(&self, request: &CreateMessageRequest) -> Result<(), AgentLoopError> {
-        if !request.tools.is_empty()
+        use sylvander_llm_anthropic::api::types::{
+            SystemBlock, SystemPrompt, UserContent, UserContentBlock,
+        };
+
+        let mut history_tool = false;
+        let mut history_thinking = false;
+        let mut image = false;
+        for message in &request.messages {
+            let UserContent::Blocks(blocks) = &message.content else {
+                continue;
+            };
+            for block in blocks {
+                match block {
+                    UserContentBlock::ToolResult(_) => history_tool = true,
+                    UserContentBlock::Image(_) => image = true,
+                    UserContentBlock::Other(value) => {
+                        match value.get("type").and_then(serde_json::Value::as_str) {
+                            Some("tool_use") => history_tool = true,
+                            Some("thinking") => history_thinking = true,
+                            _ => {}
+                        }
+                    }
+                    UserContentBlock::Text(_) => {}
+                }
+            }
+        }
+        let cached_system = matches!(
+            &request.system,
+            Some(SystemPrompt::Blocks(blocks))
+                if blocks.iter().any(|block| matches!(
+                    block,
+                    SystemBlock::Text(text) if text.cache_control.is_some()
+                ))
+        );
+        let cached_tool = request
+            .tools
+            .iter()
+            .any(|tool| tool.cache_control.is_some());
+
+        if (!request.tools.is_empty() || history_tool)
             && !self
                 .model
                 .capabilities
                 .contains(ModelCapabilities::TOOL_USE)
         {
-            return Err(AgentLoopError::IncompatibleModel(format!(
-                "model `{}` does not support TOOL_USE (required because tools are set)",
-                self.model.id
-            )));
+            return Err(AgentLoopError::IncompatibleModel(
+                "legacy request requires unsupported TOOL_USE capability".into(),
+            ));
         }
 
-        if request.thinking.is_some()
+        if (request.thinking.is_some() || history_thinking)
             && !self
                 .model
                 .capabilities
                 .contains(ModelCapabilities::EXTENDED_THINKING)
         {
-            return Err(AgentLoopError::IncompatibleModel(format!(
-                "model `{}` does not support EXTENDED_THINKING",
-                self.model.id
-            )));
+            return Err(AgentLoopError::IncompatibleModel(
+                "legacy request requires unsupported EXTENDED_THINKING capability".into(),
+            ));
         }
 
         if request.output_config.is_some()
@@ -1596,10 +1636,26 @@ impl AgentLoop {
                 .capabilities
                 .contains(ModelCapabilities::STRUCTURED_OUTPUT)
         {
-            return Err(AgentLoopError::IncompatibleModel(format!(
-                "model `{}` does not support STRUCTURED_OUTPUT",
-                self.model.id
-            )));
+            return Err(AgentLoopError::IncompatibleModel(
+                "legacy request requires unsupported STRUCTURED_OUTPUT capability".into(),
+            ));
+        }
+
+        if (cached_system || cached_tool)
+            && !self
+                .model
+                .capabilities
+                .contains(ModelCapabilities::PROMPT_CACHING)
+        {
+            return Err(AgentLoopError::IncompatibleModel(
+                "legacy request requires unsupported PROMPT_CACHING capability".into(),
+            ));
+        }
+
+        if image && !self.model.capabilities.contains(ModelCapabilities::VISION) {
+            return Err(AgentLoopError::IncompatibleModel(
+                "legacy request requires unsupported VISION capability".into(),
+            ));
         }
 
         Ok(())
@@ -1978,6 +2034,63 @@ mod tests {
             assert_eq!(neutral.system[0].cache_hint.is_some(), enabled);
             assert_eq!(neutral.tools[0].cache_hint.is_some(), enabled);
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_history_media_and_cache_fail_before_dispatch() {
+        use sylvander_llm_anthropic::api::types::{
+            CacheControl, ImageBlock, SystemBlock, SystemPrompt, SystemTextBlock, ThinkingBlock,
+            UserContentBlock,
+        };
+        use wiremock::MockServer;
+
+        let server = MockServer::start().await;
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .base_url(server.uri())
+            .build()
+            .unwrap();
+        let model = ModelInfo::builder()
+            .id("legacy-model")
+            .context_window(100_000)
+            .max_output_tokens(4096)
+            .build()
+            .unwrap();
+        let loop_ = AgentLoop::builder()
+            .client(client)
+            .model(model)
+            .max_retries(0)
+            .build()
+            .unwrap();
+        let tool_call =
+            loop_.build_request(&[MessageParam::assistant_blocks(vec![ContentBlock::ToolUse(
+                ToolUseBlock::new("secret-call", "secret-tool", json!({"secret": true})),
+            )])]);
+        let tool_result = loop_.build_request(&[MessageParam::user_blocks(vec![
+            UserContentBlock::ToolResult(ToolResultBlock::new("secret-call", "secret-result")),
+        ])]);
+        let thinking = loop_.build_request(&[MessageParam::assistant_blocks(vec![
+            ContentBlock::Thinking(ThinkingBlock::new("secret-thinking", "secret-signature")),
+        ])]);
+        let image =
+            loop_.build_request(&[MessageParam::user_blocks(vec![UserContentBlock::Image(
+                ImageBlock::png("secret-image"),
+            )])]);
+        let mut cache = loop_.build_request(&[MessageParam::user("hello")]);
+        cache.system = Some(SystemPrompt::Blocks(vec![SystemBlock::Text(
+            SystemTextBlock::new("secret-system").with_cache_control(CacheControl::ephemeral()),
+        )]));
+
+        for request in [tool_call, tool_result, thinking, image, cache] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let Err(error) = loop_.call_model_with_retry(&request, None, tx).await else {
+                panic!("unsupported legacy request reached dispatch");
+            };
+            assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
+            assert!(!error.is_retryable());
+            assert!(!error.to_string().contains("secret"));
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[test]
