@@ -271,6 +271,7 @@ async fn handle_socket(
     let ctx = state.ctx.clone();
     let agent_id = state.agent_id.clone();
     let client_id_for_cleanup = client_id;
+    let mut selected_protocol = None;
     while let Some(msg) = ws_rx.next().await {
         let msg = match msg {
             Ok(Message::Text(t)) => t,
@@ -285,13 +286,116 @@ async fn handle_socket(
                 continue;
             }
         };
-        handle_client_msg(parsed, &ctx, &agent_id, &tx, &principal, &state.instance_id).await;
+        if !handle_protocol_message(
+            parsed,
+            &mut selected_protocol,
+            &ctx,
+            &agent_id,
+            &tx,
+            &principal,
+            &state.instance_id,
+        )
+        .await
+        {
+            break;
+        }
     }
 
     // Cleanup
     write_task.abort();
     clients.lock().await.remove(&client_id_for_cleanup);
     info!(client_id = client_id_for_cleanup, "ws client disconnected");
+}
+
+async fn handle_protocol_message(
+    msg: ClientMsg,
+    selected: &mut Option<u16>,
+    ctx: &ChannelContext,
+    agent_id: &AgentId,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    instance_id: &str,
+) -> bool {
+    match (&msg, *selected) {
+        (ClientMsg::Hello { protocol }, None) => {
+            match sylvander_protocol::negotiate_ui_protocol(protocol) {
+                Ok(version) => {
+                    *selected = Some(version);
+                    send_welcome(tx, version);
+                    true
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::ProtocolError { error });
+                    false
+                }
+            }
+        }
+        (ClientMsg::Hello { .. }, Some(_)) => {
+            send_protocol_error(
+                tx,
+                "duplicate_handshake",
+                "connection is already negotiated",
+            );
+            true
+        }
+        (_, None) => {
+            send_protocol_error(
+                tx,
+                "handshake_required",
+                "hello must be the first client message",
+            );
+            false
+        }
+        (ClientMsg::RegistryAdmin { request }, Some(version))
+            if request.minimum_ui_protocol_version() > version =>
+        {
+            send_protocol_error(
+                tx,
+                "unsupported_message_version",
+                "message requires a newer UI protocol version",
+            );
+            true
+        }
+        (_, Some(_)) => {
+            handle_client_msg(msg, ctx, agent_id, tx, principal, instance_id).await;
+            true
+        }
+    }
+}
+
+fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
+    let mut capabilities = vec![
+        "agent_discovery".into(),
+        "session_config".into(),
+        "feedback".into(),
+    ];
+    if version >= 2 {
+        capabilities.extend([
+            "agent_administration".into(),
+            "registry_administration".into(),
+        ]);
+    }
+    if version >= 3 {
+        capabilities.push("credential_registry_lifecycle".into());
+    }
+    let _ = tx.send(ServerMsg::Welcome {
+        protocol: sylvander_protocol::UiProtocolWelcome {
+            server_name: "sylvander-server".into(),
+            version,
+            capabilities,
+        },
+    });
+}
+
+fn send_protocol_error(tx: &mpsc::UnboundedSender<ServerMsg>, code: &str, message: &str) {
+    let _ = tx.send(ServerMsg::ProtocolError {
+        error: sylvander_protocol::UiProtocolError {
+            code: code.into(),
+            message: message.into(),
+            server_min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+            server_max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+        },
+    });
 }
 
 async fn handle_client_msg(
@@ -319,20 +423,7 @@ async fn handle_client_msg(
         ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
         {
             Ok(version) => {
-                let _ = tx.send(ServerMsg::Welcome {
-                    protocol: sylvander_protocol::UiProtocolWelcome {
-                        server_name: "sylvander-server".into(),
-                        version,
-                        capabilities: vec![
-                            "agent_discovery".into(),
-                            "session_config".into(),
-                            "feedback".into(),
-                            "agent_administration".into(),
-                            "registry_administration".into(),
-                            "credential_registry_lifecycle".into(),
-                        ],
-                    },
-                });
+                send_welcome(tx, version);
             }
             Err(error) => {
                 let _ = tx.send(ServerMsg::ProtocolError { error });
@@ -1136,6 +1227,220 @@ mod tests {
                 "missing {capability} capability"
             );
         }
+    }
+
+    fn hello(version: u16) -> ClientMsg {
+        ClientMsg::Hello {
+            protocol: sylvander_protocol::UiProtocolHello {
+                client_name: "test-client".into(),
+                min_version: version,
+                max_version: version,
+                capabilities: Vec::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "client",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut selected = None;
+
+        assert!(
+            !handle_protocol_message(
+                ClientMsg::Ping,
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::ProtocolError { error }) if error.code == "handshake_required"
+        ));
+
+        assert!(
+            handle_protocol_message(
+                hello(1),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test"
+            )
+            .await
+        );
+        let Some(ServerMsg::Welcome { protocol }) = rx.recv().await else {
+            panic!("expected v1 Welcome")
+        };
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item.contains("administration"))
+        );
+        selected = None;
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        let Some(ServerMsg::Welcome { protocol }) = rx.recv().await else {
+            panic!("expected Welcome")
+        };
+        assert!(
+            protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "registry_administration")
+        );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::ProtocolError { error }) if error.code == "duplicate_handshake"
+        ));
+    }
+
+    #[tokio::test]
+    async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
+        let ui = Arc::new(CredentialRegistryUi {
+            received: Mutex::new(None),
+        });
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(ui.clone()),
+            readiness: None,
+        };
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        principal.roles.push("admin".into());
+        let request = || ClientMsg::RegistryAdmin {
+            request: sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+                binding_id: "private".into(),
+                reference: sylvander_protocol::CredentialSecretReferenceDraft::Environment {
+                    name: "PRIVATE_TOKEN".into(),
+                },
+            },
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut selected = None;
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let _ = rx.recv().await;
+        assert!(
+            handle_protocol_message(
+                request(),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let rejected = rx.recv().await.expect("version rejection");
+        assert!(matches!(
+            &rejected,
+            ServerMsg::ProtocolError { error }
+                if error.code == "unsupported_message_version"
+        ));
+        let rejected_wire = serde_json::to_string(&rejected).unwrap();
+        assert!(!rejected_wire.contains("private"));
+        assert!(!rejected_wire.contains("PRIVATE_TOKEN"));
+        assert!(
+            ui.received.lock().await.is_none(),
+            "v2 request reached UI service"
+        );
+
+        selected = None;
+        assert!(
+            handle_protocol_message(
+                hello(3),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let _ = rx.recv().await;
+        assert!(
+            handle_protocol_message(
+                request(),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::RegistryAdmin { .. })
+        ));
+        assert!(
+            ui.received.lock().await.is_some(),
+            "v3 request was not dispatched"
+        );
     }
 
     #[tokio::test]
