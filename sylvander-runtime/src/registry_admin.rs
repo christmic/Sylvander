@@ -2,14 +2,17 @@
 
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{
-    AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind, ModelRevisionView,
-    ProviderRevisionView, RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
-    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RegistryAdminResult,
+    AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind,
+    CredentialSecretReferenceDraft, ModelRevisionView, ProviderRevisionView,
+    RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
+    RegistryAdminErrorCode, RegistryAdminErrorDetails, RegistryAdminRequest, RegistryAdminResponse,
+    RegistryAdminResult,
 };
 
 use crate::agent_admin::is_agent_administrator;
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::credential_registry::CredentialRegistryError;
+use crate::config::SecretRef;
+use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolver};
 use crate::model_registry::ModelRegistryError;
 use crate::provider_registry::ProviderRegistryError;
 use crate::registry_domain::{
@@ -78,6 +81,15 @@ impl<'a> RegistryAdminService<'a> {
                 self.list_credentials(binding_id, before_generation, limit)
                     .await
             }
+            RegistryAdminRequest::CreateCredentialBinding { .. }
+            | RegistryAdminRequest::StageCredentialGeneration { .. }
+            | RegistryAdminRequest::ActivateCredentialGeneration { .. }
+            | RegistryAdminRequest::RollbackCredentialGeneration { .. } => failure(error(
+                RegistryAdminErrorCode::Internal,
+                "credential mutation dispatcher is unavailable",
+                None,
+                None,
+            )),
         }
     }
 
@@ -262,6 +274,181 @@ impl<'a> RegistryAdminService<'a> {
     }
 }
 
+pub(crate) struct CredentialRegistryMutationService<'a> {
+    registry: &'a AgentRegistry,
+    resolver: &'a dyn CredentialSecretResolver,
+}
+
+impl<'a> CredentialRegistryMutationService<'a> {
+    #[must_use]
+    pub(crate) const fn new(
+        registry: &'a AgentRegistry,
+        resolver: &'a dyn CredentialSecretResolver,
+    ) -> Self {
+        Self { registry, resolver }
+    }
+
+    pub(crate) async fn dispatch(
+        &self,
+        principal: Option<&AuthenticatedPrincipal>,
+        request: RegistryAdminRequest,
+    ) -> RegistryAdminResponse {
+        if !is_registry_administrator(principal) {
+            return failure(error(
+                RegistryAdminErrorCode::Unauthorized,
+                "registry administration requires an administrator",
+                None,
+                None,
+            ));
+        }
+        if let Err(error) = request.validate() {
+            return failure(error);
+        }
+        match request {
+            RegistryAdminRequest::CreateCredentialBinding {
+                binding_id,
+                reference,
+            } => self.create(binding_id, reference).await,
+            RegistryAdminRequest::StageCredentialGeneration {
+                binding_id,
+                generation,
+                expected_active_generation,
+                reference,
+            } => {
+                self.stage(
+                    binding_id,
+                    generation,
+                    expected_active_generation,
+                    reference,
+                )
+                .await
+            }
+            RegistryAdminRequest::ActivateCredentialGeneration {
+                binding_id,
+                generation,
+                expected_active_generation,
+            } => {
+                self.activate(binding_id, generation, expected_active_generation)
+                    .await
+            }
+            RegistryAdminRequest::RollbackCredentialGeneration {
+                binding_id,
+                target_generation,
+                expected_active_generation,
+            } => {
+                self.rollback(binding_id, target_generation, expected_active_generation)
+                    .await
+            }
+            _ => failure(error(
+                RegistryAdminErrorCode::InvalidRequest,
+                "credential mutation request is required",
+                None,
+                None,
+            )),
+        }
+    }
+
+    async fn create(
+        &self,
+        binding_id: String,
+        reference: CredentialSecretReferenceDraft,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .create_credential_binding(&binding_id, secret_reference(reference))
+            .await
+        {
+            Ok(revision) => success(RegistryAdminResult::CredentialBindingCreated {
+                generation: redact_stored_credential(&revision),
+            }),
+            Err(source) => failure(map_credential_error(source, &binding_id, Some(1))),
+        }
+    }
+
+    async fn stage(
+        &self,
+        binding_id: String,
+        generation: u64,
+        expected_active: u64,
+        reference: CredentialSecretReferenceDraft,
+    ) -> RegistryAdminResponse {
+        let definition = crate::registry_domain::CredentialBindingRevision {
+            binding_id: binding_id.clone(),
+            generation,
+            reference: secret_reference(reference),
+        };
+        match self
+            .registry
+            .stage_credential(expected_active, definition)
+            .await
+        {
+            Ok(revision) => success(RegistryAdminResult::CredentialGenerationStaged {
+                generation: redact_stored_credential(&revision),
+            }),
+            Err(source) => failure(map_credential_error(source, &binding_id, Some(generation))),
+        }
+    }
+
+    async fn activate(
+        &self,
+        binding_id: String,
+        generation: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        if let Err(source) = self
+            .registry
+            .preflight_credential_generation(&binding_id, generation, self.resolver)
+            .await
+        {
+            return failure(map_credential_error(source, &binding_id, Some(generation)));
+        }
+        match self
+            .registry
+            .activate_credential(&binding_id, generation, expected_active)
+            .await
+        {
+            Ok(()) => success(RegistryAdminResult::CredentialGenerationActivated {
+                binding_id_sha256: sha256(&binding_id),
+                active_generation: generation,
+            }),
+            Err(source) => failure(map_credential_error(source, &binding_id, Some(generation))),
+        }
+    }
+
+    async fn rollback(
+        &self,
+        binding_id: String,
+        target: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        if let Err(source) = self
+            .registry
+            .preflight_credential_generation(&binding_id, target, self.resolver)
+            .await
+        {
+            return failure(map_credential_error(source, &binding_id, Some(target)));
+        }
+        match self
+            .registry
+            .rollback_credential(&binding_id, target, expected_active)
+            .await
+        {
+            Ok(()) => success(RegistryAdminResult::CredentialGenerationRolledBack {
+                binding_id_sha256: sha256(&binding_id),
+                active_generation: target,
+            }),
+            Err(source) => failure(map_credential_error(source, &binding_id, Some(target))),
+        }
+    }
+}
+
+fn secret_reference(reference: CredentialSecretReferenceDraft) -> SecretRef {
+    match reference {
+        CredentialSecretReferenceDraft::Environment { name } => SecretRef::Env { name },
+        CredentialSecretReferenceDraft::File { path } => SecretRef::File { path: path.into() },
+    }
+}
+
 #[must_use]
 pub(crate) fn is_registry_administrator(principal: Option<&AuthenticatedPrincipal>) -> bool {
     is_agent_administrator(principal)
@@ -329,6 +516,23 @@ fn redact_credential_generation(view: &CredentialBindingView) -> CredentialGener
     }
 }
 
+fn redact_stored_credential(
+    revision: &StoredRevision<crate::registry_domain::CredentialBindingRevision>,
+) -> CredentialGenerationView {
+    CredentialGenerationView {
+        binding_id_sha256: sha256(&revision.definition.binding_id),
+        generation: revision.definition.generation,
+        reference_kind: match revision.definition.reference {
+            SecretRef::Env { .. } => CredentialReferenceKind::Environment,
+            SecretRef::File { .. } => CredentialReferenceKind::File,
+        },
+        reference_configured: true,
+        reference_digest_sha256: revision.digest.clone(),
+        created_at_unix_secs: revision.created_at,
+        active: revision.active,
+    }
+}
+
 fn map_credential_error(
     source: CredentialRegistryError,
     binding_id: &str,
@@ -347,15 +551,64 @@ fn map_credential_error(
             binding_id,
             Some(generation),
         ),
-        CredentialRegistryError::Registry(source) => {
-            map_credential_storage_error(source, binding_id, generation)
-        }
-        _ => credential_error(
-            RegistryAdminErrorCode::Internal,
-            "credential registry operation failed",
+        CredentialRegistryError::AlreadyExists { .. } => credential_error(
+            RegistryAdminErrorCode::CredentialAlreadyExists,
+            "credential binding already exists",
             binding_id,
             generation,
         ),
+        CredentialRegistryError::Conflict {
+            expected, actual, ..
+        } => credential_error_details(
+            RegistryAdminErrorCode::ActiveGenerationConflict,
+            "credential active generation changed",
+            binding_id,
+            generation,
+            RegistryAdminErrorDetails::ActiveGenerationConflict {
+                expected_active_generation: expected,
+                actual_active_generation: actual,
+            },
+        ),
+        CredentialRegistryError::NonSequential {
+            expected, actual, ..
+        } => credential_error_details(
+            RegistryAdminErrorCode::NonSequentialGeneration,
+            "credential generation is not sequential",
+            binding_id,
+            Some(actual),
+            RegistryAdminErrorDetails::NonSequentialGeneration {
+                expected_generation: expected,
+                actual_generation: actual,
+            },
+        ),
+        CredentialRegistryError::GenerationCollision { generation, .. } => {
+            credential_error_details(
+                RegistryAdminErrorCode::GenerationCollision,
+                "credential generation has different content",
+                binding_id,
+                Some(generation),
+                RegistryAdminErrorDetails::GenerationCollision { generation },
+            )
+        }
+        CredentialRegistryError::InvalidRollback { target, actual } => credential_error_details(
+            RegistryAdminErrorCode::InvalidRollback,
+            "credential rollback target is invalid",
+            binding_id,
+            Some(target),
+            RegistryAdminErrorDetails::InvalidRollback {
+                target_generation: target,
+                actual_active_generation: actual,
+            },
+        ),
+        CredentialRegistryError::Resolution { generation, .. } => credential_error(
+            RegistryAdminErrorCode::CredentialUnavailable,
+            "credential generation is unavailable",
+            binding_id,
+            Some(generation),
+        ),
+        CredentialRegistryError::Registry(source) => {
+            map_credential_storage_error(source, binding_id, generation)
+        }
     }
 }
 
@@ -399,6 +652,20 @@ fn credential_error(
         binding_id_sha256: Some(sha256(binding_id).into_boxed_str()),
         revision: None,
         generation,
+        details: None,
+    }
+}
+
+fn credential_error_details(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+    binding_id: &str,
+    generation: Option<u64>,
+    details: RegistryAdminErrorDetails,
+) -> RegistryAdminError {
+    RegistryAdminError {
+        details: Some(Box::new(details)),
+        ..credential_error(code, message, binding_id, generation)
     }
 }
 
@@ -486,11 +753,12 @@ fn model_error(
     RegistryAdminError {
         code,
         message: message.into(),
-        provider_id: Some(provider_id),
+        provider_id: Some(provider_id.into_boxed_str()),
         model_id: Some(model_id.into_boxed_str()),
         binding_id_sha256: None,
         revision,
         generation: None,
+        details: None,
     }
 }
 
@@ -563,11 +831,12 @@ fn error(
     RegistryAdminError {
         code,
         message: message.into(),
-        provider_id,
+        provider_id: provider_id.map(String::into_boxed_str),
         model_id: None,
         binding_id_sha256: None,
         revision,
         generation: None,
+        details: None,
     }
 }
 
