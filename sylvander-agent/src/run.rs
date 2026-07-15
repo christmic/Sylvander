@@ -1109,7 +1109,7 @@ impl AgentRun {
             content,
             self.tool_context().session.as_ref().clone(),
         );
-        let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag, "true"));
+        let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag));
         store
             .store(&self.tool_context().session, entry.clone())
             .await?;
