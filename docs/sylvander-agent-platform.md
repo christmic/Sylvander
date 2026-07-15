@@ -215,7 +215,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration now provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Capability discovery and validated cross-provider session switching remain. |
+| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -303,13 +303,15 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   update, activate, roll back, and bind sessions to revisions.
   Evidence: immutable SQLite revisions and active heads with digest validation;
   redacted protocol administration over Unix/WebSocket; admin/system
-  authorization; optimistic conflicts; full composition before mutation;
-  hot activation, rollback, historical session workers, restart restoration;
+  authorization; optimistic conflicts; atomic staging of each immutable Agent
+  definition and its exact V3 Provider/Model closure in one immediate
+  transaction; full composition revalidation before active-head mutation; hot
+  activation, rollback, historical session workers, restart restoration;
   provider-request tests for revision-specific model/prompt selection; and
   durable content-free success/failure audit.
-- [ ] **P1.2 Provider and model registry:** provider-neutral client factory,
-  capability discovery/validation, per-Agent default, per-session override,
-  lifecycle, pricing, and credential references.
+- [x] **P1.2 Provider and model registry:** provider-neutral client factory,
+  Registry capability publication and request validation, per-Agent default,
+  per-session override, lifecycle, pricing, and credential references.
   - [x] Provider-neutral model, conversation, tool/media, stream, error, usage,
     and capability contracts are independent from public UI protocol types.
   - [x] Anthropic implements the neutral adapter with no internal retry or
@@ -354,14 +356,28 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     Agent snapshots or sessions. Adopting a new component requires creating and
     promoting a fully precomposed Agent revision through the existing Agent
     administration path.
-  - [ ] Enable validated cross-provider session overrides and prove same model
+  - [x] Canonicalize Registry Model capabilities and publish protocol-owned
+    names through the exact provider-qualified runtime catalog. Malformed or
+    adapter-unsupported declarations fail during preflight, and request/model
+    capability mismatches fail before credentials or adapter dispatch without
+    fallback.
+  - [x] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
-    isolation with deterministic local providers.
+    isolation with deterministic local providers. Evidence includes public
+    RegistryAdmin and AgentAdmin adoption, DiscoverAgents metadata, ambiguous
+    legacy selection rejection before mutation, exact session revision pins,
+    restart restoration, live Credential rotation, and one-provider failure
+    without fallback or contamination of a healthy Provider.
 - [ ] **P1.3 Prompt resolver:** shared safety layers, model/provider profiles,
   Agent prompt, allowed session input, provenance/digests, limits, and tests.
 - [ ] **P1.4 Durable memory:** Agent-namespaced SQLite memory, retrieval/write
   policy, provenance, retention/deletion, backup, and migration from configured
   stores.
+- [ ] **P1.5 Optional Provider catalog synchronization:** let adapters that
+  expose a remote model catalog enumerate it, reconcile discovered metadata
+  against the Registry SSOT, report drift and health, and never silently
+  rewrite an active Agent snapshot. Providers without a reliable enumeration
+  contract continue to use validated operator-managed Registry metadata.
 
 ### P2 — Workspace and extension platform
 
