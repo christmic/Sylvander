@@ -47,7 +47,7 @@ impl Tool for MemoryReadTool {
     }
 
     fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
+        let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "query": {
                     "type": "string",
@@ -67,13 +67,16 @@ impl Tool for MemoryReadTool {
                 }
             }),
             &["query"],
-        )
+        );
+        schema.schema["additionalProperties"] = JsonValue::Bool(false);
+        schema
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));
         }
+        reject_unknown_fields(&input, &["query", "limit", "kind", "min_importance"])?;
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
@@ -125,6 +128,18 @@ impl Tool for MemoryReadTool {
                 .unwrap_or_else(|_| format!("{json_results:#?}")),
         ))
     }
+}
+
+fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), ToolError> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| ToolError::Other("memory tool input must be an object".into()))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ToolError::Other(
+            "memory tool input contains an unknown field".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_kind(s: Option<&str>) -> Result<Option<super::memory::MemoryKind>, ToolError> {
@@ -186,6 +201,7 @@ mod tests {
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("query").is_some());
+        assert_eq!(schema.schema["additionalProperties"], json!(false));
         let required = schema.schema.get("required").expect("has required");
         assert!(
             required
@@ -228,6 +244,19 @@ mod tests {
         let c = ctx();
         let result = tool.execute(&c, json!({})).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_unknown_top_level_fields() {
+        let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
+        for input in [
+            json!({"query": "", "owner": "attacker"}),
+            json!({"query": "", "scope": "relationship"}),
+            json!({"query": "", "unexpected": true}),
+        ] {
+            assert!(tool.execute(&c, input).await.is_err());
+        }
     }
 
     #[tokio::test]
