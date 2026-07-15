@@ -21,9 +21,9 @@ use sylvander_llm_core::{
     ModelRef,
 };
 use sylvander_protocol::{
-    ApprovalPolicy, FileAccess, ModelSelection, NetworkAccess, PermissionProfile, ReasoningEffort,
-    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionWorkspaceBinding,
+    ApprovalPolicy, FileAccess, ModelSelection, ModelSelectionResolutionError, NetworkAccess,
+    PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionConfigProvenance,
+    SessionConfigSource, SessionConfigSourceKind, SessionEffectiveConfig, SessionWorkspaceBinding,
 };
 
 #[cfg(test)]
@@ -32,6 +32,7 @@ use crate::config::{
     AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
+#[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
 use crate::registry_domain::{ModelDefinition, ProviderDefinition};
@@ -51,7 +52,7 @@ struct RegistryRevisionBindings {
 pub struct ConfiguredAgent {
     pub spec: AgentSpec,
     pub run: AgentRun,
-    pub models: Vec<ModelInfo>,
+    pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
     pub execution_targets: HashSet<String>,
@@ -96,10 +97,26 @@ pub(crate) fn build_agent(
             .build()
             .map_err(|error| CompositionError::Client(provider.id.clone(), error.to_string()))?;
 
-    let models = model_catalog(provider)?;
-    let primary = models
+    let model_list = model_catalog(provider)?;
+    let models = model_list
         .iter()
-        .find(|model| model.id == definition.spec.model.model_name)
+        .cloned()
+        .map(|model| {
+            (
+                ModelSelection {
+                    provider_id: provider.id.clone(),
+                    model_id: model.id.clone(),
+                },
+                model,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let default_selection = ModelSelection {
+        provider_id: provider.id.clone(),
+        model_id: definition.spec.model.model_name.clone(),
+    };
+    let primary = models
+        .get(&default_selection)
         .ok_or_else(|| CompositionError::MissingModel {
             provider: provider.id.clone(),
             model: definition.spec.model.model_name.clone(),
@@ -115,7 +132,7 @@ pub(crate) fn build_agent(
         .session_store(sessions)
         .memory(memory)
         .override_tools(tools)
-        .available_models(models.clone())
+        .available_models(model_list)
         .prompt_profiles(prompt_profiles(definition))
         .model_capabilities(primary.capabilities);
     let run = apply_server_run_settings(config, builder)
@@ -152,6 +169,7 @@ pub(crate) fn build_registry_agent(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_registry_agent_with_resolver(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
@@ -334,17 +352,23 @@ pub fn resolve_session_config(
     legacy_workspace: Option<&std::path::Path>,
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
-    let provider_id = definition.spec.model.provider.clone();
-    let (model, model_id) = resolve_model_override(
-        &provider_id,
-        &definition.spec.model.model_name,
-        &agent.models,
-        overrides,
-    )?;
-    let selection = ModelSelection {
-        provider_id: provider_id.clone(),
-        model_id: model_id.clone(),
-    };
+    let catalog = agent.models.keys().cloned().collect::<Vec<_>>();
+    let selection = overrides
+        .resolve_model_selection(&catalog)
+        .map_err(CompositionError::ModelSelection)?
+        .unwrap_or_else(|| ModelSelection {
+            provider_id: definition.spec.model.provider.clone(),
+            model_id: definition.spec.model.model_name.clone(),
+        });
+    let model = agent
+        .models
+        .get(&selection)
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: selection.provider_id.clone(),
+            model: selection.model_id.clone(),
+        })?;
+    let provider_id = selection.provider_id.clone();
+    let model_id = selection.model_id.clone();
     let (provider_revision, model_revision) = match &agent.revision_bindings {
         None => (None, None),
         Some(bindings) => {
@@ -521,34 +545,6 @@ pub fn resolve_session_config(
     })
 }
 
-fn resolve_model_override<'a>(
-    configured_provider: &str,
-    default_model_id: &str,
-    models: &'a [ModelInfo],
-    overrides: &SessionConfigOverrides,
-) -> Result<(&'a ModelInfo, String), CompositionError> {
-    let model_id = match (&overrides.model, &overrides.model_id) {
-        (Some(_), Some(_)) => return Err(CompositionError::ConflictingModelOverrides),
-        (Some(selection), None) if selection.provider_id != configured_provider => {
-            return Err(CompositionError::ProviderSwitchUnavailable {
-                configured: configured_provider.to_string(),
-                requested: selection.provider_id.clone(),
-            });
-        }
-        (Some(selection), None) => selection.model_id.clone(),
-        (None, Some(legacy_model_id)) => legacy_model_id.clone(),
-        (None, None) => default_model_id.to_string(),
-    };
-    let model = models
-        .iter()
-        .find(|candidate| candidate.id == model_id)
-        .ok_or_else(|| CompositionError::MissingModel {
-            provider: configured_provider.to_string(),
-            model: model_id.clone(),
-        })?;
-    Ok((model, model_id))
-}
-
 fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> SessionWorkspaceBinding {
     SessionWorkspaceBinding {
         execution_target: workspace.execution_target.clone(),
@@ -602,6 +598,7 @@ fn apply_server_run_settings(
     builder
 }
 
+#[cfg(test)]
 fn registry_revision_bindings(
     provider: &ProviderDefinition,
     models: &[ModelDefinition],
@@ -678,8 +675,8 @@ fn versioned_registry_revision_bindings(
 
 fn registry_model_catalog(
     definitions: &[ModelDefinition],
-) -> Result<(Vec<ModelInfo>, Vec<ProviderModelInfo>), CompositionError> {
-    let mut shadows = Vec::with_capacity(definitions.len());
+) -> Result<(BTreeMap<ModelSelection, ModelInfo>, Vec<ProviderModelInfo>), CompositionError> {
+    let mut shadows = BTreeMap::new();
     let mut exact = Vec::with_capacity(definitions.len());
     for model in definitions {
         let (shadow_capabilities, provider_capabilities) = registry_model_capabilities(model)?;
@@ -690,7 +687,16 @@ fn registry_model_catalog(
             .capabilities(shadow_capabilities)
             .build()
             .ok_or_else(|| CompositionError::InvalidModel(model.model_id.clone()))?;
-        shadows.push(shadow);
+        let selection = ModelSelection {
+            provider_id: model.provider_id.clone(),
+            model_id: model.model_id.clone(),
+        };
+        if shadows.insert(selection.clone(), shadow).is_some() {
+            return Err(CompositionError::DuplicateRegistryModelBinding {
+                provider: selection.provider_id,
+                model: selection.model_id,
+            });
+        }
         exact.push(ProviderModelInfo {
             reference: ModelRef::new(&model.provider_id, &model.model_id),
             context_window: model.context_window,
@@ -836,15 +842,8 @@ pub enum CompositionError {
     MissingProvider(String),
     #[error("model `{model}` is unavailable from provider `{provider}`")]
     MissingModel { provider: String, model: String },
-    #[error("model and legacy model_id overrides cannot both be set")]
-    ConflictingModelOverrides,
-    #[error(
-        "provider switch from `{configured}` to `{requested}` requires a provider-capable runtime"
-    )]
-    ProviderSwitchUnavailable {
-        configured: String,
-        requested: String,
-    },
+    #[error(transparent)]
+    ModelSelection(#[from] ModelSelectionResolutionError),
     #[error("model `{0}` does not support reasoning")]
     UnsupportedReasoning(String),
     #[error("execution target `{0}` is unavailable")]
@@ -900,16 +899,6 @@ mod tests {
     use sylvander_agent::session_store::SqliteSessionStore;
     use sylvander_protocol::ModelSelection;
 
-    fn test_models() -> Vec<ModelInfo> {
-        vec![ModelInfo {
-            id: "model-a".into(),
-            context_window: 100_000,
-            max_output_tokens: 16_000,
-            capabilities: ModelCapabilities::TOOL_USE,
-            cache_ttl: Vec::new(),
-        }]
-    }
-
     fn versioned_config() -> ServerConfig {
         ServerConfig::from_toml(
             r#"
@@ -953,7 +942,7 @@ model_name = "shared"
         let model = |provider_id: &str, lifecycle| ModelDefinition {
             provider_id: provider_id.into(),
             model_id: "shared".into(),
-            revision: 3,
+            revision: if provider_id == "alpha" { 3 } else { 5 },
             context_window: 100_000,
             max_output_tokens: 4096,
             capabilities: ["tool_use".into()].into(),
@@ -1046,6 +1035,39 @@ model_name = "shared"
             )
             .await
             .unwrap();
+
+        let beta = resolve_session_config(
+            &configured,
+            &SessionConfigOverrides {
+                model: Some(ModelSelection {
+                    provider_id: "beta".into(),
+                    model_id: "shared".into(),
+                }),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(beta.provider_id, "beta");
+        assert_eq!(beta.model_id, "shared");
+        assert_eq!(beta.provider_revision, Some(4));
+        assert_eq!(beta.model_revision, Some(5));
+
+        assert!(matches!(
+            resolve_session_config(
+                &configured,
+                &SessionConfigOverrides {
+                    model_id: Some("shared".into()),
+                    ..SessionConfigOverrides::default()
+                },
+                None,
+                None,
+            ),
+            Err(CompositionError::ModelSelection(
+                ModelSelectionResolutionError::LegacyAmbiguous { model_id, provider_ids }
+            )) if model_id == "shared" && provider_ids == vec!["alpha", "beta"]
+        ));
     }
 
     #[test]
@@ -1057,63 +1079,6 @@ model_name = "shared"
         assert!(matches!(
             versioned_registry_revision_bindings(&snapshot.providers, &snapshot.models),
             Err(CompositionError::InvalidRegistryRevisionBinding)
-        ));
-    }
-
-    #[test]
-    fn qualified_override_selects_a_model_from_the_configured_provider() {
-        let models = test_models();
-        let overrides = SessionConfigOverrides {
-            model: Some(ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "model-a".into(),
-            }),
-            ..SessionConfigOverrides::default()
-        };
-
-        let (model, model_id) =
-            resolve_model_override("primary", "default", &models, &overrides).unwrap();
-        assert_eq!(model.id, "model-a");
-        assert_eq!(model_id, "model-a");
-    }
-
-    #[test]
-    fn qualified_override_rejects_a_provider_switch() {
-        let models = test_models();
-        let overrides = SessionConfigOverrides {
-            model: Some(ModelSelection {
-                provider_id: "secondary".into(),
-                model_id: "model-a".into(),
-            }),
-            ..SessionConfigOverrides::default()
-        };
-
-        let error = resolve_model_override("primary", "model-a", &models, &overrides).unwrap_err();
-        assert!(matches!(
-            error,
-            CompositionError::ProviderSwitchUnavailable {
-                configured,
-                requested
-            } if configured == "primary" && requested == "secondary"
-        ));
-    }
-
-    #[test]
-    fn qualified_override_rejects_an_unknown_model() {
-        let models = test_models();
-        let overrides = SessionConfigOverrides {
-            model: Some(ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "missing".into(),
-            }),
-            ..SessionConfigOverrides::default()
-        };
-
-        let error = resolve_model_override("primary", "model-a", &models, &overrides).unwrap_err();
-        assert!(matches!(
-            error,
-            CompositionError::MissingModel { provider, model }
-                if provider == "primary" && model == "missing"
         ));
     }
 
@@ -1188,7 +1153,11 @@ path = "/tmp/sylvander-test.sock"
             "Optimized system prompt"
         );
         assert!(
-            agents[0].models[0]
+            agents[0]
+                .models
+                .values()
+                .next()
+                .unwrap()
                 .capabilities
                 .contains(ModelCapabilities::TOOL_USE | ModelCapabilities::VISION)
         );
