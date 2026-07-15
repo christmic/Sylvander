@@ -381,7 +381,9 @@ impl AgentLoopBuilder {
             .unwrap_or_else(|| crate::tool_context::defaults::model_tool_context(&model));
 
         // Cache tool definitions once — tools are immutable post-build.
-        let tool_definitions = self.tools.definitions();
+        // Prompt caching is an optional model feature, so omit its wire hint
+        // instead of making otherwise valid tool use incompatible.
+        let tool_definitions = tool_definitions_for_model(&self.tools, &model);
 
         Ok(AgentLoop {
             backend,
@@ -1533,7 +1535,11 @@ impl AgentLoop {
                 .iter()
                 .map(|text| sylvander_llm_core::SystemInstruction {
                     text: text.clone(),
-                    cache_hint: None,
+                    cache_hint: self
+                        .model
+                        .capabilities
+                        .contains(ModelCapabilities::PROMPT_CACHING)
+                        .then_some(sylvander_llm_core::CacheHint::Ephemeral),
                 })
                 .collect(),
             messages,
@@ -1597,14 +1603,17 @@ impl AgentLoop {
             .messages(messages.to_vec());
 
         if let Some(sp) = &self.system_prompt {
-            // Use structured Blocks form so we can attach a
-            // cache_control breakpoint to the system prompt.
-            use sylvander_llm_anthropic::api::types::{
-                CacheControl, SystemBlock, SystemPrompt, SystemTextBlock,
-            };
-            builder = builder.system(SystemPrompt::Blocks(vec![SystemBlock::Text(
-                SystemTextBlock::new(sp.clone()).with_cache_control(CacheControl::ephemeral()),
-            )]));
+            use sylvander_llm_anthropic::api::types::{SystemBlock, SystemPrompt, SystemTextBlock};
+            let mut block = SystemTextBlock::new(sp.clone());
+            if self
+                .model
+                .capabilities
+                .contains(ModelCapabilities::PROMPT_CACHING)
+            {
+                use sylvander_llm_anthropic::api::types::CacheControl;
+                block = block.with_cache_control(CacheControl::ephemeral());
+            }
+            builder = builder.system(SystemPrompt::Blocks(vec![SystemBlock::Text(block)]));
         }
 
         if let Some(budget) = self.reasoning_effort.budget_tokens() {
@@ -1622,6 +1631,22 @@ impl AgentLoop {
             .build()
             .expect("CreateMessageRequest builder fields are pre-validated")
     }
+}
+
+pub(crate) fn tool_definitions_for_model(
+    tools: &ToolRegistry,
+    model: &ModelInfo,
+) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+    let mut definitions = tools.definitions();
+    if !model
+        .capabilities
+        .contains(ModelCapabilities::PROMPT_CACHING)
+    {
+        for definition in &mut definitions {
+            definition.cache_control = None;
+        }
+    }
+    definitions
 }
 
 // =====================================================================
@@ -1900,6 +1925,47 @@ mod tests {
                 if model.reference == ModelRef::new("local", "test-model")
                     && *routing == ProviderRouting::Single
         ));
+    }
+
+    #[test]
+    fn prompt_cache_hints_follow_the_selected_model_capability() {
+        for enabled in [false, true] {
+            let capabilities = if enabled {
+                ProviderCapabilities::TOOL_USE | ProviderCapabilities::PROMPT_CACHING
+            } else {
+                ProviderCapabilities::TOOL_USE
+            };
+            let model = ProviderModelInfo {
+                reference: ModelRef::new("local", "cache-model"),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities,
+            };
+            let loop_ = AgentLoop::builder()
+                .provider(Arc::new(FakeProvider {
+                    _secret: "not-resolved",
+                }))
+                .provider_model(model)
+                .system_prompt("stable instructions")
+                .tool(crate::tool::MockTool::new(
+                    "read",
+                    "read a file",
+                    crate::tool::ToolOutput::ok("done"),
+                ))
+                .build()
+                .unwrap();
+
+            assert_eq!(loop_.tool_definitions[0].cache_control.is_some(), enabled);
+            let legacy =
+                serde_json::to_value(loop_.build_request(&[MessageParam::user("go")])).unwrap();
+            assert_eq!(legacy.pointer("/system/0/cache_control").is_some(), enabled);
+            let neutral = loop_
+                .build_provider_request(&[MessageParam::user("go")])
+                .unwrap()
+                .unwrap();
+            assert_eq!(neutral.system[0].cache_hint.is_some(), enabled);
+            assert_eq!(neutral.tools[0].cache_hint.is_some(), enabled);
+        }
     }
 
     #[test]
