@@ -216,7 +216,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
 | A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
-| A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
+| A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
 | A10 | Command/Git tools | missing | The Agent has no production spawn/shell/Git tool surface. `Cap::Spawn` and `Cap::Git` are declarations without executor-backed tools. |
@@ -368,8 +368,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     legacy selection rejection before mutation, exact session revision pins,
     restart restoration, live Credential rotation, and one-provider failure
     without fallback or contamination of a healthy Provider.
-- [ ] **P1.3 Prompt resolver:** shared safety layers, model/provider profiles,
-  Agent prompt, allowed session input, provenance/digests, limits, and tests.
+- [x] **P1.3 Prompt resolver:** shared safety layers, exact qualified
+  model/provider profiles, Agent prompt, allowed write-only session input,
+  ordered provenance/digests, byte limits, deterministic restart, and
+  execution-boundary tamper rejection. Evidence: `sylvander-agent/src/prompt.rs`,
+  `sylvander-agent/src/run.rs`, protocol schema/redaction tests, real Unix and
+  WebSocket response tests, provider-wire composition tests, and runtime
+  restart acceptance in `registry_agent_composition_tests.rs`.
 - [ ] **P1.4 Durable memory:** Agent-namespaced SQLite memory, retrieval/write
   policy, provenance, retention/deletion, backup, and migration from configured
   stores.

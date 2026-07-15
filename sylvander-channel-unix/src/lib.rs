@@ -1707,6 +1707,7 @@ mod tests {
         registry_authorizations: AtomicUsize,
         registry_dispatches: AtomicUsize,
         allow_registry: bool,
+        session_config: Option<sylvander_protocol::SessionConfigState>,
     }
 
     #[tokio::test]
@@ -1769,10 +1770,9 @@ mod tests {
             _session_id: &SessionId,
         ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
         {
-            Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary,
-                "get_session_config",
-            ))
+            self.session_config.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "get_session_config")
+            })
         }
 
         async fn update_session_config(
@@ -1878,6 +1878,64 @@ mod tests {
         }
     }
 
+    fn private_session_config(
+        session_id: &str,
+        prompt: &str,
+        digest: &str,
+    ) -> sylvander_protocol::SessionConfigState {
+        use sylvander_protocol::{
+            PromptLayerDigest, PromptLayerKind, PromptManifest, SessionConfigProvenance,
+            SessionConfigSource, SessionConfigSourceKind, SessionEffectiveConfig,
+        };
+        let source = SessionConfigSource {
+            kind: SessionConfigSourceKind::SessionOverride,
+            reference: Some("session".into()),
+        };
+        sylvander_protocol::SessionConfigState {
+            session_id: SessionId::new(session_id),
+            revision: 2,
+            overrides: sylvander_protocol::SessionConfigOverrides {
+                system_prompt: Some(prompt.into()),
+                ..sylvander_protocol::SessionConfigOverrides::default()
+            },
+            effective: SessionEffectiveConfig {
+                agent_id: AgentId::new("agent-1"),
+                agent_revision: 1,
+                provider_id: "test".into(),
+                provider_revision: Some(1),
+                model_id: "test-model".into(),
+                model_revision: Some(1),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                permissions: sylvander_protocol::PermissionProfile::default(),
+                prompt_profile: None,
+                system_prompt_sha256: digest.into(),
+                prompt_manifest: Some(PromptManifest {
+                    layers: vec![PromptLayerDigest {
+                        kind: PromptLayerKind::SessionInput,
+                        reference: Some("session".into()),
+                        sha256: digest.into(),
+                        byte_count: prompt.len() as u64,
+                    }],
+                    aggregate_sha256: "aggregate-digest".into(),
+                    total_bytes: prompt.len() as u64,
+                }),
+                agent_workspace: None,
+                user_workspace: None,
+                execution_target: "local".into(),
+                provenance: SessionConfigProvenance {
+                    model: source.clone(),
+                    reasoning_effort: source.clone(),
+                    permissions: source.clone(),
+                    prompt_profile: source.clone(),
+                    system_prompt: source.clone(),
+                    agent_workspace: source.clone(),
+                    user_workspace: source.clone(),
+                    execution_target: source,
+                },
+            },
+        }
+    }
+
     async fn connect(path: &std::path::Path) -> tokio::net::UnixStream {
         for _ in 0..40 {
             if let Ok(stream) = tokio::net::UnixStream::connect(path).await {
@@ -1893,16 +1951,24 @@ mod tests {
         reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
         message: serde_json::Value,
     ) -> serde_json::Value {
+        let line = send_and_read_wire(write, reader, message).await;
+        serde_json::from_str(&line).expect("json response")
+    }
+
+    async fn send_and_read_wire(
+        write: &mut tokio::net::unix::OwnedWriteHalf,
+        reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        message: serde_json::Value,
+    ) -> String {
         write
             .write_all(format!("{message}\n").as_bytes())
             .await
             .expect("write");
-        let line = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line())
+        tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line())
             .await
             .expect("response timeout")
             .expect("read")
-            .expect("response");
-        serde_json::from_str(&line).expect("json response")
+            .expect("response")
     }
 
     async fn negotiate(
@@ -2312,6 +2378,57 @@ mod tests {
         assert_eq!(accepted["response"]["status"], "success");
         assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 1);
         assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 1);
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn session_prompt_is_redacted_on_the_unix_wire() {
+        const SENTINEL: &str = "UNIX_PRIVATE_SESSION_PROMPT_SENTINEL";
+        const DIGEST: &str = "unix-public-prompt-digest";
+        let path = socket_path();
+        let service = Arc::new(EmptyUiService {
+            session_config: Some(private_session_config("session-secret", SENTINEL, DIGEST)),
+            ..EmptyUiService::default()
+        });
+        let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
+        let task = tokio::spawn(channel.run(ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(service),
+            readiness: None,
+        }));
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        negotiate(&mut write, &mut lines).await;
+
+        let wire = send_and_read_wire(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type": "get_session_config",
+                "session_id": "session-secret"
+            }),
+        )
+        .await;
+        let response: serde_json::Value = serde_json::from_str(&wire).expect("session config");
+
+        assert!(!wire.contains(SENTINEL));
+        assert!(
+            response["state"]["overrides"]
+                .get("system_prompt")
+                .is_none()
+        );
+        assert_eq!(
+            response["state"]["effective"]["system_prompt_sha256"],
+            DIGEST
+        );
+        assert_eq!(
+            response["state"]["effective"]["prompt_manifest"]["layers"][0]["sha256"],
+            DIGEST
+        );
 
         task.abort();
         let _ = std::fs::remove_file(path);

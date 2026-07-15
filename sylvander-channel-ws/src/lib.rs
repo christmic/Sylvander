@@ -1939,6 +1939,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_prompt_is_redacted_from_the_websocket_payload() {
+        const SENTINEL: &str = "WS_PRIVATE_SESSION_PROMPT_SENTINEL";
+        const DIGEST: &str = "ws-public-prompt-digest";
+        let mut state = config_state("session-secret");
+        state.overrides.system_prompt = Some(SENTINEL.into());
+        state.effective.system_prompt_sha256 = DIGEST.into();
+        state.effective.prompt_manifest = Some(sylvander_protocol::PromptManifest {
+            layers: vec![sylvander_protocol::PromptLayerDigest {
+                kind: sylvander_protocol::PromptLayerKind::SessionInput,
+                reference: Some("session".into()),
+                sha256: DIGEST.into(),
+                byte_count: SENTINEL.len() as u64,
+            }],
+            aggregate_sha256: "aggregate-digest".into(),
+            total_bytes: SENTINEL.len() as u64,
+        });
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            ui: Some(Arc::new(SessionConfigUi {
+                states: Mutex::new(HashMap::from([("session-secret".into(), state)])),
+            })),
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::GetSessionConfig {
+                session_id: "session-secret".into(),
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+        let response = rx.recv().await.expect("session config response");
+        let wire = serde_json::to_string(&response).expect("websocket JSON payload");
+        let encoded: serde_json::Value = serde_json::from_str(&wire).expect("session config JSON");
+
+        assert!(!wire.contains(SENTINEL));
+        assert!(encoded["state"]["overrides"].get("system_prompt").is_none());
+        assert_eq!(
+            encoded["state"]["effective"]["system_prompt_sha256"],
+            DIGEST
+        );
+        assert_eq!(
+            encoded["state"]["effective"]["prompt_manifest"]["layers"][0]["sha256"],
+            DIGEST
+        );
+    }
+
+    #[tokio::test]
     async fn ambiguous_legacy_selection_fails_without_mutating_session() {
         let ui = Arc::new(SessionConfigUi {
             states: Mutex::new(HashMap::from([(
