@@ -563,6 +563,7 @@ mod tests {
                     code: crate::RegistryAdminErrorCode::StorageUnavailable,
                     message: "registry unavailable".into(),
                     provider_id: None,
+                    model_id: None,
                     revision: None,
                 },
             },

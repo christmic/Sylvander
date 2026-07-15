@@ -92,13 +92,17 @@ mod tests {
         for operation in [
             "inspect_provider_revision",
             "list_provider_revisions",
+            "inspect_model_revision",
+            "list_model_revisions",
             "base_url_sha256",
             "credential_binding_id_sha256",
+            "pricing_sha256",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }
         assert!(!has_property(&schema, "base_url"));
         assert!(!has_property(&schema, "credential_binding_id"));
+        assert!(!has_property(&schema, "pricing"));
     }
 
     fn has_property(value: &Value, name: &str) -> bool {
