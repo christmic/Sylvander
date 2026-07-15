@@ -13,6 +13,36 @@
 > only as historical architecture analysis and must not drive new UI
 > implementation.
 
+### Native session lifecycle
+
+The macOS rail is a management surface for durable server sessions, not a
+second session database. It negotiates the public Unix UI protocol for every
+operation:
+
+- discovery refreshes every five seconds while online and reconnects with
+  bounded exponential backoff after a transport failure;
+- creation discovers available Agents first, inherits the selected Agent's
+  workspace by default, and sends an override only when the user chooses a
+  folder;
+- rename, archive, and permanent delete wait for the matching server
+  acknowledgement before refreshing local state;
+- archive and delete are contextual, confirmed actions. Permanent delete is
+  never a primary sidebar control.
+
+Each opened server session owns at most one PTY surface and one Host Broker
+capability registration. Activity monitors are bounded to the 32 most recent
+sessions plus the selected session. Reconciliation is authoritative:
+when a session disappears, the host cancels its monitor, removes its terminal
+reference, clears unread state, and unregisters its preview credential. A
+retained surface whose TUI process exited is recreated with a fresh credential.
+
+Activity monitors attach through the same public protocol and classify only
+semantic server events. Iteration and tool events are `RUNNING`; approvals,
+questions, plans, and interaction timeouts are `NEEDS YOU`; terminal success
+and failure events become `DONE` and `FAILED`. Changed state becomes unread only
+for an unfocused session and clears when selected. Initial replay has a short
+priming window so restored history does not masquerade as new attention.
+
 ### Desktop host capability boundary
 
 The macOS host may expose local presentation capabilities that portable TUI

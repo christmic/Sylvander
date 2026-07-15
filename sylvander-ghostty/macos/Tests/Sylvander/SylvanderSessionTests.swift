@@ -44,6 +44,26 @@ struct SylvanderSessionTests {
         }
     }
 
+    @Test
+    func decodesDiscoveredAgentsAndWorkspace() throws {
+        let data = Data(#"{"type":"agents_discovered","agents":[{"id":"code","name":"Code","agent_workspace":{"execution_target":"local","path":"/work/code","read_only":false}}]}"#.utf8)
+
+        let agents = try SylvanderSessionClient.decodeAgents(data)
+
+        #expect(agents.map(\.id) == ["code"])
+        #expect(agents.first?.name == "Code")
+        #expect(agents.first?.agentWorkspace?.path == "/work/code")
+    }
+
+    @Test
+    func classifiesSemanticSessionActivity() {
+        #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"iteration_start"}"#.utf8)) == .running)
+        #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"approval_request"}"#.utf8)) == .waiting)
+        #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"done"}"#.utf8)) == .complete)
+        #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"tool_result","is_error":true}"#.utf8)) == .failed)
+        #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"session_history"}"#.utf8)) == nil)
+    }
+
     @Test @MainActor
     func reconciliationKeepsSelectionAndSortsByActivity() {
         let suite = "SylvanderSessionTests.\(#function)"
@@ -94,6 +114,43 @@ struct SylvanderSessionTests {
         store.reconcile([replacement])
         #expect(store.selectedSessionID == "replacement")
         #expect(defaults.string(forKey: SylvanderSessionStore.selectedSessionDefaultsKey) == "replacement")
+    }
+
+    @Test @MainActor
+    func managementOperationsRefreshAndSelectCreatedSession() async {
+        let suite = "SylvanderSessionTests.\(#function)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = ManagingSessionClient()
+        let store = SylvanderSessionStore(client: client, defaults: defaults)
+
+        #expect(await store.createSession(label: "  New work  ", agentID: "code", workspace: "/work/new"))
+        store.reconcile([
+            SylvanderSession(id: "created", label: "New work", workspace: "/work/new", lastSeenSeconds: 0),
+        ])
+        #expect(store.selectedSessionID == "created")
+        #expect(client.createdLabel == "New work")
+
+        #expect(await store.renameSession(id: "created", label: "Renamed"))
+        #expect(await store.archiveSession(id: "created"))
+        #expect(await store.deleteSession(id: "created"))
+        #expect(client.operations == ["rename:created:Renamed", "archive:created", "delete:created"])
+    }
+
+    @Test @MainActor
+    func selectedSessionActivityDoesNotBecomeUnread() {
+        let suite = "SylvanderSessionTests.\(#function)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = SylvanderSessionStore(client: StubSessionClient(), defaults: defaults)
+        store.reconcile([
+            SylvanderSession(id: "focused", label: "Focused", workspace: "/work", lastSeenSeconds: 0),
+        ])
+
+        store.apply(.waiting, to: "focused")
+
+        #expect(store.activity(for: "focused") == .waiting)
+        #expect(store.unreadSessionIDs.isEmpty)
     }
 
 }
@@ -270,4 +327,24 @@ struct SylvanderHostBrokerTests {
 
 private struct StubSessionClient: SylvanderSessionFetching {
     func fetchSessions() async throws -> [SylvanderSession] { [] }
+}
+
+private final class ManagingSessionClient: SylvanderSessionFetching, @unchecked Sendable {
+    var createdLabel: String?
+    var operations: [String] = []
+
+    func fetchSessions() async throws -> [SylvanderSession] { [] }
+    func fetchAgents() async throws -> [SylvanderAgent] { [] }
+
+    func createSession(label: String, agentID: String, workspace: String?) async throws -> String {
+        createdLabel = label
+        return "created"
+    }
+
+    func renameSession(id: String, label: String) async throws {
+        operations.append("rename:\(id):\(label)")
+    }
+
+    func archiveSession(id: String) async throws { operations.append("archive:\(id)") }
+    func deleteSession(id: String) async throws { operations.append("delete:\(id)") }
 }
