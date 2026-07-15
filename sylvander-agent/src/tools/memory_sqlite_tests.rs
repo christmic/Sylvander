@@ -145,7 +145,23 @@ async fn guardian_and_system_relationship_access_fails_closed() {
         ));
         assert!(matches!(
             store
-                .search_relationship(&ctx, "", MemoryFilter::default())
+                .search_relationship(
+                    &ctx,
+                    &"q".repeat(MAX_MEMORY_QUERY_BYTES + 1),
+                    MemoryFilter::default()
+                )
+                .await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+        assert!(matches!(
+            store
+                .update_relationship(&ctx, "", 0, MemoryPatch::default())
+                .await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+        assert!(matches!(
+            store
+                .supersede_relationship(&ctx, "", 0, MemoryAppend::new(""))
                 .await,
             Err(MemoryStoreError::AccessDenied)
         ));
