@@ -45,6 +45,7 @@ pub struct ServerSettings {
     pub name: String,
     pub data_dir: Option<PathBuf>,
     pub session_db: Option<PathBuf>,
+    pub memory_db: Option<PathBuf>,
     pub workspace_journal: Option<PathBuf>,
     #[serde(default)]
     pub approval: ApprovalSettings,
@@ -60,6 +61,7 @@ impl Default for ServerSettings {
             name: default_server_name(),
             data_dir: None,
             session_db: None,
+            memory_db: None,
             workspace_journal: None,
             approval: ApprovalSettings::default(),
             evidence: EvidenceSettings::default(),
