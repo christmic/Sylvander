@@ -21,7 +21,7 @@ use sylvander_llm_anthropic::api::model::ModelInfo;
 // ID types
 // ---------------------------------------------------------------------------
 
-pub use sylvander_protocol::{AgentId, SessionId};
+pub use sylvander_protocol::{AgentId, ModelSelection, SessionId};
 
 // ---------------------------------------------------------------------------
 // Config sub-types
@@ -47,6 +47,14 @@ pub struct ModelConfig {
     /// Model name / ID (e.g. `"claude-sonnet-5-20260601"`).
     #[serde(default)]
     pub model_name: String,
+    /// Exact Provider/Model identities this Agent revision may select.
+    ///
+    /// An empty list is reserved for legacy definitions. The runtime must
+    /// materialize those definitions from their existing immutable snapshot
+    /// or legacy bootstrap seed; newly authored definitions should always
+    /// provide this allowlist explicitly.
+    #[serde(default)]
+    pub allowed_models: Vec<ModelSelection>,
     /// Optional temperature override.
     #[serde(default)]
     pub temperature: Option<f64>,
@@ -64,6 +72,7 @@ impl Default for ModelConfig {
         Self {
             provider: default_provider(),
             model_name: String::new(),
+            allowed_models: Vec::new(),
             temperature: None,
             max_tokens: None,
         }
@@ -328,6 +337,20 @@ impl AgentSpecBuilder {
         self
     }
 
+    /// Allow one exact Provider/Model identity for this Agent revision.
+    #[must_use]
+    pub fn allowed_model(
+        mut self,
+        provider_id: impl Into<String>,
+        model_id: impl Into<String>,
+    ) -> Self {
+        self.model.allowed_models.push(ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+        });
+        self
+    }
+
     // -- tools --
 
     /// Register a built-in tool by name.
@@ -455,6 +478,8 @@ mod tests {
             .system_prompt("You are a test agent.")
             .description("Used for testing")
             .model_name("claude-sonnet-5-20260601")
+            .allowed_model("anthropic", "claude-sonnet-5-20260601")
+            .allowed_model("secondary", "shared")
             .builtin_tool("read")
             .builtin_tool("write")
             .max_iterations(30)
@@ -466,6 +491,19 @@ mod tests {
         assert_eq!(spec.persona.system_prompt, "You are a test agent.");
         assert_eq!(spec.persona.description, "Used for testing");
         assert_eq!(spec.model.model_name, "claude-sonnet-5-20260601");
+        assert_eq!(
+            spec.model.allowed_models,
+            [
+                ModelSelection {
+                    provider_id: "anthropic".into(),
+                    model_id: "claude-sonnet-5-20260601".into(),
+                },
+                ModelSelection {
+                    provider_id: "secondary".into(),
+                    model_id: "shared".into(),
+                }
+            ]
+        );
         assert_eq!(spec.tools.len(), 2);
         assert!(matches!(&spec.tools[0], ToolRef::Builtin { name } if name == "read"));
         assert_eq!(spec.behavior.max_iterations, 30);
@@ -500,6 +538,7 @@ mod tests {
         assert_eq!(spec.behavior.max_iterations, 50);
         assert_eq!(spec.behavior.max_retries, 3);
         assert_eq!(spec.model.provider, "anthropic");
+        assert!(spec.model.allowed_models.is_empty());
     }
 
     // -- TOML --
@@ -511,6 +550,8 @@ mod tests {
             .name("TOML Agent")
             .system_prompt("You are defined in TOML.")
             .model_name("claude-haiku-4-5-20251001")
+            .allowed_model("anthropic", "claude-haiku-4-5-20251001")
+            .allowed_model("secondary", "shared")
             .builtin_tool("read")
             .build()
             .expect("build should succeed");
@@ -522,6 +563,7 @@ mod tests {
         assert_eq!(parsed.name, spec.name);
         assert_eq!(parsed.persona.system_prompt, spec.persona.system_prompt);
         assert_eq!(parsed.model.model_name, spec.model.model_name);
+        assert_eq!(parsed.model.allowed_models, spec.model.allowed_models);
         assert_eq!(parsed.tools.len(), spec.tools.len());
     }
 
@@ -603,6 +645,7 @@ max_retries = 5
         assert_eq!(spec.persona.system_prompt, "You are a helpful assistant.");
         assert_eq!(spec.model.temperature, Some(0.7));
         assert_eq!(spec.model.max_tokens, Some(4096));
+        assert!(spec.model.allowed_models.is_empty());
         assert_eq!(spec.tools.len(), 3);
         assert_eq!(spec.memory_stores.len(), 1);
         assert_eq!(spec.memory_stores[0].store_type, "sqlite");
@@ -620,6 +663,10 @@ max_retries = 5
             .model(ModelConfig {
                 provider: "anthropic".into(),
                 model_name: "claude-sonnet-5-20260601".into(),
+                allowed_models: vec![ModelSelection {
+                    provider_id: "anthropic".into(),
+                    model_id: "claude-sonnet-5-20260601".into(),
+                }],
                 temperature: Some(0.5),
                 max_tokens: Some(8192),
             })
