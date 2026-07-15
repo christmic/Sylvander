@@ -95,6 +95,25 @@ pub struct AgentAdministrationAudit {
     pub error_code: Option<String>,
 }
 
+/// Content-free terminal audit for any privileged registry administration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdministrationAudit {
+    pub id: String,
+    pub occurred_at: i64,
+    pub request_id: String,
+    pub principal_digest: String,
+    pub channel_instance_id: String,
+    pub transport: String,
+    pub operation: String,
+    pub resource_kind: String,
+    pub resource_digest: String,
+    /// Exact revision/generation when the operation targets one; collection
+    /// operations such as `list` carry no fabricated version.
+    pub version: Option<u64>,
+    pub outcome: String,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TurnQuery {
     pub session_id: Option<String>,
@@ -422,6 +441,62 @@ impl EvidenceStore {
         .await
     }
 
+    /// Persist one already-terminal registry administration decision.
+    pub async fn record_administration_audit(
+        &self,
+        audit: AdministrationAudit,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            let version = audit.version.map(as_i64).transpose()?;
+            connection
+                .execute(
+                    "INSERT INTO administration_audit(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![audit.id, audit.occurred_at, audit.request_id, audit.principal_digest, audit.channel_instance_id, audit.transport, audit.operation, audit.resource_kind, audit.resource_digest, version, audit.outcome, audit.error_code],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Read a bounded newest-first view without registry definitions or secrets.
+    pub async fn administration_audits(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<AdministrationAudit>, EvidenceError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code FROM administration_audit ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map([i64::from(limit.clamp(1, 1000))], |row| {
+                    Ok(AdministrationAudit {
+                        id: row.get(0)?,
+                        occurred_at: row.get(1)?,
+                        request_id: row.get(2)?,
+                        principal_digest: row.get(3)?,
+                        channel_instance_id: row.get(4)?,
+                        transport: row.get(5)?,
+                        operation: row.get(6)?,
+                        resource_kind: row.get(7)?,
+                        resource_digest: row.get(8)?,
+                        version: row
+                            .get::<_, Option<i64>>(9)?
+                            .map(|value| sql_nonnegative(value, 9))
+                            .transpose()?,
+                        outcome: row.get(10)?,
+                        error_code: row.get(11)?,
+                    })
+                })
+                .map_err(EvidenceError::sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
     /// Resolve the single session to which feedback may be attributed.
     /// Run-level feedback is accepted only when the run contains one session;
     /// callers must name a turn when a run spans multiple owners.
@@ -731,11 +806,21 @@ CREATE TABLE IF NOT EXISTS agent_administration_audit (
   error_code TEXT,
   CHECK (outcome IN ('pending', 'succeeded', 'failed'))
 );
+CREATE TABLE IF NOT EXISTS administration_audit (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, resource_kind TEXT NOT NULL,
+  resource_digest TEXT NOT NULL, version INTEGER, outcome TEXT NOT NULL,
+  error_code TEXT,
+  CHECK (version IS NULL OR version > 0),
+  CHECK (outcome IN ('succeeded', 'failed', 'denied'))
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_authorization_denials_time ON authorization_denials(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_admin_audit_time ON agent_administration_audit(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_administration_audit_time ON administration_audit(occurred_at DESC);
 ";
 
 #[cfg(test)]
@@ -894,6 +979,70 @@ mod tests {
                 .await,
             Err(EvidenceError::InvalidAuditState)
         ));
+    }
+
+    #[tokio::test]
+    async fn generic_administration_audit_is_restart_durable_and_content_free() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("evidence.db");
+        let audit = AdministrationAudit {
+            id: "registry-admin-1".into(),
+            occurred_at: 44,
+            request_id: "request-3".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "activate".into(),
+            resource_kind: "provider".into(),
+            resource_digest: "resource-sha256".into(),
+            version: Some(7),
+            outcome: "failed".into(),
+            error_code: Some("revision_conflict".into()),
+        };
+        let store = EvidenceStore::open(&path).await.unwrap();
+        store
+            .record_administration_audit(audit.clone())
+            .await
+            .unwrap();
+        let list_audit = AdministrationAudit {
+            id: "registry-admin-list".into(),
+            occurred_at: 45,
+            request_id: "request-4".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "list".into(),
+            resource_kind: "provider".into(),
+            resource_digest: "provider-collection-sha256".into(),
+            version: None,
+            outcome: "succeeded".into(),
+            error_code: None,
+        };
+        store
+            .record_administration_audit(list_audit.clone())
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = EvidenceStore::open(&path).await.unwrap();
+        assert_eq!(
+            reopened.administration_audits(10).await.unwrap(),
+            vec![list_audit, audit]
+        );
+        drop(reopened);
+
+        let database = std::fs::read(path).unwrap();
+        for marker in [
+            b"https://provider.internal.example".as_slice(),
+            b"provider:alpha:api_key".as_slice(),
+            b"raw-provider-id".as_slice(),
+        ] {
+            assert!(
+                !database
+                    .windows(marker.len())
+                    .any(|window| window == marker)
+            );
+        }
     }
 
     #[tokio::test]
