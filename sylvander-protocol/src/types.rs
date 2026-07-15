@@ -691,6 +691,27 @@ pub struct SessionConfigProvenance {
     pub execution_target: SessionConfigSource,
 }
 
+/// Immutable registry revisions required before a session may execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SessionRevisionPins {
+    pub provider_revision: u64,
+    pub model_revision: u64,
+}
+
+/// A legacy effective configuration can be decoded without revision pins, but
+/// it cannot execute until the runtime resolves and persists both revisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SessionRevisionPinError {
+    #[error("session Provider revision is missing")]
+    MissingProviderRevision,
+    #[error("session Provider revision must be greater than zero")]
+    ZeroProviderRevision,
+    #[error("session Model revision is missing")]
+    MissingModelRevision,
+    #[error("session Model revision must be greater than zero")]
+    ZeroModelRevision,
+}
+
 /// Fully resolved configuration used to start a turn. The runtime persists
 /// this value before provider or tool work begins, so later configuration
 /// changes cannot rewrite the historical execution context.
@@ -699,7 +720,15 @@ pub struct SessionEffectiveConfig {
     pub agent_id: AgentId,
     pub agent_revision: u64,
     pub provider_id: String,
+    /// Immutable Provider registry revision. `None` is accepted only while
+    /// loading a legacy session that still requires migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_revision: Option<u64>,
     pub model_id: String,
+    /// Immutable Model registry revision. `None` is accepted only while
+    /// loading a legacy session that still requires migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_revision: Option<u64>,
     pub reasoning_effort: ReasoningEffort,
     pub permissions: PermissionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -721,6 +750,27 @@ impl SessionEffectiveConfig {
             provider_id: self.provider_id.clone(),
             model_id: self.model_id.clone(),
         }
+    }
+
+    /// Return execution-safe revision pins, rejecting unresolved legacy data
+    /// and the reserved zero revision.
+    pub fn require_revision_pins(&self) -> Result<SessionRevisionPins, SessionRevisionPinError> {
+        let provider_revision = self
+            .provider_revision
+            .ok_or(SessionRevisionPinError::MissingProviderRevision)?;
+        if provider_revision == 0 {
+            return Err(SessionRevisionPinError::ZeroProviderRevision);
+        }
+        let model_revision = self
+            .model_revision
+            .ok_or(SessionRevisionPinError::MissingModelRevision)?;
+        if model_revision == 0 {
+            return Err(SessionRevisionPinError::ZeroModelRevision);
+        }
+        Ok(SessionRevisionPins {
+            provider_revision,
+            model_revision,
+        })
     }
 }
 
@@ -1228,6 +1278,95 @@ impl BusMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn effective_config_json() -> serde_json::Value {
+        let source = serde_json::json!({ "kind": "agent_default" });
+        serde_json::json!({
+            "agent_id": "agent-1",
+            "agent_revision": 3,
+            "provider_id": "provider-1",
+            "model_id": "model-1",
+            "reasoning_effort": "off",
+            "permissions": {
+                "file_access": "workspace_write",
+                "network_access": "denied",
+                "approval_policy": "allow"
+            },
+            "system_prompt_sha256": "digest",
+            "execution_target": "local",
+            "provenance": {
+                "model": source.clone(),
+                "reasoning_effort": source.clone(),
+                "permissions": source.clone(),
+                "prompt_profile": source.clone(),
+                "system_prompt": source.clone(),
+                "agent_workspace": source.clone(),
+                "user_workspace": source.clone(),
+                "execution_target": source
+            }
+        })
+    }
+
+    #[test]
+    fn legacy_effective_config_omits_unresolved_revision_pins() {
+        let config: SessionEffectiveConfig =
+            serde_json::from_value(effective_config_json()).expect("legacy config");
+        assert_eq!(config.provider_revision, None);
+        assert_eq!(config.model_revision, None);
+        assert_eq!(
+            config.require_revision_pins(),
+            Err(SessionRevisionPinError::MissingProviderRevision)
+        );
+
+        let encoded = serde_json::to_value(config).expect("serialize legacy config");
+        assert!(encoded.get("provider_revision").is_none());
+        assert!(encoded.get("model_revision").is_none());
+    }
+
+    #[test]
+    fn pinned_effective_config_round_trips_and_validates() {
+        let mut json = effective_config_json();
+        json["provider_revision"] = serde_json::json!(7);
+        json["model_revision"] = serde_json::json!(11);
+        let config: SessionEffectiveConfig = serde_json::from_value(json).expect("pinned config");
+        assert_eq!(
+            config.require_revision_pins(),
+            Ok(SessionRevisionPins {
+                provider_revision: 7,
+                model_revision: 11,
+            })
+        );
+        let round_trip: SessionEffectiveConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(round_trip, config);
+    }
+
+    #[test]
+    fn revision_pin_validation_rejects_each_missing_or_zero_value() {
+        let mut json = effective_config_json();
+        json["provider_revision"] = serde_json::json!(0);
+        json["model_revision"] = serde_json::json!(1);
+        let config: SessionEffectiveConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            config.require_revision_pins(),
+            Err(SessionRevisionPinError::ZeroProviderRevision)
+        );
+
+        json["provider_revision"] = serde_json::json!(1);
+        json.as_object_mut().unwrap().remove("model_revision");
+        let config: SessionEffectiveConfig = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            config.require_revision_pins(),
+            Err(SessionRevisionPinError::MissingModelRevision)
+        );
+
+        json["model_revision"] = serde_json::json!(0);
+        let config: SessionEffectiveConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            config.require_revision_pins(),
+            Err(SessionRevisionPinError::ZeroModelRevision)
+        );
+    }
 
     #[test]
     fn user_id_round_trips() {
