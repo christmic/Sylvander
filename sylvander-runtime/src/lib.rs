@@ -58,10 +58,10 @@ mod registry_bootstrap_tests;
 mod registry_composition;
 #[cfg(test)]
 mod registry_composition_tests;
-#[cfg(test)]
-mod registry_composition_v3_tests;
 #[allow(dead_code)] // versioned composition is wired into Agent construction next
 mod registry_composition_v3;
+#[cfg(test)]
+mod registry_composition_v3_tests;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
