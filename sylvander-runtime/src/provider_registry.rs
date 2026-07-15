@@ -142,8 +142,10 @@ impl AgentRegistry {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
             require_expected(&transaction, &provider_id, expected_active)?;
-            if let Some(existing) = definition_digest(&transaction, &provider_id, revision)? {
-                return if existing == digest {
+            if let Some(existing) =
+                verified_provider_revision(&transaction, &provider_id, revision, expected_active)?
+            {
+                return if existing.digest == digest {
                     transaction.commit().map_err(storage)
                 } else {
                     Err(ProviderRegistryError::RevisionCollision {
@@ -177,7 +179,7 @@ impl AgentRegistry {
         provider_id: &str,
         revision: u64,
         expected_active: u64,
-    ) -> Result<(), ProviderRegistryError> {
+    ) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
         set_head(self, provider_id, revision, expected_active, false).await
     }
 
@@ -186,7 +188,7 @@ impl AgentRegistry {
         provider_id: &str,
         target_revision: u64,
         expected_active: u64,
-    ) -> Result<(), ProviderRegistryError> {
+    ) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
         set_head(self, provider_id, target_revision, expected_active, true).await
     }
 
@@ -266,7 +268,8 @@ impl AgentRegistry {
                          ) AS active_exists
                      )
                      SELECT state.active_revision, state.has_revisions, state.active_exists,
-                            d.revision, d.definition_json, d.digest, d.created_at
+                            d.revision, d.definition_json, d.digest,
+                            d.credential_binding_id, d.created_at
                      FROM state
                      LEFT JOIN provider_definitions d
                        ON d.provider_id=?1 AND (?2 IS NULL OR d.revision < ?2)
@@ -310,6 +313,7 @@ impl AgentRegistry {
                     required_column(row.get(4).map_err(storage)?)?,
                     required_column(row.get(5).map_err(storage)?)?,
                     required_column(row.get(6).map_err(storage)?)?,
+                    required_column(row.get(7).map_err(storage)?)?,
                     active,
                 )?);
             }
@@ -339,6 +343,7 @@ fn decode_revision(
     revision: i64,
     definition_json: String,
     stored_digest: String,
+    stored_credential_binding_id: String,
     created_at: i64,
     active_revision: u64,
 ) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
@@ -355,6 +360,11 @@ fn decode_revision(
             AgentRegistryError::Integrity("Provider revision digest mismatch".into()).into(),
         );
     }
+    if definition.credential_binding_id != stored_credential_binding_id {
+        return Err(
+            AgentRegistryError::Integrity("Provider credential binding mismatch".into()).into(),
+        );
+    }
     Ok(StoredRevision {
         definition,
         digest: stored_digest,
@@ -369,7 +379,7 @@ async fn set_head(
     target: u64,
     expected: u64,
     rollback: bool,
-) -> Result<(), ProviderRegistryError> {
+) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
     let provider_id = provider_id.to_owned();
     registry
         .run_with(move |connection| {
@@ -388,12 +398,12 @@ async fn set_head(
             if rollback && target >= actual {
                 return Err(ProviderRegistryError::InvalidRollback { target, actual });
             }
-            if definition_digest(&transaction, &provider_id, target)?.is_none() {
-                return Err(ProviderRegistryError::UnknownRevision {
-                    provider_id,
-                    revision: target,
-                });
-            }
+            let mut target_revision =
+                verified_provider_revision(&transaction, &provider_id, target, actual)?
+                    .ok_or_else(|| ProviderRegistryError::UnknownRevision {
+                        provider_id: provider_id.clone(),
+                        revision: target,
+                    })?;
             let changed = transaction
                 .execute(
                     "UPDATE provider_registry_heads SET active_revision=?2,updated_at=?3 \
@@ -410,9 +420,48 @@ async fn set_head(
                     actual,
                 });
             }
-            transaction.commit().map_err(storage)
+            transaction.commit().map_err(storage)?;
+            target_revision.active = true;
+            Ok(target_revision)
         })
         .await
+}
+
+fn verified_provider_revision(
+    connection: &Connection,
+    provider_id: &str,
+    revision: u64,
+    active_revision: u64,
+) -> Result<Option<StoredRevision<ProviderDefinition>>, ProviderRegistryError> {
+    let row = connection
+        .query_row(
+            "SELECT revision,definition_json,digest,credential_binding_id,created_at \
+             FROM provider_definitions WHERE provider_id=?1 AND revision=?2",
+            params![provider_id, sql_index(revision)?],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage)?;
+    row.map(|(revision, json, digest, binding, created_at)| {
+        decode_revision(
+            provider_id,
+            revision,
+            json,
+            digest,
+            binding,
+            created_at,
+            active_revision,
+        )
+    })
+    .transpose()
 }
 
 fn insert_definition(
