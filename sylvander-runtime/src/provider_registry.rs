@@ -5,6 +5,15 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::registry_domain::{ProviderDefinition, StoredRevision, canonical_definition};
 
+const MAX_PROVIDER_PAGE_SIZE: u16 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderRevisionPage {
+    pub active_revision: u64,
+    pub revisions: Vec<StoredRevision<ProviderDefinition>>,
+    pub next_before_revision: Option<u64>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ProviderRegistryError {
     #[error("invalid Provider definition")]
@@ -183,6 +192,132 @@ impl AgentRegistry {
         }
         Ok(stored)
     }
+
+    /// Load one bounded Provider revision page in a single database query.
+    pub(crate) async fn inspect_provider_page(
+        &self,
+        provider_id: &str,
+        before_revision: Option<u64>,
+        limit: u16,
+    ) -> Result<ProviderRevisionPage, ProviderRegistryError> {
+        if !(1..=MAX_PROVIDER_PAGE_SIZE).contains(&limit) || before_revision == Some(0) {
+            return Err(
+                AgentRegistryError::Invalid("Provider page bounds are invalid".into()).into(),
+            );
+        }
+        let provider_id = provider_id.to_owned();
+        let before = before_revision.map(sql_index).transpose()?;
+        let sql_limit = i64::from(limit) + 1;
+        self.run_with(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "WITH state AS (
+                       SELECT
+                         (SELECT active_revision FROM provider_registry_heads WHERE provider_id=?1) AS active_revision,
+                         EXISTS(SELECT 1 FROM provider_definitions WHERE provider_id=?1) AS has_revisions,
+                         EXISTS(
+                           SELECT 1 FROM provider_registry_heads h
+                           JOIN provider_definitions d
+                             ON d.provider_id=h.provider_id AND d.revision=h.active_revision
+                           WHERE h.provider_id=?1
+                         ) AS active_exists
+                     )
+                     SELECT state.active_revision, state.has_revisions, state.active_exists,
+                            d.revision, d.definition_json, d.digest, d.created_at
+                     FROM state
+                     LEFT JOIN provider_definitions d
+                       ON d.provider_id=?1 AND (?2 IS NULL OR d.revision < ?2)
+                     ORDER BY d.revision DESC
+                     LIMIT ?3",
+                )
+                .map_err(storage)?;
+            let mut rows = statement
+                .query(params![provider_id, before, sql_limit])
+                .map_err(storage)?;
+            let mut active_revision = None;
+            let mut revisions = Vec::with_capacity(usize::from(limit) + 1);
+            while let Some(row) = rows.next().map_err(storage)? {
+                let active = row.get::<_, Option<i64>>(0).map_err(storage)?;
+                let has_revisions = row.get::<_, bool>(1).map_err(storage)?;
+                let active_exists = row.get::<_, bool>(2).map_err(storage)?;
+                let Some(active) = active else {
+                    return if has_revisions {
+                        Err(AgentRegistryError::Integrity(
+                            "Provider registry head is missing".into(),
+                        )
+                        .into())
+                    } else {
+                        Err(ProviderRegistryError::UnknownProvider(provider_id))
+                    };
+                };
+                if !active_exists {
+                    return Err(AgentRegistryError::Integrity(
+                        "Provider active revision is missing".into(),
+                    )
+                    .into());
+                }
+                let active = sql_revision(active)?;
+                active_revision = Some(active);
+                let Some(revision) = row.get::<_, Option<i64>>(3).map_err(storage)? else {
+                    continue;
+                };
+                revisions.push(decode_revision(
+                    &provider_id,
+                    revision,
+                    required_column(row.get(4).map_err(storage)?)?,
+                    required_column(row.get(5).map_err(storage)?)?,
+                    required_column(row.get(6).map_err(storage)?)?,
+                    active,
+                )?);
+            }
+            let active_revision = active_revision
+                .ok_or_else(|| ProviderRegistryError::UnknownProvider(provider_id.clone()))?;
+            let next_before_revision = (revisions.len() > usize::from(limit))
+                .then(|| revisions[usize::from(limit) - 1].definition.revision);
+            revisions.truncate(usize::from(limit));
+            Ok(ProviderRevisionPage {
+                active_revision,
+                revisions,
+                next_before_revision,
+            })
+        })
+        .await
+    }
+}
+
+fn required_column<T>(value: Option<T>) -> Result<T, ProviderRegistryError> {
+    value.ok_or_else(|| {
+        AgentRegistryError::Integrity("Provider revision row is incomplete".into()).into()
+    })
+}
+
+fn decode_revision(
+    provider_id: &str,
+    revision: i64,
+    definition_json: String,
+    stored_digest: String,
+    created_at: i64,
+    active_revision: u64,
+) -> Result<StoredRevision<ProviderDefinition>, ProviderRegistryError> {
+    let revision = sql_revision(revision)?;
+    let definition: ProviderDefinition =
+        serde_json::from_str(&definition_json).map_err(AgentRegistryError::serde)?;
+    validate(&definition)?;
+    if definition.id != provider_id || definition.revision != revision {
+        return Err(AgentRegistryError::Integrity("Provider identity mismatch".into()).into());
+    }
+    let (expected_json, expected_digest) = canonical_definition(&definition)?;
+    if definition_json != expected_json || stored_digest != expected_digest {
+        return Err(
+            AgentRegistryError::Integrity("Provider revision digest mismatch".into()).into(),
+        );
+    }
+    Ok(StoredRevision {
+        definition,
+        digest: stored_digest,
+        created_at,
+        active: revision == active_revision,
+    })
 }
 
 async fn set_head(
