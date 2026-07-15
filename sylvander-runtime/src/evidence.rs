@@ -459,6 +459,58 @@ impl EvidenceStore {
         .await
     }
 
+    /// Persist a mutation intent before any registry state is changed.
+    pub async fn begin_administration_mutation(
+        &self,
+        audit: AdministrationAudit,
+    ) -> Result<(), EvidenceError> {
+        if audit.outcome != "pending" || audit.error_code.is_some() {
+            return Err(EvidenceError::InvalidAuditState);
+        }
+        self.run(move |connection| {
+            let version = audit.version.map(as_i64).transpose()?;
+            connection
+                .execute(
+                    "INSERT INTO administration_audit_intents(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![audit.id, audit.occurred_at, audit.request_id, audit.principal_digest, audit.channel_instance_id, audit.transport, audit.operation, audit.resource_kind, audit.resource_digest, version],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Atomically turn one pending mutation intent into a terminal audit.
+    pub async fn finish_administration_mutation(
+        &self,
+        id: String,
+        outcome: &'static str,
+        error_code: Option<String>,
+    ) -> Result<(), EvidenceError> {
+        if !matches!(outcome, "succeeded" | "failed") {
+            return Err(EvidenceError::InvalidAuditState);
+        }
+        self.run(move |connection| {
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(EvidenceError::sqlite)?;
+            let inserted = transaction
+                .execute(
+                    "INSERT INTO administration_audit(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code) SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, ?2, ?3 FROM administration_audit_intents WHERE id=?1",
+                    params![id, outcome, error_code],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            if inserted != 1 {
+                return Err(EvidenceError::InvalidAuditState);
+            }
+            transaction
+                .execute("DELETE FROM administration_audit_intents WHERE id=?1", [&id])
+                .map_err(EvidenceError::sqlite)?;
+            transaction.commit().map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
     /// Read a bounded newest-first view without registry definitions or secrets.
     pub async fn administration_audits(
         &self,
@@ -467,7 +519,7 @@ impl EvidenceStore {
         self.run(move |connection| {
             let mut statement = connection
                 .prepare(
-                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code FROM administration_audit ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code FROM administration_audit UNION ALL SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, 'pending', NULL FROM administration_audit_intents ORDER BY occurred_at DESC, id DESC LIMIT ?1",
                 )
                 .map_err(EvidenceError::sqlite)?;
             let rows = statement
@@ -815,12 +867,20 @@ CREATE TABLE IF NOT EXISTS administration_audit (
   CHECK (version IS NULL OR version > 0),
   CHECK (outcome IN ('succeeded', 'failed', 'denied'))
 );
+CREATE TABLE IF NOT EXISTS administration_audit_intents (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, resource_kind TEXT NOT NULL,
+  resource_digest TEXT NOT NULL, version INTEGER,
+  CHECK (version IS NULL OR version > 0)
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_authorization_denials_time ON authorization_denials(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_admin_audit_time ON agent_administration_audit(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_administration_audit_time ON administration_audit(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_administration_audit_intents_time ON administration_audit_intents(occurred_at DESC);
 ";
 
 #[cfg(test)]
@@ -1043,6 +1103,56 @@ mod tests {
                     .any(|window| window == marker)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn administration_mutation_intent_survives_crash_and_finishes_once() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("mutation-audit.db");
+        let pending = AdministrationAudit {
+            id: "registry-mutation-1".into(),
+            occurred_at: 50,
+            request_id: "request-5".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "activate_credential_generation".into(),
+            resource_kind: "credential".into(),
+            resource_digest: "binding-sha256".into(),
+            version: Some(3),
+            outcome: "pending".into(),
+            error_code: None,
+        };
+        let store = EvidenceStore::open(&path).await.unwrap();
+        store
+            .begin_administration_mutation(pending.clone())
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = EvidenceStore::open(&path).await.unwrap();
+        assert_eq!(reopened.administration_audits(10).await.unwrap(), [pending]);
+        reopened
+            .finish_administration_mutation(
+                "registry-mutation-1".into(),
+                "failed",
+                Some("active_generation_conflict".into()),
+            )
+            .await
+            .unwrap();
+        let terminal = reopened.administration_audits(10).await.unwrap();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].outcome, "failed");
+        assert_eq!(
+            terminal[0].error_code.as_deref(),
+            Some("active_generation_conflict")
+        );
+        assert!(matches!(
+            reopened
+                .finish_administration_mutation("registry-mutation-1".into(), "succeeded", None,)
+                .await,
+            Err(EvidenceError::InvalidAuditState)
+        ));
     }
 
     #[tokio::test]
