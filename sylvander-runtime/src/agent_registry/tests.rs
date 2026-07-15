@@ -81,7 +81,7 @@ async fn legacy_file_migrates_once_and_enforces_registry_foreign_keys() {
         })
         .await
         .unwrap();
-    assert_eq!(migration_rows, 1);
+    assert_eq!(migration_rows, REGISTRY_SCHEMA_VERSION);
 }
 
 #[tokio::test]

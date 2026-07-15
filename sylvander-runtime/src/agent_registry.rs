@@ -537,8 +537,8 @@ fn run_registry_migrations(connection: &mut Connection) -> Result<(), AgentRegis
 }
 
 const REGISTRY_COMPONENT: &str = "runtime_registry";
-const REGISTRY_SCHEMA_VERSION: i64 = 1;
-const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[(1, REGISTRY_SCHEMA_V1)];
+const REGISTRY_SCHEMA_VERSION: i64 = 2;
+const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[(1, REGISTRY_SCHEMA_V1), (2, REGISTRY_SCHEMA_V2)];
 
 const MIGRATION_SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -599,6 +599,39 @@ CREATE TABLE model_registry_heads (
     FOREIGN KEY(provider_id, model_id, active_revision)
         REFERENCES model_definitions(provider_id, model_id, revision)
 );
+";
+
+const REGISTRY_SCHEMA_V2: &str = r"
+CREATE TABLE agent_registry_snapshots (
+    agent_id TEXT NOT NULL,
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    provider_id TEXT NOT NULL,
+    provider_revision INTEGER NOT NULL CHECK(provider_revision > 0),
+    digest TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(agent_id, agent_revision),
+    UNIQUE(agent_id, agent_revision, provider_id),
+    FOREIGN KEY(agent_id, agent_revision)
+        REFERENCES agent_definitions(agent_id, revision),
+    FOREIGN KEY(provider_id, provider_revision)
+        REFERENCES provider_definitions(provider_id, revision)
+);
+CREATE TABLE agent_registry_snapshot_models (
+    agent_id TEXT NOT NULL,
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    provider_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_revision INTEGER NOT NULL CHECK(model_revision > 0),
+    is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)),
+    PRIMARY KEY(agent_id, agent_revision, provider_id, model_id),
+    FOREIGN KEY(agent_id, agent_revision, provider_id)
+        REFERENCES agent_registry_snapshots(agent_id, agent_revision, provider_id),
+    FOREIGN KEY(provider_id, model_id, model_revision)
+        REFERENCES model_definitions(provider_id, model_id, revision)
+);
+CREATE UNIQUE INDEX one_default_model_per_agent_snapshot
+    ON agent_registry_snapshot_models(agent_id, agent_revision)
+    WHERE is_default = 1;
 ";
 
 const SCHEMA: &str = r"
