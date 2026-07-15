@@ -237,39 +237,42 @@ impl RuntimeRevisionProvider {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
         {
-            return session.effective_config.map_or_else(
-                || {
-                    Err(RuntimeError::Config(format!(
-                        "durable session {session_id} has no effective Agent revision"
-                    )))
-                },
-                |effective| {
-                    if &effective.agent_id == agent_id {
-                        Ok(effective.agent_revision)
-                    } else {
-                        Err(RuntimeError::Config(format!(
-                            "session {session_id} is bound to Agent {}, not {agent_id}",
-                            effective.agent_id
-                        )))
-                    }
-                },
-            );
+            return self.bound_stored_revision(agent_id, &session).await;
         }
         let ephemeral = self
             .ephemeral
             .read()
             .await
             .get(session_id)
-            .and_then(|session| session.effective_config.as_ref())
             .cloned()
             .ok_or_else(|| RuntimeError::Config(format!("session {session_id} is not bound")))?;
-        if &ephemeral.agent_id != agent_id {
+        self.bound_stored_revision(agent_id, &ephemeral).await
+    }
+
+    async fn bound_stored_revision(
+        &self,
+        agent_id: &AgentId,
+        session: &StoredSession,
+    ) -> Result<u64, RuntimeError> {
+        let effective = session.effective_config.as_ref().ok_or_else(|| {
+            RuntimeError::SessionBinding(SessionBindingError::UnresolvedPins(session.id.clone()))
+        })?;
+        if &effective.agent_id != agent_id {
             return Err(RuntimeError::Config(format!(
-                "session {session_id} is bound to Agent {}, not {agent_id}",
-                ephemeral.agent_id
+                "session {} is bound to Agent {}, not {agent_id}",
+                session.id, effective.agent_id
             )));
         }
-        Ok(ephemeral.agent_revision)
+        let configured = self
+            .configured_revision(&effective.agent_id, effective.agent_revision)
+            .await?;
+        let closure = close_session_revision_pins(&self.registry, session, &configured).await?;
+        if closure.changed {
+            return Err(RuntimeError::SessionBinding(
+                SessionBindingError::UnresolvedPins(session.id.clone()),
+            ));
+        }
+        Ok(closure.effective.agent_revision)
     }
 }
 
@@ -1179,6 +1182,15 @@ impl RuntimeUiService {
                 ));
             }
         }
+        if let Some(provider) = &self.revision_provider {
+            let agent_id = session.agents.first().expect("non-empty checked above");
+            provider
+                .bound_stored_revision(agent_id, &session)
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, operation, "session registry binding is invalid")
+                })?;
+        }
         Ok(session)
     }
 }
@@ -1977,6 +1989,8 @@ async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), Runti
 pub enum SessionBindingError {
     #[error("session {0} must have exactly one Agent")]
     InvalidMembership(SessionId),
+    #[error("session {0} has unresolved registry revision pins")]
+    UnresolvedPins(SessionId),
     #[error("session {session_id} belongs to Agent {expected}, not {actual}")]
     AgentMismatch {
         session_id: SessionId,
@@ -2439,6 +2453,18 @@ model_name = "model-a"
             .unwrap();
         assert!(closed.changed);
         assert_eq!(closed.effective.require_revision_pins().unwrap(), pins);
+        runtime.session_store.save(&legacy).await.unwrap();
+        assert!(
+            runtime
+                .revision_provider
+                .as_ref()
+                .unwrap()
+                .revision_for_session(&AgentId::new("assistant"), &legacy.id)
+                .await
+                .is_err(),
+            "execution routing must not repair unresolved pins on demand"
+        );
+        runtime.session_store.delete(&legacy.id).await.unwrap();
 
         legacy.effective_config = Some(effective.clone());
         let already_closed = close_session_revision_pins(registry, &legacy, active_agent)
