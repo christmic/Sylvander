@@ -18,7 +18,10 @@ use crate::agent_registry::AgentRegistry;
 use crate::credential_registry::{
     CredentialRegistryError, CredentialSecretResolver, ResolvedCredential,
 };
-use crate::registry_domain::ProviderDefinition;
+use crate::registry_domain::{
+    CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
+    parse_model_capabilities,
+};
 
 pub(crate) type CredentialLeaseFuture<'a> = Pin<
     Box<
@@ -155,6 +158,14 @@ impl std::fmt::Debug for RequestScopedAnthropicProvider {
 /// Builds a provider adapter from an already pinned registry revision.
 /// Implementations must not consult mutable provider or Agent heads.
 pub(crate) trait ProviderAdapterFactory: Send + Sync {
+    /// Validate one pinned Provider/Model pair without resolving credentials
+    /// or performing network I/O.
+    fn preflight(
+        &self,
+        provider: &ProviderDefinition,
+        model: &ModelDefinition,
+    ) -> Result<(), ProviderFactoryError>;
+
     fn create(
         &self,
         provider: ProviderDefinition,
@@ -183,9 +194,44 @@ impl AnthropicProviderFactory {
             .map(|_| ())
             .map_err(|_| ProviderFactoryError::InvalidDefinition)
     }
+
+    fn preflight_model(
+        provider: &ProviderDefinition,
+        model: &ModelDefinition,
+    ) -> Result<(), ProviderFactoryError> {
+        Self::validate_definition(provider)?;
+        if model.provider_id != provider.id {
+            return Err(ProviderFactoryError::ModelProviderMismatch);
+        }
+        let capabilities =
+            parse_model_capabilities(&model.capabilities).map_err(|error| match error {
+                ModelCapabilityError::Unknown(_) => {
+                    ProviderFactoryError::UnsupportedModelCapability
+                }
+                _ => ProviderFactoryError::InvalidModelDefinition,
+            })?;
+        model
+            .validate()
+            .map_err(|_| ProviderFactoryError::InvalidModelDefinition)?;
+        if capabilities
+            .into_iter()
+            .any(|capability| !anthropic_supports(capability))
+        {
+            return Err(ProviderFactoryError::UnsupportedModelCapability);
+        }
+        Ok(())
+    }
 }
 
 impl ProviderAdapterFactory for AnthropicProviderFactory {
+    fn preflight(
+        &self,
+        provider: &ProviderDefinition,
+        model: &ModelDefinition,
+    ) -> Result<(), ProviderFactoryError> {
+        Self::preflight_model(provider, model)
+    }
+
     fn create(
         &self,
         provider: ProviderDefinition,
@@ -210,6 +256,23 @@ pub(crate) enum ProviderFactoryError {
     UnsupportedKind,
     #[error("provider definition is invalid")]
     InvalidDefinition,
+    #[error("model definition is invalid")]
+    InvalidModelDefinition,
+    #[error("model provider does not match adapter definition")]
+    ModelProviderMismatch,
+    #[error("model capability is unsupported by provider adapter")]
+    UnsupportedModelCapability,
+}
+
+const fn anthropic_supports(capability: CanonicalModelCapability) -> bool {
+    match capability {
+        CanonicalModelCapability::ExtendedThinking
+        | CanonicalModelCapability::PromptCaching
+        | CanonicalModelCapability::StructuredOutput
+        | CanonicalModelCapability::ToolUse
+        | CanonicalModelCapability::Vision
+        | CanonicalModelCapability::DocumentInput => true,
+    }
 }
 
 impl ModelProvider for RequestScopedAnthropicProvider {
