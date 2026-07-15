@@ -32,6 +32,26 @@ source sylvander.env
 cargo run -p sylvander-tui --locked -- /tmp/sylvander.sock
 ```
 
+A desktop host can bind one TUI process to one durable session without changing
+the standalone interaction model:
+
+```bash
+cargo run -p sylvander-tui --locked -- \
+  --socket /tmp/sylvander.sock \
+  --session session-id \
+  --workspace /path/to/workspace
+```
+
+The equivalent environment variables are `SYLVANDER_SOCKET`,
+`SYLVANDER_SESSION`, and `SYLVANDER_WORKSPACE`. Command-line values win over
+environment values. Omitting `--session` preserves the Welcome and session
+picker flow.
+
+When Ghostty supplies a session-scoped host capability, the bound TUI also
+exposes `/preview image <workspace-path>` and `/preview web <https-url>`. The
+host socket and random capability token are injected by Ghostty, are not shown
+in `/config`, and must not be configured manually for ordinary standalone use.
+
 Select another built-in theme:
 
 ```bash

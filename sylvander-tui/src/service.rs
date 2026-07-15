@@ -76,6 +76,11 @@ impl AgentService {
 
     pub async fn execute(&mut self, action: Action) -> std::io::Result<()> {
         let message = match action {
+            Action::HostPreview { .. } => {
+                return Err(std::io::Error::other(
+                    "host preview must be handled by the local runtime",
+                ));
+            }
             Action::SendChat {
                 text,
                 attachments,

@@ -28,7 +28,9 @@ fn run_git_diff(workspace: &Path, staged: bool) -> Result<String, String> {
         .arg("-C")
         .arg(workspace)
         .args(["--no-pager", "diff", "--no-ext-diff", "--no-color"])
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("SYLVANDER_HOST_SOCKET")
+        .env_remove("SYLVANDER_HOST_TOKEN");
     if staged {
         command.arg("--cached");
     }
@@ -59,6 +61,8 @@ fn append_untracked_diffs(workspace: &Path, diff: &mut String) -> Result<(), Str
         .arg(workspace)
         .args(["ls-files", "--others", "--exclude-standard", "-z"])
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env_remove("SYLVANDER_HOST_SOCKET")
+        .env_remove("SYLVANDER_HOST_TOKEN")
         .output()
         .map_err(|error| format!("could not list untracked files: {error}"))?;
     if !listed.status.success() {
@@ -98,6 +102,8 @@ fn append_untracked_diffs(workspace: &Path, diff: &mut String) -> Result<(), Str
                 path,
             ])
             .env("GIT_OPTIONAL_LOCKS", "0")
+            .env_remove("SYLVANDER_HOST_SOCKET")
+            .env_remove("SYLVANDER_HOST_TOKEN")
             .output()
             .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
         if !matches!(output.status.code(), Some(0 | 1)) {
