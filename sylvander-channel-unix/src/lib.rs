@@ -1692,9 +1692,20 @@ mod tests {
     impl sylvander_channel::UiService for EmptyUiService {
         async fn authorize_message(
             &self,
-            _boundary: &sylvander_protocol::BoundaryContext,
-            _message: &ClientMsg,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &ClientMsg,
         ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && !boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin"))
+            {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "registry_admin",
+                ));
+            }
             Ok(())
         }
 
@@ -1748,6 +1759,45 @@ mod tests {
             _feedback: sylvander_protocol::RunFeedback,
         ) -> Result<String, sylvander_protocol::BoundaryError> {
             Ok("feedback-1".into())
+        }
+
+        async fn registry_admin(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::RegistryAdminRequest,
+        ) -> sylvander_protocol::RegistryAdminResponse {
+            assert!(
+                boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin")),
+                "non-administrator reached registry dispatch"
+            );
+            let sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                provider_id,
+                revision,
+            } = request
+            else {
+                unreachable!()
+            };
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(
+                    sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                        revision: sylvander_protocol::ProviderRevisionView {
+                            definition: sylvander_protocol::RedactedProviderDefinition {
+                                provider_id,
+                                revision,
+                                kind: "mock".into(),
+                                base_url_sha256: "base-digest".into(),
+                                credential_binding_id_sha256: "binding-digest".into(),
+                            },
+                            digest_sha256: "definition-digest".into(),
+                            created_at_unix_secs: 7,
+                            active: true,
+                        },
+                    },
+                ),
+            }
         }
     }
 
@@ -2005,6 +2055,86 @@ mod tests {
         ));
         assert!(!json.contains("private-provider"));
         assert!(!json.contains("42"));
+    }
+
+    async fn dispatch_registry_admin_as(
+        principal: sylvander_protocol::AuthenticatedPrincipal,
+    ) -> ServerMsg {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(Arc::new(EmptyUiService)),
+            readiness: None,
+        };
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "inspect_provider_revision",
+                "provider_id": "provider-a",
+                "revision": 9
+            }
+        }))
+        .expect("decode registry request");
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            principal,
+            "unix-test",
+            "unix",
+            "request-1",
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg_for_client(
+            request,
+            ClientHandler {
+                boundary: &boundary,
+                ctx: &context,
+                agent_id: &AgentId::new("agent-1"),
+                tx: &tx,
+                runtime: &runtime_info(),
+                runtime_control: None,
+                hub: &Arc::new(Mutex::new(RelayHub::default())),
+                client_id: 1,
+            },
+        )
+        .await;
+        rx.recv().await.expect("registry transport response")
+    }
+
+    #[tokio::test]
+    async fn registry_admin_round_trip_preserves_success_response() {
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        principal.roles.push("admin".into());
+        let response = dispatch_registry_admin_as(principal).await;
+        let wire = serde_json::to_string(&response).expect("encode registry response");
+        let decoded: ServerMsg = serde_json::from_str(&wire).expect("decode registry response");
+
+        assert!(matches!(
+            decoded,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected { revision }
+                    if revision.definition.provider_id == "provider-a"
+                        && revision.definition.revision == 9
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_non_administrator_is_rejected_before_dispatch() {
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "reader",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        assert!(matches!(
+            dispatch_registry_admin_as(principal).await,
+            ServerMsg::BoundaryDenied { error }
+                if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+                    && error.operation == "registry_admin"
+        ));
     }
 
     #[tokio::test]
