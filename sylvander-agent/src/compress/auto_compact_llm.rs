@@ -90,7 +90,7 @@ impl AutoCompactLlm for AgentLoopAutoCompactLlm {
                 .messages()
                 .create(&req)
                 .await
-                .map_err(|e| AgentLoopError::Compression(format!("auto_compact: {e}")))?;
+                .map_err(|source| AgentLoopError::Llm { retries: 0, source })?;
 
             let text = response
                 .content

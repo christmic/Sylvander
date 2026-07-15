@@ -19,6 +19,7 @@
 
 pub mod auto_compact_llm;
 pub mod disk;
+pub mod error;
 pub mod layer;
 pub mod layers;
 pub mod pipeline;

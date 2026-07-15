@@ -580,6 +580,16 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Result<sylvander_protocol::CompactionReport, String> {
+        self.compact_session_typed(session_id)
+            .await
+            .map_err(|error| error.compatibility_reason().into())
+    }
+
+    async fn compact_session_typed(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CompactionReport, crate::compress::error::CompactionError> {
+        use crate::compress::error::{CompactionError, CompactionFailureCode};
         if self
             .inner
             .active_turns
@@ -587,7 +597,7 @@ impl AgentRun {
             .await
             .contains_key(session_id)
         {
-            return Err("interrupt active work before compacting".into());
+            return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
         let lock = self.get_session_lock(session_id).await;
         let _guard = lock.lock().await;
@@ -598,7 +608,7 @@ impl AgentRun {
             .await
             .contains_key(session_id)
         {
-            return Err("interrupt active work before compacting".into());
+            return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
         let mut history = self
             .inner
@@ -606,17 +616,19 @@ impl AgentRun {
             .read()
             .await
             .get(session_id)
-            .ok_or_else(|| format!("unknown session: {session_id}"))?
+            .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?
             .history_snapshot();
         if history.len() <= 4 {
-            return Err("not enough conversation history to compact".into());
+            return Err(CompactionError::new(
+                CompactionFailureCode::InsufficientHistory,
+            ));
         }
         let runtime = self.inner.runtime_models.read().await;
         let model = runtime
             .available
             .get(&runtime.current_model)
             .cloned()
-            .expect("current model belongs to runtime catalog");
+            .ok_or_else(|| CompactionError::new(CompactionFailureCode::Other))?;
         drop(runtime);
         let usage = sylvander_llm_anthropic::api::types::Usage {
             input_tokens: model.context_window,
@@ -635,13 +647,16 @@ impl AgentRun {
             .with_trigger_ratio(0.0)
             .apply(&mut context)
             .await;
-        if let Some(reason) = report.failure.clone() {
-            return Err(reason);
+        if let Some(error) =
+            crate::compress::layer::first_failure_error(std::slice::from_ref(&report))
+        {
+            return Err(error);
         }
         let layers = vec![report];
         self.inner
             .apply_compacted_history(session_id, &history, &layers)
-            .await?;
+            .await
+            .map_err(|_| CompactionError::new(CompactionFailureCode::Persistence))?;
         Ok(public_compaction_report(false, &layers))
     }
 
@@ -2195,21 +2210,25 @@ impl AgentRunInner {
                     let persisted = self
                         .apply_compacted_history(&session_id, &history, &layers)
                         .await;
-                    if let Some(reason) = crate::compress::layer::first_failure(&layers) {
+                    if let Some(error) = crate::compress::layer::first_failure_error(&layers) {
                         self.publish_stream(
                             &session_id,
                             crate::bus::StreamEvent::CompactionFailed {
                                 automatic: true,
-                                reason: reason.into(),
+                                reason: error.compatibility_reason().into(),
                             },
                         )
                         .await;
-                    } else if let Err(reason) = persisted {
+                    } else if persisted.is_err() {
                         self.publish_stream(
                             &session_id,
                             crate::bus::StreamEvent::CompactionFailed {
                                 automatic: true,
-                                reason,
+                                reason: crate::compress::error::CompactionError::new(
+                                    crate::compress::error::CompactionFailureCode::Persistence,
+                                )
+                                .compatibility_reason()
+                                .into(),
                             },
                         )
                         .await;
@@ -2922,6 +2941,45 @@ mod tests {
         assert_eq!(report.removed_messages, 2);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(run.get_session(&session_id).await.unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_failures_are_typed_before_string_facade() {
+        use crate::compress::error::CompactionFailureCode;
+
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build()
+            .unwrap();
+        let missing = SessionId::new("missing");
+        assert_eq!(
+            run.compact_session_typed(&missing).await.unwrap_err().code,
+            CompactionFailureCode::SessionUnavailable
+        );
+        let session_id = run.join_session(test_metadata()).await;
+        assert_eq!(
+            run.compact_session_typed(&session_id)
+                .await
+                .unwrap_err()
+                .code,
+            CompactionFailureCode::InsufficientHistory
+        );
+        let (interrupt, _receiver) = oneshot::channel();
+        run.inner.active_turns.lock().await.insert(
+            session_id.clone(),
+            ActiveTurn {
+                id: uuid::Uuid::new_v4(),
+                interrupt,
+            },
+        );
+        assert_eq!(
+            run.compact_session_typed(&session_id)
+                .await
+                .unwrap_err()
+                .code,
+            CompactionFailureCode::Busy
+        );
     }
 
     #[test]
