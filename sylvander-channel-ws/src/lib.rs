@@ -1045,6 +1045,7 @@ mod tests {
                 id: id.into(),
                 provider: provider.into(),
                 capabilities: 0,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,

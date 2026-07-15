@@ -1,7 +1,8 @@
 use sylvander_protocol::{
     AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, ModelSelection,
-    RegistryAdminResponse,
+    AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext, ModelCapability, ModelSelection,
+    RegistryAdminResponse, SessionConfigOverrides, SessionConfigUpdateRequest,
+    SessionCreateRequest,
 };
 use tempfile::TempDir;
 
@@ -314,9 +315,20 @@ model_name = "shared"
             definition: sylvander_protocol::ModelDefinitionDraft {
                 context_window: 100_000,
                 max_output_tokens: 4096,
-                capabilities: vec!["tool_use".into()],
-                lifecycle: sylvander_protocol::ModelLifecycleDraft::Active {},
-                pricing: None,
+                capabilities: vec![
+                    "vision".into(),
+                    "tool_use".into(),
+                    "extended_thinking".into(),
+                ],
+                lifecycle: sylvander_protocol::ModelLifecycleDraft::Deprecated {
+                    replacement: Some("alpha/shared".into()),
+                },
+                pricing: Some(sylvander_protocol::ModelPricingDraft {
+                    input_usd_micros_per_million: 11,
+                    output_usd_micros_per_million: 29,
+                    cache_write_usd_micros_per_million: Some(7),
+                    cache_read_usd_micros_per_million: Some(3),
+                }),
             },
         },
     )
@@ -328,9 +340,7 @@ model_name = "shared"
 
     let mut next = config.agents[0].clone();
     next.revision = 2;
-    next.spec.model.provider = "beta".into();
-    next.spec.model.model_name = "shared".into();
-    next.spec.model.allowed_models = vec![model("beta")];
+    next.spec.model.allowed_models = vec![model("alpha"), model("beta")];
     let updated = sylvander_channel::UiService::agent_admin(
         runtime.ui_service.as_ref(),
         &administrator,
@@ -354,9 +364,94 @@ model_name = "shared"
         .await,
         AgentAdminResponse::Success { .. }
     ));
+
+    let discovered =
+        sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &administrator)
+            .await
+            .unwrap();
+    assert_dynamic_beta_descriptor(&discovered);
+    let created = sylvander_channel::UiService::create_session(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        SessionCreateRequest {
+            agent_id: AgentId::new("assistant"),
+            label: "dynamic beta".into(),
+            channel_id: None,
+            overrides: SessionConfigOverrides::default(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.effective.model_selection(), model("alpha"));
+    assert_eq!(created.effective.agent_revision, 2);
+
+    let ambiguous = sylvander_channel::UiService::update_session_config(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        SessionConfigUpdateRequest {
+            session_id: created.session_id.clone(),
+            expected_revision: created.revision,
+            overrides: SessionConfigOverrides {
+                model_id: Some("shared".into()),
+                ..SessionConfigOverrides::default()
+            },
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        ambiguous.code,
+        sylvander_protocol::BoundaryErrorCode::InvalidScope
+    );
+    assert!(ambiguous.message.contains("ambiguous"));
+    let unchanged = sylvander_channel::UiService::session_config(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        &created.session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(unchanged.revision, created.revision);
+    assert_eq!(unchanged.overrides, created.overrides);
+
+    let updated = sylvander_channel::UiService::update_session_config(
+        runtime.ui_service.as_ref(),
+        &administrator,
+        SessionConfigUpdateRequest {
+            session_id: created.session_id.clone(),
+            expected_revision: created.revision,
+            overrides: SessionConfigOverrides {
+                model: Some(model("beta")),
+                ..SessionConfigOverrides::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated.effective.model_selection(), model("beta"));
+    assert_eq!(updated.effective.agent_revision, 2);
+    assert_eq!(updated.effective.provider_revision, Some(1));
+    assert_eq!(updated.effective.model_revision, Some(1));
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(original).await.unwrap();
+    let rediscovered = sylvander_channel::UiService::discover_agents(
+        restarted.ui_service.as_ref(),
+        &administrator,
+    )
+    .await
+    .unwrap();
+    assert_dynamic_beta_descriptor(&rediscovered);
+    let restored = sylvander_channel::UiService::session_config(
+        restarted.ui_service.as_ref(),
+        &administrator,
+        &created.session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.revision, updated.revision);
+    assert_eq!(restored.overrides, updated.overrides);
+    assert_eq!(restored.effective, updated.effective);
     let active = restarted
         .ui_service
         .agent_registry
@@ -367,7 +462,7 @@ model_name = "shared"
         .unwrap()
         .unwrap();
     assert_eq!(active.definition.revision, 2);
-    assert_eq!(active.definition.spec.model.provider, "beta");
+    assert_eq!(active.definition.spec.model.provider, "alpha");
     let snapshot = restarted
         .ui_service
         .agent_registry
@@ -377,17 +472,60 @@ model_name = "shared"
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot.providers, [("beta".into(), 1)].into());
-    assert_eq!(snapshot.models[0].model, model("beta"));
-    assert_eq!(snapshot.models[0].revision, 1);
+    assert_eq!(
+        snapshot.providers,
+        [("alpha".into(), 1), ("beta".into(), 1)].into()
+    );
+    assert_eq!(
+        snapshot
+            .models
+            .iter()
+            .map(|pin| (pin.model.clone(), pin.revision))
+            .collect::<Vec<_>>(),
+        vec![(model("alpha"), 1), (model("beta"), 1)]
+    );
     assert_eq!(
         restarted.configured_agents[&AgentId::new("assistant")]
             .spec
             .model
             .provider,
-        "beta"
+        "alpha"
     );
     restarted.shutdown().await.unwrap();
+}
+
+fn assert_dynamic_beta_descriptor(descriptors: &[sylvander_protocol::AgentDescriptor]) {
+    let beta = descriptors
+        .iter()
+        .find(|agent| agent.id == AgentId::new("assistant"))
+        .unwrap()
+        .models
+        .iter()
+        .find(|model| model.provider == "beta" && model.id == "shared")
+        .unwrap();
+    assert_eq!(
+        beta.capability_names,
+        vec![
+            ModelCapability::ExtendedThinking,
+            ModelCapability::ToolUse,
+            ModelCapability::Vision,
+        ]
+    );
+    assert_eq!(
+        beta.lifecycle,
+        sylvander_protocol::ModelLifecycle::Deprecated {
+            replacement: Some("alpha/shared".into())
+        }
+    );
+    assert_eq!(
+        beta.pricing,
+        Some(sylvander_protocol::ModelPricing {
+            input_usd_micros_per_million: 11,
+            output_usd_micros_per_million: 29,
+            cache_write_usd_micros_per_million: Some(7),
+            cache_read_usd_micros_per_million: Some(3),
+        })
+    );
 }
 
 enum Corruption {

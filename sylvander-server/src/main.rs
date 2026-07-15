@@ -5,8 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use sylvander_agent::bus::{
-    ApprovalPolicy, FileAccess, ModelDescriptor, ModelLifecycle, NetworkAccess, PermissionProfile,
-    PlatformSnapshot, ReasoningEffort,
+    ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
+    PermissionProfile, PlatformSnapshot, ReasoningEffort,
 };
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
@@ -90,15 +90,19 @@ fn build_channels(
                     let primary = agent
                         .models
                         .iter()
-                        .find(|model| model.id == agent.spec.model.model_name)
+                        .find(|(selection, _)| {
+                            selection.provider_id == agent.spec.model.provider
+                                && selection.model_id == agent.spec.model.model_name
+                        })
                         .ok_or_else(|| ServerError::UnknownModel(agent.spec.model.model_name.clone()))?;
                     let models = agent
                         .models
                         .iter()
-                        .map(|model| ModelDescriptor {
-                            id: model.id.clone(),
-                            provider: agent.spec.model.provider.clone(),
+                        .map(|(selection, model)| ModelDescriptor {
+                            id: selection.model_id.clone(),
+                            provider: selection.provider_id.clone(),
                             capabilities: model.capabilities.bits(),
+                            capability_names: model_capability_names(model.capabilities),
                             reasoning_efforts: if model
                                 .capabilities
                                 .contains(sylvander_llm_anthropic::api::model::ModelCapabilities::EXTENDED_THINKING)
@@ -116,7 +120,7 @@ fn build_channels(
                             .with_instance_id(&channel.id)
                             .with_request_limit(config.server.boundary.max_request_bytes)
                             .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
-                                model: primary.id.clone(),
+                                model: primary.0.model_id.clone(),
                                 reasoning_effort: ReasoningEffort::Off,
                                 models,
                                 permissions: PermissionProfile {
@@ -128,7 +132,7 @@ fn build_channels(
                                         ApprovalPolicy::Allow
                                     },
                                 },
-                                capabilities: primary.capabilities.bits(),
+                                capabilities: primary.1.capabilities.bits(),
                                 approval_enabled: agent.approval_enabled,
                                 max_attachment_bytes: 512 * 1024,
                                 platform: PlatformSnapshot::default(),
@@ -221,6 +225,23 @@ fn build_channels(
             Ok(result)
         })
         .collect()
+}
+
+fn model_capability_names(
+    capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities,
+) -> Vec<ModelCapability> {
+    use sylvander_llm_anthropic::api::model::ModelCapabilities as Flags;
+    [
+        (Flags::EXTENDED_THINKING, ModelCapability::ExtendedThinking),
+        (Flags::PROMPT_CACHING, ModelCapability::PromptCaching),
+        (Flags::STRUCTURED_OUTPUT, ModelCapability::StructuredOutput),
+        (Flags::TOOL_USE, ModelCapability::ToolUse),
+        (Flags::VISION, ModelCapability::Vision),
+        (Flags::DOCUMENT_INPUT, ModelCapability::DocumentInput),
+    ]
+    .into_iter()
+    .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))
+    .collect()
 }
 
 fn resolve_text(

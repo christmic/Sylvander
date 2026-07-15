@@ -84,12 +84,40 @@ impl ReasoningEffort {
 pub struct ModelDescriptor {
     pub id: String,
     pub provider: String,
+    /// Legacy bitset retained for wire compatibility with UI protocol v1-v3.
     pub capabilities: u8,
+    /// Provider-neutral, canonical capabilities for current clients.
+    #[serde(default)]
+    pub capability_names: Vec<ModelCapability>,
     pub reasoning_efforts: Vec<ReasoningEffort>,
     #[serde(default)]
     pub lifecycle: ModelLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
+}
+
+/// Canonical model capabilities exposed by the public protocol.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCapability {
+    ExtendedThinking,
+    PromptCaching,
+    StructuredOutput,
+    ToolUse,
+    Vision,
+    DocumentInput,
 }
 
 /// Stable identity for one model exposed by one provider.
@@ -1482,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_model_descriptors_default_to_active() {
+    fn legacy_model_descriptors_default_new_metadata() {
         let descriptor: ModelDescriptor = serde_json::from_value(serde_json::json!({
             "id": "model-a",
             "provider": "test",
@@ -1490,8 +1518,35 @@ mod tests {
             "reasoning_efforts": ["off"]
         }))
         .expect("legacy model descriptor");
+        assert!(descriptor.capability_names.is_empty());
         assert_eq!(descriptor.lifecycle, ModelLifecycle::Active);
         assert_eq!(descriptor.pricing, None);
+    }
+
+    #[test]
+    fn model_capability_names_are_canonical_and_strict() {
+        let descriptor: ModelDescriptor = serde_json::from_value(serde_json::json!({
+            "id": "model-a",
+            "provider": "test",
+            "capabilities": 8,
+            "capability_names": ["tool_use", "vision"],
+            "reasoning_efforts": ["off"]
+        }))
+        .expect("canonical capability names");
+        assert_eq!(
+            descriptor.capability_names,
+            [ModelCapability::ToolUse, ModelCapability::Vision]
+        );
+        assert!(
+            serde_json::from_value::<ModelDescriptor>(serde_json::json!({
+                "id": "model-a",
+                "provider": "test",
+                "capabilities": 0,
+                "capability_names": ["telepathy"],
+                "reasoning_efforts": ["off"]
+            }))
+            .is_err()
+        );
     }
 
     #[test]

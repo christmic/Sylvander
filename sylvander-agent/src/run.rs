@@ -320,6 +320,7 @@ impl RuntimeModels {
                     id: model.selection.model_id.clone(),
                     provider: model.selection.provider_id.clone(),
                     capabilities: model.shadow.capabilities.bits(),
+                    capability_names: public_capability_names(model.shadow.capabilities),
                     reasoning_efforts,
                     lifecycle: model.lifecycle.clone(),
                     pricing: model.pricing,
@@ -333,6 +334,40 @@ impl RuntimeModels {
             models,
         }
     }
+}
+
+fn public_capability_names(
+    capabilities: ModelCapabilities,
+) -> Vec<sylvander_protocol::ModelCapability> {
+    [
+        (
+            ModelCapabilities::EXTENDED_THINKING,
+            sylvander_protocol::ModelCapability::ExtendedThinking,
+        ),
+        (
+            ModelCapabilities::PROMPT_CACHING,
+            sylvander_protocol::ModelCapability::PromptCaching,
+        ),
+        (
+            ModelCapabilities::STRUCTURED_OUTPUT,
+            sylvander_protocol::ModelCapability::StructuredOutput,
+        ),
+        (
+            ModelCapabilities::TOOL_USE,
+            sylvander_protocol::ModelCapability::ToolUse,
+        ),
+        (
+            ModelCapabilities::VISION,
+            sylvander_protocol::ModelCapability::Vision,
+        ),
+        (
+            ModelCapabilities::DOCUMENT_INPUT,
+            sylvander_protocol::ModelCapability::DocumentInput,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))
+    .collect()
 }
 
 fn usage_cost_nano_usd(
@@ -3114,7 +3149,8 @@ mod tests {
             reference: sylvander_llm_core::ModelRef::new("remote", "shared"),
             context_window: 200_000,
             max_output_tokens: 8192,
-            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+            capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE
+                | sylvander_llm_core::ModelCapabilities::VISION,
         };
         let local_selection = sylvander_protocol::ModelSelection {
             provider_id: "local".into(),
@@ -3162,6 +3198,13 @@ mod tests {
             sylvander_protocol::ModelLifecycle::Deprecated { .. }
         ));
         assert_eq!(remote.pricing, Some(remote_pricing));
+        assert_eq!(
+            remote.capability_names,
+            [
+                sylvander_protocol::ModelCapability::ToolUse,
+                sylvander_protocol::ModelCapability::Vision,
+            ]
+        );
 
         run.select_qualified_model(remote_selection, sylvander_protocol::ReasoningEffort::Off)
             .await

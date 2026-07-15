@@ -1740,6 +1740,7 @@ mod tests {
                 id: "claude-test".into(),
                 provider: "test".into(),
                 capabilities: 0b10001,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -1843,6 +1844,7 @@ mod tests {
                 id: "old-model".into(),
                 provider: "test".into(),
                 capabilities: 0,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                     replacement: Some("new-model".into()),
