@@ -17,6 +17,7 @@ use super::memory::{
 
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 2;
+const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS relationship_memories (
   record_key TEXT NOT NULL UNIQUE,
@@ -395,7 +396,7 @@ fn migrate(connection: &mut Connection) -> Result<(), MemoryStoreError> {
         return Err(schema_error());
     }
     connection
-        .execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));")
+        .execute_batch(&format!("PRAGMA foreign_keys = ON; {LEDGER_SCHEMA}"))
         .map_err(|_| schema_error())?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -420,29 +421,52 @@ fn migrate(connection: &mut Connection) -> Result<(), MemoryStoreError> {
                     params![COMPONENT, SCHEMA_VERSION],
                 )
                 .map_err(store_error)?;
+            verify_schema(&transaction)?;
             transaction.commit().map_err(store_error)
         }
         Some(SCHEMA_VERSION) => {
-            transaction
-                .prepare(&format!("{ENTRY_SELECT} LIMIT 0"))
-                .map_err(|_| schema_error())?;
-            transaction
-                .prepare("SELECT sequence, event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask FROM relationship_memory_audit LIMIT 0")
-                .map_err(|_| schema_error())?;
-            let trigger_count: i64 = transaction
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN ('relationship_memory_audit_no_update', 'relationship_memory_audit_no_delete')",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(|_| schema_error())?;
-            if trigger_count != 2 {
-                return Err(schema_error());
-            }
+            verify_schema(&transaction)?;
             transaction.commit().map_err(store_error)
         }
         Some(_) => Err(schema_error()),
     }
+}
+
+type SchemaObject = (String, String, String, String);
+
+fn verify_schema(connection: &Connection) -> Result<(), MemoryStoreError> {
+    let expected = Connection::open_in_memory().map_err(|_| schema_error())?;
+    expected
+        .execute_batch(&format!("{LEDGER_SCHEMA}{SCHEMA}"))
+        .map_err(|_| schema_error())?;
+    if schema_objects(connection)? != schema_objects(&expected)? {
+        return Err(schema_error());
+    }
+    Ok(())
+}
+
+fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemoryStoreError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit')) ORDER BY type, name, tbl_name",
+        )
+        .map_err(|_| schema_error())?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                normalize_sql(&row.get::<_, String>(3)?),
+            ))
+        })
+        .map_err(|_| schema_error())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| schema_error())
+}
+
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn component_objects_exist(
@@ -533,7 +557,7 @@ fn insert_entry(
 }
 
 fn encode(value: &impl serde::Serialize) -> Result<String, MemoryStoreError> {
-    serde_json::to_string(value).map_err(|error| MemoryStoreError::Store(error.to_string()))
+    serde_json::to_string(value).map_err(|_| store_failure())
 }
 
 fn decode<T: DeserializeOwned>(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<T> {
@@ -644,14 +668,18 @@ fn append_audit(
     Ok(())
 }
 
-fn store_error(error: rusqlite::Error) -> MemoryStoreError {
-    MemoryStoreError::Store(error.to_string())
+fn store_error(_: rusqlite::Error) -> MemoryStoreError {
+    store_failure()
 }
-fn search_error(error: rusqlite::Error) -> MemoryStoreError {
-    MemoryStoreError::Search(error.to_string())
+fn search_error(_: rusqlite::Error) -> MemoryStoreError {
+    MemoryStoreError::Search("memory search failed".into())
 }
-fn delete_error(error: rusqlite::Error) -> MemoryStoreError {
-    MemoryStoreError::Delete(error.to_string())
+fn delete_error(_: rusqlite::Error) -> MemoryStoreError {
+    MemoryStoreError::Delete("memory delete failed".into())
+}
+
+fn store_failure() -> MemoryStoreError {
+    MemoryStoreError::Store("memory store operation failed".into())
 }
 
 fn mutation_error() -> MemoryStoreError {
