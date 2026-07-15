@@ -80,7 +80,7 @@ use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RunFeedback,
     SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionEffectiveConfig,
+    SessionEffectiveConfig, SessionRevisionPinError,
 };
 
 use crate::agent_admin::{
@@ -295,6 +295,116 @@ fn active_snapshot_selection(
         allowed_model_ids,
         default_model_id: definition.spec.model.model_name.clone(),
     })
+}
+
+struct SessionPinClosure {
+    effective: SessionEffectiveConfig,
+    changed: bool,
+}
+
+async fn close_session_revision_pins(
+    registry: &AgentRegistry,
+    session: &StoredSession,
+    active_agent: &ConfiguredAgent,
+) -> Result<SessionPinClosure, SessionBindingError> {
+    let [member] = session.agents.as_slice() else {
+        return Err(SessionBindingError::InvalidMembership(session.id.clone()));
+    };
+    let (mut effective, mut changed) = if let Some(effective) = &session.effective_config {
+        if member != &effective.agent_id {
+            return Err(SessionBindingError::AgentMismatch {
+                session_id: session.id.clone(),
+                expected: member.clone(),
+                actual: effective.agent_id.clone(),
+            });
+        }
+        (effective.clone(), false)
+    } else {
+        if member != &active_agent.spec.id {
+            return Err(SessionBindingError::AgentMismatch {
+                session_id: session.id.clone(),
+                expected: member.clone(),
+                actual: active_agent.spec.id.clone(),
+            });
+        }
+        let active = registry
+            .load_active(member)
+            .await
+            .map_err(|_| SessionBindingError::Registry)?
+            .ok_or_else(|| SessionBindingError::MissingActiveAgent(member.clone()))?;
+        if active.definition.revision != active_agent.definition.revision {
+            return Err(SessionBindingError::ActiveAgentMismatch {
+                agent_id: member.clone(),
+                expected: active.definition.revision,
+                actual: active_agent.definition.revision,
+            });
+        }
+        let effective = resolve_session_config(
+            active_agent,
+            &session.config_overrides,
+            None,
+            Some(&session.metadata.workspace),
+        )
+        .map_err(|_| SessionBindingError::Resolution)?;
+        (effective, true)
+    };
+    let snapshot = registry
+        .load_agent_snapshot(&effective.agent_id.0, effective.agent_revision)
+        .await
+        .map_err(|_| SessionBindingError::Snapshot)?
+        .ok_or_else(|| SessionBindingError::MissingSnapshot {
+            agent_id: effective.agent_id.clone(),
+            revision: effective.agent_revision,
+        })?;
+    snapshot
+        .validate()
+        .map_err(|_| SessionBindingError::Snapshot)?;
+    if snapshot.provider_id != effective.provider_id {
+        return Err(SessionBindingError::ProviderMismatch {
+            expected: snapshot.provider_id,
+            actual: effective.provider_id,
+        });
+    }
+    let model = snapshot
+        .models
+        .iter()
+        .find(|model| {
+            model.provider_id == effective.provider_id && model.model_id == effective.model_id
+        })
+        .ok_or_else(|| SessionBindingError::MissingModel {
+            provider_id: effective.provider_id.clone(),
+            model_id: effective.model_id.clone(),
+        })?;
+    match effective.provider_revision {
+        Some(actual) if actual != snapshot.provider_revision => {
+            return Err(SessionBindingError::ProviderRevisionMismatch {
+                expected: snapshot.provider_revision,
+                actual,
+            });
+        }
+        None => {
+            effective.provider_revision = Some(snapshot.provider_revision);
+            changed = true;
+        }
+        Some(_) => {}
+    }
+    match effective.model_revision {
+        Some(actual) if actual != model.revision => {
+            return Err(SessionBindingError::ModelRevisionMismatch {
+                expected: model.revision,
+                actual,
+            });
+        }
+        None => {
+            effective.model_revision = Some(model.revision);
+            changed = true;
+        }
+        Some(_) => {}
+    }
+    effective
+        .require_revision_pins()
+        .map_err(SessionBindingError::InvalidPins)?;
+    Ok(SessionPinClosure { effective, changed })
 }
 
 #[async_trait::async_trait]
@@ -1524,47 +1634,19 @@ impl Runtime {
                 .ok_or_else(|| {
                     RuntimeError::Config(format!("session {} has no configured Agent", session.id))
                 })?;
-            if let Some(effective) = &session.effective_config {
-                if session.agents.first() != Some(&effective.agent_id) {
-                    return Err(RuntimeError::Config(format!(
-                        "session {} Agent membership does not match effective revision owner {}",
-                        session.id, effective.agent_id
-                    )));
-                }
-                let registered = agent_registry
-                    .load(&effective.agent_id, effective.agent_revision)
-                    .await
-                    .map_err(|error| RuntimeError::Store(error.to_string()))?;
-                if registered.is_none() {
-                    return Err(RuntimeError::Config(format!(
-                        "session {} references unknown Agent revision {}@{}",
-                        session.id, effective.agent_id, effective.agent_revision
-                    )));
-                }
-            } else {
-                let effective = resolve_session_config(
-                    agent,
-                    &session.config_overrides,
-                    None,
-                    Some(&session.metadata.workspace),
-                )
-                .map_err(|error| {
-                    RuntimeError::Config(format!(
-                        "resolve configuration for session {}: {error}",
-                        session.id
-                    ))
-                })?;
+            let closure = close_session_revision_pins(&agent_registry, &session, agent).await?;
+            if closure.changed {
                 session.config_revision = session_store
                     .update_config(
                         &session.id,
                         session.config_revision,
                         session.config_overrides.clone(),
-                        effective.clone(),
+                        closure.effective.clone(),
                     )
                     .await
                     .map_err(|error| RuntimeError::Store(error.to_string()))?;
-                session.effective_config = Some(effective);
             }
+            session.effective_config = Some(closure.effective);
             engine
                 .attach_session(
                     session.id.clone(),
@@ -1892,6 +1974,47 @@ async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), Runti
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
+pub enum SessionBindingError {
+    #[error("session {0} must have exactly one Agent")]
+    InvalidMembership(SessionId),
+    #[error("session {session_id} belongs to Agent {expected}, not {actual}")]
+    AgentMismatch {
+        session_id: SessionId,
+        expected: AgentId,
+        actual: AgentId,
+    },
+    #[error("Agent {0} has no active immutable revision")]
+    MissingActiveAgent(AgentId),
+    #[error("active Agent {agent_id} revision is {expected}, not composed revision {actual}")]
+    ActiveAgentMismatch {
+        agent_id: AgentId,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("Agent {agent_id}@{revision} has no immutable registry snapshot")]
+    MissingSnapshot { agent_id: AgentId, revision: u64 },
+    #[error("session Provider is {actual}, not snapshot Provider {expected}")]
+    ProviderMismatch { expected: String, actual: String },
+    #[error("snapshot does not contain Model {provider_id}/{model_id}")]
+    MissingModel {
+        provider_id: String,
+        model_id: String,
+    },
+    #[error("session Provider revision is {actual}, not snapshot revision {expected}")]
+    ProviderRevisionMismatch { expected: u64, actual: u64 },
+    #[error("session Model revision is {actual}, not snapshot revision {expected}")]
+    ModelRevisionMismatch { expected: u64, actual: u64 },
+    #[error("failed to resolve legacy session configuration")]
+    Resolution,
+    #[error("Agent registry unavailable while closing session pins")]
+    Registry,
+    #[error("invalid immutable Agent snapshot")]
+    Snapshot,
+    #[error(transparent)]
+    InvalidPins(#[from] SessionRevisionPinError),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     #[error("engine error: {0}")]
     Engine(String),
@@ -1905,6 +2028,8 @@ pub enum RuntimeError {
     Evidence(String),
     #[error("channel error: {0}")]
     Channel(String),
+    #[error(transparent)]
+    SessionBinding(#[from] SessionBindingError),
     #[error("{operation} at {path}: {message}")]
     Io {
         operation: &'static str,
@@ -2294,6 +2419,44 @@ model_name = "model-a"
             effective.provenance.user_workspace.kind,
             sylvander_protocol::SessionConfigSourceKind::LegacyMigration
         );
+        let registry = runtime.ui_service.agent_registry.as_ref().unwrap();
+        let active_agent = runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap();
+        let mut legacy = StoredSession::new(
+            SessionId::new("legacy-pin-probe"),
+            "legacy pin probe",
+            SessionLifetime::Persistent,
+            test_metadata(),
+            vec![AgentId::new("assistant")],
+        );
+        let mut unpinned = effective.clone();
+        unpinned.provider_revision = None;
+        unpinned.model_revision = None;
+        legacy.effective_config = Some(unpinned);
+        let closed = close_session_revision_pins(registry, &legacy, active_agent)
+            .await
+            .unwrap();
+        assert!(closed.changed);
+        assert_eq!(closed.effective.require_revision_pins().unwrap(), pins);
+
+        legacy.effective_config = Some(effective.clone());
+        let already_closed = close_session_revision_pins(registry, &legacy, active_agent)
+            .await
+            .unwrap();
+        assert!(!already_closed.changed);
+
+        let mut mismatched = legacy;
+        let mut invalid = effective.clone();
+        invalid.model_revision = Some(99);
+        mismatched.effective_config = Some(invalid);
+        assert!(matches!(
+            close_session_revision_pins(registry, &mismatched, active_agent).await,
+            Err(SessionBindingError::ModelRevisionMismatch {
+                expected: 1,
+                actual: 99
+            })
+        ));
         let (revision, updated) = runtime
             .update_session_config(
                 &SessionId::new("restored-session"),
