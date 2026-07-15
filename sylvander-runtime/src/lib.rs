@@ -80,7 +80,8 @@ use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RunFeedback,
+    AgentDescriptor, ModelDescriptor, ModelLifecycle, ReasoningEffort, RegistryAdminError,
+    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
     SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
     SessionEffectiveConfig, SessionRevisionPinError,
 };
@@ -94,7 +95,8 @@ use crate::composition::{
     ConfiguredAgent, build_agent, build_registry_agent, resolve_session_config,
 };
 use crate::config::{ServerConfig, SystemSecretResolver};
-use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use crate::registry_admin::RegistryAdminService;
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
@@ -935,6 +937,66 @@ impl sylvander_channel::UiService for RuntimeUiService {
         }
         response
     }
+
+    async fn registry_admin(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: RegistryAdminRequest,
+    ) -> RegistryAdminResponse {
+        let Some(registry) = self.agent_registry.as_ref() else {
+            return registry_admin_error(
+                RegistryAdminErrorCode::StorageUnavailable,
+                "Registry administration service is unavailable",
+            );
+        };
+        let Some(principal) = boundary.principal.as_ref() else {
+            return RegistryAdminService::new(registry)
+                .dispatch(None, request)
+                .await;
+        };
+        if !is_agent_administrator(Some(principal)) {
+            return RegistryAdminService::new(registry)
+                .dispatch(Some(principal), request)
+                .await;
+        }
+        let Some(store) = self.evidence.as_ref() else {
+            return registry_admin_error(
+                RegistryAdminErrorCode::StorageUnavailable,
+                "Registry administration audit is unavailable",
+            );
+        };
+        let (operation, provider_id, version) = registry_admin_audit_target(&request);
+        let response = RegistryAdminService::new(registry)
+            .dispatch(Some(principal), request)
+            .await;
+        let (outcome, error_code) = match &response {
+            RegistryAdminResponse::Success { .. } => ("succeeded", None),
+            RegistryAdminResponse::Error { error } => {
+                ("failed", Some(registry_admin_error_code(error.code).into()))
+            }
+        };
+        let audit = AdministrationAudit {
+            id: uuid::Uuid::new_v4().to_string(),
+            occurred_at: sylvander_agent::session::now_secs(),
+            request_id: boundary.request_id.clone(),
+            principal_digest: sha256_text(&principal.id.0),
+            channel_instance_id: boundary.channel_instance_id.clone(),
+            transport: boundary.transport.clone(),
+            operation: operation.into(),
+            resource_kind: "provider".into(),
+            resource_digest: sha256_text(&provider_id),
+            version,
+            outcome: outcome.into(),
+            error_code,
+        };
+        if store.record_administration_audit(audit).await.is_err() {
+            return registry_admin_error(
+                RegistryAdminErrorCode::StorageUnavailable,
+                "Registry administration audit is unavailable",
+            );
+        }
+        response
+    }
 }
 
 impl RuntimeUiService {
@@ -1304,6 +1366,50 @@ fn agent_admin_error_code(code: AgentAdminErrorCode) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "internal".into())
+}
+
+fn registry_admin_error(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+) -> RegistryAdminResponse {
+    RegistryAdminResponse::Error {
+        error: RegistryAdminError {
+            code,
+            message: message.into(),
+            provider_id: None,
+            revision: None,
+        },
+    }
+}
+
+fn registry_admin_audit_target(
+    request: &RegistryAdminRequest,
+) -> (&'static str, String, Option<u64>) {
+    match request {
+        RegistryAdminRequest::InspectProviderRevision {
+            provider_id,
+            revision,
+        } => (
+            "inspect_provider_revision",
+            provider_id.clone(),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::ListProviderRevisions { provider_id, .. } => {
+            ("list_provider_revisions", provider_id.clone(), None)
+        }
+    }
+}
+
+const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str {
+    match code {
+        RegistryAdminErrorCode::Unauthorized => "unauthorized",
+        RegistryAdminErrorCode::InvalidRequest => "invalid_request",
+        RegistryAdminErrorCode::UnknownProvider => "unknown_provider",
+        RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
+        RegistryAdminErrorCode::StorageUnavailable => "storage_unavailable",
+        RegistryAdminErrorCode::IntegrityFailure => "integrity_failure",
+        RegistryAdminErrorCode::Internal => "internal",
+    }
 }
 
 fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
@@ -2976,11 +3082,12 @@ model_name = "model-a"
         )
         .await
         .expect("administrators may reach the Agent administration service");
+        let registry_request = sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+            provider_id: "primary".into(),
+            revision: 1,
+        };
         let registry_message = sylvander_protocol::UiClientMessage::RegistryAdmin {
-            request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
-                provider_id: "primary".into(),
-                revision: 1,
-            },
+            request: registry_request.clone(),
         };
         assert!(
             sylvander_channel::UiService::authorize_message(
@@ -2998,13 +3105,72 @@ model_name = "model-a"
         )
         .await
         .expect("administrators may reach the registry administration seam");
+        let unauthorized_registry = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &owner,
+            registry_request.clone(),
+        )
+        .await;
+        assert!(matches!(
+            unauthorized_registry,
+            sylvander_protocol::RegistryAdminResponse::Error { error }
+                if error.code == sylvander_protocol::RegistryAdminErrorCode::Unauthorized
+        ));
+        let inspected_provider = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            registry_request,
+        )
+        .await;
+        assert!(matches!(
+            inspected_provider,
+            sylvander_protocol::RegistryAdminResponse::Success { result }
+                if matches!(
+                    result.as_ref(),
+                    sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                        revision
+                    } if revision.definition.provider_id == "primary"
+                        && revision.definition.revision == 1
+                )
+        ));
+        let missing_provider_revision = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                provider_id: "primary".into(),
+                revision: 99,
+            },
+        )
+        .await;
+        assert!(matches!(
+            missing_provider_revision,
+            sylvander_protocol::RegistryAdminResponse::Error { error }
+                if error.code == sylvander_protocol::RegistryAdminErrorCode::UnknownRevision
+        ));
+        let registry_audits = evidence.administration_audits(10).await.unwrap();
+        assert!(registry_audits.iter().any(|audit| {
+            audit.operation == "inspect_provider_revision"
+                && audit.resource_kind == "provider"
+                && audit.resource_digest != "primary"
+                && audit.version == Some(1)
+                && audit.outcome == "succeeded"
+        }));
+        assert!(registry_audits.iter().any(|audit| {
+            audit.operation == "inspect_provider_revision"
+                && audit.version == Some(99)
+                && audit.outcome == "failed"
+                && audit.error_code.as_deref() == Some("unknown_revision")
+        }));
+        let admin_denials = evidence.authorization_denials(20).await.unwrap();
         assert!(
-            evidence
-                .authorization_denials(20)
-                .await
-                .unwrap()
+            admin_denials
                 .iter()
                 .any(|denial| denial.operation == "agent_admin")
+        );
+        assert!(
+            admin_denials
+                .iter()
+                .any(|denial| denial.operation == "registry_admin")
         );
         let updated = sylvander_channel::UiService::agent_admin(
             runtime.ui_service.as_ref(),
