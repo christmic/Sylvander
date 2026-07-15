@@ -40,6 +40,8 @@ mod model_registry_tests;
 mod provider_registry;
 #[cfg(test)]
 mod provider_registry_tests;
+#[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
+mod registry_bootstrap;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
