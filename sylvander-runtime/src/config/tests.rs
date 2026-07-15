@@ -105,7 +105,11 @@ max_batches_per_run = 8
 default_ttl_days = 90
 max_ttl_days = 730
 expired_grace_days = 3
-superseded_retention_days = 14"#,
+superseded_retention_days = 14
+
+[server.memory_maintenance.backup]
+interval_seconds = 43200
+retained_copies = 5"#,
     );
     let config = ServerConfig::from_toml(&input).unwrap();
     let maintenance = config.server.memory_maintenance;
@@ -116,6 +120,8 @@ superseded_retention_days = 14"#,
     assert_eq!(maintenance.retention.max_ttl_days, 730);
     assert_eq!(maintenance.retention.expired_grace_days, 3);
     assert_eq!(maintenance.retention.superseded_retention_days, 14);
+    assert_eq!(maintenance.backup.interval_seconds, 43_200);
+    assert_eq!(maintenance.backup.retained_copies, 5);
 }
 
 #[test]
@@ -123,6 +129,7 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
     for unknown in [
         "[server.memory_maintenance]\nbackup_directory = \"/tmp\"",
         "[server.memory_maintenance.retention]\nforever = true",
+        "[server.memory_maintenance.backup]\npath = \"/tmp\"",
     ] {
         let input = valid_toml().replace(
             "data_dir = \"/var/lib/sylvander\"",
@@ -140,6 +147,8 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
     maintenance.interval_seconds = 59;
     maintenance.batch_size = 0;
     maintenance.max_batches_per_run = 101;
+    maintenance.backup.interval_seconds = 3_599;
+    maintenance.backup.retained_copies = 31;
     let joined = config.validate().unwrap_err().errors.join("\n");
     for field in [
         "default_ttl_days",
@@ -149,6 +158,8 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
         "interval_seconds",
         "batch_size",
         "max_batches_per_run",
+        "backup interval_seconds",
+        "backup retained_copies",
     ] {
         assert!(joined.contains(field), "missing validation for {field}");
     }

@@ -79,6 +79,8 @@ impl Default for ServerSettings {
 pub struct MemoryMaintenanceSettings {
     #[serde(default)]
     pub retention: MemoryRetentionSettings,
+    #[serde(default)]
+    pub backup: MemoryBackupSettings,
     #[serde(default = "default_memory_maintenance_interval_seconds")]
     pub interval_seconds: u32,
     #[serde(default = "default_memory_maintenance_batch_size")]
@@ -91,9 +93,30 @@ impl Default for MemoryMaintenanceSettings {
     fn default() -> Self {
         Self {
             retention: MemoryRetentionSettings::default(),
+            backup: MemoryBackupSettings::default(),
             interval_seconds: default_memory_maintenance_interval_seconds(),
             batch_size: default_memory_maintenance_batch_size(),
             max_batches_per_run: default_memory_maintenance_max_batches(),
+        }
+    }
+}
+
+/// Finite backup schedule. Backup paths are derived from `data_dir` so a
+/// configuration cannot redirect memory snapshots to an arbitrary location.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryBackupSettings {
+    #[serde(default = "default_memory_backup_interval_seconds")]
+    pub interval_seconds: u32,
+    #[serde(default = "default_memory_backup_retained_copies")]
+    pub retained_copies: u32,
+}
+
+impl Default for MemoryBackupSettings {
+    fn default() -> Self {
+        Self {
+            interval_seconds: default_memory_backup_interval_seconds(),
+            retained_copies: default_memory_backup_retained_copies(),
         }
     }
 }
@@ -149,6 +172,14 @@ const fn default_memory_maintenance_batch_size() -> u32 {
 
 const fn default_memory_maintenance_max_batches() -> u32 {
     20
+}
+
+const fn default_memory_backup_interval_seconds() -> u32 {
+    86_400
+}
+
+const fn default_memory_backup_retained_copies() -> u32 {
+    7
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -514,6 +545,17 @@ impl ServerConfig {
         if !(1..=100).contains(&memory.max_batches_per_run) {
             errors.push(
                 "server memory_maintenance max_batches_per_run must be between 1 and 100".into(),
+            );
+        }
+        if !(3_600..=604_800).contains(&memory.backup.interval_seconds) {
+            errors.push(
+                "server memory_maintenance backup interval_seconds must be between 3600 and 604800"
+                    .into(),
+            );
+        }
+        if !(2..=30).contains(&memory.backup.retained_copies) {
+            errors.push(
+                "server memory_maintenance backup retained_copies must be between 2 and 30".into(),
             );
         }
         if !(1024..=16 * 1024 * 1024).contains(&self.server.boundary.max_request_bytes) {
