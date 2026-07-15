@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class SylvanderSessionStore: ObservableObject {
     static let selectedSessionDefaultsKey = "ai.oraculo.sylvander.workspace.selected-session"
+    static let maximumActivityMonitors = 32
 
     enum ConnectionState: Equatable {
         case connecting
@@ -30,6 +31,7 @@ final class SylvanderSessionStore: ObservableObject {
             if let selectedSessionID {
                 unreadSessionIDs.remove(selectedSessionID)
             }
+            reconcileActivityMonitors()
         }
     }
     @Published var query = ""
@@ -199,7 +201,8 @@ final class SylvanderSessionStore: ObservableObject {
     }
 
     private func reconcileActivityMonitors() {
-        let validIDs = Set(sessions.map(\.id))
+        var validIDs = Set(sessions.prefix(Self.maximumActivityMonitors).map(\.id))
+        if let selectedSessionID { validIDs.insert(selectedSessionID) }
         for sessionID in Set(activityTasks.keys).subtracting(validIDs) {
             activityTasks.removeValue(forKey: sessionID)?.cancel()
             activities[sessionID] = nil
