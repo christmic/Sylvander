@@ -59,7 +59,7 @@ mod registry_domain_tests;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -87,7 +87,10 @@ use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
     redact_revision,
 };
-use crate::composition::{ConfiguredAgent, build_agent, build_agents, resolve_session_config};
+use crate::agent_registry_snapshot::AgentSnapshotSelection;
+use crate::composition::{
+    ConfiguredAgent, build_agent, build_registry_agent, resolve_session_config,
+};
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::evidence::{AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 use agent_registry::AgentRegistry;
@@ -160,10 +163,10 @@ struct RuntimeRevisionProvider {
 }
 
 impl RuntimeRevisionProvider {
-    fn compose_definition(
+    fn preflight_definition(
         &self,
         definition: &crate::config::AgentDefinitionConfig,
-    ) -> Result<ConfiguredAgent, RuntimeError> {
+    ) -> Result<(), RuntimeError> {
         build_agent(
             &self.config,
             definition,
@@ -171,12 +174,28 @@ impl RuntimeRevisionProvider {
             self.sessions.clone(),
             &SystemSecretResolver,
         )
+        .map(|_| ())
         .map_err(|error| RuntimeError::Composition(error.to_string()))
     }
 
-    async fn cache_revision(&self, configured: ConfiguredAgent) {
-        let key = (configured.spec.id.clone(), configured.definition.revision);
-        self.configured.write().await.insert(key, configured);
+    async fn compose_revision(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
+        let snapshot = self
+            .registry
+            .resolve_registry_composition(agent_id, revision)
+            .await
+            .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        build_registry_agent(
+            &self.config,
+            snapshot,
+            self.registry.clone(),
+            self.bus.clone(),
+            self.sessions.clone(),
+        )
+        .map_err(|error| RuntimeError::Composition(error.to_string()))
     }
 
     async fn configured_revision(
@@ -188,16 +207,7 @@ impl RuntimeRevisionProvider {
         if let Some(configured) = self.configured.read().await.get(&key).cloned() {
             return Ok(configured);
         }
-        let definition = self
-            .registry
-            .load(agent_id, revision)
-            .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))?
-            .ok_or_else(|| {
-                RuntimeError::Config(format!("unknown Agent revision {agent_id}@{revision}"))
-            })?
-            .definition;
-        let configured = self.compose_definition(&definition)?;
+        let configured = self.compose_revision(agent_id, revision).await?;
         let mut cache = self.configured.write().await;
         Ok(cache
             .entry(key)
@@ -261,6 +271,30 @@ impl RuntimeRevisionProvider {
         }
         Ok(ephemeral.agent_revision)
     }
+}
+
+fn active_snapshot_selection(
+    config: &ServerConfig,
+    definition: &crate::config::AgentDefinitionConfig,
+) -> Result<AgentSnapshotSelection, RuntimeError> {
+    let provider_id = &definition.spec.model.provider;
+    let provider = config
+        .model_providers
+        .iter()
+        .find(|candidate| &candidate.id == provider_id)
+        .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
+    let allowed_model_ids = provider
+        .models
+        .iter()
+        .map(|model| model.id.clone())
+        .collect::<BTreeSet<_>>();
+    Ok(AgentSnapshotSelection {
+        agent_id: definition.spec.id.to_string(),
+        agent_revision: definition.revision,
+        provider_id: provider_id.clone(),
+        allowed_model_ids,
+        default_model_id: definition.spec.model.model_name.clone(),
+    })
 }
 
 #[async_trait::async_trait]
@@ -679,27 +713,44 @@ impl sylvander_channel::UiService for RuntimeUiService {
             AgentAdminDispatch::Update {
                 expected_active_revision,
                 definition,
-            } => match provider.compose_definition(&definition) {
-                Err(_) => agent_admin_error(
-                    AgentAdminErrorCode::InvalidDefinition,
-                    "Agent revision could not be composed",
-                ),
-                Ok(configured) => match registry
+            } => match (
+                provider.preflight_definition(&definition),
+                active_snapshot_selection(&provider.config, &definition),
+            ) {
+                (Ok(()), Ok(selection)) => match registry
                     .update(&provider.config, expected_active_revision, *definition)
                     .await
                 {
                     Ok(stored) => {
-                        provider.cache_revision(configured).await;
-                        AgentAdminResponse::Success {
-                            result: Box::new(AgentAdminResult::DefinitionUpdated {
-                                revision: redact_revision(&stored),
-                            }),
+                        if registry.stage_agent_snapshot(selection).await.is_err()
+                            || provider
+                                .configured_revision(
+                                    &stored.definition.spec.id,
+                                    stored.definition.revision,
+                                )
+                                .await
+                                .is_err()
+                        {
+                            agent_admin_error(
+                                AgentAdminErrorCode::InvalidDefinition,
+                                "Agent revision could not be composed",
+                            )
+                        } else {
+                            AgentAdminResponse::Success {
+                                result: Box::new(AgentAdminResult::DefinitionUpdated {
+                                    revision: redact_revision(&stored),
+                                }),
+                            }
                         }
                     }
                     Err(error) => AgentAdminResponse::Error {
                         error: map_registry_error(error),
                     },
                 },
+                _ => agent_admin_error(
+                    AgentAdminErrorCode::InvalidDefinition,
+                    "Agent revision could not be composed",
+                ),
             },
             AgentAdminDispatch::Activate {
                 agent_id,
@@ -1349,6 +1400,19 @@ impl Runtime {
         config.validate().map_err(|error| {
             RuntimeError::Config(format!("active Agent registry is incompatible: {error}"))
         })?;
+        for definition in &config.agents {
+            let existing = agent_registry
+                .load_agent_snapshot(&definition.spec.id.0, definition.revision)
+                .await
+                .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+            if existing.is_none() {
+                let selection = active_snapshot_selection(&config, definition)?;
+                agent_registry
+                    .stage_agent_snapshot(selection)
+                    .await
+                    .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+            }
+        }
 
         let session_store: Arc<dyn SessionStore> = Arc::new(
             SqliteSessionStore::open(session_db)
@@ -1390,13 +1454,23 @@ impl Runtime {
         } else {
             None
         };
-        let agents = build_agents(
-            &config,
-            bus.clone(),
-            session_store.clone(),
-            &SystemSecretResolver,
-        )
-        .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+        let mut agents = Vec::with_capacity(config.agents.len());
+        for definition in &config.agents {
+            let snapshot = agent_registry
+                .resolve_registry_composition(&definition.spec.id, definition.revision)
+                .await
+                .map_err(|error| RuntimeError::Composition(error.to_string()))?;
+            agents.push(
+                build_registry_agent(
+                    &config,
+                    snapshot,
+                    agent_registry.clone(),
+                    bus.clone(),
+                    session_store.clone(),
+                )
+                .map_err(|error| RuntimeError::Composition(error.to_string()))?,
+            );
+        }
         let ephemeral = Arc::new(RwLock::new(HashMap::new()));
         let mut configured_agents = HashMap::new();
         for agent in agents {
@@ -2212,6 +2286,9 @@ model_name = "model-a"
         let effective = migrated.effective_config.unwrap();
         assert_eq!(effective.agent_id, AgentId::new("assistant"));
         assert_eq!(effective.model_id, "model-a");
+        let pins = effective.require_revision_pins().unwrap();
+        assert_eq!(pins.provider_revision, 1);
+        assert_eq!(pins.model_revision, 1);
         assert_eq!(effective.execution_target, "local");
         assert_eq!(
             effective.provenance.user_workspace.kind,
@@ -2268,6 +2345,7 @@ model_name = "model-a"
         )
         .await
         .unwrap();
+        assert!(created.effective.require_revision_pins().is_ok());
         let stored = runtime
             .session_store
             .get(&created.session_id)
