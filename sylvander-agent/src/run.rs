@@ -3063,6 +3063,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prompt_integrity_failure_precedes_provider_and_durable_turn_writes() {
+        enum Tamper {
+            SystemHash,
+            LayerHash,
+            MissingManifest,
+        }
+
+        for tamper in [
+            Tamper::SystemHash,
+            Tamper::LayerHash,
+            Tamper::MissingManifest,
+        ] {
+            let directory = tempfile::TempDir::new().expect("temporary directory");
+            let database = directory.path().join("sessions.db");
+            let store: Arc<dyn SessionStore> = Arc::new(
+                crate::session_store::SqliteSessionStore::open(&database)
+                    .await
+                    .expect("store"),
+            );
+            let (spec, _) = test_spec_and_client();
+            let selection = sylvander_protocol::ModelSelection {
+                provider_id: spec.model.provider.clone(),
+                model_id: spec.model.model_name.clone(),
+            };
+            let resolver = Arc::new(
+                crate::prompt::PromptResolver::new(
+                    "agent:test-agent@1".into(),
+                    spec.persona.system_prompt.clone(),
+                    Vec::new(),
+                    None,
+                    true,
+                )
+                .expect("prompt resolver"),
+            );
+            let prompt_snapshot = resolver
+                .resolve(&selection, None, Some("private prompt sentinel"))
+                .expect("resolved prompt");
+            let provider = Arc::new(RecordingProvider::default());
+            let model = ProviderModelInfo {
+                reference: sylvander_llm_core::ModelRef::new(
+                    selection.provider_id.clone(),
+                    selection.model_id.clone(),
+                ),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+            };
+            let run = AgentRun::provider_builder(spec, provider.clone(), model)
+                .bus(Arc::new(InProcessMessageBus::new()))
+                .session_store(store.clone())
+                .prompt_resolver(resolver)
+                .build()
+                .expect("run");
+            let metadata = test_metadata();
+            let session_id = run.join_session(metadata.clone()).await;
+            let mut stored = StoredSession::new(
+                session_id.clone(),
+                metadata.name.clone(),
+                SessionLifetime::Persistent,
+                metadata.clone(),
+                vec![run.id().clone()],
+            );
+            stored.config_overrides.system_prompt = Some("private prompt sentinel".into());
+            let mut effective = run.inner.legacy_session_config(&metadata).await;
+            effective.agent_revision = 1;
+            effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
+            effective.prompt_manifest = Some(prompt_snapshot.manifest);
+            match tamper {
+                Tamper::SystemHash => effective.system_prompt_sha256 = "tampered".into(),
+                Tamper::LayerHash => {
+                    effective.prompt_manifest.as_mut().expect("manifest").layers[0].sha256 =
+                        "tampered".into();
+                }
+                Tamper::MissingManifest => effective.prompt_manifest = None,
+            }
+            stored.effective_config = Some(effective);
+            store.save(&stored).await.expect("save tampered session");
+
+            let error = run
+                .handle_message(BusMessage::user_chat(
+                    session_id.clone(),
+                    "user-1",
+                    "must not execute",
+                ))
+                .await
+                .expect_err("tampered prompt metadata must fail closed");
+            let rendered = error.to_string();
+            assert_eq!(
+                rendered,
+                "session configuration error: prompt integrity verification failed"
+            );
+            assert!(!rendered.contains("private prompt sentinel"));
+            assert!(provider.requests.lock().unwrap().is_empty());
+
+            let connection = rusqlite::Connection::open(&database).expect("inspect database");
+            for table in ["session_turn_configs", "session_messages"] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .expect("row count");
+                assert_eq!(count, 0, "{table} must remain untouched");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         let mut spec = AgentSpec::builder()
             .id("provider-agent")
