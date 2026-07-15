@@ -537,8 +537,12 @@ fn run_registry_migrations(connection: &mut Connection) -> Result<(), AgentRegis
 }
 
 const REGISTRY_COMPONENT: &str = "runtime_registry";
-const REGISTRY_SCHEMA_VERSION: i64 = 2;
-const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[(1, REGISTRY_SCHEMA_V1), (2, REGISTRY_SCHEMA_V2)];
+const REGISTRY_SCHEMA_VERSION: i64 = 3;
+const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[
+    (1, REGISTRY_SCHEMA_V1),
+    (2, REGISTRY_SCHEMA_V2),
+    (3, REGISTRY_SCHEMA_V3),
+];
 
 const MIGRATION_SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -631,6 +635,69 @@ CREATE TABLE agent_registry_snapshot_models (
 );
 CREATE UNIQUE INDEX one_default_model_per_agent_snapshot
     ON agent_registry_snapshot_models(agent_id, agent_revision)
+    WHERE is_default = 1;
+";
+
+// V3 is intentionally side-by-side with V2. Historical single-provider
+// snapshots remain immutable while new snapshots can pin more than one
+// Provider and a provider-qualified Model allowlist.
+const REGISTRY_SCHEMA_V3: &str = r"
+CREATE TABLE agent_registry_snapshots_v3 (
+    agent_id TEXT NOT NULL CHECK(length(trim(agent_id)) > 0),
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    default_provider_id TEXT NOT NULL CHECK(length(trim(default_provider_id)) > 0),
+    default_model_id TEXT NOT NULL CHECK(length(trim(default_model_id)) > 0),
+    default_marker INTEGER NOT NULL DEFAULT 1 CHECK(default_marker = 1),
+    digest TEXT NOT NULL CHECK(length(trim(digest)) > 0),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(agent_id, agent_revision),
+    FOREIGN KEY(agent_id, agent_revision)
+        REFERENCES agent_definitions(agent_id, revision),
+    FOREIGN KEY(
+        agent_id,
+        agent_revision,
+        default_provider_id,
+        default_model_id,
+        default_marker
+    ) REFERENCES agent_registry_snapshot_models_v3(
+        agent_id,
+        agent_revision,
+        provider_id,
+        model_id,
+        is_default
+    ) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TABLE agent_registry_snapshot_providers_v3 (
+    agent_id TEXT NOT NULL CHECK(length(trim(agent_id)) > 0),
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    provider_id TEXT NOT NULL CHECK(length(trim(provider_id)) > 0),
+    provider_revision INTEGER NOT NULL CHECK(provider_revision > 0),
+    PRIMARY KEY(agent_id, agent_revision, provider_id),
+    FOREIGN KEY(agent_id, agent_revision)
+        REFERENCES agent_registry_snapshots_v3(agent_id, agent_revision),
+    FOREIGN KEY(provider_id, provider_revision)
+        REFERENCES provider_definitions(provider_id, revision)
+);
+CREATE TABLE agent_registry_snapshot_models_v3 (
+    agent_id TEXT NOT NULL CHECK(length(trim(agent_id)) > 0),
+    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
+    provider_id TEXT NOT NULL CHECK(length(trim(provider_id)) > 0),
+    model_id TEXT NOT NULL CHECK(length(trim(model_id)) > 0),
+    model_revision INTEGER NOT NULL CHECK(model_revision > 0),
+    is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)),
+    PRIMARY KEY(agent_id, agent_revision, provider_id, model_id),
+    UNIQUE(agent_id, agent_revision, provider_id, model_id, is_default),
+    FOREIGN KEY(agent_id, agent_revision, provider_id)
+        REFERENCES agent_registry_snapshot_providers_v3(
+            agent_id,
+            agent_revision,
+            provider_id
+        ),
+    FOREIGN KEY(provider_id, model_id, model_revision)
+        REFERENCES model_definitions(provider_id, model_id, revision)
+);
+CREATE UNIQUE INDEX one_default_model_per_agent_snapshot_v3
+    ON agent_registry_snapshot_models_v3(agent_id, agent_revision)
     WHERE is_default = 1;
 ";
 
