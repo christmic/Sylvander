@@ -135,6 +135,34 @@ pub(crate) enum ModelCapabilityError {
     Duplicate(CanonicalModelCapability),
 }
 
+/// Content-free capability failure category safe to cross runtime boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ModelCapabilityIssue {
+    #[error("blank capability")]
+    Blank,
+    #[error("capability has surrounding whitespace")]
+    SurroundingWhitespace,
+    #[error("capability uses non-canonical case")]
+    NotLowercase,
+    #[error("unknown capability")]
+    Unknown,
+    #[error("duplicate capability")]
+    Duplicate,
+}
+
+impl ModelCapabilityError {
+    #[must_use]
+    pub(crate) const fn issue(&self) -> ModelCapabilityIssue {
+        match self {
+            Self::Blank => ModelCapabilityIssue::Blank,
+            Self::SurroundingWhitespace(_) => ModelCapabilityIssue::SurroundingWhitespace,
+            Self::NotLowercase(_) => ModelCapabilityIssue::NotLowercase,
+            Self::Unknown(_) => ModelCapabilityIssue::Unknown,
+            Self::Duplicate(_) => ModelCapabilityIssue::Duplicate,
+        }
+    }
+}
+
 impl std::fmt::Display for CanonicalModelCapability {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
@@ -209,7 +237,10 @@ impl ModelDefinition {
             ));
         }
         parse_model_capabilities(&self.capabilities).map_err(|error| {
-            AgentRegistryError::Invalid(format!("invalid model capabilities: {error}"))
+            AgentRegistryError::Invalid(format!(
+                "invalid model capability metadata: {}",
+                error.issue()
+            ))
         })?;
         Ok(())
     }
@@ -560,6 +591,28 @@ mod capability_tests {
     }
 
     #[test]
+    fn content_free_issue_preserves_each_failure_category() {
+        for (capabilities, expected) in [
+            (vec![""], ModelCapabilityIssue::Blank),
+            (
+                vec![" tool_use"],
+                ModelCapabilityIssue::SurroundingWhitespace,
+            ),
+            (vec!["TOOL_USE"], ModelCapabilityIssue::NotLowercase),
+            (vec!["future_capability"], ModelCapabilityIssue::Unknown),
+            (
+                vec!["reasoning", "extended_thinking"],
+                ModelCapabilityIssue::Duplicate,
+            ),
+        ] {
+            assert_eq!(
+                parse_model_capabilities(capabilities).unwrap_err().issue(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn model_validation_accepts_historical_alias_without_rewriting_it() {
         let definition = model(["reasoning"]);
         definition.validate().unwrap();
@@ -584,5 +637,18 @@ mod capability_tests {
                 Err(AgentRegistryError::Invalid(_))
             ));
         }
+    }
+
+    #[test]
+    fn validation_error_is_typed_and_does_not_expose_raw_capability() {
+        let raw = "secret_future_capability";
+        let error = model([raw]).validate().unwrap_err();
+        assert!(error.to_string().contains("unknown capability"));
+        assert!(!error.to_string().contains(raw));
+        assert!(!format!("{error:?}").contains(raw));
+        assert_eq!(
+            parse_model_capabilities([raw]).unwrap_err().issue(),
+            ModelCapabilityIssue::Unknown
+        );
     }
 }
