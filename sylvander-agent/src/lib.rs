@@ -117,7 +117,10 @@ pub mod prelude {
     pub use crate::loop_::{
         AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };
-    pub use crate::run::{AgentRun, AgentRunBuilder, AgentRunError};
+    pub use crate::run::{
+        AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
+        AuthenticatedSessionLease,
+    };
     pub use crate::session::{SessionContext, SessionMetadata};
     pub use crate::spec::{
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,

@@ -85,6 +85,9 @@ pub(crate) struct AgentRunInner {
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
+    /// Sessions whose identity was admitted through this run's private issuer.
+    authenticated_sessions: RwLock<HashSet<SessionId>>,
+    session_authority: Arc<SessionAuthorityMarker>,
     /// Optional durable source of truth shared with channels/runtime.
     session_store: Option<Arc<dyn SessionStore>>,
     /// Long-term memory store.
@@ -404,6 +407,71 @@ fn usage_cost_nano_usd(
 #[derive(Clone)]
 pub struct AgentRun {
     pub(crate) inner: Arc<AgentRunInner>,
+}
+
+#[derive(Debug)]
+struct SessionAuthorityMarker;
+
+/// Runtime-owned issuer for authenticated sessions on exactly one [`AgentRun`].
+///
+/// The matching marker is never exposed by `AgentRun`; obtaining a raw run or
+/// publishing `JoinSession` on the bus cannot mint this authority.
+#[derive(Clone)]
+pub struct AgentSessionIssuer {
+    authority: Arc<SessionAuthorityMarker>,
+}
+
+/// A single-use, run-bound admission capability.
+pub struct AuthenticatedSessionLease {
+    authority: Arc<SessionAuthorityMarker>,
+    session_id: SessionId,
+    metadata: SessionMetadata,
+}
+
+/// Proof that a session was admitted by the issuer belonging to this run.
+#[derive(Debug)]
+pub struct AuthenticatedSession {
+    authority: Arc<SessionAuthorityMarker>,
+    session_id: SessionId,
+}
+
+impl AuthenticatedSession {
+    #[must_use]
+    pub fn id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+impl AgentSessionIssuer {
+    /// Issue a capability after rejecting unsafe identity metadata. Identity
+    /// authorization comes from possession of this issuer, not these strings.
+    pub fn issue(
+        &self,
+        session_id: SessionId,
+        metadata: SessionMetadata,
+    ) -> Result<AuthenticatedSessionLease, AgentRunError> {
+        validate_identity_component("session id", &session_id.0, 128)?;
+        validate_identity_component("user id", &metadata.user_id, 256)?;
+        if metadata.name.len() > 200 || metadata.name.chars().any(char::is_control) {
+            return Err(AgentRunError::Authentication("invalid session name".into()));
+        }
+        Ok(AuthenticatedSessionLease {
+            authority: self.authority.clone(),
+            session_id,
+            metadata,
+        })
+    }
+}
+
+fn validate_identity_component(
+    label: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), AgentRunError> {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+        return Err(AgentRunError::Authentication(format!("invalid {label}")));
+    }
+    Ok(())
 }
 
 impl AgentRun {
@@ -802,8 +870,8 @@ impl AgentRun {
 
     // -- session management --
 
-    /// Join a session, creating a new [`SessionContext`].
-    pub async fn join_session(&self, meta: SessionMetadata) -> SessionId {
+    #[cfg(test)]
+    async fn join_session(&self, meta: SessionMetadata) -> SessionId {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let ctx = SessionContext::new(session_id.clone(), meta);
         self.inner
@@ -811,12 +879,60 @@ impl AgentRun {
             .write()
             .await
             .insert(session_id.clone(), ctx);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .insert(session_id.clone());
         session_id
+    }
+
+    #[cfg(test)]
+    fn authenticated_session_for_test(&self, session_id: SessionId) -> AuthenticatedSession {
+        AuthenticatedSession {
+            authority: self.inner.session_authority.clone(),
+            session_id,
+        }
+    }
+
+    /// Admit a session using a capability issued for this exact run.
+    pub async fn attach_authenticated_session(
+        &self,
+        lease: AuthenticatedSessionLease,
+    ) -> Result<AuthenticatedSession, AgentRunError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &lease.authority) {
+            return Err(AgentRunError::Authentication(
+                "session capability belongs to another agent run".into(),
+            ));
+        }
+        let ctx = self
+            .inner
+            .restore_session_context(&lease.session_id, &lease.metadata)
+            .await;
+        self.inner
+            .sessions
+            .write()
+            .await
+            .insert(lease.session_id.clone(), ctx);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .insert(lease.session_id.clone());
+        Ok(AuthenticatedSession {
+            authority: lease.authority,
+            session_id: lease.session_id,
+        })
     }
 
     /// Leave a session.
     pub async fn leave_session(&self, session_id: &SessionId) {
         self.inner.sessions.write().await.remove(session_id);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .remove(session_id);
         self.inner.context_usage.write().await.remove(session_id);
         self.inner
             .approval_memory
@@ -885,6 +1001,15 @@ impl AgentRun {
                         session_id,
                         metadata,
                     } => {
+                        if self
+                            .inner
+                            .authenticated_sessions
+                            .read()
+                            .await
+                            .contains(session_id)
+                        {
+                            continue;
+                        }
                         let ctx = self
                             .inner
                             .restore_session_context(session_id, metadata)
@@ -898,6 +1023,11 @@ impl AgentRun {
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         self.inner.sessions.write().await.remove(session_id);
+                        self.inner
+                            .authenticated_sessions
+                            .write()
+                            .await
+                            .remove(session_id);
                         self.inner.context_usage.write().await.remove(session_id);
                         self.inner
                             .approval_memory
@@ -1082,6 +1212,15 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Result<MemoryExecutionContext, MemoryStoreError> {
+        if !self
+            .inner
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(session_id)
+        {
+            return Err(MemoryStoreError::AccessDenied);
+        }
         let sessions = self.inner.sessions.read().await;
         let session = sessions
             .get(session_id)
@@ -1098,21 +1237,21 @@ impl AgentRun {
     /// session already attached to this Agent application.
     pub async fn remember(
         &self,
-        session_id: &SessionId,
+        session: &AuthenticatedSession,
         content: impl Into<String>,
         tags: &[&str],
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let append = tags.iter().fold(MemoryAppend::new(content), |append, tag| {
             append.with_tag(*tag)
         });
-        self.remember_entry(session_id, append).await
+        self.remember_entry(session, append).await
     }
 
     /// Persist a structured application-derived memory for an attached
     /// session. Caller-controlled identity is deliberately absent.
     pub async fn remember_entry(
         &self,
-        session_id: &SessionId,
+        session: &AuthenticatedSession,
         append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let store = self
@@ -1120,6 +1259,7 @@ impl AgentRun {
             .memory
             .as_ref()
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
+        let session_id = self.authorized_session_id(session)?;
         let context = self.memory_context_for_session(session_id).await?;
         store.append_relationship(&context, append).await
     }
@@ -1127,7 +1267,7 @@ impl AgentRun {
     /// System-driven memory lookup derived from an attached session.
     pub async fn recall(
         &self,
-        session_id: &SessionId,
+        session: &AuthenticatedSession,
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
@@ -1136,8 +1276,18 @@ impl AgentRun {
             .memory
             .as_ref()
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
+        let session_id = self.authorized_session_id(session)?;
         let context = self.memory_context_for_session(session_id).await?;
         store.search_relationship(&context, query, filter).await
+    }
+
+    fn authorized_session_id<'a>(
+        &self,
+        session: &'a AuthenticatedSession,
+    ) -> Result<&'a SessionId, MemoryStoreError> {
+        Arc::ptr_eq(&self.inner.session_authority, &session.authority)
+            .then_some(&session.session_id)
+            .ok_or(MemoryStoreError::AccessDenied)
     }
 }
 
@@ -2118,12 +2268,17 @@ impl AgentRunInner {
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
+        let memory_authorized = self
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(&session_id);
         let tool_context = tool_context_for_permissions(
             &session_metadata,
             &self.id,
             &session_id,
             &permissions,
-            self.memory.is_some(),
+            self.memory.is_some() && memory_authorized,
             self.workspace_journal.clone(),
             Some(turn_id),
         );
@@ -2546,7 +2701,7 @@ fn tool_context_for_permissions(
     agent_id: &AgentId,
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
-    memory_enabled: bool,
+    trusted_memory: bool,
     workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
     turn_id: Option<&str>,
 ) -> ToolContext {
@@ -2558,7 +2713,12 @@ fn tool_context_for_permissions(
     if let Some(turn_id) = turn_id {
         session = session.with_trace_id(turn_id);
     }
-    let mut context = ToolContext::application(session).with_fs_root(metadata.workspace.clone());
+    let mut context = if trusted_memory {
+        ToolContext::application(session)
+    } else {
+        ToolContext::new(session)
+    }
+    .with_fs_root(metadata.workspace.clone());
     if let Some(journal) = workspace_journal {
         context = context.with_workspace_journal(journal);
     }
@@ -2577,7 +2737,7 @@ fn tool_context_for_permissions(
         context = context.with_capability(Cap::Network);
         context.surface.network = NetworkPolicy::All;
     }
-    if memory_enabled {
+    if trusted_memory {
         context = context
             .with_capability(Cap::MemoryRead)
             .with_capability(Cap::MemoryWrite);
@@ -2812,8 +2972,16 @@ impl AgentRunBuilder {
         self
     }
 
-    /// Build the [`AgentRun`].
+    /// Build the [`AgentRun`] without exposing its session issuer.
     pub fn build(self) -> Result<AgentRun, AgentRunError> {
+        self.build_with_session_issuer().map(|(run, _)| run)
+    }
+
+    /// Build a run and return the runtime-owned issuer for authenticated
+    /// session admission. Keep the issuer at the trusted service boundary.
+    pub fn build_with_session_issuer(
+        self,
+    ) -> Result<(AgentRun, AgentSessionIssuer), AgentRunError> {
         let id = self.spec.id.clone();
         let bus = self
             .bus
@@ -2969,7 +3137,11 @@ impl AgentRunBuilder {
         let workspace_journal = self
             .workspace_journal_path
             .map(|path| Arc::new(crate::workspace_journal::WorkspaceJournal::new(path)));
-        Ok(AgentRun {
+        let session_authority = Arc::new(SessionAuthorityMarker);
+        let issuer = AgentSessionIssuer {
+            authority: session_authority.clone(),
+        };
+        let run = AgentRun {
             inner: Arc::new(AgentRunInner {
                 id,
                 spec: self.spec,
@@ -2981,6 +3153,8 @@ impl AgentRunBuilder {
                 workspace_journal,
                 bus,
                 sessions: RwLock::new(HashMap::new()),
+                authenticated_sessions: RwLock::new(HashSet::new()),
+                session_authority,
                 session_store: self.session_store,
                 memory,
                 memory_source,
@@ -2994,7 +3168,8 @@ impl AgentRunBuilder {
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
             }),
-        })
+        };
+        Ok((run, issuer))
     }
 }
 
@@ -3010,6 +3185,8 @@ fn prompt_integrity_error() -> AgentRunError {
 pub enum AgentRunError {
     #[error("unknown session: {0}")]
     UnknownSession(SessionId),
+    #[error("session authentication error: {0}")]
+    Authentication(String),
     #[error("loop error: {0}")]
     Loop(#[from] AgentLoopError),
     #[error("build error: {0}")]
@@ -4352,6 +4529,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_capability_is_bound_to_one_run() {
+        let (spec_a, client_a) = test_spec_and_client();
+        let (run_a, issuer_a) = AgentRun::builder(spec_a, client_a)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build A");
+        let (spec_b, client_b) = test_spec_and_client();
+        let (run_b, _) = AgentRun::builder(spec_b, client_b)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build B");
+        let session_id = SessionId::new("session-a");
+        let lease = issuer_a
+            .issue(session_id, test_metadata())
+            .expect("issue lease");
+
+        let error = run_b
+            .attach_authenticated_session(lease)
+            .await
+            .expect_err("foreign run must reject lease");
+        assert!(matches!(error, AgentRunError::Authentication(_)));
+        assert!(run_a.list_sessions().await.is_empty());
+        assert!(run_b.list_sessions().await.is_empty());
+    }
+
+    #[test]
+    fn session_issuer_rejects_control_characters_before_admission() {
+        let (spec, client) = test_spec_and_client();
+        let (_, issuer) = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build");
+        let error = issuer
+            .issue(
+                SessionId::new("sentinel-session"),
+                SessionMetadata {
+                    user_id: "victim\nforged".into(),
+                    ..test_metadata()
+                },
+            )
+            .err()
+            .expect("unsafe identity must fail");
+        assert!(matches!(error, AgentRunError::Authentication(_)));
+    }
+
+    #[tokio::test]
+    async fn raw_session_presence_has_no_trusted_memory_identity() {
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()))
+            .build()
+            .expect("build");
+        let session_id = SessionId::new("raw-bus-session");
+        run.inner.sessions.write().await.insert(
+            session_id.clone(),
+            SessionContext::new(session_id.clone(), test_metadata()),
+        );
+
+        assert!(matches!(
+            run.memory_context_for_session(&session_id).await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+    }
+
+    #[tokio::test]
     async fn remember_is_system_driven() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
@@ -4362,12 +4605,13 @@ mod tests {
             .build()
             .expect("build");
         let session_id = run.join_session(test_metadata()).await;
-        run.remember(&session_id, "User prefers dark mode", &["preference"])
+        let session = run.authenticated_session_for_test(session_id);
+        run.remember(&session, "User prefers dark mode", &["preference"])
             .await
             .expect("remember");
         let results = run
             .recall(
-                &session_id,
+                &session,
                 "dark mode",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -4392,10 +4636,8 @@ mod tests {
                 ..test_metadata()
             })
             .await;
-        let entry = run
-            .remember(&session_id, "caller-owned", &[])
-            .await
-            .unwrap();
+        let session = run.authenticated_session_for_test(session_id);
+        let entry = run.remember(&session, "caller-owned", &[]).await.unwrap();
 
         assert_eq!(
             entry.owner,
@@ -4406,7 +4648,7 @@ mod tests {
         );
         assert_eq!(
             run.recall(
-                &session_id,
+                &session,
                 "caller-owned",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -4426,10 +4668,8 @@ mod tests {
             .build()
             .expect("build");
         let session_id = run.join_session(test_metadata()).await;
-        let err = run
-            .remember(&session_id, "something", &[])
-            .await
-            .unwrap_err();
+        let session = run.authenticated_session_for_test(session_id);
+        let err = run.remember(&session, "something", &[]).await.unwrap_err();
         assert!(err.to_string().contains("no memory store"));
     }
 

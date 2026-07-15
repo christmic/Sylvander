@@ -40,18 +40,26 @@ async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>
         .build()
         .expect("spec");
 
-    let run = AgentRun::builder(spec, mock_client(server))
+    let (run, issuer) = AgentRun::builder(spec, mock_client(server))
         .bus(bus.clone())
-        .build()
+        .build_with_session_issuer()
         .expect("build");
 
-    let sid = run
-        .join_session(SessionMetadata {
-            workspace: "/tmp".into(),
-            name: "test".into(),
-            user_id: "user-1".into(),
-        })
-        .await;
+    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
+    run.attach_authenticated_session(
+        issuer
+            .issue(
+                sid.clone(),
+                SessionMetadata {
+                    workspace: "/tmp".into(),
+                    name: "test".into(),
+                    user_id: "user-1".into(),
+                },
+            )
+            .expect("issue session"),
+    )
+    .await
+    .expect("attach session");
 
     (run, bus, sid)
 }
@@ -630,13 +638,21 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         provenance,
     };
 
-    let agent = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
         .bus(bus)
         .session_store(store.clone())
         .prompt_resolver(prompt_policy)
-        .build()
+        .build_with_session_issuer()
         .expect("build");
-    let session_id = agent.join_session(metadata.clone()).await;
+    let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+    agent
+        .attach_authenticated_session(
+            issuer
+                .issue(session_id.clone(), metadata.clone())
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
     let mut stored = StoredSession::new(
         session_id.clone(),
         "configured",
@@ -731,24 +747,32 @@ async fn tool_call_events_published() {
         .build()
         .expect("spec");
 
-    let agent = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
-        .build()
+        .build_with_session_issuer()
         .expect("build");
 
+    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
     agent
-        .join_session(SessionMetadata {
-            workspace: "/tmp".into(),
-            name: "test".into(),
-            user_id: "user-1".into(),
-        })
-        .await;
+        .attach_authenticated_session(
+            issuer
+                .issue(
+                    sid.clone(),
+                    SessionMetadata {
+                        workspace: "/tmp".into(),
+                        name: "test".into(),
+                        user_id: "user-1".into(),
+                    },
+                )
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
 
     let mut rx = subscribe_stream(&bus).await;
 
-    let sid = agent.list_sessions().await[0].clone();
     let msg = BusMessage::user_chat(sid, "user-1", "Run tool");
     agent.handle_message(msg).await.expect("handle_message");
 

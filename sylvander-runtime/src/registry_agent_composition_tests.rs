@@ -171,7 +171,11 @@ async fn persisted_session_with_overrides(
         name: name.into(),
         user_id: "user".into(),
     };
-    let session_id = agent.run.join_session(metadata.clone()).await;
+    let session_id = sylvander_protocol::SessionId::new(uuid::Uuid::new_v4().to_string());
+    agent
+        .attach_authenticated_session(session_id.clone(), metadata.clone())
+        .await
+        .expect("attach authenticated session");
     let mut stored = StoredSession::new(
         session_id.clone(),
         name,
