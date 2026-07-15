@@ -24,6 +24,10 @@
 
 mod agent_admin;
 pub mod agent_registry;
+#[allow(dead_code)] // immutable runtime bindings consumed by registry composition
+mod agent_registry_snapshot;
+#[cfg(test)]
+mod agent_registry_snapshot_tests;
 mod boundary;
 pub mod composition;
 pub mod config;
