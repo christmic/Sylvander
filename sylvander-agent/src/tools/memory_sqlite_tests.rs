@@ -55,11 +55,11 @@ async fn roundtrips_restarts_and_isolates_relationships() {
     );
 
     let foreign = reopened
-        .delete_relationship(&bob, &entry.id)
+        .delete_relationship(&bob, &entry.id, entry.revision)
         .await
         .unwrap_err();
     let missing = reopened
-        .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000")
+        .delete_relationship(&bob, "00000000-0000-0000-0000-000000000000", entry.revision)
         .await
         .unwrap_err();
     assert_eq!(foreign.to_string(), missing.to_string());
@@ -70,9 +70,8 @@ async fn roundtrips_restarts_and_isolates_relationships() {
             .unwrap()
             .is_some()
     );
-
     reopened
-        .delete_relationship(&alice, &entry.id)
+        .delete_relationship(&alice, &entry.id, entry.revision)
         .await
         .unwrap();
     drop(reopened);
@@ -87,7 +86,7 @@ async fn roundtrips_restarts_and_isolates_relationships() {
 }
 
 #[tokio::test]
-async fn search_is_bounded_and_future_schema_fails_closed() {
+async fn search_is_bounded_and_unknown_schema_fails_closed() {
     let file = tempfile::NamedTempFile::new().unwrap();
     let ctx = worker("alice", "agent-a");
     let store = SqliteMemoryStore::open(file.path()).unwrap();
@@ -122,7 +121,7 @@ async fn search_is_bounded_and_future_schema_fails_closed() {
     let connection = Connection::open(file.path()).unwrap();
     connection
         .execute(
-            "UPDATE memory_schema_migrations SET version = 2 WHERE component = ?1",
+            "UPDATE memory_schema_migrations SET version = 1 WHERE component = ?1",
             [COMPONENT],
         )
         .unwrap();

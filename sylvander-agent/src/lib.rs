@@ -127,9 +127,10 @@ pub mod prelude {
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry,
-        MemoryExecutionContext, MemoryOwner, MemoryReadTool, MemoryScope, MemoryStore,
-        MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool, SqliteMemoryStore,
-        StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
+        MemoryExecutionContext, MemoryOwner, MemoryProvenance, MemoryProvenanceSource,
+        MemoryReadTool, MemoryScope, MemoryStore, MemoryStoreError, MemoryWriteTool,
+        PresentPlanTool, ReadTool, SqliteMemoryStore, StartBackgroundTaskTool, UpdatePlanTool,
+        WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;
