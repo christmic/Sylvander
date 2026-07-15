@@ -300,11 +300,11 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
             provider: default_model.provider_id.clone(),
             model: default_model.model_id.clone(),
         })?;
-    let allowed_models = provider_models
+    let model_catalog = provider_models
         .iter()
-        .map(|model| model.reference.clone())
-        .collect::<HashSet<_>>();
-    let router = PinnedProviderRouter::new(adapters_by_provider, allowed_models)
+        .map(|model| (model.reference.clone(), model.capabilities))
+        .collect::<HashMap<_, _>>();
+    let router = PinnedProviderRouter::new(adapters_by_provider, model_catalog)
         .map_err(|error| CompositionError::ProviderRouter(error.to_string()))?;
 
     let mut spec = definition.spec.clone();
