@@ -35,7 +35,10 @@ use crate::credential_registry::CredentialSecretResolver;
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
-use crate::registry_domain::{ModelDefinition, ProviderDefinition};
+use crate::registry_domain::{
+    CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
+    parse_model_capabilities,
+};
 use crate::request_scoped_provider::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
     RegistryCredentialSource,
@@ -710,42 +713,60 @@ fn registry_model_catalog(
 fn registry_model_capabilities(
     model: &ModelDefinition,
 ) -> Result<(ModelCapabilities, ProviderModelCapabilities), CompositionError> {
+    let capabilities = parse_model_capabilities(&model.capabilities).map_err(|error| {
+        CompositionError::UnknownCapability {
+            model: model.model_id.clone(),
+            capability: rejected_capability(error),
+        }
+    })?;
+    Ok(canonical_model_capability_bits(capabilities))
+}
+
+fn canonical_model_capability_bits(
+    capabilities: impl IntoIterator<Item = CanonicalModelCapability>,
+) -> (ModelCapabilities, ProviderModelCapabilities) {
     let mut shadow = ModelCapabilities::empty();
     let mut exact = ProviderModelCapabilities::empty();
-    for capability in &model.capabilities {
-        let (shadow_capability, exact_capability) = match capability.as_str() {
-            "extended_thinking" | "reasoning" => (
+    for capability in capabilities {
+        let (shadow_capability, exact_capability) = match capability {
+            CanonicalModelCapability::ExtendedThinking => (
                 ModelCapabilities::EXTENDED_THINKING,
                 ProviderModelCapabilities::REASONING,
             ),
-            "prompt_caching" => (
+            CanonicalModelCapability::PromptCaching => (
                 ModelCapabilities::PROMPT_CACHING,
                 ProviderModelCapabilities::PROMPT_CACHING,
             ),
-            "structured_output" => (
+            CanonicalModelCapability::StructuredOutput => (
                 ModelCapabilities::STRUCTURED_OUTPUT,
                 ProviderModelCapabilities::STRUCTURED_OUTPUT,
             ),
-            "tool_use" => (
+            CanonicalModelCapability::ToolUse => (
                 ModelCapabilities::TOOL_USE,
                 ProviderModelCapabilities::TOOL_USE,
             ),
-            "vision" => (ModelCapabilities::VISION, ProviderModelCapabilities::VISION),
-            "document_input" => (
+            CanonicalModelCapability::Vision => {
+                (ModelCapabilities::VISION, ProviderModelCapabilities::VISION)
+            }
+            CanonicalModelCapability::DocumentInput => (
                 ModelCapabilities::DOCUMENT_INPUT,
                 ProviderModelCapabilities::DOCUMENT_INPUT,
             ),
-            unknown => {
-                return Err(CompositionError::UnknownCapability {
-                    model: model.model_id.clone(),
-                    capability: unknown.to_string(),
-                });
-            }
         };
         shadow |= shadow_capability;
         exact = exact | exact_capability;
     }
-    Ok((shadow, exact))
+    (shadow, exact)
+}
+
+fn rejected_capability(error: ModelCapabilityError) -> String {
+    match error {
+        ModelCapabilityError::Blank => String::new(),
+        ModelCapabilityError::SurroundingWhitespace(capability)
+        | ModelCapabilityError::NotLowercase(capability)
+        | ModelCapabilityError::Unknown(capability) => capability,
+        ModelCapabilityError::Duplicate(capability) => capability.to_string(),
+    }
 }
 
 fn source(kind: SessionConfigSourceKind, reference: &str) -> SessionConfigSource {
@@ -816,24 +837,13 @@ fn model_catalog(provider: &ModelProviderConfig) -> Result<Vec<ModelInfo>, Compo
 fn model_capabilities(
     model: &ModelDefinitionConfig,
 ) -> Result<ModelCapabilities, CompositionError> {
-    let mut result = ModelCapabilities::empty();
-    for capability in &model.capabilities {
-        result |= match capability.as_str() {
-            "extended_thinking" | "reasoning" => ModelCapabilities::EXTENDED_THINKING,
-            "prompt_caching" => ModelCapabilities::PROMPT_CACHING,
-            "structured_output" => ModelCapabilities::STRUCTURED_OUTPUT,
-            "tool_use" => ModelCapabilities::TOOL_USE,
-            "vision" => ModelCapabilities::VISION,
-            "document_input" => ModelCapabilities::DOCUMENT_INPUT,
-            unknown => {
-                return Err(CompositionError::UnknownCapability {
-                    model: model.id.clone(),
-                    capability: unknown.to_string(),
-                });
-            }
-        };
-    }
-    Ok(result)
+    let capabilities = parse_model_capabilities(&model.capabilities).map_err(|error| {
+        CompositionError::UnknownCapability {
+            model: model.id.clone(),
+            capability: rejected_capability(error),
+        }
+    })?;
+    Ok(canonical_model_capability_bits(capabilities).0)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -898,6 +908,72 @@ mod tests {
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
     use sylvander_protocol::ModelSelection;
+
+    #[test]
+    fn capability_mapping_covers_the_canonical_vocabulary() {
+        let model = ModelDefinition {
+            provider_id: "provider".into(),
+            model_id: "model".into(),
+            revision: 1,
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: [
+                "extended_thinking",
+                "prompt_caching",
+                "structured_output",
+                "tool_use",
+                "vision",
+                "document_input",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            lifecycle: sylvander_protocol::ModelLifecycle::Active,
+            pricing: None,
+        };
+
+        let (shadow, exact) = registry_model_capabilities(&model).unwrap();
+
+        assert_eq!(
+            shadow,
+            ModelCapabilities::EXTENDED_THINKING
+                | ModelCapabilities::PROMPT_CACHING
+                | ModelCapabilities::STRUCTURED_OUTPUT
+                | ModelCapabilities::TOOL_USE
+                | ModelCapabilities::VISION
+                | ModelCapabilities::DOCUMENT_INPUT
+        );
+        assert_eq!(
+            exact,
+            ProviderModelCapabilities::REASONING
+                | ProviderModelCapabilities::PROMPT_CACHING
+                | ProviderModelCapabilities::STRUCTURED_OUTPUT
+                | ProviderModelCapabilities::TOOL_USE
+                | ProviderModelCapabilities::VISION
+                | ProviderModelCapabilities::DOCUMENT_INPUT
+        );
+    }
+
+    #[test]
+    fn config_capability_mapping_uses_domain_aliases_and_fails_closed() {
+        let mut model = ModelDefinitionConfig {
+            id: "model".into(),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: vec!["reasoning".into()],
+        };
+        assert_eq!(
+            model_capabilities(&model).unwrap(),
+            ModelCapabilities::EXTENDED_THINKING
+        );
+
+        model.capabilities = vec!["telepathy".into()];
+        assert!(matches!(
+            model_capabilities(&model),
+            Err(CompositionError::UnknownCapability { model, capability })
+                if model == "model" && capability == "telepathy"
+        ));
+    }
 
     fn versioned_config() -> ServerConfig {
         ServerConfig::from_toml(
