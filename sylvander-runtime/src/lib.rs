@@ -52,6 +52,8 @@ mod registry_bootstrap_tests;
 mod registry_domain;
 #[cfg(test)]
 mod registry_domain_tests;
+#[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
+mod request_scoped_provider;
 
 use std::collections::HashMap;
 use std::sync::Arc;
