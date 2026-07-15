@@ -14,7 +14,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::agent_registry::AgentRegistry;
 use crate::agent_registry_snapshot::AgentSnapshotSelection;
-use crate::config::{SecretRef, ServerConfig};
+use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
+use crate::config::{SecretRef, ServerConfig, SystemSecretResolver};
 use crate::registry_domain::CredentialBindingRevision;
 
 const TEXT_STREAM: &str = "\
@@ -76,6 +77,65 @@ model_name = "model-a"
     .unwrap()
 }
 
+fn dual_provider_config(
+    alpha_url: &str,
+    alpha_secret: &std::path::Path,
+    beta_url: &str,
+    beta_secret: &std::path::Path,
+) -> ServerConfig {
+    let mut config = ServerConfig::from_toml(&format!(
+        r#"
+schema_version = 1
+
+[[model_providers]]
+id = "alpha"
+base_url = "{alpha_url}"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "shared"
+context_window = 100000
+max_output_tokens = 4096
+capabilities = ["tool_use"]
+
+[[model_providers]]
+id = "beta"
+base_url = "{beta_url}"
+[model_providers.api_key]
+source = "file"
+path = "{}"
+[[model_providers.models]]
+id = "shared"
+context_window = 100000
+max_output_tokens = 4096
+capabilities = ["tool_use"]
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Assistant"
+[agents.spec.model]
+provider = "alpha"
+model_name = "shared"
+"#,
+        alpha_secret.display(),
+        beta_secret.display()
+    ))
+    .unwrap();
+    config.agents[0].spec.model.allowed_models = vec![
+        ModelSelection {
+            provider_id: "alpha".into(),
+            model_id: "shared".into(),
+        },
+        ModelSelection {
+            provider_id: "beta".into(),
+            model_id: "shared".into(),
+        },
+    ];
+    config
+}
+
 async fn expect_request(server: &MockServer, key: &str) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -92,6 +152,15 @@ async fn persisted_session(
     store: &SqliteSessionStore,
     name: &str,
 ) -> sylvander_agent::spec::SessionId {
+    persisted_session_with_overrides(agent, store, name, SessionConfigOverrides::default()).await
+}
+
+async fn persisted_session_with_overrides(
+    agent: &ConfiguredAgent,
+    store: &SqliteSessionStore,
+    name: &str,
+    overrides: SessionConfigOverrides,
+) -> sylvander_agent::spec::SessionId {
     let metadata = SessionMetadata {
         workspace: std::path::PathBuf::from("/workspace"),
         name: name.into(),
@@ -105,9 +174,7 @@ async fn persisted_session(
         metadata,
         vec![agent.spec.id.clone()],
     );
-    stored.effective_config = Some(
-        resolve_session_config(agent, &SessionConfigOverrides::default(), None, None).unwrap(),
-    );
+    stored.effective_config = Some(resolve_session_config(agent, &overrides, None, None).unwrap());
     store.save(&stored).await.unwrap();
     session_id
 }
@@ -264,6 +331,190 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
 
     pinned_server.verify().await;
     assert!(newer_server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_credentials() {
+    let directory = tempdir().unwrap();
+    let alpha_first = directory.path().join("alpha-first.secret");
+    let alpha_second = directory.path().join("alpha-second.secret");
+    let beta_secret = directory.path().join("beta.secret");
+    std::fs::write(&alpha_first, "alpha-first-key\n").unwrap();
+    std::fs::write(&alpha_second, "alpha-second-key\n").unwrap();
+    std::fs::write(&beta_secret, "beta-key\n").unwrap();
+    let alpha_pinned = MockServer::start().await;
+    let beta_pinned = MockServer::start().await;
+    let alpha_new = MockServer::start().await;
+    let beta_new = MockServer::start().await;
+    let success_stream = TEXT_STREAM.replace("model-a", "shared");
+    for key in ["alpha-first-key", "alpha-second-key"] {
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("authorization", format!("Bearer {key}")))
+            .and(body_partial_json(json!({"model": "shared"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(success_stream.clone(), "text/event-stream"),
+            )
+            .expect(1)
+            .mount(&alpha_pinned)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", "Bearer beta-key"))
+        .and(body_partial_json(json!({"model": "shared"})))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+            "type": "error",
+            "error": {"type": "authentication_error", "message": "denied"}
+        })))
+        .expect(1)
+        .mount(&beta_pinned)
+        .await;
+
+    let config = dual_provider_config(
+        &alpha_pinned.uri(),
+        &alpha_first,
+        &beta_pinned.uri(),
+        &beta_secret,
+    );
+    let registry = AgentRegistry::open(directory.path().join("dual.db"))
+        .await
+        .unwrap();
+    registry.bootstrap_registries(&config).await.unwrap();
+    registry.seed(&config).await.unwrap();
+    registry
+        .stage_agent_snapshot_v3(AgentSnapshotSelectionV3 {
+            agent_id: "assistant".into(),
+            agent_revision: 1,
+            default_model: ModelSelection {
+                provider_id: "alpha".into(),
+                model_id: "shared".into(),
+            },
+            allowed_models: BTreeSet::from([
+                ModelSelection {
+                    provider_id: "alpha".into(),
+                    model_id: "shared".into(),
+                },
+                ModelSelection {
+                    provider_id: "beta".into(),
+                    model_id: "shared".into(),
+                },
+            ]),
+        })
+        .await
+        .unwrap();
+    let snapshot = registry
+        .resolve_registry_composition_versioned(&config.agents[0].spec.id, 1)
+        .await
+        .unwrap();
+
+    for (provider_id, newer_url) in [("alpha", alpha_new.uri()), ("beta", beta_new.uri())] {
+        let mut provider = snapshot.providers[provider_id].clone();
+        provider.revision = 2;
+        provider.base_url = newer_url;
+        registry.stage_provider(1, provider).await.unwrap();
+        registry.activate_provider(provider_id, 2, 1).await.unwrap();
+        let selection = ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: "shared".into(),
+        };
+        let mut model = snapshot.models[&selection].clone();
+        model.revision = 2;
+        model.context_window += 1;
+        registry.stage_model(1, model).await.unwrap();
+        registry
+            .activate_model((provider_id, "shared"), 2, 1)
+            .await
+            .unwrap();
+    }
+
+    let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let sessions: Arc<dyn SessionStore> = store.clone();
+    let agent = build_registry_agent_versioned_with_resolver(
+        &config,
+        snapshot.clone(),
+        registry.clone(),
+        bus,
+        sessions,
+        Arc::new(SystemSecretResolver),
+    )
+    .unwrap();
+    let runtime = agent.run.runtime_model_info().await;
+    assert_eq!(
+        runtime
+            .models
+            .iter()
+            .map(|model| (model.provider.as_str(), model.id.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("alpha", "shared"), ("beta", "shared")]
+    );
+
+    let alpha_one = persisted_session(&agent, &store, "alpha-one").await;
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(alpha_one, "user", "alpha one"))
+        .await
+        .unwrap();
+    let alpha_binding = snapshot.providers["alpha"].credential_binding_id.clone();
+    registry
+        .stage_credential(
+            1,
+            CredentialBindingRevision {
+                binding_id: alpha_binding.clone(),
+                generation: 2,
+                reference: SecretRef::File { path: alpha_second },
+            },
+        )
+        .await
+        .unwrap();
+    registry
+        .activate_credential(&alpha_binding, 2, 1)
+        .await
+        .unwrap();
+    let alpha_two = persisted_session(&agent, &store, "alpha-two").await;
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(alpha_two, "user", "alpha two"))
+        .await
+        .unwrap();
+
+    let beta_selection = ModelSelection {
+        provider_id: "beta".into(),
+        model_id: "shared".into(),
+    };
+    agent
+        .run
+        .select_qualified_model(beta_selection.clone(), ReasoningEffort::Off)
+        .await
+        .unwrap();
+    let beta_session = persisted_session_with_overrides(
+        &agent,
+        &store,
+        "beta",
+        SessionConfigOverrides {
+            model: Some(beta_selection),
+            ..SessionConfigOverrides::default()
+        },
+    )
+    .await;
+    let error = agent
+        .run
+        .handle_message(BusMessage::user_chat(beta_session, "user", "beta"))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        sylvander_agent::run::AgentRunError::Loop(
+            sylvander_agent::error::AgentLoopError::Provider { attempts: 1, source }
+        ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
+    ));
+
+    alpha_pinned.verify().await;
+    beta_pinned.verify().await;
+    assert!(alpha_new.received_requests().await.unwrap().is_empty());
+    assert!(beta_new.received_requests().await.unwrap().is_empty());
 }
 
 #[test]
