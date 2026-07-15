@@ -3,7 +3,7 @@ use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryFilter, M
 use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::worker(&SessionContext::new("alice", "agent-a", "session"))
+    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
 }
 
 async fn backup_fixture() -> (tempfile::TempDir, MemoryBackupArtifact) {

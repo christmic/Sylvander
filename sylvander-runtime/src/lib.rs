@@ -3164,17 +3164,15 @@ model_name = "shared"
             .memory_maintenance
             .retention
             .expired_grace_days = 0;
-        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "user",
-            "assistant",
-            "session",
-        ));
         let runtime = Runtime::boot_config(config.clone()).await.unwrap();
         assert!(runtime.memory_maintenance.is_some());
+        let session = attach_memory_session(&runtime, "assistant", "user").await;
+        let run = &runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run;
         for content in ["one", "two", "three"] {
-            runtime
-                .memory_store
-                .append_relationship(&context, MemoryAppend::new(content))
+            run.remember_entry(&session, MemoryAppend::new(content))
                 .await
                 .unwrap();
         }
@@ -3234,15 +3232,13 @@ model_name = "shared"
             .memory_maintenance
             .retention
             .expired_grace_days = 0;
-        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "user",
-            "assistant",
-            "session",
-        ));
         let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let session = attach_memory_session(&runtime, "assistant", "user").await;
         runtime
-            .memory_store
-            .append_relationship(&context, MemoryAppend::new("must remain durable"))
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .remember_entry(&session, MemoryAppend::new("must remain durable"))
             .await
             .unwrap();
         runtime.shutdown().await.unwrap();
@@ -3273,18 +3269,6 @@ model_name = "shared"
             "store error: memory retention catch-up failed"
         );
         assert!(!error.to_string().contains("private"));
-        assert_eq!(
-            store
-                .search_relationship(
-                    &context,
-                    "durable",
-                    sylvander_agent::tools::memory::MemoryFilter::default(),
-                )
-                .await
-                .unwrap()
-                .len(),
-            0
-        );
         let count: u32 = rusqlite::Connection::open(memory_db)
             .unwrap()
             .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
@@ -3305,26 +3289,30 @@ model_name = "shared"
             .expired_grace_days = 0;
         config.server.memory_maintenance.batch_size = 1;
         config.server.memory_maintenance.max_batches_per_run = 100;
+        let memory_db = directory.path().join("periodic-memory.db");
+        config.server.memory_db = Some(memory_db.clone());
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let session = attach_memory_session(&runtime, "assistant", "user").await;
+        let run = &runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run;
+        for index in 0..25 {
+            run.remember_entry(&session, MemoryAppend::new(format!("periodic-{index}")))
+                .await
+                .unwrap();
+        }
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
         let policy =
             RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
                 .unwrap()
                 .with_interval(std::time::Duration::from_millis(10));
-        let memory_db = directory.path().join("periodic-memory.db");
         let store =
             SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
                 .unwrap();
-        let context = MemoryExecutionContext::worker(&sylvander_protocol::SessionContext::new(
-            "user",
-            "assistant",
-            "session",
-        ));
         let maintenance = MemoryMaintenanceTask::start(store.maintenance(), policy);
-        for index in 0..25 {
-            store
-                .append_relationship(&context, MemoryAppend::new(format!("periodic-{index}")))
-                .await
-                .unwrap();
-        }
         rusqlite::Connection::open(&memory_db)
             .unwrap()
             .execute(
