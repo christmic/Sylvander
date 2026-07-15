@@ -124,6 +124,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -131,6 +133,29 @@ jobs:
 
       - name: cargo build
         run: cargo build --workspace --locked
+
+      - name: Verify macOS app helper contract
+        run: |
+          set -euo pipefail
+          universal="$RUNNER_TEMP/sylvander-tui-universal"
+          sylvander-ghostty/macos/Scripts/build-sylvander-tui-universal.sh \
+            "$GITHUB_WORKSPACE" "$universal"
+          test "$(lipo -archs "$universal")" = "x86_64 arm64" || \
+            test "$(lipo -archs "$universal")" = "arm64 x86_64"
+          destination="$RUNNER_TEMP/sylvander-helper-contract"
+          SRCROOT="$GITHUB_WORKSPACE/sylvander-ghostty/macos" \
+          TARGET_BUILD_DIR="$destination" \
+          UNLOCALIZED_RESOURCES_FOLDER_PATH="Sylvander.app/Contents/Resources" \
+          SYLVANDER_TUI_PATH="$universal" \
+          CONFIGURATION=Release \
+          PLATFORM_NAME=macosx \
+          ARCHS="arm64 x86_64" \
+          CODE_SIGNING_ALLOWED=YES \
+          EXPANDED_CODE_SIGN_IDENTITY=- \
+          sylvander-ghostty/macos/Scripts/embed-sylvander-tui.sh
+          helper="$destination/Sylvander.app/Contents/Resources/bin/sylvander-tui"
+          test -x "$helper"
+          codesign --verify --strict "$helper"
 
       - name: cargo test
         # Several tests assert on the streaming-event contract. Their
@@ -162,9 +187,9 @@ jobs:
           set -e
           test -f Sylvander-Info.plist
           test -f Sylvander.sdef
-          test -f Ghostty.xcodeproj/project.pbxproj
+          test -f Sylvander.xcodeproj/project.pbxproj
           # Confirm pbxproj no longer references the old file names.
-          if grep -q 'Ghostty-Info\.plist\|Ghostty\.sdef' Ghostty.xcodeproj/project.pbxproj; then
+          if grep -q 'Ghostty-Info\.plist\|Ghostty\.sdef' Sylvander.xcodeproj/project.pbxproj; then
             echo "ERROR: pbxproj still references old file names"
             exit 1
           fi
