@@ -365,6 +365,7 @@ fn ui_protocol_capabilities(version: u16) -> Vec<String> {
         ("diagnostics", 1),
         ("model_selection", 1),
         ("plans", 1),
+        ("provider_model_registry_lifecycle", 3),
         ("registry_administration", 2),
         ("session_replay", 1),
         ("sessions", 1),
@@ -2198,6 +2199,13 @@ mod tests {
         );
         assert!(v2.iter().any(|item| item == "agent_administration"));
         assert!(v2.iter().any(|item| item == "registry_administration"));
+        for capabilities in [&v1, &v2] {
+            assert!(
+                !capabilities
+                    .iter()
+                    .any(|item| item == "provider_model_registry_lifecycle")
+            );
+        }
         assert!(
             !v2.iter()
                 .any(|item| item == "credential_registry_lifecycle")
@@ -2205,6 +2213,10 @@ mod tests {
         assert!(
             v3.iter()
                 .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            v3.iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
         );
     }
 

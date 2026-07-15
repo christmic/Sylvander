@@ -377,6 +377,7 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
     }
     if version >= 3 {
         capabilities.push("credential_registry_lifecycle".into());
+        capabilities.push("provider_model_registry_lifecycle".into());
     }
     let _ = tx.send(ServerMsg::Welcome {
         protocol: sylvander_protocol::UiProtocolWelcome {
@@ -1221,6 +1222,7 @@ mod tests {
             "agent_administration",
             "registry_administration",
             "credential_registry_lifecycle",
+            "provider_model_registry_lifecycle",
         ] {
             assert!(
                 protocol.capabilities.iter().any(|item| item == capability),
@@ -1293,6 +1295,12 @@ mod tests {
                 .iter()
                 .any(|item| item.contains("administration"))
         );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
+        );
         selected = None;
 
         assert!(
@@ -1321,6 +1329,12 @@ mod tests {
                 .capabilities
                 .iter()
                 .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
         );
 
         assert!(
