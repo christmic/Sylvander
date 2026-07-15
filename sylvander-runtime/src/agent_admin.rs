@@ -223,6 +223,7 @@ pub(crate) fn definition_from_draft(
             model: ModelConfig {
                 provider: draft.provider_id,
                 model_name: draft.default_model_id,
+                allowed_models: draft.allowed_models,
                 temperature: draft.temperature,
                 max_tokens: draft.max_tokens,
             },
@@ -309,6 +310,7 @@ pub(crate) fn draft_from_definition(
         description: definition.spec.persona.description.clone(),
         provider_id: definition.spec.model.provider.clone(),
         default_model_id: definition.spec.model.model_name.clone(),
+        allowed_models: definition.spec.model.allowed_models.clone(),
         temperature: definition.spec.model.temperature,
         max_tokens: definition.spec.model.max_tokens,
         system_prompt: definition.spec.persona.system_prompt.clone(),
@@ -386,6 +388,7 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
             description: definition.spec.persona.description.clone(),
             provider_id: definition.spec.model.provider.clone(),
             default_model_id: definition.spec.model.model_name.clone(),
+            allowed_models: definition.spec.model.allowed_models.clone(),
             system_prompt_sha256: digest(&definition.spec.persona.system_prompt),
             tools,
             memory_store_types: definition
@@ -536,6 +539,27 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     }
     if draft.temperature.is_some_and(|value| !value.is_finite()) || draft.max_tokens == Some(0) {
         return Err(invalid_definition("model tuning values are invalid"));
+    }
+    if !draft.allowed_models.is_empty() {
+        let mut seen = HashSet::new();
+        for model in &draft.allowed_models {
+            if model.provider_id.trim().is_empty()
+                || model.model_id.trim().is_empty()
+                || model.provider_id != draft.provider_id
+                || !seen.insert((&model.provider_id, &model.model_id))
+            {
+                return Err(invalid_definition(
+                    "allowed models must be non-empty, unique, and use the Agent provider",
+                ));
+            }
+        }
+        if !draft.allowed_models.iter().any(|model| {
+            model.provider_id == draft.provider_id && model.model_id == draft.default_model_id
+        }) {
+            return Err(invalid_definition(
+                "allowed models must contain the Agent default model",
+            ));
+        }
     }
     if draft
         .agent_workspace
@@ -743,6 +767,10 @@ mod tests {
             description: "companion".into(),
             provider_id: "primary".into(),
             default_model_id: "sonnet".into(),
+            allowed_models: vec![sylvander_protocol::ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "sonnet".into(),
+            }],
             temperature: Some(0.2),
             max_tokens: Some(1024),
             system_prompt: "never reveal me".into(),
@@ -823,6 +851,42 @@ mod tests {
             view.definition.system_prompt_sha256,
             digest("never reveal me")
         );
+        assert_eq!(view.definition.allowed_models, draft().allowed_models);
+    }
+
+    #[test]
+    fn allowed_models_are_qualified_unique_and_include_the_default() {
+        for allowed_models in [
+            vec![sylvander_protocol::ModelSelection {
+                provider_id: String::new(),
+                model_id: "sonnet".into(),
+            }],
+            vec![
+                sylvander_protocol::ModelSelection {
+                    provider_id: "primary".into(),
+                    model_id: "sonnet".into(),
+                },
+                sylvander_protocol::ModelSelection {
+                    provider_id: "primary".into(),
+                    model_id: "sonnet".into(),
+                },
+            ],
+            vec![sylvander_protocol::ModelSelection {
+                provider_id: "secondary".into(),
+                model_id: "sonnet".into(),
+            }],
+            vec![sylvander_protocol::ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "haiku".into(),
+            }],
+        ] {
+            let mut candidate = draft();
+            candidate.allowed_models = allowed_models;
+            assert_eq!(
+                definition_from_draft(candidate).unwrap_err().code,
+                AgentAdminErrorCode::InvalidDefinition
+            );
+        }
     }
 
     #[test]

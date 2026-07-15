@@ -555,6 +555,45 @@ fn validate_agent(
             agent.spec.id, agent.spec.model.model_name, agent.spec.model.provider
         ));
     }
+    if !agent.spec.model.allowed_models.is_empty() {
+        let default_model = agent.spec.model.model_name.trim();
+        let mut allowed = HashSet::new();
+        for model in &agent.spec.model.allowed_models {
+            let allowed_provider = model.provider_id.trim();
+            let allowed_model = model.model_id.trim();
+            if allowed_provider.is_empty() || allowed_model.is_empty() {
+                errors.push(format!(
+                    "Agent {} allowed Model identities must not be empty",
+                    agent.spec.id
+                ));
+            } else if !allowed.insert((allowed_provider, allowed_model)) {
+                errors.push(format!(
+                    "Agent {} has duplicate allowed Model {}/{}",
+                    agent.spec.id, model.provider_id, model.model_id
+                ));
+            }
+            if allowed_provider != provider {
+                errors.push(format!(
+                    "Agent {} allowed Model {}/{} does not use its configured Provider {}",
+                    agent.spec.id, model.provider_id, model.model_id, agent.spec.model.provider
+                ));
+            } else if providers
+                .get(provider)
+                .is_some_and(|models| !models.contains(allowed_model))
+            {
+                errors.push(format!(
+                    "Agent {} allowed Model {} is absent from provider {}",
+                    agent.spec.id, model.model_id, agent.spec.model.provider
+                ));
+            }
+        }
+        if !allowed.contains(&(provider, default_model)) {
+            errors.push(format!(
+                "Agent {} allowed Models do not contain its default {}/{}",
+                agent.spec.id, agent.spec.model.provider, agent.spec.model.model_name
+            ));
+        }
+    }
     if let Some(workspace) = &agent.agent_workspace {
         validate_workspace(workspace, targets, "Agent workspace", errors);
     }

@@ -96,6 +96,9 @@ impl ServerConfig {
             .model(ModelConfig {
                 provider: "primary".into(),
                 model_name: model,
+                // Preserve the legacy same-provider catalog policy. A default-only
+                // allowlist would silently remove SYLVANDER_MODELS alternatives.
+                allowed_models: Vec::new(),
                 temperature: None,
                 max_tokens: Some(32_000),
             })
@@ -332,6 +335,7 @@ mod tests {
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(!encoded.contains("must-not-be-stored"));
         assert_eq!(config.agents[0].spec.model.provider, "primary");
+        assert!(config.agents[0].spec.model.allowed_models.is_empty());
         assert!(!config.agents[0].access.allow_authenticated);
         assert!(config.agents[0].access.allowed_principals.is_empty());
     }

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, SessionWorkspaceBinding};
+use crate::{AgentId, ModelSelection, SessionWorkspaceBinding};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -56,6 +56,11 @@ pub struct AgentDefinitionDraft {
     pub description: String,
     pub provider_id: String,
     pub default_model_id: String,
+    /// Provider-qualified models that sessions may select, including the
+    /// Agent default. An empty list is reserved for legacy definitions and is
+    /// materialized by the server from existing immutable state.
+    #[serde(default)]
+    pub allowed_models: Vec<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +220,9 @@ pub struct RedactedAgentDefinition {
     pub description: String,
     pub provider_id: String,
     pub default_model_id: String,
+    /// Non-sensitive provider-qualified session model allowlist.
+    #[serde(default)]
+    pub allowed_models: Vec<ModelSelection>,
     pub system_prompt_sha256: String,
     #[serde(default)]
     pub tools: Vec<RedactedAgentTool>,
@@ -339,6 +347,16 @@ mod tests {
                 description: "companion".into(),
                 provider_id: "anthropic".into(),
                 default_model_id: "sonnet".into(),
+                allowed_models: vec![
+                    ModelSelection {
+                        provider_id: "anthropic".into(),
+                        model_id: "sonnet".into(),
+                    },
+                    ModelSelection {
+                        provider_id: "openai".into(),
+                        model_id: "gpt-5".into(),
+                    },
+                ],
                 temperature: None,
                 max_tokens: Some(32_000),
                 system_prompt: "private prompt".into(),
@@ -382,6 +400,10 @@ mod tests {
                         description: "companion".into(),
                         provider_id: "anthropic".into(),
                         default_model_id: "sonnet".into(),
+                        allowed_models: vec![ModelSelection {
+                            provider_id: "openai".into(),
+                            model_id: "gpt-5".into(),
+                        }],
                         system_prompt_sha256: "abc".into(),
                         tools: vec![RedactedAgentTool::McpServer {
                             name: "search".into(),
@@ -406,6 +428,11 @@ mod tests {
             }),
         };
         let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            json.contains(
+                "\"allowed_models\":[{\"provider_id\":\"openai\",\"model_id\":\"gpt-5\"}]"
+            )
+        );
         for forbidden in [
             "system_prompt\"",
             "command\"",
@@ -417,6 +444,50 @@ mod tests {
         ] {
             assert!(!json.contains(forbidden), "inspection leaked {forbidden}");
         }
+    }
+
+    #[test]
+    fn legacy_definition_without_allowed_models_defaults_to_empty() {
+        let definition: AgentDefinitionDraft = serde_json::from_value(serde_json::json!({
+            "agent_id": "oraculo",
+            "revision": 1,
+            "name": "Oraculo",
+            "provider_id": "anthropic",
+            "default_model_id": "sonnet"
+        }))
+        .unwrap();
+
+        assert!(definition.allowed_models.is_empty());
+    }
+
+    #[test]
+    fn qualified_allowed_models_round_trip_and_appear_in_schema() {
+        let definition: AgentDefinitionDraft = serde_json::from_value(serde_json::json!({
+            "agent_id": "oraculo",
+            "revision": 2,
+            "name": "Oraculo",
+            "provider_id": "anthropic",
+            "default_model_id": "sonnet",
+            "allowed_models": [
+                { "provider_id": "anthropic", "model_id": "sonnet" },
+                { "provider_id": "openai", "model_id": "gpt-5" }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_value::<AgentDefinitionDraft>(
+                serde_json::to_value(&definition).unwrap()
+            )
+            .unwrap(),
+            definition
+        );
+        assert_eq!(definition.allowed_models[1].provider_id, "openai");
+        assert_eq!(definition.allowed_models[1].model_id, "gpt-5");
+
+        let schema = serde_json::to_string(&schemars::schema_for!(AgentDefinitionDraft)).unwrap();
+        assert!(schema.contains("allowed_models"));
+        assert!(schema.contains("ModelSelection"));
     }
 
     #[test]

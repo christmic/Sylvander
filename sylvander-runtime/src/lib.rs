@@ -294,11 +294,25 @@ fn active_snapshot_selection(
         .iter()
         .find(|candidate| &candidate.id == provider_id)
         .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
-    let allowed_model_ids = provider
-        .models
-        .iter()
-        .map(|model| model.id.clone())
-        .collect::<BTreeSet<_>>();
+    let allowed_model_ids = if definition.spec.model.allowed_models.is_empty() {
+        provider
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect::<BTreeSet<_>>()
+    } else {
+        let mut allowed = BTreeSet::new();
+        for model in &definition.spec.model.allowed_models {
+            if model.provider_id != *provider_id {
+                return Err(RuntimeError::Config(format!(
+                    "cross-Provider Agent snapshot `{}/{}` requires the versioned snapshot format",
+                    model.provider_id, model.model_id
+                )));
+            }
+            allowed.insert(model.model_id.clone());
+        }
+        allowed
+    };
     Ok(AgentSnapshotSelection {
         agent_id: definition.spec.id.to_string(),
         agent_revision: definition.revision,
@@ -2787,6 +2801,16 @@ model_name = "model-a"
             secret.display()
         );
         let mut config = ServerConfig::from_toml(&input).unwrap();
+        let mut explicit_definition = config.agents[0].clone();
+        explicit_definition.spec.model.allowed_models = vec![sylvander_protocol::ModelSelection {
+            provider_id: "primary".into(),
+            model_id: "model-a".into(),
+        }];
+        let explicit_selection = active_snapshot_selection(&config, &explicit_definition).unwrap();
+        assert_eq!(
+            explicit_selection.allowed_model_ids,
+            BTreeSet::from(["model-a".into()])
+        );
         config.agents[0].spec.persona.system_prompt = "revision one prompt".into();
         let restart_config = config.clone();
         let runtime = Runtime::boot_config(config).await.unwrap();
