@@ -47,7 +47,7 @@ impl Tool for MemoryWriteTool {
     }
 
     fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
+        let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "content": {
                     "type": "string",
@@ -60,13 +60,16 @@ impl Tool for MemoryWriteTool {
                 }
             }),
             &["content"],
-        )
+        );
+        schema.schema["additionalProperties"] = JsonValue::Bool(false);
+        schema
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));
         }
+        reject_unknown_fields(&input, &["content", "tags"])?;
         let content = input["content"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;
@@ -92,6 +95,18 @@ impl Tool for MemoryWriteTool {
             json!({"status": "stored", "id": entry.id}).to_string(),
         ))
     }
+}
+
+fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), ToolError> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| ToolError::Other("memory tool input must be an object".into()))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ToolError::Other(
+            "memory tool input contains an unknown field".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +146,7 @@ mod tests {
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
+        assert_eq!(schema.schema["additionalProperties"], json!(false));
         for server_owned in ["owner", "scope", "id", "created_at", "provenance"] {
             assert!(props.get(server_owned).is_none());
         }
@@ -212,36 +228,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_input_cannot_override_runtime_owner() {
+    async fn model_input_cannot_submit_server_owned_fields() {
         let store = test_store();
         let tool = MemoryWriteTool::new(store.clone());
         let c = ctx();
-        tool.execute(
-            &c,
-            json!({
-                "content": "runtime owned",
-                "owner": {"scope": "relationship", "user_id": "attacker", "agent_id": "other"},
-                "id": "attacker-controlled",
-                "created_at": 0
-            }),
-        )
-        .await
-        .unwrap();
+        for forbidden in ["owner", "scope", "id", "created_at", "provenance"] {
+            let mut input = json!({"content": "must not persist"});
+            input[forbidden] = json!("attacker-controlled");
+            assert!(tool.execute(&c, input).await.is_err());
+        }
 
         let results = store
             .search_relationship(
                 c.memory_context(),
-                "runtime owned",
+                "",
                 crate::tools::memory::MemoryFilter::default(),
             )
             .await
             .unwrap();
-        assert_eq!(results.len(), 1);
-        assert_ne!(results[0].id, "attacker-controlled");
-        assert!(results[0].created_at > 0);
-        assert_eq!(
-            results[0].owner,
-            c.memory_context().relationship_owner().unwrap()
-        );
+        assert!(results.is_empty());
     }
 }
