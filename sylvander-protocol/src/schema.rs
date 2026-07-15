@@ -3,8 +3,8 @@
 use serde_json::{Value, json};
 
 use crate::{
-    AgentAdminRequest, AgentAdminResponse, UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION,
-    UiClientMessage, UiServerMessage,
+    AgentAdminRequest, AgentAdminResponse, RegistryAdminRequest, RegistryAdminResponse,
+    UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION, UiClientMessage, UiServerMessage,
 };
 
 #[must_use]
@@ -14,6 +14,16 @@ pub fn agent_admin_protocol_schema() -> Value {
         "title": "Sylvander Agent Administration Protocol",
         "request": schemars::schema_for!(AgentAdminRequest),
         "response": schemars::schema_for!(AgentAdminResponse)
+    })
+}
+
+#[must_use]
+pub fn registry_admin_protocol_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Sylvander Registry Administration Protocol",
+        "request": schemars::schema_for!(RegistryAdminRequest),
+        "response": schemars::schema_for!(RegistryAdminResponse)
     })
 }
 
@@ -28,7 +38,8 @@ pub fn ui_protocol_schema() -> Value {
         },
         "client_message": schemars::schema_for!(UiClientMessage),
         "server_message": schemars::schema_for!(UiServerMessage),
-        "agent_administration": agent_admin_protocol_schema()
+        "agent_administration": agent_admin_protocol_schema(),
+        "registry_administration": registry_admin_protocol_schema()
     })
 }
 
@@ -71,5 +82,35 @@ mod tests {
         assert!(encoded.contains("AgentSecretReference"));
         assert!(!encoded.contains("secret_value"));
         assert!(!encoded.contains("api_key"));
+    }
+
+    #[test]
+    fn registry_schema_exposes_provider_reads_without_raw_configuration_fields() {
+        let schema = registry_admin_protocol_schema();
+        let encoded = serde_json::to_string(&schema).unwrap();
+        for operation in [
+            "inspect_provider_revision",
+            "list_provider_revisions",
+            "base_url_sha256",
+            "credential_binding_id_sha256",
+        ] {
+            assert!(encoded.contains(operation), "schema omitted {operation}");
+        }
+        assert!(!has_property(&schema, "base_url"));
+        assert!(!has_property(&schema, "credential_binding_id"));
+    }
+
+    fn has_property(value: &Value, name: &str) -> bool {
+        match value {
+            Value::Object(object) => {
+                object
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|properties| properties.contains_key(name))
+                    || object.values().any(|value| has_property(value, name))
+            }
+            Value::Array(values) => values.iter().any(|value| has_property(value, name)),
+            _ => false,
+        }
     }
 }
