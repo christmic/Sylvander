@@ -4,12 +4,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 use sylvander_protocol::AgentId;
 use tokio::sync::Mutex;
 use tokio::task;
 
+use crate::agent_registry_snapshot_v3::{
+    AgentRegistrySnapshotV3, AgentSnapshotSelectionV3, AgentSnapshotV3Error,
+    stage_snapshot_v3_in_transaction,
+};
 use crate::config::{AgentDefinitionConfig, ServerConfig};
 
 #[derive(Clone)]
@@ -156,6 +160,80 @@ impl AgentRegistry {
             })?;
             transaction.commit().map_err(AgentRegistryError::sqlite)?;
             Ok(stored)
+        })
+        .await
+    }
+
+    /// Atomically append one Agent revision and its exact V3 registry pins.
+    pub(crate) async fn stage_agent_revision_v3(
+        &self,
+        expected_active: u64,
+        definition: AgentDefinitionConfig,
+        selection: AgentSnapshotSelectionV3,
+    ) -> Result<(AgentRevision, AgentRegistrySnapshotV3), AgentSnapshotV3Error> {
+        selection.validate()?;
+        let configured_default = sylvander_protocol::ModelSelection {
+            provider_id: definition.spec.model.provider.clone(),
+            model_id: definition.spec.model.model_name.clone(),
+        };
+        if selection.agent_id != definition.spec.id.0
+            || selection.agent_revision != definition.revision
+            || selection.default_model != configured_default
+            || (!definition.spec.model.allowed_models.is_empty()
+                && selection.allowed_models
+                    != definition
+                        .spec
+                        .model
+                        .allowed_models
+                        .iter()
+                        .cloned()
+                        .collect())
+        {
+            return Err(AgentSnapshotV3Error::DefinitionSelectionMismatch);
+        }
+
+        let agent_id = definition.spec.id.0.clone();
+        self.run_with(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(AgentRegistryError::sqlite)?;
+            let active = active_revision(&transaction, &agent_id)?
+                .ok_or_else(|| AgentRegistryError::UnknownAgent(agent_id.clone()))?;
+            if active != expected_active {
+                return Err(AgentRegistryError::Conflict {
+                    agent_id,
+                    expected: expected_active,
+                    actual: active,
+                }
+                .into());
+            }
+            let latest = transaction
+                .query_row(
+                    "SELECT MAX(revision) FROM agent_definitions WHERE agent_id=?1",
+                    [&definition.spec.id.0],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .map_err(AgentRegistryError::sqlite)?
+                .map_or(Ok(0), decode_revision)?;
+            if definition.revision != latest + 1 {
+                return Err(AgentRegistryError::NonSequential {
+                    agent_id: definition.spec.id.0.clone(),
+                    expected: latest + 1,
+                    actual: definition.revision,
+                }
+                .into());
+            }
+
+            let revision = definition.revision;
+            insert_definition(&transaction, &definition, false)?;
+            let stored = load_revision(&transaction, &agent_id, revision)?.ok_or_else(|| {
+                AgentRegistryError::Integrity(format!(
+                    "newly inserted Agent revision `{agent_id}`@{revision} is missing"
+                ))
+            })?;
+            let snapshot = stage_snapshot_v3_in_transaction(&transaction, selection)?;
+            transaction.commit().map_err(AgentRegistryError::sqlite)?;
+            Ok((stored, snapshot))
         })
         .await
     }
