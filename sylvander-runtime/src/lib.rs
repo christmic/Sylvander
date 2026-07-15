@@ -1470,6 +1470,10 @@ const fn registry_admin_is_mutation(request: &RegistryAdminRequest) -> bool {
             | RegistryAdminRequest::StageProviderRevision { .. }
             | RegistryAdminRequest::ActivateProviderRevision { .. }
             | RegistryAdminRequest::RollbackProviderRevision { .. }
+            | RegistryAdminRequest::CreateModel { .. }
+            | RegistryAdminRequest::StageModelRevision { .. }
+            | RegistryAdminRequest::ActivateModelRevision { .. }
+            | RegistryAdminRequest::RollbackModelRevision { .. }
             | RegistryAdminRequest::CreateCredentialBinding { .. }
             | RegistryAdminRequest::StageCredentialGeneration { .. }
             | RegistryAdminRequest::ActivateCredentialGeneration { .. }
@@ -1557,6 +1561,49 @@ fn registry_admin_audit_target(request: &RegistryAdminRequest) -> RegistryAdmini
             format!("{provider_id}/{model_id}"),
             None,
         ),
+        RegistryAdminRequest::CreateModel {
+            provider_id,
+            model_id,
+            ..
+        } => (
+            "create_model",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            Some(1),
+        ),
+        RegistryAdminRequest::StageModelRevision {
+            provider_id,
+            model_id,
+            revision,
+            ..
+        } => (
+            "stage_model_revision",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::ActivateModelRevision {
+            provider_id,
+            model_id,
+            revision,
+            ..
+        } => (
+            "activate_model_revision",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            Some(*revision),
+        ),
+        RegistryAdminRequest::RollbackModelRevision {
+            provider_id,
+            model_id,
+            target_revision,
+            ..
+        } => (
+            "rollback_model_revision",
+            "model",
+            format!("{provider_id}/{model_id}"),
+            Some(*target_revision),
+        ),
         RegistryAdminRequest::InspectCredentialGeneration {
             binding_id,
             generation,
@@ -1621,6 +1668,7 @@ const fn registry_admin_error_code(code: RegistryAdminErrorCode) -> &'static str
         RegistryAdminErrorCode::UnknownRevision => "unknown_revision",
         RegistryAdminErrorCode::UnknownGeneration => "unknown_generation",
         RegistryAdminErrorCode::ProviderAlreadyExists => "provider_already_exists",
+        RegistryAdminErrorCode::ModelAlreadyExists => "model_already_exists",
         RegistryAdminErrorCode::ActiveRevisionConflict => "active_revision_conflict",
         RegistryAdminErrorCode::NonSequentialRevision => "non_sequential_revision",
         RegistryAdminErrorCode::RevisionCollision => "revision_collision",
