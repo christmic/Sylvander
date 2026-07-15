@@ -523,6 +523,9 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
 
 #[tokio::test]
 async fn public_session_override_survives_restart_and_never_falls_back() {
+    const AGENT_PROMPT: &str = "restart agent prompt";
+    const PROFILE_PROMPT: &str = "restart beta profile prompt";
+    const SESSION_PROMPT: &str = "restart session prompt";
     let directory = tempdir().unwrap();
     let alpha_secret = directory.path().join("alpha.secret");
     let beta_secret = directory.path().join("beta.secret");
@@ -554,6 +557,18 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let mut config = dual_provider_config(&alpha.uri(), &alpha_secret, &beta.uri(), &beta_secret);
     config.server.data_dir = Some(directory.path().into());
     config.server.session_db = Some(directory.path().join("runtime.db"));
+    config.agents[0].spec.persona.system_prompt = AGENT_PROMPT.into();
+    config.agents[0].allow_session_prompt = true;
+    config.agents[0].prompt_profiles = vec![crate::config::PromptProfileConfig {
+        id: "beta-restart".into(),
+        qualified_models: vec![ModelSelection {
+            provider_id: "beta".into(),
+            model_id: "shared".into(),
+        }],
+        providers: Vec::new(),
+        models: Vec::new(),
+        system_prompt: PROFILE_PROMPT.into(),
+    }];
     let mut principal = AuthenticatedPrincipal::user("user", AuthenticationMethod::Internal);
     principal.roles.push("admin".into());
     let boundary =
@@ -584,6 +599,8 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
             expected_revision: created.revision,
             overrides: SessionConfigOverrides {
                 model: Some(beta_selection.clone()),
+                prompt_profile: Some("beta-restart".into()),
+                system_prompt: Some(SESSION_PROMPT.into()),
                 ..SessionConfigOverrides::default()
             },
         },
@@ -591,6 +608,16 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     .await
     .unwrap();
     assert_eq!(updated.effective.model_selection(), beta_selection);
+    let expected_effective = updated.effective.clone();
+    let expected_prompt_sha256 = expected_effective.system_prompt_sha256.clone();
+    let expected_manifest = expected_effective
+        .prompt_manifest
+        .clone()
+        .expect("new sessions must persist a prompt manifest");
+    let expected_prompt = format!(
+        "{}\n\n{PROFILE_PROMPT}\n\n{AGENT_PROMPT}\n\n{SESSION_PROMPT}",
+        sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+    );
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(config).await.unwrap();
@@ -604,6 +631,15 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     assert_eq!(restored.revision, updated.revision);
     assert_eq!(restored.overrides, updated.overrides);
     assert_eq!(restored.effective.model_selection(), beta_selection);
+    assert_eq!(
+        restored.effective.system_prompt_sha256,
+        expected_prompt_sha256
+    );
+    assert_eq!(restored.effective, expected_effective);
+    assert_eq!(
+        restored.effective.prompt_manifest.as_ref(),
+        Some(&expected_manifest)
+    );
 
     let agent = restarted
         .configured_agent(&AgentId::new("assistant"))
@@ -632,6 +668,15 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         ) if source.kind == sylvander_llm_core::ProviderErrorKind::Authentication
         ),
         "unexpected beta failure: {beta_error:?}"
+    );
+    let beta_requests = beta.received_requests().await.unwrap();
+    assert_eq!(beta_requests.len(), 1);
+    let beta_body: serde_json::Value =
+        serde_json::from_slice(&beta_requests[0].body).expect("provider request must be JSON");
+    assert_eq!(beta_body["model"], "shared");
+    assert_eq!(
+        beta_body["system"][0]["text"], expected_prompt,
+        "the restarted provider call must use the exact persisted prompt composition"
     );
 
     let alpha_session = sylvander_channel::UiService::create_session(
