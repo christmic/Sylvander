@@ -20,7 +20,7 @@ use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
 };
 use sylvander_protocol::{
-    ApprovalPolicy, FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort,
+    ApprovalPolicy, FileAccess, ModelSelection, NetworkAccess, PermissionProfile, ReasoningEffort,
     SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
     SessionEffectiveConfig, SessionWorkspaceBinding,
 };
@@ -31,12 +31,19 @@ use crate::config::{
 };
 use crate::credential_registry::CredentialSecretResolver;
 use crate::registry_composition::RegistryCompositionSnapshot;
-use crate::registry_domain::ModelDefinition;
+use crate::registry_domain::{ModelDefinition, ProviderDefinition};
 use crate::request_scoped_provider::{
     AnthropicProviderFactory, ProviderAdapterFactory, RegistryCredentialSource,
 };
 
 /// A configured run plus the metadata needed by protocol adapters.
+#[derive(Clone)]
+struct RegistryRevisionBindings {
+    provider_id: String,
+    provider_revision: u64,
+    model_revisions: HashMap<ModelSelection, u64>,
+}
+
 #[derive(Clone)]
 pub struct ConfiguredAgent {
     pub spec: AgentSpec,
@@ -45,6 +52,7 @@ pub struct ConfiguredAgent {
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
     pub execution_targets: HashSet<String>,
+    revision_bindings: Option<RegistryRevisionBindings>,
 }
 
 /// Build every configured Agent without starting background tasks.
@@ -118,14 +126,11 @@ pub(crate) fn build_agent(
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
         execution_targets: execution_targets(config),
+        revision_bindings: None,
     })
 }
 
 /// Build one immutable registry revision while keeping credentials live.
-#[cfg_attr(not(test), expect(
-    dead_code,
-    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
-))]
 pub(crate) fn build_registry_agent(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
@@ -143,10 +148,6 @@ pub(crate) fn build_registry_agent(
     )
 }
 
-#[cfg_attr(not(test), expect(
-    dead_code,
-    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
-))]
 fn build_registry_agent_with_resolver(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
@@ -162,6 +163,7 @@ fn build_registry_agent_with_resolver(
         default_model_id,
         credential_binding_id,
     } = snapshot;
+    let revision_bindings = registry_revision_bindings(&provider, &definitions)?;
     if credential_binding_id != provider.credential_binding_id {
         return Err(CompositionError::RegistryBindingMismatch);
     }
@@ -212,6 +214,7 @@ fn build_registry_agent_with_resolver(
         approval_enabled: config.server.approval.enabled,
         definition,
         execution_targets: execution_targets(config),
+        revision_bindings: Some(revision_bindings),
     })
 }
 
@@ -230,6 +233,25 @@ pub fn resolve_session_config(
         &agent.models,
         overrides,
     )?;
+    let selection = ModelSelection {
+        provider_id: provider_id.clone(),
+        model_id: model_id.clone(),
+    };
+    let (provider_revision, model_revision) = match &agent.revision_bindings {
+        None => (None, None),
+        Some(bindings) => {
+            if bindings.provider_id != provider_id {
+                return Err(CompositionError::RegistryProviderBindingMismatch);
+            }
+            let model_revision = bindings.model_revisions.get(&selection).ok_or_else(|| {
+                CompositionError::MissingRegistryModelBinding {
+                    provider: provider_id.clone(),
+                    model: model_id.clone(),
+                }
+            })?;
+            (Some(bindings.provider_revision), Some(*model_revision))
+        }
+    };
     let reasoning_effort = overrides.reasoning_effort.unwrap_or_default();
     if reasoning_effort != ReasoningEffort::Off
         && !model
@@ -326,9 +348,9 @@ pub fn resolve_session_config(
         agent_id: definition.spec.id.clone(),
         agent_revision: definition.revision,
         provider_id,
-        provider_revision: None,
+        provider_revision,
         model_id,
-        model_revision: None,
+        model_revision,
         reasoning_effort,
         permissions,
         prompt_profile,
@@ -471,10 +493,46 @@ fn apply_server_run_settings(
     builder
 }
 
-#[cfg_attr(not(test), expect(
-    dead_code,
-    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
-))]
+fn registry_revision_bindings(
+    provider: &ProviderDefinition,
+    models: &[ModelDefinition],
+) -> Result<RegistryRevisionBindings, CompositionError> {
+    if provider.id.trim().is_empty() || provider.revision == 0 {
+        return Err(CompositionError::InvalidRegistryRevisionBinding);
+    }
+    let mut model_revisions = HashMap::with_capacity(models.len());
+    for model in models {
+        if model.model_id.trim().is_empty() || model.revision == 0 {
+            return Err(CompositionError::InvalidRegistryRevisionBinding);
+        }
+        if model.provider_id != provider.id {
+            return Err(CompositionError::RegistryModelProviderMismatch {
+                provider: provider.id.clone(),
+                model: model.model_id.clone(),
+                model_provider: model.provider_id.clone(),
+            });
+        }
+        let selection = ModelSelection {
+            provider_id: model.provider_id.clone(),
+            model_id: model.model_id.clone(),
+        };
+        if model_revisions
+            .insert(selection.clone(), model.revision)
+            .is_some()
+        {
+            return Err(CompositionError::DuplicateRegistryModelBinding {
+                provider: selection.provider_id,
+                model: selection.model_id,
+            });
+        }
+    }
+    Ok(RegistryRevisionBindings {
+        provider_id: provider.id.clone(),
+        provider_revision: provider.revision,
+        model_revisions,
+    })
+}
+
 fn registry_model_catalog(
     definitions: &[ModelDefinition],
 ) -> Result<(Vec<ModelInfo>, Vec<ProviderModelInfo>), CompositionError> {
@@ -500,10 +558,6 @@ fn registry_model_catalog(
     Ok((shadows, exact))
 }
 
-#[cfg_attr(not(test), expect(
-    dead_code,
-    reason = "production RuntimeRevisionProvider wiring lands in the next isolated batch"
-))]
 fn registry_model_capabilities(
     model: &ModelDefinition,
 ) -> Result<(ModelCapabilities, ProviderModelCapabilities), CompositionError> {
@@ -668,6 +722,20 @@ pub enum CompositionError {
     Client(String, String),
     #[error("registry credential binding does not match the pinned Provider")]
     RegistryBindingMismatch,
+    #[error("registry revision binding contains an empty identity or zero revision")]
+    InvalidRegistryRevisionBinding,
+    #[error("registry Provider binding does not match the selected Provider")]
+    RegistryProviderBindingMismatch,
+    #[error("model `{model}` belongs to Provider `{model_provider}`, not `{provider}`")]
+    RegistryModelProviderMismatch {
+        provider: String,
+        model: String,
+        model_provider: String,
+    },
+    #[error("registry Model binding `{provider}/{model}` is duplicated")]
+    DuplicateRegistryModelBinding { provider: String, model: String },
+    #[error("registry Model binding `{provider}/{model}` is missing")]
+    MissingRegistryModelBinding { provider: String, model: String },
     #[error("failed to create pinned Provider: {0}")]
     ProviderFactory(String),
     #[error("model `{0}` has invalid metadata")]
@@ -838,6 +906,8 @@ path = "/tmp/sylvander-test.sock"
         )
         .unwrap();
         assert_eq!(effective.model_id, "model-a");
+        assert_eq!(effective.provider_revision, None);
+        assert_eq!(effective.model_revision, None);
         assert_eq!(effective.prompt_profile.as_deref(), Some("optimized"));
         assert_eq!(effective.execution_target, "local");
         assert_eq!(

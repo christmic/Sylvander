@@ -150,6 +150,18 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
     newer_provider.base_url = newer_server.uri();
     registry.stage_provider(1, newer_provider).await.unwrap();
     registry.activate_provider("alpha", 2, 1).await.unwrap();
+    let mut newer_model = snapshot
+        .models
+        .iter()
+        .find(|model| model.model_id == "model-b")
+        .unwrap()
+        .clone();
+    newer_model.revision = 2;
+    registry.stage_model(1, newer_model).await.unwrap();
+    registry
+        .activate_model(("alpha", "model-b"), 2, 1)
+        .await
+        .unwrap();
 
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
@@ -160,6 +172,57 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
     assert_eq!(runtime.current_model, "model-a");
     assert_eq!(runtime.models.len(), 2);
     assert!(runtime.models.iter().all(|model| model.provider == "alpha"));
+    let default =
+        resolve_session_config(&agent, &SessionConfigOverrides::default(), None, None).unwrap();
+    assert_eq!(
+        default.require_revision_pins().unwrap().provider_revision,
+        1
+    );
+    assert_eq!(default.require_revision_pins().unwrap().model_revision, 1);
+    let alternate = resolve_session_config(
+        &agent,
+        &SessionConfigOverrides {
+            model: Some(ModelSelection {
+                provider_id: "alpha".into(),
+                model_id: "model-b".into(),
+            }),
+            ..SessionConfigOverrides::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        alternate.require_revision_pins().unwrap().provider_revision,
+        1
+    );
+    assert_eq!(alternate.require_revision_pins().unwrap().model_revision, 1);
+
+    let mut missing = agent.clone();
+    missing
+        .revision_bindings
+        .as_mut()
+        .unwrap()
+        .model_revisions
+        .remove(&ModelSelection {
+            provider_id: "alpha".into(),
+            model_id: "model-b".into(),
+        });
+    assert!(matches!(
+        resolve_session_config(
+            &missing,
+            &SessionConfigOverrides {
+                model: Some(ModelSelection {
+                    provider_id: "alpha".into(),
+                    model_id: "model-b".into(),
+                }),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        ),
+        Err(CompositionError::MissingRegistryModelBinding { .. })
+    ));
 
     let first_session = persisted_session(&agent, &store, "first").await;
     agent
@@ -201,4 +264,42 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
 
     pinned_server.verify().await;
     assert!(newer_server.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn registry_revision_binding_validation_is_typed() {
+    let provider = ProviderDefinition {
+        id: "alpha".into(),
+        revision: 1,
+        kind: "anthropic_compatible".into(),
+        base_url: "https://alpha.invalid".into(),
+        credential_binding_id: "provider:alpha:api_key".into(),
+    };
+    let model = ModelDefinition {
+        provider_id: "alpha".into(),
+        model_id: "shared".into(),
+        revision: 1,
+        context_window: 100,
+        max_output_tokens: 10,
+        capabilities: BTreeSet::new(),
+        lifecycle: sylvander_protocol::ModelLifecycle::Active,
+        pricing: None,
+    };
+
+    let mut zero = provider.clone();
+    zero.revision = 0;
+    assert!(matches!(
+        registry_revision_bindings(&zero, std::slice::from_ref(&model)),
+        Err(CompositionError::InvalidRegistryRevisionBinding)
+    ));
+    assert!(matches!(
+        registry_revision_bindings(&provider, &[model.clone(), model.clone()]),
+        Err(CompositionError::DuplicateRegistryModelBinding { .. })
+    ));
+    let mut foreign = model;
+    foreign.provider_id = "beta".into();
+    assert!(matches!(
+        registry_revision_bindings(&provider, &[foreign]),
+        Err(CompositionError::RegistryModelProviderMismatch { .. })
+    ));
 }
