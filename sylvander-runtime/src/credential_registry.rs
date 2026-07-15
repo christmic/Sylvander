@@ -330,6 +330,12 @@ impl AgentRegistry {
                 binding_id: binding_id.into(),
                 generation,
             })?;
+        secret
+            .as_str()
+            .map_err(|_| CredentialRegistryError::Resolution {
+                binding_id: binding_id.into(),
+                generation,
+            })?;
         drop(secret);
         Ok(generation)
     }

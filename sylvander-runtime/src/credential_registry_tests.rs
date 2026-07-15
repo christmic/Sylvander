@@ -433,7 +433,9 @@ async fn request_scoped_resolution_reloads_rotates_and_fails_closed() {
 async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head() {
     let directory = tempdir().unwrap();
     let secret_path = directory.path().join("private-provider-secret");
+    let invalid_path = directory.path().join("invalid-utf8-secret");
     std::fs::write(&secret_path, "available-secret\n").unwrap();
+    std::fs::write(&invalid_path, [0xff, 0xfe]).unwrap();
     let registry = AgentRegistry::open(directory.path().join("registry.db"))
         .await
         .unwrap();
@@ -452,6 +454,10 @@ async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head()
         .stage_credential(1, file_credential(2, secret_path.clone()))
         .await
         .unwrap();
+    registry
+        .stage_credential(1, file_credential(3, invalid_path.clone()))
+        .await
+        .unwrap();
     let resolver = MockResolver::default();
 
     assert_eq!(
@@ -462,6 +468,17 @@ async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head()
         2
     );
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+    let invalid = registry
+        .preflight_credential_generation("credential/live", 3, &resolver)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        &invalid,
+        CredentialRegistryError::Resolution { generation: 3, .. }
+    ));
+    let invalid_rendered = format!("{invalid:?} {invalid}");
+    assert!(!invalid_rendered.contains(invalid_path.to_string_lossy().as_ref()));
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
     resolver.fail.store(true, Ordering::SeqCst);
     let failed = registry
         .preflight_credential_generation("credential/live", 1, &resolver)
@@ -474,7 +491,8 @@ async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head()
     let rendered = format!("{failed:?} {failed}");
     assert!(!rendered.contains(env_locator));
     assert!(!rendered.contains(secret_path.to_string_lossy().as_ref()));
-    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert!(!rendered.contains(invalid_path.to_string_lossy().as_ref()));
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 3);
 
     let unknown = registry
         .preflight_credential_generation("credential/live", 99, &resolver)
@@ -484,7 +502,7 @@ async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head()
         unknown,
         CredentialRegistryError::UnknownGeneration { generation: 99, .. }
     ));
-    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 3);
     assert_eq!(
         registry
             .load_active_credential("credential/live")
