@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sylvander_protocol::ModelSelection;
@@ -72,131 +72,7 @@ impl AgentRegistry {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
-            let agent_revision = sql_index(selection.agent_revision)?;
-            let agent_exists = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM agent_definitions \
-                     WHERE agent_id=?1 AND revision=?2)",
-                    params![selection.agent_id, agent_revision],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(storage)?;
-            if !agent_exists {
-                return Err(AgentSnapshotV3Error::UnknownAgentRevision {
-                    agent_id: selection.agent_id,
-                    revision: selection.agent_revision,
-                });
-            }
-            let has_v2 = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM agent_registry_snapshots \
-                     WHERE agent_id=?1 AND agent_revision=?2)",
-                    params![selection.agent_id, agent_revision],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(storage)?;
-            if has_v2 {
-                return Err(AgentSnapshotV3Error::SchemaConflict {
-                    agent_id: selection.agent_id,
-                    revision: selection.agent_revision,
-                });
-            }
-
-            let mut providers = BTreeMap::new();
-            let mut models = Vec::with_capacity(selection.allowed_models.len());
-            for model in &selection.allowed_models {
-                if !providers.contains_key(&model.provider_id) {
-                    let revision = active_provider_revision(&transaction, &model.provider_id)?
-                        .ok_or_else(|| {
-                            AgentSnapshotV3Error::UnknownProvider(model.provider_id.clone())
-                        })?;
-                    providers.insert(model.provider_id.clone(), revision);
-                }
-                let revision = active_model_revision(
-                    &transaction,
-                    &model.provider_id,
-                    &model.model_id,
-                )?
-                .ok_or_else(|| AgentSnapshotV3Error::UnknownModel {
-                    provider_id: model.provider_id.clone(),
-                    model_id: model.model_id.clone(),
-                })?;
-                models.push(SnapshotModelRevisionV3 {
-                    model: model.clone(),
-                    revision,
-                });
-            }
-            let snapshot = AgentRegistrySnapshotV3::new(
-                selection.agent_id,
-                selection.agent_revision,
-                selection.default_model,
-                providers,
-                models,
-            )?;
-            let (_, digest) = snapshot.canonical_json_and_digest()?;
-            if let Some(existing) = load_snapshot_v3(
-                &transaction,
-                &snapshot.agent_id,
-                agent_revision,
-            )? {
-                let (_, existing_digest) = existing.canonical_json_and_digest()?;
-                return if digest == existing_digest {
-                    transaction.commit().map_err(storage)?;
-                    Ok(existing)
-                } else {
-                    Err(AgentSnapshotV3Error::SnapshotCollision {
-                        agent_id: snapshot.agent_id,
-                        revision: snapshot.agent_revision,
-                    })
-                };
-            }
-
-            transaction
-                .execute(
-                    "INSERT INTO agent_registry_snapshots_v3 \
-                     (agent_id,agent_revision,default_provider_id,default_model_id,digest,created_at) \
-                     VALUES (?1,?2,?3,?4,?5,unixepoch())",
-                    params![
-                        snapshot.agent_id,
-                        agent_revision,
-                        snapshot.default_model.provider_id,
-                        snapshot.default_model.model_id,
-                        digest
-                    ],
-                )
-                .map_err(storage)?;
-            for (provider_id, revision) in &snapshot.providers {
-                transaction
-                    .execute(
-                        "INSERT INTO agent_registry_snapshot_providers_v3 \
-                         (agent_id,agent_revision,provider_id,provider_revision) \
-                         VALUES (?1,?2,?3,?4)",
-                        params![
-                            snapshot.agent_id,
-                            agent_revision,
-                            provider_id,
-                            sql_index(*revision)?
-                        ],
-                    )
-                    .map_err(storage)?;
-            }
-            for model in &snapshot.models {
-                transaction
-                    .execute(
-                        "INSERT INTO agent_registry_snapshot_models_v3 \
-                         (agent_id,agent_revision,provider_id,model_id,model_revision,is_default) \
-                         VALUES (?1,?2,?3,?4,?5,?6)",
-                        params![
-                            snapshot.agent_id,
-                            agent_revision,
-                            model.model.provider_id,
-                            model.model.model_id,
-                            sql_index(model.revision)?,
-                            model.model == snapshot.default_model
-                        ],
-                    )
-                    .map_err(storage)?;
-            }
+            let snapshot = stage_snapshot_v3_in_transaction(&transaction, selection)?;
             transaction.commit().map_err(storage)?;
             Ok(snapshot)
         })
@@ -253,6 +129,119 @@ impl AgentRegistry {
         })
         .await
     }
+}
+
+pub(crate) fn stage_snapshot_v3_in_transaction(
+    transaction: &Transaction<'_>,
+    selection: AgentSnapshotSelectionV3,
+) -> Result<AgentRegistrySnapshotV3, AgentSnapshotV3Error> {
+    selection.validate()?;
+    let agent_revision = sql_index(selection.agent_revision)?;
+    let agent_exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_definitions \
+             WHERE agent_id=?1 AND revision=?2)",
+            params![selection.agent_id, agent_revision],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(storage)?;
+    if !agent_exists {
+        return Err(AgentSnapshotV3Error::UnknownAgentRevision {
+            agent_id: selection.agent_id,
+            revision: selection.agent_revision,
+        });
+    }
+    if has_v2_snapshot(transaction, &selection.agent_id, agent_revision)? {
+        return Err(AgentSnapshotV3Error::SchemaConflict {
+            agent_id: selection.agent_id,
+            revision: selection.agent_revision,
+        });
+    }
+
+    let mut providers = BTreeMap::new();
+    let mut models = Vec::with_capacity(selection.allowed_models.len());
+    for model in &selection.allowed_models {
+        if !providers.contains_key(&model.provider_id) {
+            let revision = active_provider_revision(transaction, &model.provider_id)?
+                .ok_or_else(|| AgentSnapshotV3Error::UnknownProvider(model.provider_id.clone()))?;
+            providers.insert(model.provider_id.clone(), revision);
+        }
+        let revision = active_model_revision(transaction, &model.provider_id, &model.model_id)?
+            .ok_or_else(|| AgentSnapshotV3Error::UnknownModel {
+                provider_id: model.provider_id.clone(),
+                model_id: model.model_id.clone(),
+            })?;
+        models.push(SnapshotModelRevisionV3 {
+            model: model.clone(),
+            revision,
+        });
+    }
+    let snapshot = AgentRegistrySnapshotV3::new(
+        selection.agent_id,
+        selection.agent_revision,
+        selection.default_model,
+        providers,
+        models,
+    )?;
+    let (_, digest) = snapshot.canonical_json_and_digest()?;
+    if let Some(existing) = load_snapshot_v3(transaction, &snapshot.agent_id, agent_revision)? {
+        let (_, existing_digest) = existing.canonical_json_and_digest()?;
+        return if digest == existing_digest {
+            Ok(existing)
+        } else {
+            Err(AgentSnapshotV3Error::SnapshotCollision {
+                agent_id: snapshot.agent_id,
+                revision: snapshot.agent_revision,
+            })
+        };
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO agent_registry_snapshots_v3 \
+             (agent_id,agent_revision,default_provider_id,default_model_id,digest,created_at) \
+             VALUES (?1,?2,?3,?4,?5,unixepoch())",
+            params![
+                snapshot.agent_id,
+                agent_revision,
+                snapshot.default_model.provider_id,
+                snapshot.default_model.model_id,
+                digest
+            ],
+        )
+        .map_err(storage)?;
+    for (provider_id, revision) in &snapshot.providers {
+        transaction
+            .execute(
+                "INSERT INTO agent_registry_snapshot_providers_v3 \
+                 (agent_id,agent_revision,provider_id,provider_revision) VALUES (?1,?2,?3,?4)",
+                params![
+                    snapshot.agent_id,
+                    agent_revision,
+                    provider_id,
+                    sql_index(*revision)?
+                ],
+            )
+            .map_err(storage)?;
+    }
+    for model in &snapshot.models {
+        transaction
+            .execute(
+                "INSERT INTO agent_registry_snapshot_models_v3 \
+                 (agent_id,agent_revision,provider_id,model_id,model_revision,is_default) \
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    snapshot.agent_id,
+                    agent_revision,
+                    model.model.provider_id,
+                    model.model.model_id,
+                    sql_index(model.revision)?,
+                    model.model == snapshot.default_model
+                ],
+            )
+            .map_err(storage)?;
+    }
+    Ok(snapshot)
 }
 
 impl AgentRegistrySnapshotV3 {
@@ -597,6 +586,8 @@ pub(crate) enum AgentSnapshotV3Error {
     ModelsNotSorted,
     #[error("default Model is not in the allowed qualified catalog")]
     DefaultNotAllowed,
+    #[error("Agent definition and snapshot selection do not match")]
+    DefinitionSelectionMismatch,
     #[error("failed to serialize Agent snapshot: {0}")]
     Serialization(String),
     #[error("invalid snapshot revision")]

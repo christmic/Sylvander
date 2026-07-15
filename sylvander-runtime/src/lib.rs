@@ -100,10 +100,9 @@ use crate::agent_admin::{
     AgentAdminDispatch, AgentAdminService, is_agent_administrator, map_registry_error,
     redact_revision,
 };
-use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
+use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 use crate::composition::{
-    ConfiguredAgent, build_agent, build_registry_agent_versioned_with_resolver,
-    resolve_session_config,
+    ConfiguredAgent, build_registry_agent_versioned_with_resolver, resolve_session_config,
 };
 use crate::config::{ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
@@ -181,21 +180,6 @@ struct RuntimeRevisionProvider {
 }
 
 impl RuntimeRevisionProvider {
-    fn preflight_definition(
-        &self,
-        definition: &crate::config::AgentDefinitionConfig,
-    ) -> Result<(), RuntimeError> {
-        build_agent(
-            &self.config,
-            definition,
-            self.bus.clone(),
-            self.sessions.clone(),
-            &SystemSecretResolver,
-        )
-        .map(|_| ())
-        .map_err(|error| RuntimeError::Composition(error.to_string()))
-    }
-
     async fn compose_revision(
         &self,
         agent_id: &AgentId,
@@ -313,12 +297,12 @@ fn active_snapshot_selection(
     definition: &crate::config::AgentDefinitionConfig,
 ) -> Result<AgentSnapshotSelectionV3, RuntimeError> {
     let provider_id = &definition.spec.model.provider;
-    let provider = config
-        .model_providers
-        .iter()
-        .find(|candidate| &candidate.id == provider_id)
-        .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
     let allowed_models = if definition.spec.model.allowed_models.is_empty() {
+        let provider = config
+            .model_providers
+            .iter()
+            .find(|candidate| &candidate.id == provider_id)
+            .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
         provider
             .models
             .iter()
@@ -870,23 +854,19 @@ impl sylvander_channel::UiService for RuntimeUiService {
             AgentAdminDispatch::Update {
                 expected_active_revision,
                 definition,
-            } => match (
-                provider.preflight_definition(&definition),
-                active_snapshot_selection(&provider.config, &definition),
-            ) {
-                (Ok(()), Ok(selection)) => match registry
-                    .update(&provider.config, expected_active_revision, *definition)
+            } => match active_snapshot_selection(&provider.config, &definition) {
+                Ok(selection) => match registry
+                    .stage_agent_revision_v3(expected_active_revision, *definition, selection)
                     .await
                 {
-                    Ok(stored) => {
-                        if registry.stage_agent_snapshot_v3(selection).await.is_err()
-                            || provider
-                                .revalidate_revision(
-                                    &stored.definition.spec.id,
-                                    stored.definition.revision,
-                                )
-                                .await
-                                .is_err()
+                    Ok((stored, _)) => {
+                        if provider
+                            .revalidate_revision(
+                                &stored.definition.spec.id,
+                                stored.definition.revision,
+                            )
+                            .await
+                            .is_err()
                         {
                             agent_admin_error(
                                 AgentAdminErrorCode::InvalidDefinition,
@@ -900,11 +880,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
                             }
                         }
                     }
-                    Err(error) => AgentAdminResponse::Error {
+                    Err(AgentSnapshotV3Error::Registry(error)) => AgentAdminResponse::Error {
                         error: map_registry_error(error),
                     },
+                    Err(_) => agent_admin_error(
+                        AgentAdminErrorCode::InvalidDefinition,
+                        "Agent revision could not be composed",
+                    ),
                 },
-                _ => agent_admin_error(
+                Err(_) => agent_admin_error(
                     AgentAdminErrorCode::InvalidDefinition,
                     "Agent revision could not be composed",
                 ),
