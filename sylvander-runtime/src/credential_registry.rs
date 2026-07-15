@@ -22,6 +22,8 @@ pub(crate) struct CredentialBindingPage {
 pub(crate) enum CredentialRegistryError {
     #[error("unknown credential binding `{0}`")]
     UnknownBinding(String),
+    #[error("credential binding `{binding_id}` already exists with different content")]
+    AlreadyExists { binding_id: String },
     #[error("unknown credential generation `{binding_id}`@{generation}")]
     UnknownGeneration { binding_id: String, generation: u64 },
     #[error(
@@ -82,6 +84,94 @@ impl<T: SecretResolver + ?Sized> CredentialSecretResolver for T {
 }
 
 impl AgentRegistry {
+    /// Create a new binding at generation one without bootstrap's overwrite-ignore semantics.
+    pub(crate) async fn create_credential_binding(
+        &self,
+        binding_id: &str,
+        reference: SecretRef,
+    ) -> Result<StoredRevision<CredentialBindingRevision>, CredentialRegistryError> {
+        let definition = CredentialBindingRevision {
+            binding_id: binding_id.to_owned(),
+            generation: 1,
+            reference,
+        };
+        definition.validate()?;
+        let result_id = definition.binding_id.clone();
+        let (json, digest) = canonical_secret_reference(&definition.reference)?;
+        self.run_with(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let active = active_generation(&transaction, &definition.binding_id)?;
+            let latest = latest_generation(&transaction, &definition.binding_id)?;
+            let existing: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT reference_json,digest FROM credential_binding_revisions \
+                     WHERE binding_id=?1 AND generation=1",
+                    [&definition.binding_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(storage)?;
+            match (active, latest, existing) {
+                (None, 0, None) => {
+                    insert_revision(&transaction, &definition, &json, &digest)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO credential_binding_heads \
+                             (binding_id,active_generation,updated_at) VALUES (?1,1,?2)",
+                            params![definition.binding_id, now()],
+                        )
+                        .map_err(storage)?;
+                }
+                (Some(active), _, Some((stored_json, stored_digest))) => {
+                    if revision_digest(&transaction, &definition.binding_id, active)?.is_none() {
+                        return Err(AgentRegistryError::Integrity(
+                            "credential active generation is missing".into(),
+                        )
+                        .into());
+                    }
+                    let stored_reference: SecretRef =
+                        serde_json::from_str(&stored_json).map_err(|_| {
+                            AgentRegistryError::Integrity("credential reference is invalid".into())
+                        })?;
+                    let (expected_json, expected_digest) =
+                        canonical_secret_reference(&stored_reference)?;
+                    if stored_json != expected_json || stored_digest != expected_digest {
+                        return Err(AgentRegistryError::Integrity(
+                            "credential reference digest mismatch".into(),
+                        )
+                        .into());
+                    }
+                    if stored_digest != digest {
+                        return Err(CredentialRegistryError::AlreadyExists {
+                            binding_id: definition.binding_id,
+                        });
+                    }
+                }
+                (None, _, Some(_)) => {
+                    return Err(AgentRegistryError::Integrity(
+                        "credential binding head is missing".into(),
+                    )
+                    .into());
+                }
+                _ => {
+                    return Err(AgentRegistryError::Integrity(
+                        "credential generation one is missing".into(),
+                    )
+                    .into());
+                }
+            }
+            transaction.commit().map_err(storage)
+        })
+        .await?;
+        self.load_credential_revision(&result_id, 1)
+            .await?
+            .ok_or_else(|| {
+                AgentRegistryError::Integrity("credential generation one disappeared".into()).into()
+            })
+    }
+
     pub(crate) async fn seed_credential(
         &self,
         definition: CredentialBindingRevision,
@@ -218,6 +308,30 @@ impl AgentRegistry {
                 generation,
             })?;
         Ok(ResolvedCredential { generation, value })
+    }
+
+    /// Resolve one immutable generation only long enough to prove availability.
+    pub(crate) async fn preflight_credential_generation<R: CredentialSecretResolver + ?Sized>(
+        &self,
+        binding_id: &str,
+        generation: u64,
+        resolver: &R,
+    ) -> Result<u64, CredentialRegistryError> {
+        let stored = self
+            .load_credential_revision(binding_id, generation)
+            .await?
+            .ok_or_else(|| CredentialRegistryError::UnknownGeneration {
+                binding_id: binding_id.into(),
+                generation,
+            })?;
+        let secret = resolver
+            .resolve_credential(&stored.definition.reference)
+            .map_err(|()| CredentialRegistryError::Resolution {
+                binding_id: binding_id.into(),
+                generation,
+            })?;
+        drop(secret);
+        Ok(generation)
     }
 
     pub(crate) async fn inspect_credentials(

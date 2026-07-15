@@ -51,6 +51,110 @@ async fn open_pair(path: &Path) -> (AgentRegistry, AgentRegistry) {
 }
 
 #[tokio::test]
+async fn strict_create_is_idempotent_rejects_different_content_and_survives_restart() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry.db");
+    let registry = AgentRegistry::open(&path).await.unwrap();
+    let reference = SecretRef::Env {
+        name: "PROVIDER_KEY_ONE".into(),
+    };
+    let created = registry
+        .create_credential_binding("credential/created", reference.clone())
+        .await
+        .unwrap();
+    assert_eq!(created.definition.generation, 1);
+    assert!(created.active);
+    let retried = registry
+        .create_credential_binding("credential/created", reference.clone())
+        .await
+        .unwrap();
+    assert_eq!(retried, created);
+    assert!(matches!(
+        registry
+            .create_credential_binding(
+                "credential/created",
+                SecretRef::Env {
+                    name: "DIFFERENT_KEY".into()
+                }
+            )
+            .await,
+        Err(CredentialRegistryError::AlreadyExists { binding_id })
+            if binding_id == "credential/created"
+    ));
+    drop(registry);
+
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    let after_restart = reopened
+        .create_credential_binding("credential/created", reference)
+        .await
+        .unwrap();
+    assert_eq!(after_restart, created);
+    assert_eq!(
+        reopened
+            .inspect_credentials("credential/created")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn strict_create_serializes_two_connections_for_same_and_different_references() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry.db");
+    let first = AgentRegistry::open(&path).await.unwrap();
+    let second = AgentRegistry::open(&path).await.unwrap();
+    let same = SecretRef::Env {
+        name: "SHARED_KEY".into(),
+    };
+    let same_results = tokio::join!(
+        first.create_credential_binding("credential/same", same.clone()),
+        second.create_credential_binding("credential/same", same)
+    );
+    let left = same_results.0.unwrap();
+    let right = same_results.1.unwrap();
+    assert_eq!(left, right);
+    assert_eq!(left.definition.generation, 1);
+
+    let different_results = tokio::join!(
+        first.create_credential_binding(
+            "credential/race",
+            SecretRef::Env {
+                name: "FIRST_KEY".into()
+            }
+        ),
+        second.create_credential_binding(
+            "credential/race",
+            SecretRef::Env {
+                name: "SECOND_KEY".into()
+            }
+        )
+    );
+    let outcomes = [different_results.0, different_results.1];
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(CredentialRegistryError::AlreadyExists { binding_id })
+                    if binding_id == "credential/race"
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        first
+            .inspect_credentials("credential/race")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn lifecycle_is_immutable_redacted_and_survives_restart() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("registry.db");
@@ -322,6 +426,74 @@ async fn request_scoped_resolution_reloads_rotates_and_fails_closed() {
             .definition
             .generation,
         2
+    );
+}
+
+#[tokio::test]
+async fn exact_generation_preflight_is_redacted_bounded_and_does_not_move_head() {
+    let directory = tempdir().unwrap();
+    let secret_path = directory.path().join("private-provider-secret");
+    std::fs::write(&secret_path, "available-secret\n").unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    let env_locator = "VERY_SECRET_ENV_LOCATOR";
+    registry
+        .seed_credential(CredentialBindingRevision {
+            binding_id: "credential/live".into(),
+            generation: 1,
+            reference: SecretRef::Env {
+                name: env_locator.into(),
+            },
+        })
+        .await
+        .unwrap();
+    registry
+        .stage_credential(1, file_credential(2, secret_path.clone()))
+        .await
+        .unwrap();
+    let resolver = MockResolver::default();
+
+    assert_eq!(
+        registry
+            .preflight_credential_generation("credential/live", 2, &resolver)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+    resolver.fail.store(true, Ordering::SeqCst);
+    let failed = registry
+        .preflight_credential_generation("credential/live", 1, &resolver)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        &failed,
+        CredentialRegistryError::Resolution { generation: 1, .. }
+    ));
+    let rendered = format!("{failed:?} {failed}");
+    assert!(!rendered.contains(env_locator));
+    assert!(!rendered.contains(secret_path.to_string_lossy().as_ref()));
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+
+    let unknown = registry
+        .preflight_credential_generation("credential/live", 99, &resolver)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        unknown,
+        CredentialRegistryError::UnknownGeneration { generation: 99, .. }
+    ));
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        registry
+            .load_active_credential("credential/live")
+            .await
+            .unwrap()
+            .unwrap()
+            .definition
+            .generation,
+        1
     );
 }
 
