@@ -104,8 +104,8 @@ impl MemoryEntry {
 
     /// Builder-style: add a tag.
     #[must_use]
-    pub fn with_tag(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.metadata.insert(key.into(), value.into());
+    pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
+        self.tags.push(tag.into());
         self
     }
 
@@ -309,10 +309,24 @@ impl MemoryStore for InMemoryMemoryStore {
 
     async fn store(
         &self,
-        _ctx: &SessionContext,
+        ctx: &SessionContext,
         entry: MemoryEntry,
     ) -> Result<(), MemoryStoreError> {
-        self.entries.write().await.push(entry);
+        if !same_owner(&entry.owner, ctx) {
+            return Err(MemoryStoreError::AccessDenied(
+                "memory owner does not match the runtime context".into(),
+            ));
+        }
+        let mut entries = self.entries.write().await;
+        if entries
+            .iter()
+            .any(|existing| existing.id == entry.id && same_owner(&existing.owner, ctx))
+        {
+            return Err(MemoryStoreError::Store(
+                "memory identity already exists".into(),
+            ));
+        }
+        entries.push(entry);
         Ok(())
     }
 
@@ -337,8 +351,10 @@ impl MemoryStore for InMemoryMemoryStore {
         id: &str,
     ) -> Result<Option<MemoryEntry>, MemoryStoreError> {
         let entries = self.entries.read().await;
-        let entry = entries.iter().find(|e| e.id == id).cloned();
-        Ok(entry.filter(|e| same_owner(&e.owner, ctx)))
+        Ok(entries
+            .iter()
+            .find(|entry| entry.id == id && same_owner(&entry.owner, ctx))
+            .cloned())
     }
 }
 
@@ -368,6 +384,14 @@ mod tests {
 
     fn bob_session() -> SessionContext {
         SessionContext::new(UserId::new("bob"), AgentId::new("a1"), SessionId::new("s2"))
+    }
+
+    fn alice_other_agent_session() -> SessionContext {
+        SessionContext::new(
+            UserId::new("alice"),
+            AgentId::new("a2"),
+            SessionId::new("s3"),
+        )
     }
 
     #[tokio::test]
@@ -534,6 +558,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn store_rejects_forged_user_or_agent_ownership() {
+        let store = InMemoryMemoryStore::new();
+        let alice = alice_session();
+        for forged_owner in [bob_session(), alice_other_agent_session()] {
+            let result = store
+                .store(
+                    &alice,
+                    MemoryEntry::new("forged", "must not persist", forged_owner),
+                )
+                .await;
+            assert!(matches!(result, Err(MemoryStoreError::AccessDenied(_))));
+        }
+        assert!(
+            store
+                .search(&alice, "", MemoryFilter::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn same_id_is_isolated_by_user_and_agent_owner() {
+        let store = InMemoryMemoryStore::new();
+        let alice = alice_session();
+        let bob = bob_session();
+        let other_agent = alice_other_agent_session();
+        for (owner, content) in [
+            (&alice, "alice a1"),
+            (&bob, "bob a1"),
+            (&other_agent, "alice a2"),
+        ] {
+            store
+                .store(owner, MemoryEntry::new("shared-id", content, owner.clone()))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .get(&alice, "shared-id")
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "alice a1"
+        );
+        assert_eq!(
+            store.get(&bob, "shared-id").await.unwrap().unwrap().content,
+            "bob a1"
+        );
+        assert_eq!(
+            store
+                .get(&other_agent, "shared-id")
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "alice a2"
+        );
+    }
+
+    #[tokio::test]
     async fn delete_owned_entry() {
         let store = InMemoryMemoryStore::new();
         let ctx = alice_session();
@@ -591,6 +677,7 @@ mod tests {
         let ctx = alice_session();
         let entry = MemoryEntry::new("1", "we chose Rust", ctx)
             .with_kind(MemoryKind::Decision)
+            .with_tag("architecture")
             .with_importance(Importance::High)
             .with_reference(MemoryReference::File {
                 path: "/Cargo.toml".into(),
@@ -598,5 +685,6 @@ mod tests {
         assert_eq!(entry.kind, MemoryKind::Decision);
         assert_eq!(entry.importance, Importance::High);
         assert_eq!(entry.references.len(), 1);
+        assert_eq!(entry.tags, ["architecture"]);
     }
 }

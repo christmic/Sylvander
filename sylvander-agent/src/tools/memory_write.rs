@@ -81,7 +81,7 @@ impl Tool for MemoryWriteTool {
         if let Some(tags) = input["tags"].as_array() {
             for tag in tags {
                 if let Some(tag_str) = tag.as_str() {
-                    entry = entry.with_tag(tag_str, "true");
+                    entry = entry.with_tag(tag_str);
                 }
             }
         }
@@ -174,6 +174,7 @@ mod tests {
             .expect("search");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "The user prefers tabs over spaces");
+        assert_eq!(results[0].tags, ["preference", "code-style"]);
     }
 
     #[tokio::test]
