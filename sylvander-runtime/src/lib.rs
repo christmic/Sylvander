@@ -23,6 +23,8 @@
 //! ```
 
 mod agent_admin;
+#[cfg(test)]
+mod agent_admin_runtime_v3_tests;
 pub mod agent_registry;
 #[allow(dead_code)] // immutable runtime bindings consumed by registry composition
 mod agent_registry_snapshot;
@@ -230,6 +232,19 @@ impl RuntimeRevisionProvider {
             .entry(key)
             .or_insert_with(|| configured.clone())
             .clone())
+    }
+
+    async fn revalidate_revision(
+        &self,
+        agent_id: &AgentId,
+        revision: u64,
+    ) -> Result<ConfiguredAgent, RuntimeError> {
+        let configured = self.compose_revision(agent_id, revision).await?;
+        self.configured
+            .write()
+            .await
+            .insert((agent_id.clone(), revision), configured.clone());
+        Ok(configured)
     }
 
     async fn active_agent(&self, agent_id: &AgentId) -> Result<ConfiguredAgent, RuntimeError> {
@@ -866,7 +881,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     Ok(stored) => {
                         if registry.stage_agent_snapshot_v3(selection).await.is_err()
                             || provider
-                                .configured_revision(
+                                .revalidate_revision(
                                     &stored.definition.spec.id,
                                     stored.definition.revision,
                                 )
@@ -898,7 +913,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 agent_id,
                 revision,
                 expected_active_revision,
-            } => match provider.configured_revision(&agent_id, revision).await {
+            } => match provider.revalidate_revision(&agent_id, revision).await {
                 Err(_) => agent_admin_error(
                     AgentAdminErrorCode::InvalidDefinition,
                     "Agent revision could not be composed",
@@ -923,7 +938,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 target_revision,
                 expected_active_revision,
             } => match provider
-                .configured_revision(&agent_id, target_revision)
+                .revalidate_revision(&agent_id, target_revision)
                 .await
             {
                 Err(_) => agent_admin_error(
