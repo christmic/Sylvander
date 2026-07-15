@@ -29,6 +29,14 @@ pub struct MemoryBackupArtifact {
     pub manifest: MemoryBackupManifest,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum MemoryRestoreError {
+    #[error("memory restore rejected")]
+    Rejected,
+    #[error("memory restore outcome requires operator inspection")]
+    OutcomeUnknown,
+}
+
 /// Explicit offline administration surface. Restore must run before the live
 /// database is opened by a Runtime or [`SqliteMemoryStore`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -39,11 +47,12 @@ impl SqliteMemoryAdmin {
         live_database: impl AsRef<Path>,
         backup_database: impl AsRef<Path>,
         manifest: impl AsRef<Path>,
-    ) -> Result<(), MemoryStoreError> {
-        restore_offline(
+    ) -> Result<(), MemoryRestoreError> {
+        restore_offline_impl(
             live_database.as_ref(),
             backup_database.as_ref(),
             manifest.as_ref(),
+            false,
         )
     }
 }
@@ -99,34 +108,80 @@ pub(super) fn create_backup(
     result
 }
 
-fn restore_offline(
+fn restore_offline_impl(
     live: &Path,
     backup: &Path,
     manifest_path: &Path,
-) -> Result<(), MemoryStoreError> {
-    reject_live_sidecars(live)?;
-    let manifest = read_manifest(manifest_path)?;
-    validate_artifact(backup, &manifest)?;
-    verify_database(backup)?;
+    fail_after_replace: bool,
+) -> Result<(), MemoryRestoreError> {
+    reject_live_sidecars(live).map_err(|_| MemoryRestoreError::Rejected)?;
+    let manifest = read_manifest(manifest_path).map_err(|_| MemoryRestoreError::Rejected)?;
+    validate_artifact(backup, &manifest).map_err(|_| MemoryRestoreError::Rejected)?;
+    verify_database(backup).map_err(|_| MemoryRestoreError::Rejected)?;
     let parent = live
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(backup_error)?;
-    std::fs::create_dir_all(parent).map_err(|_| backup_error())?;
+        .ok_or(MemoryRestoreError::Rejected)?;
+    std::fs::create_dir_all(parent).map_err(|_| MemoryRestoreError::Rejected)?;
     let temp = parent.join(format!(".memory-restore-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
+    let rollback = parent.join(format!(".memory-rollback-{}", uuid::Uuid::new_v4()));
+    if (|| {
         copy_new(backup, &temp)?;
         secure_file(&temp)?;
         validate_artifact(&temp, &manifest)?;
         verify_database(&temp)?;
-        sync_file(&temp)?;
-        std::fs::rename(&temp, live).map_err(|_| backup_error())?;
-        sync_directory(parent)
-    })();
-    if result.is_err() {
+        sync_file(&temp)
+    })()
+    .is_err()
+    {
         let _ = std::fs::remove_file(temp);
+        return Err(MemoryRestoreError::Rejected);
     }
-    result
+    let had_live = live.exists();
+    if had_live {
+        if std::fs::rename(live, &rollback).is_err() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(MemoryRestoreError::Rejected);
+        }
+        if sync_directory(parent).is_err() {
+            let _ = std::fs::remove_file(&temp);
+            return rollback_original(live, &rollback, parent);
+        }
+    }
+    if std::fs::rename(&temp, live).is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return if had_live {
+            rollback_original(live, &rollback, parent)
+        } else {
+            Err(MemoryRestoreError::Rejected)
+        };
+    }
+    if fail_after_replace || sync_directory(parent).is_err() {
+        return if had_live {
+            rollback_original(live, &rollback, parent)
+        } else if std::fs::remove_file(live).is_ok() && sync_directory(parent).is_ok() {
+            Err(MemoryRestoreError::Rejected)
+        } else {
+            Err(MemoryRestoreError::OutcomeUnknown)
+        };
+    }
+    if had_live {
+        let _ = std::fs::remove_file(rollback);
+        let _ = sync_directory(parent);
+    }
+    Ok(())
+}
+
+fn rollback_original(
+    live: &Path,
+    rollback: &Path,
+    parent: &Path,
+) -> Result<(), MemoryRestoreError> {
+    if std::fs::rename(rollback, live).is_ok() && sync_directory(parent).is_ok() {
+        Err(MemoryRestoreError::Rejected)
+    } else {
+        Err(MemoryRestoreError::OutcomeUnknown)
+    }
 }
 
 fn verify_database(path: &Path) -> Result<(), MemoryStoreError> {
@@ -258,3 +313,7 @@ fn secure_file(_: &Path) -> Result<(), MemoryStoreError> {
 fn backup_error() -> MemoryStoreError {
     MemoryStoreError::Store("memory backup operation failed".into())
 }
+
+#[cfg(test)]
+#[path = "backup_tests.rs"]
+mod tests;

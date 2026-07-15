@@ -180,6 +180,8 @@ fn worker_facing_memory_contract_has_no_maintenance_operation() {
         .unwrap();
     assert!(!trait_body.contains("purge"));
     assert!(!trait_body.contains("retention"));
+    assert!(!trait_body.contains("backup"));
+    assert!(!trait_body.contains("restore"));
 }
 
 #[test]
