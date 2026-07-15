@@ -3,7 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::registry_domain::{ProviderDefinition, StoredRevision, canonical_definition};
+use crate::registry_domain::{
+    ModelDefinition, ProviderDefinition, StoredRevision, canonical_definition,
+};
+use crate::request_scoped_provider::{
+    AnthropicProviderFactory, ProviderAdapterFactory, ProviderFactoryError,
+};
 
 const MAX_PROVIDER_PAGE_SIZE: u16 = 100;
 
@@ -18,6 +23,8 @@ pub(crate) struct ProviderRevisionPage {
 pub(crate) enum ProviderRegistryError {
     #[error("invalid Provider definition")]
     InvalidDefinition,
+    #[error("Provider is incompatible with an active Model")]
+    IncompatibleModel(#[source] ProviderFactoryError),
     #[error("Provider `{provider_id}` already exists")]
     AlreadyExists { provider_id: String },
     #[error("unknown Provider `{0}`")]
@@ -404,6 +411,7 @@ async fn set_head(
                         provider_id: provider_id.clone(),
                         revision: target,
                     })?;
+            preflight_active_models(&transaction, &target_revision.definition)?;
             let changed = transaction
                 .execute(
                     "UPDATE provider_registry_heads SET active_revision=?2,updated_at=?3 \
@@ -425,6 +433,54 @@ async fn set_head(
             Ok(target_revision)
         })
         .await
+}
+
+fn preflight_active_models(
+    connection: &Connection,
+    provider: &ProviderDefinition,
+) -> Result<(), ProviderRegistryError> {
+    AnthropicProviderFactory::validate_definition(provider)
+        .map_err(ProviderRegistryError::IncompatibleModel)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT d.provider_id,d.model_id,d.revision,d.definition_json,d.digest \
+             FROM model_registry_heads h JOIN model_definitions d \
+             ON d.provider_id=h.provider_id AND d.model_id=h.model_id \
+             AND d.revision=h.active_revision WHERE h.provider_id=?1",
+        )
+        .map_err(storage)?;
+    let rows = statement
+        .query_map([&provider.id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(storage)?;
+    for row in rows {
+        let (provider_id, model_id, revision, json, stored_digest) = row.map_err(storage)?;
+        let definition: ModelDefinition =
+            serde_json::from_str(&json).map_err(AgentRegistryError::serde)?;
+        let revision = sql_revision(revision)?;
+        let (canonical, digest) = canonical_definition(&definition)?;
+        if definition.provider_id != provider_id
+            || definition.model_id != model_id
+            || definition.revision != revision
+            || canonical != json
+            || digest != stored_digest
+        {
+            return Err(
+                AgentRegistryError::Integrity("active Model definition is invalid".into()).into(),
+            );
+        }
+        AnthropicProviderFactory
+            .preflight(provider, &definition)
+            .map_err(ProviderRegistryError::IncompatibleModel)?;
+    }
+    Ok(())
 }
 
 fn verified_provider_revision(
