@@ -1046,6 +1046,14 @@ mod tests {
         }
     }
 
+    fn provider_draft(base_url: &str) -> ProviderDefinitionDraft {
+        ProviderDefinitionDraft {
+            kind: "anthropic_compatible".into(),
+            base_url: base_url.into(),
+            credential_binding_id: RAW_BINDING.into(),
+        }
+    }
+
     fn model(revision: u64) -> ModelDefinition {
         ModelDefinition {
             provider_id: "alpha".into(),
@@ -1194,6 +1202,107 @@ mod tests {
         };
         assert_eq!(revisions[0].definition.revision, 1);
         assert_eq!(next_before_revision, None);
+    }
+
+    #[tokio::test]
+    async fn provider_lifecycle_is_redacted_and_reports_typed_cas_failures() {
+        let registry = registry().await;
+        let service = RegistryAdminService::new(&registry);
+        let principal = admin();
+        let dispatch = |request| service.dispatch(Some(&principal), request);
+
+        let created = dispatch(RegistryAdminRequest::CreateProvider {
+            provider_id: "beta".into(),
+            definition: provider_draft("https://CREATE_SECRET.invalid"),
+        })
+        .await;
+        assert!(matches!(
+            created,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ProviderCreated { revision }
+                    if revision.active && revision.definition.revision == 1)
+        ));
+
+        let duplicate = dispatch(RegistryAdminRequest::CreateProvider {
+            provider_id: "beta".into(),
+            definition: provider_draft("https://DIFFERENT_SECRET.invalid"),
+        })
+        .await;
+        assert!(matches!(
+            duplicate,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::ProviderAlreadyExists
+        ));
+
+        let nonsequential = dispatch(RegistryAdminRequest::StageProviderRevision {
+            provider_id: "beta".into(),
+            revision: 3,
+            expected_active_revision: 1,
+            definition: provider_draft("https://THREE_SECRET.invalid"),
+        })
+        .await;
+        assert!(matches!(
+            nonsequential,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::NonSequentialRevision
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::NonSequentialRevision {
+                            expected_revision: 2,
+                            actual_revision: 3,
+                        }
+                    ))
+        ));
+
+        let staged = dispatch(RegistryAdminRequest::StageProviderRevision {
+            provider_id: "beta".into(),
+            revision: 2,
+            expected_active_revision: 1,
+            definition: provider_draft("https://TWO_SECRET.invalid"),
+        })
+        .await;
+        assert!(matches!(
+            staged,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ProviderRevisionStaged { revision }
+                    if !revision.active && revision.definition.revision == 2)
+        ));
+        let activated = dispatch(RegistryAdminRequest::ActivateProviderRevision {
+            provider_id: "beta".into(),
+            revision: 2,
+            expected_active_revision: 1,
+        })
+        .await;
+        assert!(matches!(
+            activated,
+            RegistryAdminResponse::Success { ref result }
+                if matches!(result.as_ref(), RegistryAdminResult::ProviderRevisionActivated { revision }
+                    if revision.active && revision.definition.revision == 2)
+        ));
+
+        for response in [created, staged, activated] {
+            let wire = serde_json::to_string(&response).unwrap();
+            for secret in [RAW_BINDING, "CREATE_SECRET", "TWO_SECRET"] {
+                assert!(!wire.contains(secret));
+            }
+        }
+
+        let conflict = dispatch(RegistryAdminRequest::RollbackProviderRevision {
+            provider_id: "beta".into(),
+            target_revision: 1,
+            expected_active_revision: 1,
+        })
+        .await;
+        assert!(matches!(
+            conflict,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::ActiveRevisionConflict
+                    && matches!(error.details.as_deref(), Some(
+                        RegistryAdminErrorDetails::ActiveRevisionConflict {
+                            expected_active_revision: 1,
+                            actual_active_revision: 2,
+                        }
+                    ))
+        ));
     }
 
     #[tokio::test]

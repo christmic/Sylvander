@@ -499,6 +499,189 @@ fn credential_lifecycle_results_and_conflicts_are_typed_and_redacted() {
     assert_eq!(legacy.details, None);
 }
 
+fn provider_draft() -> ProviderDefinitionDraft {
+    ProviderDefinitionDraft {
+        kind: "anthropic_compatible".into(),
+        base_url: "https://private.example.test".into(),
+        credential_binding_id: "credential/private".into(),
+    }
+}
+
+#[test]
+fn provider_lifecycle_requests_validate_and_have_stable_wire_shapes() {
+    let requests = [
+        RegistryAdminRequest::CreateProvider {
+            provider_id: "alpha".into(),
+            definition: provider_draft(),
+        },
+        RegistryAdminRequest::StageProviderRevision {
+            provider_id: "alpha".into(),
+            revision: 2,
+            expected_active_revision: 1,
+            definition: provider_draft(),
+        },
+        RegistryAdminRequest::ActivateProviderRevision {
+            provider_id: "alpha".into(),
+            revision: 2,
+            expected_active_revision: 1,
+        },
+        RegistryAdminRequest::RollbackProviderRevision {
+            provider_id: "alpha".into(),
+            target_revision: 1,
+            expected_active_revision: 2,
+        },
+    ];
+    for request in requests {
+        request.validate().unwrap();
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RegistryAdminRequest>(encoded).unwrap(),
+            request
+        );
+        assert_eq!(request.minimum_ui_protocol_version(), 3);
+    }
+
+    assert!(
+        serde_json::from_value::<RegistryAdminRequest>(json!({
+            "operation": "create_provider",
+            "provider_id": "alpha",
+            "definition": {
+                "kind": "anthropic_compatible",
+                "base_url": "https://example.test",
+                "credential_binding_id": "credential/alpha",
+                "unexpected": true
+            }
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn provider_lifecycle_validation_and_draft_debug_are_content_free() {
+    for request in [
+        RegistryAdminRequest::CreateProvider {
+            provider_id: " ".into(),
+            definition: provider_draft(),
+        },
+        RegistryAdminRequest::CreateProvider {
+            provider_id: "alpha".into(),
+            definition: ProviderDefinitionDraft {
+                kind: " ".into(),
+                base_url: "https://example.test".into(),
+                credential_binding_id: "credential/alpha".into(),
+            },
+        },
+        RegistryAdminRequest::StageProviderRevision {
+            provider_id: "alpha".into(),
+            revision: 0,
+            expected_active_revision: 1,
+            definition: provider_draft(),
+        },
+        RegistryAdminRequest::ActivateProviderRevision {
+            provider_id: "alpha".into(),
+            revision: 2,
+            expected_active_revision: 0,
+        },
+        RegistryAdminRequest::RollbackProviderRevision {
+            provider_id: "alpha".into(),
+            target_revision: 0,
+            expected_active_revision: 2,
+        },
+    ] {
+        assert_eq!(
+            request.validate().unwrap_err().code,
+            RegistryAdminErrorCode::InvalidRequest
+        );
+    }
+    let debug = format!("{:?}", provider_draft());
+    assert_eq!(debug, "ProviderDefinitionDraft([REDACTED])");
+    for private in [
+        "anthropic_compatible",
+        "https://private.example.test",
+        "credential/private",
+    ] {
+        assert!(!debug.contains(private));
+    }
+}
+
+#[test]
+fn provider_lifecycle_results_errors_and_schema_are_typed() {
+    for result in [
+        RegistryAdminResult::ProviderCreated { revision: view() },
+        RegistryAdminResult::ProviderRevisionStaged { revision: view() },
+        RegistryAdminResult::ProviderRevisionActivated { revision: view() },
+        RegistryAdminResult::ProviderRevisionRolledBack { revision: view() },
+    ] {
+        let encoded = serde_json::to_value(RegistryAdminResponse::Success {
+            result: Box::new(result),
+        })
+        .unwrap();
+        assert!(encoded["result"]["revision"]["definition"]["base_url"].is_null());
+        assert_eq!(
+            encoded["result"]["revision"]["definition"]["base_url_sha256"],
+            "base-digest"
+        );
+    }
+    for (code, details) in [
+        (
+            RegistryAdminErrorCode::ActiveRevisionConflict,
+            RegistryAdminErrorDetails::ActiveRevisionConflict {
+                expected_active_revision: 1,
+                actual_active_revision: 2,
+            },
+        ),
+        (
+            RegistryAdminErrorCode::NonSequentialRevision,
+            RegistryAdminErrorDetails::NonSequentialRevision {
+                expected_revision: 2,
+                actual_revision: 4,
+            },
+        ),
+        (
+            RegistryAdminErrorCode::RevisionCollision,
+            RegistryAdminErrorDetails::RevisionCollision { revision: 2 },
+        ),
+        (
+            RegistryAdminErrorCode::InvalidRevisionRollback,
+            RegistryAdminErrorDetails::InvalidRevisionRollback {
+                target_revision: 3,
+                actual_active_revision: 2,
+            },
+        ),
+    ] {
+        let encoded = serde_json::to_value(RegistryAdminError {
+            code,
+            message: "provider mutation failed".into(),
+            provider_id: Some("alpha".into()),
+            model_id: None,
+            binding_id_sha256: None,
+            revision: None,
+            generation: None,
+            details: Some(Box::new(details.clone())),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::from_value::<RegistryAdminError>(encoded)
+                .unwrap()
+                .details
+                .as_deref(),
+            Some(&details)
+        );
+    }
+    let rollback_code =
+        serde_json::to_value(RegistryAdminErrorCode::InvalidRevisionRollback).unwrap();
+    assert_eq!(rollback_code, "invalid_revision_rollback");
+    let schema = serde_json::to_string(&schemars::schema_for!(RegistryAdminRequest)).unwrap();
+    for operation in [
+        "create_provider",
+        "stage_provider_revision",
+        "activate_provider_revision",
+        "rollback_provider_revision",
+    ] {
+        assert!(schema.contains(operation));
+    }
+}
+
 #[test]
 fn every_registry_request_has_an_explicit_minimum_protocol_version() {
     let reads = [
@@ -510,6 +693,10 @@ fn every_registry_request_has_an_explicit_minimum_protocol_version() {
         json!({"operation":"list_credential_generations","binding_id":"b"}),
     ];
     let mutations = [
+        json!({"operation":"create_provider","provider_id":"p","definition":{"kind":"anthropic_compatible","base_url":"https://example.test","credential_binding_id":"b"}}),
+        json!({"operation":"stage_provider_revision","provider_id":"p","revision":2,"expected_active_revision":1,"definition":{"kind":"anthropic_compatible","base_url":"https://example.test","credential_binding_id":"b"}}),
+        json!({"operation":"activate_provider_revision","provider_id":"p","revision":2,"expected_active_revision":1}),
+        json!({"operation":"rollback_provider_revision","provider_id":"p","target_revision":1,"expected_active_revision":2}),
         json!({"operation":"create_credential_binding","binding_id":"b","reference":{"source":"environment","name":"K"}}),
         json!({"operation":"stage_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1,"reference":{"source":"file","path":"/k"}}),
         json!({"operation":"activate_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1}),
