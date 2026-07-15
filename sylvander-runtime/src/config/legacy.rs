@@ -18,6 +18,7 @@ const LEGACY_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "SYLVANDER_SESSION_DB",
+    "SYLVANDER_MEMORY_DB",
     "SYLVANDER_WORKSPACE_JOURNAL",
     "SYLVANDER_AGENT_WORKSPACE",
     "SYLVANDER_SOCKET",
@@ -151,6 +152,7 @@ impl ServerConfig {
                 name: "sylvander".into(),
                 data_dir: None,
                 session_db: values.get("SYLVANDER_SESSION_DB").map(PathBuf::from),
+                memory_db: values.get("SYLVANDER_MEMORY_DB").map(PathBuf::from),
                 workspace_journal: values.get("SYLVANDER_WORKSPACE_JOURNAL").map(PathBuf::from),
                 approval: ApprovalSettings {
                     enabled: values.contains_key("SYLVANDER_APPROVAL"),
@@ -338,6 +340,22 @@ mod tests {
         assert!(config.agents[0].spec.model.allowed_models.is_empty());
         assert!(!config.agents[0].access.allow_authenticated);
         assert!(config.agents[0].access.allowed_principals.is_empty());
+    }
+
+    #[test]
+    fn conversion_preserves_memory_database_path() {
+        let mut values = required_values();
+        values.insert(
+            "SYLVANDER_MEMORY_DB".into(),
+            "/srv/sylvander/memory.db".into(),
+        );
+
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+
+        assert_eq!(
+            config.server.memory_db,
+            Some(PathBuf::from("/srv/sylvander/memory.db"))
+        );
     }
 
     #[test]

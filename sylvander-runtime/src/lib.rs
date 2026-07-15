@@ -2491,6 +2491,10 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .get_or_insert_with(|| data_dir.join("sessions.db"));
     config
         .server
+        .memory_db
+        .get_or_insert_with(|| data_dir.join("memory.db"));
+    config
+        .server
         .workspace_journal
         .get_or_insert_with(|| data_dir.join("workspace-journal"));
     config
@@ -2591,6 +2595,32 @@ mod tests {
             name: "test".into(),
             user_id: "user-1".into(),
         }
+    }
+
+    #[test]
+    fn resolved_paths_default_and_preserve_memory_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_dir = directory.path().join("data");
+        let config = ServerConfig {
+            schema_version: crate::config::CONFIG_SCHEMA_VERSION,
+            server: crate::config::ServerSettings {
+                data_dir: Some(data_dir.clone()),
+                ..crate::config::ServerSettings::default()
+            },
+            model_providers: Vec::new(),
+            execution_targets: Vec::new(),
+            agents: Vec::new(),
+            channels: Vec::new(),
+        };
+
+        let resolved = with_resolved_paths(config.clone()).unwrap();
+        assert_eq!(resolved.server.memory_db, Some(data_dir.join("memory.db")));
+
+        let explicit = directory.path().join("stores/custom-memory.db");
+        let mut config = config;
+        config.server.memory_db = Some(explicit.clone());
+        let resolved = with_resolved_paths(config).unwrap();
+        assert_eq!(resolved.server.memory_db, Some(explicit));
     }
 
     #[tokio::test]
