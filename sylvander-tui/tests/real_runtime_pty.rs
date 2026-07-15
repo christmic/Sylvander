@@ -206,11 +206,13 @@ impl HarnessUiService {
             agent_id: request.agent_id.clone(),
             agent_revision: 0,
             provider_id: "test-provider".into(),
+            provider_revision: None,
             model_id: request
                 .overrides
                 .model_id
                 .clone()
                 .unwrap_or_else(|| "sylvander-test-model".into()),
+            model_revision: None,
             reasoning_effort: request
                 .overrides
                 .reasoning_effort
