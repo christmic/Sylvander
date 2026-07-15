@@ -1777,6 +1777,7 @@ impl AgentRunInner {
             permissions: self.runtime_permissions.read().await.clone(),
             prompt_profile: None,
             system_prompt_sha256: format!("{:x}", Sha256::digest(prompt.as_bytes())),
+            prompt_manifest: None,
             agent_workspace: None,
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),

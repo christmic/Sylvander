@@ -505,6 +505,7 @@ pub fn resolve_session_config(
         permissions,
         prompt_profile,
         system_prompt_sha256: format!("{:x}", Sha256::digest(system_prompt.as_bytes())),
+        prompt_manifest: None,
         agent_workspace,
         user_workspace,
         execution_target,

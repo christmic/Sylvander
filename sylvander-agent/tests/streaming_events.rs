@@ -604,6 +604,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         permissions: PermissionProfile::default(),
         prompt_profile: Some("session".into()),
         system_prompt_sha256: "test-digest".into(),
+        prompt_manifest: None,
         agent_workspace: None,
         user_workspace: None,
         execution_target: "local".into(),

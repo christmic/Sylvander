@@ -74,6 +74,15 @@ pub struct StoredSession {
     pub effective_config: Option<SessionEffectiveConfig>,
 }
 
+/// Atomic metadata-only changes that never rewrite session configuration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionMetadataPatch {
+    /// Replacement display name; `None` leaves the current name unchanged.
+    pub name: Option<String>,
+    /// Channel-owned values merged by key into the existing metadata.
+    pub external_meta: HashMap<String, JsonValue>,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUsage {
     pub iterations: u32,
@@ -254,6 +263,14 @@ pub trait SessionStore: Send + Sync {
 
     /// Save or update a session record (upsert).
     async fn save(&self, session: &StoredSession) -> Result<(), SessionStoreError>;
+
+    /// Merge mutable presentation/channel metadata without touching the
+    /// configuration revision, overrides, or resolved effective config.
+    async fn patch_metadata(
+        &self,
+        id: &SessionId,
+        patch: SessionMetadataPatch,
+    ) -> Result<(), SessionStoreError>;
 
     /// Replace sparse overrides and their resolved value when the caller's
     /// revision still matches. Returns the new monotonic revision.

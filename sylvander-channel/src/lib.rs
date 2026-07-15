@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
 use sylvander_agent::bus::MessageBus;
-use sylvander_agent::session_store::SessionStore;
+use sylvander_agent::session_store::{SessionMetadataPatch, SessionStore};
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
@@ -289,20 +289,18 @@ pub async fn authorize_external_chat(
         )
         .await?;
         let state = ui.create_session(boundary, create_request).await?;
-        let mut session = context
-            .sessions
-            .get(&state.session_id)
-            .await
-            .map_err(|error| external_session_error(boundary, error.to_string()))?
-            .ok_or_else(|| external_session_error(boundary, "created session was not persisted"))?;
-        for (key, value) in external_meta {
-            session
-                .external_meta
-                .insert(key, serde_json::Value::String(value));
-        }
         context
             .sessions
-            .save(&session)
+            .patch_metadata(
+                &state.session_id,
+                SessionMetadataPatch {
+                    name: None,
+                    external_meta: external_meta
+                        .into_iter()
+                        .map(|(key, value)| (key, serde_json::Value::String(value)))
+                        .collect(),
+                },
+            )
             .await
             .map_err(|error| external_session_error(boundary, error.to_string()))?;
         state.session_id

@@ -4,7 +4,7 @@
 //! never returns prompts, command templates, process arguments, environment
 //! bindings, workspace paths, or secret references.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,7 @@ const fn default_revision_page_size() -> u16 {
 
 /// Complete, validated candidate supplied by a privileged administrator.
 /// Secret-bearing process environment entries are references, never values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentDefinitionDraft {
     pub agent_id: AgentId,
@@ -86,6 +86,31 @@ pub struct AgentDefinitionDraft {
     pub allow_session_prompt: bool,
     #[serde(default)]
     pub access: AgentAccessDraft,
+}
+
+impl fmt::Debug for AgentDefinitionDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentDefinitionDraft")
+            .field("agent_id", &self.agent_id)
+            .field("revision", &self.revision)
+            .field("name", &self.name)
+            .field("provider_id", &self.provider_id)
+            .field("default_model_id", &self.default_model_id)
+            .field("allowed_model_count", &self.allowed_models.len())
+            .field("system_prompt", &"[REDACTED]")
+            .field("tool_count", &self.tools.len())
+            .field("memory_store_count", &self.memory_stores.len())
+            .field("ui_command_count", &self.ui_commands.len())
+            .field("prompt_profile_count", &self.prompt_profiles.len())
+            .field(
+                "agent_workspace_configured",
+                &self.agent_workspace.is_some(),
+            )
+            .field("default_prompt_profile", &self.default_prompt_profile)
+            .field("allow_session_prompt", &self.allow_session_prompt)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -131,7 +156,7 @@ pub struct AgentUiCommandDraft {
     pub prompt: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentPromptProfileDraft {
     pub id: String,
@@ -141,6 +166,18 @@ pub struct AgentPromptProfileDraft {
     pub models: Vec<String>,
     /// Write-only in the public contract.
     pub system_prompt: String,
+}
+
+impl fmt::Debug for AgentPromptProfileDraft {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentPromptProfileDraft")
+            .field("id", &self.id)
+            .field("providers", &self.providers)
+            .field("models", &self.models)
+            .field("system_prompt", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -458,6 +495,34 @@ mod tests {
         .unwrap();
 
         assert!(definition.allowed_models.is_empty());
+    }
+
+    #[test]
+    fn write_draft_debug_redacts_raw_prompts() {
+        let profile = AgentPromptProfileDraft {
+            id: "private-profile".into(),
+            providers: vec!["provider-1".into()],
+            models: vec!["model-1".into()],
+            system_prompt: "profile prompt must never reach logs".into(),
+        };
+        let profile_debug = format!("{profile:?}");
+        assert!(profile_debug.contains("[REDACTED]"));
+        assert!(!profile_debug.contains("profile prompt must never reach logs"));
+
+        let definition: AgentDefinitionDraft = serde_json::from_value(serde_json::json!({
+            "agent_id": "oraculo",
+            "revision": 1,
+            "name": "Oraculo",
+            "provider_id": "provider-1",
+            "default_model_id": "model-1",
+            "system_prompt": "definition prompt must never reach logs",
+            "prompt_profiles": [profile]
+        }))
+        .unwrap();
+        let definition_debug = format!("{definition:?}");
+        assert!(definition_debug.contains("[REDACTED]"));
+        assert!(!definition_debug.contains("definition prompt must never reach logs"));
+        assert!(!definition_debug.contains("profile prompt must never reach logs"));
     }
 
     #[test]

@@ -998,6 +998,7 @@ mod tests {
                 permissions: sylvander_protocol::PermissionProfile::default(),
                 prompt_profile: None,
                 system_prompt_sha256: "digest".into(),
+                prompt_manifest: None,
                 agent_workspace: None,
                 user_workspace: None,
                 execution_target: "local".into(),

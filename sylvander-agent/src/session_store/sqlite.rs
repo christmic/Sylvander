@@ -30,8 +30,9 @@ use crate::session::SessionMetadata;
 use crate::spec::{AgentId, SessionId};
 
 use super::{
-    MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionStore,
-    SessionStoreError, SessionUsage, StoredMessage, StoredSession, TurnConfigSnapshot, TurnStart,
+    MessageRole, ReplacementMessage, SessionFilter, SessionLifetime, SessionMetadataPatch,
+    SessionStore, SessionStoreError, SessionUsage, StoredMessage, StoredSession,
+    TurnConfigSnapshot, TurnStart,
 };
 
 /// SQLite-backed session store.
@@ -368,6 +369,49 @@ impl SessionStore for SqliteSessionStore {
                 )?;
             }
             Ok(())
+        })
+        .await
+    }
+
+    async fn patch_metadata(
+        &self,
+        id: &SessionId,
+        patch: SessionMetadataPatch,
+    ) -> Result<(), SessionStoreError> {
+        let id = id.clone();
+        self.run(move |connection| {
+            let transaction = connection.unchecked_transaction().map_err(sqlite_err)?;
+            let encoded: Option<String> = transaction
+                .query_row(
+                    "SELECT external_meta FROM sessions WHERE id = ?1 AND is_archived = 0",
+                    params![id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            let Some(encoded) = encoded else {
+                return Err(SessionStoreError::NotFound(id));
+            };
+            let mut external_meta: std::collections::HashMap<String, JsonValue> =
+                serde_json::from_str(&encoded).map_err(|error| {
+                    SessionStoreError::Store(format!("deserialize external metadata: {error}"))
+                })?;
+            external_meta.extend(patch.external_meta);
+            let encoded = serde_json::to_string(&external_meta).map_err(|error| {
+                SessionStoreError::Store(format!("serialize external metadata: {error}"))
+            })?;
+            let updated = transaction
+                .execute(
+                    "UPDATE sessions SET name = COALESCE(?1, name), external_meta = ?2, \
+                                         updated_at = ?3 \
+                     WHERE id = ?4 AND is_archived = 0",
+                    params![patch.name, encoded, crate::session::now_secs(), id.0],
+                )
+                .map_err(sqlite_err)?;
+            if updated != 1 {
+                return Err(SessionStoreError::NotFound(id));
+            }
+            transaction.commit().map_err(sqlite_err)
         })
         .await
     }
@@ -1353,6 +1397,7 @@ mod tests {
             permissions: sylvander_protocol::PermissionProfile::default(),
             prompt_profile: Some("coding".into()),
             system_prompt_sha256: "abc123".into(),
+            prompt_manifest: None,
             agent_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: "/agent".into(),
@@ -1521,6 +1566,49 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn metadata_patch_cannot_roll_back_a_prompt_config_update() {
+        let store = SqliteSessionStore::open_in_memory().await.unwrap();
+        let mut session = make_session("s1", SessionLifetime::Persistent);
+        session
+            .external_meta
+            .insert("existing".into(), serde_json::json!("kept"));
+        store.save(&session).await.unwrap();
+        let stale = store.get(&session.id).await.unwrap().unwrap();
+
+        let mut effective = effective_config();
+        effective.system_prompt_sha256 = "new-prompt-hash".into();
+        let overrides = sylvander_protocol::SessionConfigOverrides {
+            system_prompt: Some("new prompt".into()),
+            ..Default::default()
+        };
+        store
+            .update_config(&session.id, 0, overrides.clone(), effective.clone())
+            .await
+            .unwrap();
+
+        let external_meta =
+            std::collections::HashMap::from([("channel".into(), serde_json::json!("telegram"))]);
+        store
+            .patch_metadata(
+                &session.id,
+                SessionMetadataPatch {
+                    name: Some(format!("{} renamed", stale.name)),
+                    external_meta,
+                },
+            )
+            .await
+            .unwrap();
+
+        let loaded = store.get(&session.id).await.unwrap().unwrap();
+        assert_eq!(loaded.name, "session-s1 renamed");
+        assert_eq!(loaded.external_meta["existing"], "kept");
+        assert_eq!(loaded.external_meta["channel"], "telegram");
+        assert_eq!(loaded.config_revision, 1);
+        assert_eq!(loaded.config_overrides, overrides);
+        assert_eq!(loaded.effective_config, Some(effective));
     }
 
     #[tokio::test]
