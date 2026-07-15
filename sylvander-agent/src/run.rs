@@ -255,12 +255,18 @@ struct ActiveTurn {
     interrupt: oneshot::Sender<()>,
 }
 
+#[derive(Clone)]
+struct RuntimeModel {
+    selection: sylvander_protocol::ModelSelection,
+    shadow: ModelInfo,
+    exact: Option<ProviderModelInfo>,
+    lifecycle: sylvander_protocol::ModelLifecycle,
+    pricing: Option<sylvander_protocol::ModelPricing>,
+}
+
 struct RuntimeModels {
-    available: HashMap<String, ModelInfo>,
-    provider_id: String,
-    lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    pricing: HashMap<String, sylvander_protocol::ModelPricing>,
-    current_model: String,
+    available: HashMap<sylvander_protocol::ModelSelection, RuntimeModel>,
+    current: sylvander_protocol::ModelSelection,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
 }
 
@@ -272,12 +278,32 @@ struct ContextUsage {
 }
 
 impl RuntimeModels {
+    fn resolve_legacy_id(
+        &self,
+        model_id: &str,
+    ) -> Result<sylvander_protocol::ModelSelection, String> {
+        let matches = self
+            .available
+            .keys()
+            .filter(|selection| selection.model_id == model_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Err(format!("model `{model_id}` is not available")),
+            [selection] => Ok(selection.clone()),
+            _ => Err(format!(
+                "model `{model_id}` is ambiguous; select it with a provider id"
+            )),
+        }
+    }
+
     fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
         let mut models = self
             .available
             .values()
             .map(|model| {
                 let reasoning_efforts = if model
+                    .shadow
                     .capabilities
                     .contains(ModelCapabilities::EXTENDED_THINKING)
                 {
@@ -291,18 +317,18 @@ impl RuntimeModels {
                     vec![sylvander_protocol::ReasoningEffort::Off]
                 };
                 sylvander_protocol::ModelDescriptor {
-                    id: model.id.clone(),
-                    provider: self.provider_id.clone(),
-                    capabilities: model.capabilities.bits(),
+                    id: model.selection.model_id.clone(),
+                    provider: model.selection.provider_id.clone(),
+                    capabilities: model.shadow.capabilities.bits(),
                     reasoning_efforts,
-                    lifecycle: self.lifecycles.get(&model.id).cloned().unwrap_or_default(),
-                    pricing: self.pricing.get(&model.id).copied(),
+                    lifecycle: model.lifecycle.clone(),
+                    pricing: model.pricing,
                 }
             })
             .collect::<Vec<_>>();
-        models.sort_by(|left, right| left.id.cmp(&right.id));
+        models.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
         sylvander_protocol::RuntimeModelInfo {
-            current_model: self.current_model.clone(),
+            current_model: self.current.model_id.clone(),
             reasoning_effort: self.reasoning_effort,
             models,
         }
@@ -381,24 +407,44 @@ impl AgentRun {
         model_id: &str,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
+        let selection = self
+            .inner
+            .runtime_models
+            .read()
+            .await
+            .resolve_legacy_id(model_id)?;
+        self.select_qualified_model(selection, reasoning_effort)
+            .await
+    }
+
+    /// Select one exact provider-qualified model for subsequently started turns.
+    pub async fn select_qualified_model(
+        &self,
+        selection: sylvander_protocol::ModelSelection,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
         let mut runtime = self.inner.runtime_models.write().await;
-        let model = runtime
-            .available
-            .get(model_id)
-            .ok_or_else(|| format!("model `{model_id}` is not available"))?;
+        let model = runtime.available.get(&selection).cloned().ok_or_else(|| {
+            format!(
+                "model `{}/{}` is not available",
+                selection.provider_id, selection.model_id
+            )
+        })?;
         self.inner
-            .validate_selected_model(&self.inner.spec.model.provider, model)
+            .prepare_loop_snapshot(&model, reasoning_effort)
             .map_err(|error| error.to_string())?;
         if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
             && !model
+                .shadow
                 .capabilities
                 .contains(ModelCapabilities::EXTENDED_THINKING)
         {
             return Err(format!(
-                "model `{model_id}` does not support reasoning effort"
+                "model `{}` does not support reasoning effort",
+                selection.model_id
             ));
         }
-        runtime.current_model = model_id.to_string();
+        runtime.current = selection;
         runtime.reasoning_effort = reasoning_effort;
         Ok(runtime.public_info())
     }
@@ -516,7 +562,7 @@ impl AgentRun {
         let models = self.inner.runtime_models.read().await;
         let model = models
             .available
-            .get(&models.current_model)
+            .get(&models.current)
             .expect("current model belongs to runtime catalog");
         let usage = match session_id {
             Some(session_id) => self
@@ -563,10 +609,10 @@ impl AgentRun {
             });
         }
         sylvander_protocol::ContextReport {
-            model: model.id.clone(),
-            context_window: model.context_window,
+            model: model.shadow.id.clone(),
+            context_window: model.shadow.context_window,
             used_tokens: usage.used,
-            remaining_tokens: model.context_window.saturating_sub(usage.used),
+            remaining_tokens: model.shadow.context_window.saturating_sub(usage.used),
             cache_read_tokens: usage.cache_read,
             cache_write_tokens: usage.cache_write,
             sources,
@@ -626,12 +672,12 @@ impl AgentRun {
         let runtime = self.inner.runtime_models.read().await;
         let model = runtime
             .available
-            .get(&runtime.current_model)
+            .get(&runtime.current)
             .cloned()
             .ok_or_else(|| CompactionError::new(CompactionFailureCode::Other))?;
         drop(runtime);
         let usage = sylvander_llm_anthropic::api::types::Usage {
-            input_tokens: model.context_window,
+            input_tokens: model.shadow.context_window,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
@@ -640,7 +686,7 @@ impl AgentRun {
         let mut context = crate::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
-            model_info: &model,
+            model_info: &model.shadow,
             auto_compact_llm: Some(&summarizer),
         };
         let report = crate::compress::layers::auto_compact::AutoCompactLayer::new()
@@ -1518,14 +1564,32 @@ impl TaskGate for BusTaskGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
-    fn validate_selected_model(
+    fn prepare_loop_snapshot(
         &self,
-        provider_id: &str,
-        model: &ModelInfo,
-    ) -> Result<(), AgentRunError> {
-        self.loop_config
-            .validate_runtime_model(provider_id, model)
-            .map_err(|error| AgentRunError::Configuration(error.to_string()))
+        model: &RuntimeModel,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    ) -> Result<AgentLoop, AgentRunError> {
+        if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
+            && !model
+                .shadow
+                .capabilities
+                .contains(ModelCapabilities::EXTENDED_THINKING)
+        {
+            return Err(AgentRunError::Configuration(format!(
+                "model `{}` does not support reasoning effort",
+                model.selection.model_id
+            )));
+        }
+        let mut snapshot = self.loop_config.clone();
+        snapshot
+            .apply_runtime_model(
+                &model.selection.provider_id,
+                &model.shadow,
+                model.exact.as_ref(),
+            )
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+        snapshot.reasoning_effort = reasoning_effort;
+        Ok(snapshot)
     }
 
     async fn apply_compacted_history(
@@ -1664,8 +1728,8 @@ impl AgentRunInner {
         sylvander_protocol::SessionEffectiveConfig {
             agent_id: self.id.clone(),
             agent_revision: 0,
-            provider_id: self.spec.model.provider.clone(),
-            model_id: runtime.current_model.clone(),
+            provider_id: runtime.current.provider_id.clone(),
+            model_id: runtime.current.model_id.clone(),
             reasoning_effort: runtime.reasoning_effort,
             permissions: self.runtime_permissions.read().await.clone(),
             prompt_profile: None,
@@ -1832,19 +1896,22 @@ impl AgentRunInner {
                 effective.agent_id, self.id
             )));
         }
-        let (selected_model, selected_effort, selected_pricing) = {
+        let (selected_model, selected_effort) = {
             let runtime = self.runtime_models.read().await;
-            let model_id = effective_config
-                .as_ref()
-                .map_or(runtime.current_model.as_str(), |config| {
-                    config.model_id.as_str()
-                });
+            let selection = effective_config.as_ref().map_or_else(
+                || runtime.current.clone(),
+                |config| sylvander_protocol::ModelSelection {
+                    provider_id: config.provider_id.clone(),
+                    model_id: config.model_id.clone(),
+                },
+            );
             let model = runtime
                 .available
-                .get(model_id)
+                .get(&selection)
                 .ok_or_else(|| {
                     AgentRunError::Configuration(format!(
-                        "session {session_id} selects unavailable model `{model_id}`"
+                        "session {session_id} selects unavailable model `{}/{}`",
+                        selection.provider_id, selection.model_id
                     ))
                 })?
                 .clone();
@@ -1853,15 +1920,10 @@ impl AgentRunInner {
                 effective_config
                     .as_ref()
                     .map_or(runtime.reasoning_effort, |config| config.reasoning_effort),
-                runtime.pricing.get(model_id).copied(),
             )
         };
-        let selected_provider = effective_config
-            .as_ref()
-            .map_or(self.spec.model.provider.as_str(), |config| {
-                config.provider_id.as_str()
-            });
-        self.validate_selected_model(selected_provider, &selected_model)?;
+        let mut loop_config = self.prepare_loop_snapshot(&selected_model, selected_effort)?;
+        let selected_pricing = selected_model.pricing;
 
         // 1. Persist the immutable turn boundary before provider or tool work.
         let session_metadata = {
@@ -1899,7 +1961,7 @@ impl AgentRunInner {
                         config_revision: stored.config_revision,
                         effective_config: effective.clone(),
                         user_content,
-                        model_id: selected_model.id.clone(),
+                        model_id: selected_model.shadow.id.clone(),
                     },
                 )
                 .await
@@ -1916,34 +1978,24 @@ impl AgentRunInner {
 
         // 2. Build per-session approval gate and tool surface from one
         // permission snapshot. Changes made mid-turn apply to the next turn.
-        let mut loop_config =
-            if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
-                let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
-                    bus: self.bus.clone(),
-                    agent_id: self.id.clone(),
-                    session_id: session_id.clone(),
-                    pending_approvals: self.pending_approvals.clone(),
-                    approval_memory: self.approval_memory.clone(),
-                });
-                let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
-                    bus_gate
-                } else {
-                    Arc::new(crate::approval::RuleBasedApprovalGate::new(
-                        self.approval_rules.clone(),
-                        bus_gate,
-                    ))
-                };
-                let mut cfg = self.loop_config.clone();
-                cfg.model = selected_model.clone();
-                cfg.reasoning_effort = selected_effort;
-                cfg.approval_gate = Some(gate);
-                cfg
+        if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
+            let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
+                bus: self.bus.clone(),
+                agent_id: self.id.clone(),
+                session_id: session_id.clone(),
+                pending_approvals: self.pending_approvals.clone(),
+                approval_memory: self.approval_memory.clone(),
+            });
+            let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
+                bus_gate
             } else {
-                let mut cfg = self.loop_config.clone();
-                cfg.model = selected_model.clone();
-                cfg.reasoning_effort = selected_effort;
-                cfg
+                Arc::new(crate::approval::RuleBasedApprovalGate::new(
+                    self.approval_rules.clone(),
+                    bus_gate,
+                ))
             };
+            loop_config.approval_gate = Some(gate);
+        }
         if let Some(stored) = &stored_session {
             let resolved_prompt = stored.config_overrides.system_prompt.clone().or_else(|| {
                 effective_config
@@ -1981,9 +2033,7 @@ impl AgentRunInner {
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
         }));
-        let mut background_loop = self.loop_config.clone();
-        background_loop.model = selected_model.clone();
-        background_loop.reasoning_effort = selected_effort;
+        let mut background_loop = loop_config.clone();
         background_loop.tool_context = tool_context;
         background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
         background_loop.tool_definitions = background_loop.tools.definitions();
@@ -2440,6 +2490,7 @@ pub struct AgentRunBuilder {
     session_store: Option<Arc<dyn SessionStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     available_models: Vec<ModelInfo>,
+    available_provider_models: Vec<ProviderModelInfo>,
     model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     prompt_profiles: HashMap<String, String>,
@@ -2481,6 +2532,7 @@ impl AgentRunBuilder {
             session_store: None,
             model_capabilities: None,
             available_models: Vec::new(),
+            available_provider_models: Vec::new(),
             model_lifecycles: HashMap::new(),
             model_pricing: HashMap::new(),
             prompt_profiles: HashMap::new(),
@@ -2529,6 +2581,14 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn available_models(mut self, models: Vec<ModelInfo>) -> Self {
         self.available_models = models;
+        self
+    }
+
+    /// Register exact provider-qualified models. The configured provider
+    /// adapter can route only entries belonging to its own provider.
+    #[must_use]
+    pub fn available_provider_models(mut self, models: Vec<ProviderModelInfo>) -> Self {
+        self.available_provider_models = models;
         self
     }
 
@@ -2616,9 +2676,14 @@ impl AgentRunBuilder {
         };
 
         let provider_backend = matches!(&self.backend, AgentRunModelBackend::Provider { .. });
-        let (mut model_info, runtime_provider) = match &self.backend {
+        let (mut model_info, primary_selection, primary_exact) = match &self.backend {
             AgentRunModelBackend::Legacy(_) => {
-                (self.spec.to_model_info(), "anthropic-compatible".into())
+                let shadow = self.spec.to_model_info();
+                let selection = sylvander_protocol::ModelSelection {
+                    provider_id: self.spec.model.provider.clone(),
+                    model_id: shadow.id.clone(),
+                };
+                (shadow, selection, None)
             }
             AgentRunModelBackend::Provider { model, .. } => {
                 if model.reference.provider != self.spec.model.provider
@@ -2630,7 +2695,11 @@ impl AgentRunBuilder {
                 }
                 (
                     crate::provider_compat::model_metadata_from_core(model),
-                    model.reference.provider.clone(),
+                    sylvander_protocol::ModelSelection {
+                        provider_id: model.reference.provider.clone(),
+                        model_id: model.reference.model.clone(),
+                    },
+                    Some(model.clone()),
                 )
             }
         };
@@ -2642,24 +2711,56 @@ impl AgentRunBuilder {
             }
             model_info.capabilities = caps;
         }
-        let mut available_models = self
-            .available_models
-            .into_iter()
-            .map(|model| (model.id.clone(), model))
-            .collect::<HashMap<_, _>>();
-        if provider_backend {
-            available_models.insert(model_info.id.clone(), model_info.clone());
-        } else {
-            available_models
-                .entry(model_info.id.clone())
-                .or_insert_with(|| model_info.clone());
+        if provider_backend && !self.available_models.is_empty() {
+            return Err(AgentRunError::Build(
+                "provider catalogs require exact provider model metadata".into(),
+            ));
         }
+        let mut catalog = Vec::new();
+        if provider_backend {
+            catalog.extend(self.available_provider_models.iter().map(|exact| {
+                (
+                    sylvander_protocol::ModelSelection {
+                        provider_id: exact.reference.provider.clone(),
+                        model_id: exact.reference.model.clone(),
+                    },
+                    crate::provider_compat::model_metadata_from_core(exact),
+                    Some(exact.clone()),
+                )
+            }));
+        } else {
+            catalog.extend(self.available_models.iter().cloned().map(|shadow| {
+                (
+                    sylvander_protocol::ModelSelection {
+                        provider_id: primary_selection.provider_id.clone(),
+                        model_id: shadow.id.clone(),
+                    },
+                    shadow,
+                    None,
+                )
+            }));
+        }
+        catalog.push((primary_selection.clone(), model_info.clone(), primary_exact));
+        let available_models = catalog
+            .into_iter()
+            .map(|(selection, shadow, exact)| {
+                let model = RuntimeModel {
+                    lifecycle: self
+                        .model_lifecycles
+                        .get(&selection.model_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    pricing: self.model_pricing.get(&selection.model_id).copied(),
+                    selection: selection.clone(),
+                    shadow,
+                    exact,
+                };
+                (selection, model)
+            })
+            .collect();
         let runtime_models = RuntimeModels {
             available: available_models,
-            provider_id: runtime_provider,
-            lifecycles: self.model_lifecycles,
-            pricing: self.model_pricing,
-            current_model: model_info.id.clone(),
+            current: primary_selection,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         };
         let runtime_permissions = sylvander_protocol::PermissionProfile {
@@ -2837,56 +2938,75 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_model_selection_fails_before_ui_and_request_identity_diverge() {
+    async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         let mut spec = AgentSpec::builder()
             .id("provider-agent")
             .name("Provider")
-            .model_name("model-a")
+            .model_name("shared")
             .build()
             .unwrap();
         spec.model.provider = "local".into();
         let provider = Arc::new(RecordingProvider::default());
         let provider_model = ProviderModelInfo {
-            reference: sylvander_llm_core::ModelRef::new("local", "model-a"),
+            reference: sylvander_llm_core::ModelRef::new("local", "shared"),
             context_window: 100_000,
             max_output_tokens: 4096,
             capabilities: sylvander_llm_core::ModelCapabilities::empty(),
         };
-        let alternate = ModelInfo::builder()
-            .id("model-b")
-            .context_window(100_000)
-            .max_output_tokens(4096)
-            .build()
-            .unwrap();
+        let alternate = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "model-b"),
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let foreign = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("remote", "shared"),
+            context_window: 300_000,
+            max_output_tokens: 16_384,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
         let run = AgentRun::provider_builder(spec, provider.clone(), provider_model)
             .bus(Arc::new(InProcessMessageBus::new()))
-            .available_models(vec![alternate.clone()])
+            .available_provider_models(vec![alternate, foreign])
             .build()
             .unwrap();
 
         let before = run.runtime_model_info().await;
-        assert_eq!(before.models[0].provider, "local");
+        assert_eq!(before.models.len(), 3);
         assert!(
-            run.select_model("model-b", sylvander_protocol::ReasoningEffort::Off)
+            run.select_model("shared", sylvander_protocol::ReasoningEffort::Off)
                 .await
                 .is_err()
+        );
+        assert!(
+            run.select_qualified_model(
+                sylvander_protocol::ModelSelection {
+                    provider_id: "remote".into(),
+                    model_id: "shared".into(),
+                },
+                sylvander_protocol::ReasoningEffort::Off,
+            )
+            .await
+            .is_err()
         );
         assert_eq!(
             run.runtime_model_info().await.current_model,
             before.current_model
         );
-        assert!(matches!(
-            run.inner.validate_selected_model("local", &alternate),
-            Err(AgentRunError::Configuration(_))
-        ));
-        assert!(matches!(
-            run.inner
-                .validate_selected_model("remote", run.inner.loop_config.model()),
-            Err(AgentRunError::Configuration(_))
-        ));
+        run.select_model("model-b", sylvander_protocol::ReasoningEffort::Off)
+            .await
+            .unwrap();
+        let selected = {
+            let runtime = run.inner.runtime_models.read().await;
+            runtime.available.get(&runtime.current).unwrap().clone()
+        };
+        let snapshot = run
+            .inner
+            .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
 
         crate::loop_::run(
-            &run.inner.loop_config,
+            &snapshot,
             vec![sylvander_llm_anthropic::api::types::MessageParam::user(
                 "hello",
             )],
@@ -2897,7 +3017,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(
             requests[0].model,
-            sylvander_llm_core::ModelRef::new("local", "model-a")
+            sylvander_llm_core::ModelRef::new("local", "model-b")
         );
     }
 

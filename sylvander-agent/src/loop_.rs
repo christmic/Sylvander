@@ -1365,26 +1365,38 @@ impl AgentLoop {
     /// Guard the temporary legacy runtime catalog until it carries qualified
     /// provider models. A provider-backed loop must never update only its
     /// metadata shadow and then send the request to a different backend model.
-    pub(crate) fn validate_runtime_model(
-        &self,
+    pub(crate) fn apply_runtime_model(
+        &mut self,
         provider_id: &str,
-        model: &ModelInfo,
+        shadow: &ModelInfo,
+        exact: Option<&ProviderModelInfo>,
     ) -> Result<(), AgentLoopError> {
-        let ModelBackend::Provider {
-            model: backend_model,
-            ..
-        } = &self.backend
-        else {
-            return Ok(());
-        };
-        if backend_model.reference.provider != provider_id
-            || backend_model.reference.model != model.id
-        {
-            return Err(AgentLoopError::IncompatibleModel(format!(
-                "provider-backed runtime is fixed to `{}/{}`; qualified model switching is not available",
-                backend_model.reference.provider, backend_model.reference.model
-            )));
+        match &mut self.backend {
+            ModelBackend::LegacyAnthropic { .. } => {
+                if exact.is_some() {
+                    return Err(AgentLoopError::IncompatibleModel(
+                        "provider metadata cannot be routed by a legacy backend".into(),
+                    ));
+                }
+            }
+            ModelBackend::Provider { model, .. } => {
+                let exact = exact.ok_or_else(|| {
+                    AgentLoopError::IncompatibleModel(
+                        "provider-backed model selection lacks exact metadata".into(),
+                    )
+                })?;
+                if model.reference.provider != provider_id
+                    || exact.reference.provider != provider_id
+                    || exact.reference.model != shadow.id
+                {
+                    return Err(AgentLoopError::IncompatibleModel(format!(
+                        "model provider `{provider_id}` is not routed by this Agent"
+                    )));
+                }
+                *model = exact.clone();
+            }
         }
+        self.model = shadow.clone();
         Ok(())
     }
 
