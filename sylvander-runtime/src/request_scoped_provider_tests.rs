@@ -78,6 +78,7 @@ enum MockResult {
 
 struct MockSource {
     calls: AtomicUsize,
+    bindings: Mutex<Vec<String>>,
     results: Mutex<VecDeque<MockResult>>,
 }
 
@@ -85,15 +86,17 @@ impl MockSource {
     fn new(results: impl IntoIterator<Item = MockResult>) -> Self {
         Self {
             calls: AtomicUsize::new(0),
+            bindings: Mutex::new(Vec::new()),
             results: Mutex::new(results.into_iter().collect()),
         }
     }
 }
 
 impl ActiveCredentialSource for MockSource {
-    fn resolve_active<'a>(&'a self, _binding_id: &'a str) -> CredentialLeaseFuture<'a> {
+    fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.bindings.lock().unwrap().push(binding_id.into());
             match self.results.lock().unwrap().pop_front().unwrap() {
                 MockResult::Lease(lease) => Ok(Box::new(lease) as Box<dyn ActiveCredentialLease>),
                 MockResult::Error(error) => Err(error),
@@ -121,6 +124,25 @@ fn provider(
         "provider:anthropic:api_key",
         credentials,
     )
+}
+
+fn stored_provider(
+    revision: u64,
+    kind: &str,
+    base_url: String,
+) -> StoredRevision<ProviderDefinition> {
+    StoredRevision {
+        definition: ProviderDefinition {
+            id: "anthropic".into(),
+            revision,
+            kind: kind.into(),
+            base_url,
+            credential_binding_id: "provider:anthropic:api_key".into(),
+        },
+        digest: format!("digest-{revision}"),
+        created_at: 1,
+        active: true,
+    }
 }
 
 #[tokio::test]
@@ -255,6 +277,7 @@ async fn provider_mismatch_does_not_resolve_a_credential() {
 fn boundaries_are_object_safe_and_debug_is_redacted() {
     fn accepts_source(_: Arc<dyn ActiveCredentialSource>) {}
     fn accepts_provider(_: Arc<dyn ModelProvider>) {}
+    fn accepts_factory(_: Arc<dyn ProviderAdapterFactory>) {}
 
     let source: Arc<dyn ActiveCredentialSource> = Arc::new(MockSource::new([]));
     accepts_source(source.clone());
@@ -269,4 +292,66 @@ fn boundaries_are_object_safe_and_debug_is_redacted() {
     assert!(!debug.contains("password"));
     assert!(!debug.contains("secret-binding-name"));
     accepts_provider(provider);
+    assert_eq!(
+        format!("{AnthropicProviderFactory:?}"),
+        "AnthropicProviderFactory"
+    );
+    accepts_factory(Arc::new(AnthropicProviderFactory));
+}
+
+#[tokio::test]
+async fn factory_preserves_pinned_identity_binding_and_base_url() {
+    let pinned_server = MockServer::start().await;
+    let newer_server = MockServer::start().await;
+    expect_key(&pinned_server, "pinned-key", 1).await;
+    let drops = Arc::new(AtomicUsize::new(0));
+    let source = Arc::new(MockSource::new([lease(9, "pinned-key", &drops)]));
+    let factory: Arc<dyn ProviderAdapterFactory> = Arc::new(AnthropicProviderFactory);
+    let provider = factory
+        .create(
+            stored_provider(7, "anthropic_compatible", pinned_server.uri()),
+            source.clone(),
+        )
+        .unwrap();
+
+    // A later revision exists, but this already-created adapter remains pinned.
+    let _newer_revision = stored_provider(8, "anthropic_compatible", newer_server.uri());
+    let _stream = provider
+        .complete_stream(request("anthropic"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        source.bindings.lock().unwrap().as_slice(),
+        ["provider:anthropic:api_key"]
+    );
+    assert!(newer_server.received_requests().await.unwrap().is_empty());
+    pinned_server.verify().await;
+}
+
+#[test]
+fn factory_rejects_wrong_kind_and_invalid_definition_without_details() {
+    let factory = AnthropicProviderFactory;
+    let source: Arc<dyn ActiveCredentialSource> = Arc::new(MockSource::new([]));
+    let unsupported = factory
+        .create(
+            stored_provider(1, "secret-provider-kind", "https://example.invalid".into()),
+            source.clone(),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(unsupported, ProviderFactoryError::UnsupportedKind);
+    assert_eq!(unsupported.to_string(), "provider kind is unsupported");
+    assert!(!format!("{unsupported:?}").contains("secret-provider-kind"));
+
+    let invalid = factory
+        .create(
+            stored_provider(2, "anthropic_compatible", "not a url".into()),
+            source,
+        )
+        .err()
+        .unwrap();
+    assert_eq!(invalid, ProviderFactoryError::InvalidDefinition);
+    assert_eq!(invalid.to_string(), "provider definition is invalid");
+    assert!(!format!("{invalid:?}").contains("not a url"));
 }
