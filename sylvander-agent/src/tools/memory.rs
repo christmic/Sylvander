@@ -20,6 +20,13 @@ use serde::{Deserialize, Serialize};
 use sylvander_protocol::SessionContext;
 use sylvander_protocol::types::{AgentId, SessionId, UserId};
 
+pub const MAX_MEMORY_CONTENT_BYTES: usize = 16 * 1024;
+pub const MAX_MEMORY_QUERY_BYTES: usize = 4 * 1024;
+pub const MAX_MEMORY_TAGS: usize = 32;
+pub const MAX_MEMORY_TAG_BYTES: usize = 64;
+pub const MAX_MEMORY_REFERENCES: usize = 32;
+pub const MAX_MEMORY_RESULTS: usize = 50;
+
 /// Stable ownership domain for a memory record. Session state and user
 /// profiles are intentionally stored by their own services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -354,6 +361,9 @@ pub struct MemoryFilter {
 /// Errors from memory store operations.
 #[derive(Debug, thiserror::Error)]
 pub enum MemoryStoreError {
+    /// Input is malformed or exceeds a public boundary.
+    #[error("memory input is invalid")]
+    InvalidInput,
     /// A store operation failed.
     #[error("store error: {0}")]
     Store(String),
@@ -398,6 +408,13 @@ impl MemoryStore for InMemoryMemoryStore {
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        if query.len() > MAX_MEMORY_QUERY_BYTES
+            || filter
+                .limit
+                .is_some_and(|limit| limit == 0 || limit > MAX_MEMORY_RESULTS)
+        {
+            return Err(MemoryStoreError::InvalidInput);
+        }
         let query_lower = query.to_lowercase();
         let entries = self.entries.read().await;
         let mut results: Vec<MemoryEntry> = entries
@@ -419,6 +436,7 @@ impl MemoryStore for InMemoryMemoryStore {
         ctx: &SessionContext,
         entry: MemoryEntry,
     ) -> Result<(), MemoryStoreError> {
+        validate_entry(&entry)?;
         if !same_owner(&entry.owner, ctx) {
             return Err(MemoryStoreError::AccessDenied(
                 "memory owner does not match the runtime context".into(),
@@ -463,6 +481,23 @@ impl MemoryStore for InMemoryMemoryStore {
             .find(|entry| entry.id == id && same_owner(&entry.owner, ctx))
             .cloned())
     }
+}
+
+fn validate_entry(entry: &MemoryEntry) -> Result<(), MemoryStoreError> {
+    if entry.id.is_empty()
+        || entry.id.len() > 128
+        || entry.content.is_empty()
+        || entry.content.len() > MAX_MEMORY_CONTENT_BYTES
+        || entry.tags.len() > MAX_MEMORY_TAGS
+        || entry.references.len() > MAX_MEMORY_REFERENCES
+        || entry
+            .tags
+            .iter()
+            .any(|tag| tag.is_empty() || tag.len() > MAX_MEMORY_TAG_BYTES)
+    {
+        return Err(MemoryStoreError::InvalidInput);
+    }
+    Ok(())
 }
 
 /// Two memories "belong to" the same identity if user + agent
@@ -724,6 +759,44 @@ mod tests {
                 .content,
             "alice a2"
         );
+    }
+
+    #[tokio::test]
+    async fn public_memory_bounds_fail_closed() {
+        let store = InMemoryMemoryStore::new();
+        let ctx = alice_session();
+        let oversized = MemoryEntry::new(
+            "oversized",
+            "x".repeat(MAX_MEMORY_CONTENT_BYTES + 1),
+            ctx.clone(),
+        );
+        assert!(matches!(
+            store.store(&ctx, oversized).await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
+        assert!(matches!(
+            store
+                .search(
+                    &ctx,
+                    &"q".repeat(MAX_MEMORY_QUERY_BYTES + 1),
+                    MemoryFilter::default()
+                )
+                .await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
+        assert!(matches!(
+            store
+                .search(
+                    &ctx,
+                    "",
+                    MemoryFilter {
+                        limit: Some(MAX_MEMORY_RESULTS + 1),
+                        ..MemoryFilter::default()
+                    }
+                )
+                .await,
+            Err(MemoryStoreError::InvalidInput)
+        ));
     }
 
     #[tokio::test]
