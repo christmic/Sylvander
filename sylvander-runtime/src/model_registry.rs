@@ -160,9 +160,9 @@ impl AgentRegistry {
                 });
             }
             if let Some(existing) =
-                definition_digest(&transaction, &provider_id, &model_id, revision)?
+                verified_model_revision(&transaction, &provider_id, &model_id, revision)?
             {
-                return if existing == digest {
+                return if existing.digest == digest {
                     transaction.commit().map_err(storage)
                 } else {
                     Err(ModelRegistryError::RevisionCollision {
@@ -196,7 +196,7 @@ impl AgentRegistry {
         key: (&str, &str),
         revision: u64,
         expected_active: u64,
-    ) -> Result<(), ModelRegistryError> {
+    ) -> Result<StoredRevision<ModelDefinition>, ModelRegistryError> {
         set_head(self, key, revision, expected_active, false).await
     }
 
@@ -205,7 +205,7 @@ impl AgentRegistry {
         key: (&str, &str),
         target_revision: u64,
         expected_active: u64,
-    ) -> Result<(), ModelRegistryError> {
+    ) -> Result<StoredRevision<ModelDefinition>, ModelRegistryError> {
         set_head(self, key, target_revision, expected_active, true).await
     }
 
@@ -384,7 +384,12 @@ fn decode_page_revision(
             AgentRegistryError::Integrity("stored Model identity is invalid".into()).into(),
         );
     }
-    let (_, expected_digest) = canonical_definition(&definition)?;
+    let (expected_json, expected_digest) = canonical_definition(&definition)?;
+    if definition_json != expected_json {
+        return Err(
+            AgentRegistryError::Integrity("Model definition JSON is not canonical".into()).into(),
+        );
+    }
     if stored_digest != expected_digest {
         return Err(
             AgentRegistryError::Integrity("Model definition digest mismatch".into()).into(),
@@ -404,7 +409,7 @@ async fn set_head(
     target: u64,
     expected: u64,
     rollback: bool,
-) -> Result<(), ModelRegistryError> {
+) -> Result<StoredRevision<ModelDefinition>, ModelRegistryError> {
     let provider_id = key.0.to_owned();
     let model_id = key.1.to_owned();
     registry
@@ -426,12 +431,12 @@ async fn set_head(
             if rollback && target >= actual {
                 return Err(ModelRegistryError::InvalidRollback { target, actual });
             }
-            if definition_digest(&transaction, &provider_id, &model_id, target)?.is_none() {
-                return Err(ModelRegistryError::UnknownRevision {
-                    identity: identity(&provider_id, &model_id),
-                    revision: target,
-                });
-            }
+            let target_revision =
+                verified_model_revision(&transaction, &provider_id, &model_id, target)?
+                    .ok_or_else(|| ModelRegistryError::UnknownRevision {
+                        identity: identity(&provider_id, &model_id),
+                        revision: target,
+                    })?;
             let changed = transaction
                 .execute(
                     "UPDATE model_registry_heads SET active_revision=?3,updated_at=unixepoch() \
@@ -452,7 +457,8 @@ async fn set_head(
                     actual,
                 });
             }
-            transaction.commit().map_err(storage)
+            transaction.commit().map_err(storage)?;
+            Ok(target_revision)
         })
         .await
 }
@@ -577,6 +583,53 @@ fn definition_digest(
         )
         .optional()
         .map_err(storage)
+}
+
+fn verified_model_revision(
+    connection: &Connection,
+    provider_id: &str,
+    model_id: &str,
+    revision: u64,
+) -> Result<Option<StoredRevision<ModelDefinition>>, ModelRegistryError> {
+    let row = connection
+        .query_row(
+            "SELECT provider_id,model_id,revision,definition_json,digest,created_at \
+             FROM model_definitions \
+             WHERE provider_id=?1 AND model_id=?2 AND revision=?3",
+            params![provider_id, model_id, sql_index(revision)?],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage)?;
+    row.map(
+        |(stored_provider, stored_model, stored_revision, definition_json, digest, created_at)| {
+            if stored_provider != provider_id || stored_model != model_id {
+                return Err(AgentRegistryError::Integrity(
+                    "stored Model row identity is invalid".into(),
+                )
+                .into());
+            }
+            decode_page_revision(
+                provider_id,
+                model_id,
+                stored_revision,
+                definition_json,
+                digest,
+                created_at,
+                revision,
+            )
+        },
+    )
+    .transpose()
 }
 
 fn validate(definition: &ModelDefinition) -> Result<(), ModelRegistryError> {
