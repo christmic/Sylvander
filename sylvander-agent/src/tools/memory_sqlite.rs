@@ -16,6 +16,9 @@ use super::memory::{
     validate_patch, validate_revision,
 };
 
+mod backup;
+pub use backup::{MemoryBackupArtifact, MemoryBackupManifest, SqliteMemoryAdmin};
+
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 3;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
@@ -195,6 +198,13 @@ impl SqliteMemoryStore {
 impl SqliteMemoryMaintenance {
     pub fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
         self.purge_at(crate::session::now_secs())
+    }
+
+    pub fn backup_to_data_dir(
+        &self,
+        data_dir: impl AsRef<Path>,
+    ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
+        backup::create_backup(&self.store, data_dir.as_ref())
     }
 
     fn purge_at(&self, now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
