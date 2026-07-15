@@ -33,4 +33,20 @@ struct SylvanderSession: Codable, Hashable, Identifiable, Sendable {
         case away = "AWAY"
     }
 }
+
+struct SylvanderAgent: Decodable, Hashable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let agentWorkspace: Workspace?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case agentWorkspace = "agent_workspace"
+    }
+
+    struct Workspace: Decodable, Hashable, Sendable {
+        let path: String
+    }
+}
 #endif
