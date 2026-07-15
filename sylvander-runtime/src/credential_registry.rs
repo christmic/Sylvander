@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
+use crate::config::{SecretResolver, SecretValue};
 use crate::registry_domain::{
     CredentialBindingRevision, CredentialBindingView, StoredRevision, canonical_secret_reference,
 };
@@ -31,8 +32,43 @@ pub(crate) enum CredentialRegistryError {
     GenerationCollision { binding_id: String, generation: u64 },
     #[error("credential rollback target {target} is not older than active generation {actual}")]
     InvalidRollback { target: u64, actual: u64 },
+    #[error("credential `{binding_id}` generation {generation} could not be resolved")]
+    Resolution { binding_id: String, generation: u64 },
     #[error(transparent)]
     Registry(#[from] AgentRegistryError),
+}
+
+/// Request-scoped secret material. It is deliberately neither cloneable nor
+/// serializable, and its formatting never exposes metadata or bytes.
+pub(crate) struct ResolvedCredential {
+    generation: u64,
+    value: SecretValue,
+}
+
+impl ResolvedCredential {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn value(&self) -> &SecretValue {
+        &self.value
+    }
+}
+
+impl std::fmt::Debug for ResolvedCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ResolvedCredential([REDACTED])")
+    }
+}
+
+pub(crate) trait CredentialSecretResolver: Send + Sync {
+    fn resolve_credential(&self, reference: &crate::config::SecretRef) -> Result<SecretValue, ()>;
+}
+
+impl<T: SecretResolver + ?Sized> CredentialSecretResolver for T {
+    fn resolve_credential(&self, reference: &crate::config::SecretRef) -> Result<SecretValue, ()> {
+        self.resolve(reference).map_err(|_| ())
+    }
 }
 
 impl AgentRegistry {
@@ -151,6 +187,27 @@ impl AgentRegistry {
                 .map_err(Into::into),
             None => Ok(None),
         }
+    }
+
+    /// Resolve the active reference for one request. No result or failure is
+    /// cached, and resolver details are intentionally erased from the error.
+    pub(crate) async fn resolve_active_credential<R: CredentialSecretResolver + ?Sized>(
+        &self,
+        binding_id: &str,
+        resolver: &R,
+    ) -> Result<ResolvedCredential, CredentialRegistryError> {
+        let stored = self
+            .load_active_credential(binding_id)
+            .await?
+            .ok_or_else(|| CredentialRegistryError::UnknownBinding(binding_id.into()))?;
+        let generation = stored.definition.generation;
+        let value = resolver
+            .resolve_credential(&stored.definition.reference)
+            .map_err(|()| CredentialRegistryError::Resolution {
+                binding_id: binding_id.into(),
+                generation,
+            })?;
+        Ok(ResolvedCredential { generation, value })
     }
 
     pub(crate) async fn inspect_credentials(

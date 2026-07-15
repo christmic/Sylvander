@@ -1,10 +1,11 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::config::SecretRef;
-use crate::credential_registry::CredentialRegistryError;
+use crate::config::{SecretRef, SecretResolver, SecretValue, SystemSecretResolver};
+use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolver};
 use crate::registry_domain::CredentialBindingRevision;
 
 fn credential(generation: u64, name: &str) -> CredentialBindingRevision {
@@ -12,6 +13,30 @@ fn credential(generation: u64, name: &str) -> CredentialBindingRevision {
         binding_id: "credential/main".into(),
         generation,
         reference: SecretRef::Env { name: name.into() },
+    }
+}
+
+fn file_credential(generation: u64, path: PathBuf) -> CredentialBindingRevision {
+    CredentialBindingRevision {
+        binding_id: "credential/live".into(),
+        generation,
+        reference: SecretRef::File { path },
+    }
+}
+
+#[derive(Default)]
+struct MockResolver {
+    calls: AtomicUsize,
+    fail: AtomicBool,
+}
+
+impl CredentialSecretResolver for MockResolver {
+    fn resolve_credential(&self, reference: &SecretRef) -> Result<SecretValue, ()> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(());
+        }
+        SystemSecretResolver.resolve(reference).map_err(|_| ())
     }
 }
 
@@ -225,4 +250,77 @@ async fn database_and_inspection_never_contain_resolved_values_or_file_paths() {
         .await
         .unwrap();
     assert_eq!(occurrences, 0);
+}
+
+#[tokio::test]
+async fn request_scoped_resolution_reloads_rotates_and_fails_closed() {
+    let directory = tempdir().unwrap();
+    let first_path = directory.path().join("first.secret");
+    let second_path = directory.path().join("second.secret");
+    std::fs::write(&first_path, "first-value\n").unwrap();
+    std::fs::write(&second_path, "second-value\n").unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    registry
+        .seed_credential(file_credential(1, first_path.clone()))
+        .await
+        .unwrap();
+    let resolver = MockResolver::default();
+
+    let first = registry
+        .resolve_active_credential("credential/live", &resolver)
+        .await
+        .unwrap();
+    assert_eq!(first.generation(), 1);
+    assert_eq!(first.value().as_str().unwrap(), "first-value");
+    assert_eq!(format!("{first:?}"), "ResolvedCredential([REDACTED])");
+    std::fs::write(&first_path, "first-value-updated\n").unwrap();
+    let refreshed = registry
+        .resolve_active_credential("credential/live", &resolver)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.value().as_str().unwrap(), "first-value-updated");
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
+
+    registry
+        .stage_credential(1, file_credential(2, second_path))
+        .await
+        .unwrap();
+    registry
+        .activate_credential("credential/live", 2, 1)
+        .await
+        .unwrap();
+    let rotated = registry
+        .resolve_active_credential("credential/live", &resolver)
+        .await
+        .unwrap();
+    assert_eq!(rotated.generation(), 2);
+    assert_eq!(rotated.value().as_str().unwrap(), "second-value");
+
+    resolver.fail.store(true, Ordering::SeqCst);
+    let error = registry
+        .resolve_active_credential("credential/live", &resolver)
+        .await
+        .unwrap_err();
+    let displayed = error.to_string();
+    assert!(matches!(
+        error,
+        CredentialRegistryError::Resolution { generation: 2, .. }
+    ));
+    assert_eq!(
+        displayed,
+        "credential `credential/live` generation 2 could not be resolved"
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        registry
+            .load_active_credential("credential/live")
+            .await
+            .unwrap()
+            .unwrap()
+            .definition
+            .generation,
+        2
+    );
 }
