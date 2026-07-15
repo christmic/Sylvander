@@ -108,11 +108,27 @@ pub enum MemoryActorKind {
     SystemService,
 }
 
-/// Identity snapshot derived by the trusted runtime call path for one memory
-/// operation. Rust callers can construct a Worker from a [`SessionContext`];
-/// the security boundary is that remote model input never supplies this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryAuthority {
+    Untrusted,
+    ApplicationIssued,
+}
+
+/// Identity snapshot derived by the Agent application for one memory
+/// operation. Ordinary Rust callers can hold and forward this opaque value,
+/// but cannot mint authority from a caller-created [`SessionContext`].
+///
+/// Ordinary callers cannot issue application memory authority:
+///
+/// ```compile_fail
+/// use sylvander_agent::tools::MemoryExecutionContext;
+/// use sylvander_protocol::SessionContext;
+/// let session = SessionContext::new("forged-user", "agent", "session");
+/// let _ = MemoryExecutionContext::application_worker(&session);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryExecutionContext {
+    authority: MemoryAuthority,
     actor: MemoryActorKind,
     user_id: Option<UserId>,
     agent_id: Option<AgentId>,
@@ -122,9 +138,29 @@ pub struct MemoryExecutionContext {
 }
 
 impl MemoryExecutionContext {
+    /// Create an application-issued Worker context.
+    ///
+    /// This constructor is crate-private so ordinary tools and plugins cannot
+    /// turn a caller-created [`SessionContext`] into trusted provenance.
     #[must_use]
-    pub fn worker(session: &SessionContext) -> Self {
+    pub(crate) fn application_worker(session: &SessionContext) -> Self {
         Self {
+            authority: MemoryAuthority::ApplicationIssued,
+            actor: MemoryActorKind::Worker,
+            user_id: Some(session.identity.user_id.clone()),
+            agent_id: Some(session.identity.agent_id.clone()),
+            session_id: Some(session.identity.session_id.clone()),
+            authorized_workspace_ids: Vec::new(),
+            // Trace identifiers cross a persistence boundary below this type.
+            // Keep correlation without retaining caller-controlled text.
+            trace_id: session.request.trace_id.as_deref().map(memory_trace_digest),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn untrusted(session: &SessionContext) -> Self {
+        Self {
+            authority: MemoryAuthority::Untrusted,
             actor: MemoryActorKind::Worker,
             user_id: Some(session.identity.user_id.clone()),
             agent_id: Some(session.identity.agent_id.clone()),
@@ -138,7 +174,9 @@ impl MemoryExecutionContext {
     }
 
     pub fn relationship_owner(&self) -> Result<MemoryOwner, MemoryStoreError> {
-        if self.actor != MemoryActorKind::Worker {
+        if self.authority != MemoryAuthority::ApplicationIssued
+            || self.actor != MemoryActorKind::Worker
+        {
             return Err(MemoryStoreError::AccessDenied);
         }
         let (Some(user_id), Some(agent_id), Some(session_id)) =
@@ -186,6 +224,7 @@ impl MemoryExecutionContext {
     }
 
     pub(super) fn provenance(&self) -> MemoryProvenance {
+        debug_assert_eq!(self.authority, MemoryAuthority::ApplicationIssued);
         MemoryProvenance {
             actor: self.actor,
             user_id: self.user_id.clone(),
@@ -200,6 +239,7 @@ impl MemoryExecutionContext {
     #[cfg(test)]
     pub(super) fn privileged_for_test(actor: MemoryActorKind) -> Self {
         Self {
+            authority: MemoryAuthority::ApplicationIssued,
             actor,
             user_id: Some(UserId::new("alice")),
             agent_id: Some(AgentId::new("agent-a")),
@@ -1012,11 +1052,12 @@ mod tests {
     }
 
     fn worker(session: &SessionContext) -> MemoryExecutionContext {
-        MemoryExecutionContext::worker(session)
+        MemoryExecutionContext::application_worker(session)
     }
 
     fn privileged(actor: MemoryActorKind) -> MemoryExecutionContext {
         MemoryExecutionContext {
+            authority: MemoryAuthority::ApplicationIssued,
             actor,
             user_id: Some(UserId::new("alice")),
             agent_id: Some(AgentId::new("a1")),
@@ -1183,6 +1224,7 @@ mod tests {
     async fn incomplete_worker_context_fails_closed() {
         let store = InMemoryMemoryStore::new();
         let ctx = MemoryExecutionContext {
+            authority: MemoryAuthority::ApplicationIssued,
             actor: MemoryActorKind::Worker,
             user_id: Some(UserId::new("alice")),
             agent_id: Some(AgentId::new("a1")),
@@ -1366,10 +1408,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_context_hashes_untrusted_trace_identifiers() {
+    fn application_context_hashes_untrusted_trace_identifiers() {
         let raw_trace = format!("private\n\0{}", "x".repeat(128 * 1024));
         let session = session("alice", "a1", "s1").with_trace_id(&raw_trace);
-        let worker = MemoryExecutionContext::worker(&session);
+        let worker = MemoryExecutionContext::application_worker(&session);
         assert_eq!(worker.actor(), MemoryActorKind::Worker);
         assert_eq!(worker.user_id(), Some(&UserId::new("alice")));
         assert_eq!(worker.agent_id(), Some(&AgentId::new("a1")));

@@ -7,7 +7,7 @@ use sylvander_protocol::SessionContext;
 const SENTINEL: &str = "SECRET-injected-SQL-relationship_memories";
 
 fn worker() -> MemoryExecutionContext {
-    MemoryExecutionContext::worker(&SessionContext::new("alice", "agent-a", "session"))
+    MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
 }
 
 fn fresh_database() -> tempfile::NamedTempFile {

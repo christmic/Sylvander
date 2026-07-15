@@ -65,11 +65,27 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// Convenience constructor: minimal session + default budget +
-    /// default surface (no capabilities granted).
+    /// Construct an ordinary caller-owned tool context.
+    ///
+    /// This context has no relationship-memory authority even when the caller
+    /// later adds surface capabilities. Agent application code uses the
+    /// crate-private constructor below after resolving a real session.
     #[must_use]
     pub fn new(session: SessionContext) -> Self {
-        let memory_context = crate::tools::memory::MemoryExecutionContext::worker(&session);
+        let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&session);
+        Self {
+            session: Arc::new(session),
+            budget: ExecutionBudget::default(),
+            surface: SurfaceView::default(),
+            workspace_journal: None,
+            memory_context,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn application(session: SessionContext) -> Self {
+        let memory_context =
+            crate::tools::memory::MemoryExecutionContext::application_worker(&session);
         Self {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
@@ -312,6 +328,22 @@ mod tests {
         assert_eq!(ctx.session_id().0, "sess-1");
         assert!(ctx.surface.fs_root.is_none());
         assert!(ctx.surface.capabilities.is_empty());
+        assert!(matches!(
+            ctx.memory_context().relationship_owner(),
+            Err(crate::tools::memory::MemoryStoreError::AccessDenied)
+        ));
+    }
+
+    #[test]
+    fn application_context_issues_memory_authority() {
+        let ctx = ToolContext::application(session());
+        assert_eq!(
+            ctx.memory_context().relationship_owner().unwrap(),
+            crate::tools::memory::MemoryOwner::Relationship {
+                user_id: UserId::new("alice"),
+                agent_id: AgentId::new("code-assistant"),
+            }
+        );
     }
 
     #[test]

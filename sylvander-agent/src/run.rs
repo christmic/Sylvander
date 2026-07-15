@@ -56,7 +56,7 @@ use crate::tool::{Tool, ToolRegistry};
 use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
 use crate::tools::memory::{
-    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryStore, MemoryStoreError,
+    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
 
 // ---------------------------------------------------------------------------
@@ -111,9 +111,6 @@ pub(crate) struct AgentRunInner {
     /// One cancellation sender per session that currently owns its execution
     /// lock. Queued turns do not replace the active sender.
     active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
-    /// Tool invocation context (session identity + budget + surface).
-    /// Used by system-driven ops like `remember` to attribute writes.
-    tool_context: ToolContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,14 +438,6 @@ impl AgentRun {
     #[must_use]
     pub fn id(&self) -> &AgentId {
         &self.inner.id
-    }
-
-    /// Return the current tool invocation context (session identity,
-    /// budget, surface). Used by system-driven operations like
-    /// `remember` to attribute memory writes to the right identity.
-    #[must_use]
-    pub fn tool_context(&self) -> &ToolContext {
-        &self.inner.tool_context
     }
 
     pub async fn runtime_model_info(&self) -> sylvander_protocol::RuntimeModelInfo {
@@ -1089,22 +1078,66 @@ impl AgentRun {
         }
     }
 
-    /// System-driven memory write (NOT a tool).
+    async fn memory_context_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<MemoryExecutionContext, MemoryStoreError> {
+        let sessions = self.inner.sessions.read().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or(MemoryStoreError::AccessDenied)?;
+        let caller = sylvander_protocol::SessionContext::new(
+            session.metadata.user_id.clone(),
+            self.inner.id.clone(),
+            session_id.clone(),
+        );
+        Ok(MemoryExecutionContext::application_worker(&caller))
+    }
+
+    /// System-driven memory write (NOT a tool). Ownership is derived from a
+    /// session already attached to this Agent application.
     pub async fn remember(
         &self,
-        ctx: &MemoryExecutionContext,
+        session_id: &SessionId,
         content: impl Into<String>,
         tags: &[&str],
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let append = tags.iter().fold(MemoryAppend::new(content), |append, tag| {
+            append.with_tag(*tag)
+        });
+        self.remember_entry(session_id, append).await
+    }
+
+    /// Persist a structured application-derived memory for an attached
+    /// session. Caller-controlled identity is deliberately absent.
+    pub async fn remember_entry(
+        &self,
+        session_id: &SessionId,
+        append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let store = self
             .inner
             .memory
             .as_ref()
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
-        let append = tags.iter().fold(MemoryAppend::new(content), |append, tag| {
-            append.with_tag(*tag)
-        });
-        store.append_relationship(ctx, append).await
+        let context = self.memory_context_for_session(session_id).await?;
+        store.append_relationship(&context, append).await
+    }
+
+    /// System-driven memory lookup derived from an attached session.
+    pub async fn recall(
+        &self,
+        session_id: &SessionId,
+        query: &str,
+        filter: MemoryFilter,
+    ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        let store = self
+            .inner
+            .memory
+            .as_ref()
+            .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
+        let context = self.memory_context_for_session(session_id).await?;
+        store.search_relationship(&context, query, filter).await
     }
 }
 
@@ -2525,7 +2558,7 @@ fn tool_context_for_permissions(
     if let Some(turn_id) = turn_id {
         session = session.with_trace_id(turn_id);
     }
-    let mut context = ToolContext::new(session).with_fs_root(metadata.workspace.clone());
+    let mut context = ToolContext::application(session).with_fs_root(metadata.workspace.clone());
     if let Some(journal) = workspace_journal {
         context = context.with_workspace_journal(journal);
     }
@@ -2933,10 +2966,6 @@ impl AgentRunBuilder {
             .build()
             .map_err(|e| AgentRunError::Build(format!("loop build failed: {e}")))?;
 
-        // Clone the session for the run-level tool context before
-        // moving `loop_config` into `AgentRunInner`.
-        let run_tool_context = ToolContext::new(loop_config.tool_context.session.as_ref().clone());
-
         let workspace_journal = self
             .workspace_journal_path
             .map(|path| Arc::new(crate::workspace_journal::WorkspaceJournal::new(path)));
@@ -2964,7 +2993,6 @@ impl AgentRunBuilder {
                 background_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
-                tool_context: run_tool_context,
             }),
         })
     }
@@ -4330,19 +4358,16 @@ mod tests {
         let store = Arc::new(InMemoryMemoryStore::new());
         let run = AgentRun::builder(spec, client)
             .bus(bus)
-            .memory(store.clone())
+            .memory(store)
             .build()
             .expect("build");
-        run.remember(
-            run.tool_context().memory_context(),
-            "User prefers dark mode",
-            &["preference"],
-        )
-        .await
-        .expect("remember");
-        let results = store
-            .search_relationship(
-                run.tool_context().memory_context(),
+        let session_id = run.join_session(test_metadata()).await;
+        run.remember(&session_id, "User prefers dark mode", &["preference"])
+            .await
+            .expect("remember");
+        let results = run
+            .recall(
+                &session_id,
                 "dark mode",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -4352,34 +4377,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remember_uses_explicit_runtime_identity_not_builder_identity() {
+    async fn remember_derives_identity_from_attached_session() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
         let store = Arc::new(InMemoryMemoryStore::new());
         let run = AgentRun::builder(spec, client)
             .bus(bus)
-            .memory(store.clone())
+            .memory(store)
             .build()
             .expect("build");
-        let caller_session = sylvander_protocol::SessionContext::new(
-            "actual-user",
-            run.id().clone(),
-            "actual-session",
-        );
-        let caller = MemoryExecutionContext::worker(&caller_session);
-        let entry = run.remember(&caller, "caller-owned", &[]).await.unwrap();
+        let session_id = run
+            .join_session(SessionMetadata {
+                user_id: "actual-user".into(),
+                ..test_metadata()
+            })
+            .await;
+        let entry = run
+            .remember(&session_id, "caller-owned", &[])
+            .await
+            .unwrap();
 
-        assert_eq!(entry.owner, caller.relationship_owner().unwrap());
-        assert!(
-            store
-                .search_relationship(
-                    run.tool_context().memory_context(),
-                    "caller-owned",
-                    crate::tools::memory::MemoryFilter::default(),
-                )
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            entry.owner,
+            crate::tools::memory::MemoryOwner::Relationship {
+                user_id: sylvander_protocol::types::UserId::new("actual-user"),
+                agent_id: run.id().clone(),
+            }
+        );
+        assert_eq!(
+            run.recall(
+                &session_id,
+                "caller-owned",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
         );
     }
 
@@ -4391,8 +4425,9 @@ mod tests {
             .bus(bus)
             .build()
             .expect("build");
+        let session_id = run.join_session(test_metadata()).await;
         let err = run
-            .remember(run.tool_context().memory_context(), "something", &[])
+            .remember(&session_id, "something", &[])
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no memory store"));
