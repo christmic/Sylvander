@@ -2,16 +2,19 @@
 
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{
-    AuthenticatedPrincipal, ModelRevisionView, ProviderRevisionView, RedactedModelDefinition,
-    RedactedProviderDefinition, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
-    RegistryAdminResponse, RegistryAdminResult,
+    AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind, ModelRevisionView,
+    ProviderRevisionView, RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
+    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RegistryAdminResult,
 };
 
 use crate::agent_admin::is_agent_administrator;
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
+use crate::credential_registry::CredentialRegistryError;
 use crate::model_registry::ModelRegistryError;
 use crate::provider_registry::ProviderRegistryError;
-use crate::registry_domain::{ModelDefinition, ProviderDefinition, StoredRevision};
+use crate::registry_domain::{
+    CredentialBindingView, ModelDefinition, ProviderDefinition, SecretReferenceKind, StoredRevision,
+};
 
 pub(crate) struct RegistryAdminService<'a> {
     registry: &'a AgentRegistry,
@@ -63,6 +66,18 @@ impl<'a> RegistryAdminService<'a> {
                 self.list_models(provider_id, model_id, before_revision, limit)
                     .await
             }
+            RegistryAdminRequest::InspectCredentialGeneration {
+                binding_id,
+                generation,
+            } => self.inspect_credential(binding_id, generation).await,
+            RegistryAdminRequest::ListCredentialGenerations {
+                binding_id,
+                before_generation,
+                limit,
+            } => {
+                self.list_credentials(binding_id, before_generation, limit)
+                    .await
+            }
         }
     }
 
@@ -91,44 +106,21 @@ impl<'a> RegistryAdminService<'a> {
         before: Option<u64>,
         limit: u16,
     ) -> RegistryAdminResponse {
-        match self.registry.inspect_provider(&provider_id).await {
-            Ok(stored) if stored.is_empty() => failure(error(
-                RegistryAdminErrorCode::UnknownProvider,
-                "provider is unknown",
-                Some(provider_id),
-                None,
-            )),
-            Ok(stored) => {
-                let Some(active_revision) = stored
+        match self
+            .registry
+            .inspect_provider_page(&provider_id, before, limit)
+            .await
+        {
+            Ok(page) => success(RegistryAdminResult::ProviderRevisionsListed {
+                provider_id,
+                active_revision: page.active_revision,
+                revisions: page
+                    .revisions
                     .iter()
-                    .find(|revision| revision.active)
-                    .map(|revision| revision.definition.revision)
-                else {
-                    return failure(error(
-                        RegistryAdminErrorCode::IntegrityFailure,
-                        "provider registry integrity check failed",
-                        Some(provider_id),
-                        None,
-                    ));
-                };
-                let mut eligible = stored.iter().filter(|revision| {
-                    before.is_none_or(|value| revision.definition.revision < value)
-                });
-                let revisions = eligible
-                    .by_ref()
-                    .take(usize::from(limit))
                     .map(redact_provider_revision)
-                    .collect::<Vec<_>>();
-                let next_before_revision = eligible
-                    .next()
-                    .and_then(|_| revisions.last().map(|item| item.definition.revision));
-                success(RegistryAdminResult::ProviderRevisionsListed {
-                    provider_id,
-                    active_revision,
-                    revisions,
-                    next_before_revision,
-                })
-            }
+                    .collect(),
+                next_before_revision: page.next_before_revision,
+            }),
             Err(source) => failure(map_provider_error(source, provider_id)),
         }
     }
@@ -176,34 +168,15 @@ impl<'a> RegistryAdminService<'a> {
         before: Option<u64>,
         limit: u16,
     ) -> RegistryAdminResponse {
-        match self.registry.inspect_model((&provider_id, &model_id)).await {
-            Ok(stored) if stored.is_empty() => failure(model_error(
-                RegistryAdminErrorCode::UnknownModel,
-                "model is unknown",
-                provider_id,
-                model_id,
-                None,
-            )),
-            Ok(stored) => {
-                let Some(active_revision) = stored
+        match self
+            .registry
+            .inspect_model_page((&provider_id, &model_id), before, limit)
+            .await
+        {
+            Ok(page) => {
+                let revisions = page
+                    .revisions
                     .iter()
-                    .find(|revision| revision.active)
-                    .map(|revision| revision.definition.revision)
-                else {
-                    return failure(model_error(
-                        RegistryAdminErrorCode::IntegrityFailure,
-                        "model registry integrity check failed",
-                        provider_id,
-                        model_id,
-                        None,
-                    ));
-                };
-                let mut eligible = stored.iter().filter(|revision| {
-                    before.is_none_or(|value| revision.definition.revision < value)
-                });
-                let revisions = eligible
-                    .by_ref()
-                    .take(usize::from(limit))
                     .map(redact_model_revision)
                     .collect::<Result<Vec<_>, _>>();
                 let revisions = match revisions {
@@ -217,18 +190,74 @@ impl<'a> RegistryAdminService<'a> {
                         ));
                     }
                 };
-                let next_before_revision = eligible
-                    .next()
-                    .and_then(|_| revisions.last().map(|item| item.definition.revision));
                 success(RegistryAdminResult::ModelRevisionsListed {
                     provider_id,
                     model_id,
-                    active_revision,
+                    active_revision: page.active_revision,
                     revisions,
-                    next_before_revision,
+                    next_before_revision: page.next_before_revision,
                 })
             }
             Err(source) => failure(map_model_error(source, provider_id, model_id)),
+        }
+    }
+
+    async fn inspect_credential(
+        &self,
+        binding_id: String,
+        generation: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .inspect_credential_revision(&binding_id, generation)
+            .await
+        {
+            Ok(Some(view)) => success(RegistryAdminResult::CredentialGenerationInspected {
+                generation: redact_credential_generation(&view),
+            }),
+            Ok(None) => match self
+                .registry
+                .inspect_credential_page(&binding_id, None, 1)
+                .await
+            {
+                Ok(_) => failure(credential_error(
+                    RegistryAdminErrorCode::UnknownGeneration,
+                    "credential generation is unknown",
+                    &binding_id,
+                    Some(generation),
+                )),
+                Err(source) => failure(map_credential_error(source, &binding_id, None)),
+            },
+            Err(source) => failure(map_credential_storage_error(
+                source,
+                &binding_id,
+                Some(generation),
+            )),
+        }
+    }
+
+    async fn list_credentials(
+        &self,
+        binding_id: String,
+        before: Option<u64>,
+        limit: u16,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .inspect_credential_page(&binding_id, before, limit)
+            .await
+        {
+            Ok(page) => success(RegistryAdminResult::CredentialGenerationsListed {
+                binding_id_sha256: sha256(&binding_id),
+                active_generation: page.active_generation,
+                generations: page
+                    .generations
+                    .iter()
+                    .map(redact_credential_generation)
+                    .collect(),
+                next_before_generation: page.next_before_generation,
+            }),
+            Err(source) => failure(map_credential_error(source, &binding_id, None)),
         }
     }
 }
@@ -283,6 +312,94 @@ fn redact_model_revision(
         created_at_unix_secs: revision.created_at,
         active: revision.active,
     })
+}
+
+fn redact_credential_generation(view: &CredentialBindingView) -> CredentialGenerationView {
+    CredentialGenerationView {
+        binding_id_sha256: sha256(&view.binding_id),
+        generation: view.generation,
+        reference_kind: match view.reference_kind {
+            SecretReferenceKind::Environment => CredentialReferenceKind::Environment,
+            SecretReferenceKind::File => CredentialReferenceKind::File,
+        },
+        reference_configured: view.reference_configured,
+        reference_digest_sha256: view.reference_digest_sha256.clone(),
+        created_at_unix_secs: view.created_at,
+        active: view.active,
+    }
+}
+
+fn map_credential_error(
+    source: CredentialRegistryError,
+    binding_id: &str,
+    generation: Option<u64>,
+) -> RegistryAdminError {
+    match source {
+        CredentialRegistryError::UnknownBinding(_) => credential_error(
+            RegistryAdminErrorCode::UnknownCredentialBinding,
+            "credential binding is unknown",
+            binding_id,
+            None,
+        ),
+        CredentialRegistryError::UnknownGeneration { generation, .. } => credential_error(
+            RegistryAdminErrorCode::UnknownGeneration,
+            "credential generation is unknown",
+            binding_id,
+            Some(generation),
+        ),
+        CredentialRegistryError::Registry(source) => {
+            map_credential_storage_error(source, binding_id, generation)
+        }
+        _ => credential_error(
+            RegistryAdminErrorCode::Internal,
+            "credential registry operation failed",
+            binding_id,
+            generation,
+        ),
+    }
+}
+
+fn map_credential_storage_error(
+    source: AgentRegistryError,
+    binding_id: &str,
+    generation: Option<u64>,
+) -> RegistryAdminError {
+    let (code, message) = match source {
+        AgentRegistryError::Storage(_) | AgentRegistryError::Task(_) => (
+            RegistryAdminErrorCode::StorageUnavailable,
+            "credential registry is unavailable",
+        ),
+        AgentRegistryError::Serialization(_) | AgentRegistryError::Integrity(_) => (
+            RegistryAdminErrorCode::IntegrityFailure,
+            "credential registry integrity check failed",
+        ),
+        AgentRegistryError::Invalid(_) => (
+            RegistryAdminErrorCode::InvalidRequest,
+            "credential registry request is invalid",
+        ),
+        _ => (
+            RegistryAdminErrorCode::Internal,
+            "credential registry operation failed",
+        ),
+    };
+    credential_error(code, message, binding_id, generation)
+}
+
+fn credential_error(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+    binding_id: &str,
+    generation: Option<u64>,
+) -> RegistryAdminError {
+    RegistryAdminError {
+        code,
+        message: message.into(),
+        provider_id: None,
+        model_id: None,
+        binding_id_sha256: Some(sha256(binding_id).into_boxed_str()),
+        revision: None,
+        generation,
+    }
 }
 
 fn map_model_error(
@@ -370,8 +487,10 @@ fn model_error(
         code,
         message: message.into(),
         provider_id: Some(provider_id),
-        model_id: Some(model_id),
+        model_id: Some(model_id.into_boxed_str()),
+        binding_id_sha256: None,
         revision,
+        generation: None,
     }
 }
 
@@ -446,7 +565,9 @@ fn error(
         message: message.into(),
         provider_id,
         model_id: None,
+        binding_id_sha256: None,
         revision,
+        generation: None,
     }
 }
 
@@ -742,6 +863,114 @@ mod tests {
                 if error.code == RegistryAdminErrorCode::UnknownModel
                     && error.provider_id.as_deref() == Some("alpha")
                     && error.model_id.as_deref() == Some("missing")
+        ));
+    }
+
+    #[tokio::test]
+    async fn credential_reads_are_bounded_hashed_and_never_resolve_secrets() {
+        let registry = registry().await;
+        for generation in 2..=3 {
+            registry
+                .stage_credential(
+                    1,
+                    CredentialBindingRevision {
+                        binding_id: RAW_BINDING.into(),
+                        generation,
+                        reference: SecretRef::File {
+                            path: format!("/private/credential-{generation}").into(),
+                        },
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        registry
+            .activate_credential(RAW_BINDING, 3, 1)
+            .await
+            .unwrap();
+        let service = RegistryAdminService::new(&registry);
+
+        let inspected = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::InspectCredentialGeneration {
+                    binding_id: RAW_BINDING.into(),
+                    generation: 1,
+                },
+            )
+            .await;
+        let encoded = serde_json::to_string(&inspected).unwrap();
+        let debug = format!("{inspected:?}");
+        for marker in [
+            RAW_BINDING,
+            "UNRESOLVED_TEST_REFERENCE",
+            "/private/credential-2",
+        ] {
+            assert!(!encoded.contains(marker));
+            assert!(!debug.contains(marker));
+        }
+        let RegistryAdminResponse::Success { result } = inspected else {
+            panic!("expected credential inspection");
+        };
+        let RegistryAdminResult::CredentialGenerationInspected { generation } = *result else {
+            panic!("expected credential generation");
+        };
+        assert_eq!(generation.binding_id_sha256, sha256(RAW_BINDING));
+        assert_eq!(generation.generation, 1);
+        assert!(!generation.active);
+        assert_eq!(
+            generation.reference_kind,
+            CredentialReferenceKind::Environment
+        );
+
+        let listed = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::ListCredentialGenerations {
+                    binding_id: RAW_BINDING.into(),
+                    before_generation: None,
+                    limit: 2,
+                },
+            )
+            .await;
+        let RegistryAdminResponse::Success { result } = listed else {
+            panic!("expected credential list");
+        };
+        let RegistryAdminResult::CredentialGenerationsListed {
+            binding_id_sha256,
+            active_generation,
+            generations,
+            next_before_generation,
+        } = *result
+        else {
+            panic!("expected credential generations");
+        };
+        assert_eq!(binding_id_sha256, sha256(RAW_BINDING));
+        assert_eq!(active_generation, 3);
+        assert_eq!(
+            generations
+                .iter()
+                .map(|item| item.generation)
+                .collect::<Vec<_>>(),
+            [3, 2]
+        );
+        assert_eq!(next_before_generation, Some(2));
+
+        let unknown = service
+            .dispatch(
+                Some(&admin()),
+                RegistryAdminRequest::InspectCredentialGeneration {
+                    binding_id: RAW_BINDING.into(),
+                    generation: 99,
+                },
+            )
+            .await;
+        assert!(matches!(
+            unknown,
+            RegistryAdminResponse::Error { error }
+                if error.code == RegistryAdminErrorCode::UnknownGeneration
+                    && error.binding_id_sha256.as_deref() == Some(sha256(RAW_BINDING).as_str())
+                    && error.generation == Some(99)
         ));
     }
 }
