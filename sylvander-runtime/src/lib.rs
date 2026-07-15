@@ -3112,10 +3112,11 @@ model_name = "shared"
             restored.provenance.session_id.as_ref().unwrap().0,
             "memory-session"
         );
-        assert_eq!(
-            restored.provenance.trace_id.as_deref(),
-            Some("trace-before-restart")
-        );
+        let trace = restored.provenance.trace_id.as_deref().unwrap();
+        assert_eq!(trace.len(), 71);
+        assert!(trace.starts_with("sha256:"));
+        assert!(trace[7..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert!(!trace.contains("trace-before-restart"));
         assert_eq!(restored.provenance.source, MemoryProvenanceSource::Runtime);
         assert!(restored.provenance.trusted);
         assert_eq!(restored.provenance, entry.provenance);

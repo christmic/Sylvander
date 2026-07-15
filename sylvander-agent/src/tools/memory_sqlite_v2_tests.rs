@@ -12,7 +12,10 @@ fn worker() -> MemoryExecutionContext {
 #[tokio::test]
 async fn audit_is_content_safe_append_only_and_cas_consistent() {
     let store = SqliteMemoryStore::open_in_memory().unwrap();
-    let ctx = worker();
+    let raw_trace = format!("SECRET-trace\n\0{}", "x".repeat(128 * 1024));
+    let ctx = MemoryExecutionContext::worker(
+        &SessionContext::new("alice", "agent-a", "session").with_trace_id(&raw_trace),
+    );
     let sentinel = "SECRET-memory-payload";
     let mut append = MemoryAppend::new(sentinel)
         .with_tag(sentinel)
@@ -31,9 +34,33 @@ async fn audit_is_content_safe_append_only_and_cas_consistent() {
     );
     assert_eq!(entry.provenance.actor, MemoryActorKind::Worker);
     assert!(entry.provenance.trusted);
+    let trace = entry.provenance.trace_id.as_deref().unwrap();
+    assert_eq!(trace.len(), 71);
+    assert!(trace.starts_with("sha256:"));
+    assert!(trace[7..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert!(!trace.contains("SECRET-trace"));
+    assert!(!trace.chars().any(char::is_control));
 
     store
         .with_connection(|connection| {
+            let stored_trace: String = connection
+                .query_row(
+                    "SELECT origin_trace_id FROM relationship_memories WHERE id = ?1",
+                    [&entry.id],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            let audit_trace: String = connection
+                .query_row(
+                    "SELECT trace_id FROM relationship_memory_audit WHERE operation = 'append'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
+            assert_eq!(stored_trace, trace);
+            assert_eq!(audit_trace, trace);
+            assert!(!stored_trace.contains(&raw_trace));
+            assert!(!audit_trace.contains(&raw_trace));
             let audit: String = connection
                 .query_row(
                     "SELECT group_concat(event_id || operation || target_record_key || actor_kind || COALESCE(actor_user_id, '') || COALESCE(actor_agent_id, '') || COALESCE(session_id, '') || COALESCE(trace_id, '')) FROM relationship_memory_audit",
