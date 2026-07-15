@@ -24,7 +24,7 @@ name = "ZETA_SUPER_SECRET_VARIABLE"
 id = "shared"
 context_window = 200
 max_output_tokens = 20
-capabilities = ["tool_use", "reasoning", "tool_use"]
+capabilities = ["tool_use", "reasoning"]
 
 [[model_providers]]
 id = "alpha"
