@@ -568,6 +568,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         | ServerMsg::SessionConfig { .. }
         | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::AgentAdmin { .. }
+        | ServerMsg::RegistryAdmin { .. }
         | ServerMsg::Pong => return None,
     })
 }
