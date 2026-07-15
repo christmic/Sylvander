@@ -110,6 +110,26 @@ pub struct SqliteMemoryStore {
     retention_policy: RelationshipMemoryRetentionPolicy,
 }
 
+/// Store-internal maintenance capability. It is intentionally absent from
+/// [`MemoryStore`] and therefore cannot be registered as a model tool.
+#[derive(Clone, Debug)]
+pub struct SqliteMemoryMaintenance {
+    store: SqliteMemoryStore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryPurgeReport {
+    pub expired_count: u32,
+    pub superseded_count: u32,
+}
+
+impl MemoryPurgeReport {
+    #[must_use]
+    pub const fn total_count(self) -> u32 {
+        self.expired_count + self.superseded_count
+    }
+}
+
 impl std::fmt::Debug for SqliteMemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteMemoryStore").finish_non_exhaustive()
@@ -163,6 +183,66 @@ impl SqliteMemoryStore {
             .map_err(|_| MemoryStoreError::Store("memory database lock poisoned".into()))?;
         operation(&mut connection)
     }
+
+    #[must_use]
+    pub fn maintenance(&self) -> SqliteMemoryMaintenance {
+        SqliteMemoryMaintenance {
+            store: self.clone(),
+        }
+    }
+}
+
+impl SqliteMemoryMaintenance {
+    pub fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
+        self.purge_at(crate::session::now_secs())
+    }
+
+    fn purge_at(&self, now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
+        let policy = &self.store.retention_policy;
+        let grace = i64::from(policy.expiry_grace_days()) * 24 * 60 * 60;
+        let superseded_age = i64::from(policy.superseded_retention_days()) * 24 * 60 * 60;
+        let expired_cutoff = now.checked_sub(grace).ok_or_else(retention_error)?;
+        let superseded_cutoff = now
+            .checked_sub(superseded_age)
+            .ok_or_else(retention_error)?;
+        self.store.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| retention_error())?;
+            advance_retention_clock(&transaction, policy.revision(), now)?;
+            let candidates = {
+                let mut statement = transaction.prepare(
+                    "SELECT m.record_key, m.revision, CASE WHEN m.superseded_by_record_key IS NOT NULL THEN 1 ELSE 0 END FROM relationship_memories m WHERE (m.superseded_by_record_key IS NOT NULL AND m.updated_at <= ?1) OR (m.superseded_by_record_key IS NULL AND m.expires_at IS NOT NULL AND m.expires_at <= ?2 AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = m.record_key)) ORDER BY COALESCE(m.expires_at, m.updated_at), m.record_key LIMIT ?3",
+                ).map_err(|_| retention_error())?;
+                statement
+                    .query_map(
+                        params![superseded_cutoff, expired_cutoff, policy.batch_limit()],
+                        |row| Ok((row.get::<_, String>(0)?, read_revision(row, 1)?, row.get::<_, i64>(2)? == 1)),
+                    )
+                    .map_err(|_| retention_error())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| retention_error())?
+            };
+            let mut report = MemoryPurgeReport { expired_count: 0, superseded_count: 0 };
+            for (record_key, revision, superseded) in candidates {
+                append_maintenance_audit(&transaction, &record_key, revision, now, superseded)?;
+                if transaction.execute(
+                    "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2",
+                    params![record_key, i64::try_from(revision).map_err(|_| retention_error())?],
+                ).map_err(|_| retention_error())? != 1 {
+                    return Err(retention_error());
+                }
+                if superseded {
+                    report.superseded_count += 1;
+                } else {
+                    report.expired_count += 1;
+                }
+            }
+            insert_retention_ledgers(&transaction, policy, now, report)?;
+            transaction.commit().map_err(|_| retention_error())?;
+            Ok(report)
+        })
+    }
 }
 
 #[async_trait]
@@ -189,6 +269,8 @@ impl MemoryStore for SqliteMemoryStore {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
+            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
+                .map_err(|_| store_failure())?;
             insert_entry(&transaction, &record_key, &entry)?;
             append_audit(
                 &transaction,
@@ -270,6 +352,8 @@ impl MemoryStore for SqliteMemoryStore {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|_| mutation_error())?;
+            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
+                .map_err(|_| mutation_error())?;
             let (record_key, revision) = select_active_record(
                 &transaction,
                 &user_id,
@@ -332,6 +416,7 @@ impl MemoryStore for SqliteMemoryStore {
         let replacement_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(|connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| mutation_error())?;
+            advance_retention_clock(&transaction, self.retention_policy.revision(), now).map_err(|_| mutation_error())?;
             let (record_key, revision) = select_active_record(&transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
             if revision != expected_revision {
                 return Err(MemoryStoreError::Conflict);
@@ -370,6 +455,8 @@ impl MemoryStore for SqliteMemoryStore {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(delete_error)?;
+            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
+                .map_err(|_| MemoryStoreError::Delete("memory delete failed".into()))?;
             let visible: Option<(String, i64)> = transaction
                 .query_row(
                     "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?4)",
@@ -565,6 +652,62 @@ fn activate_policy(
         ).map_err(|_| retention_error())?;
     }
     transaction.commit().map_err(|_| retention_error())
+}
+
+fn advance_retention_clock(
+    transaction: &rusqlite::Transaction<'_>,
+    policy_revision: u64,
+    now: i64,
+) -> Result<(), MemoryStoreError> {
+    let watermark: i64 = transaction
+        .query_row(
+            "SELECT clock_watermark FROM relationship_memory_retention_state WHERE singleton = 1 AND policy_revision = ?1",
+            [i64::try_from(policy_revision).map_err(|_| retention_error())?],
+            |row| row.get(0),
+        )
+        .map_err(|_| retention_error())?;
+    if now < watermark {
+        return Err(retention_error());
+    }
+    transaction
+        .execute(
+            "UPDATE relationship_memory_retention_state SET clock_watermark = ?1 WHERE singleton = 1",
+            [now],
+        )
+        .map_err(|_| retention_error())?;
+    Ok(())
+}
+
+fn append_maintenance_audit(
+    transaction: &rusqlite::Transaction<'_>,
+    record_key: &str,
+    revision: u64,
+    now: i64,
+    superseded: bool,
+) -> Result<(), MemoryStoreError> {
+    transaction.execute(
+        "INSERT INTO relationship_memory_audit (event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask) VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'system_service', NULL, NULL, NULL, NULL, 0)",
+        params![uuid::Uuid::new_v4().to_string(), now, if superseded { "purge_superseded" } else { "purge_expired" }, record_key, i64::try_from(revision).map_err(|_| retention_error())?],
+    ).map_err(|_| retention_error())?;
+    Ok(())
+}
+
+fn insert_retention_ledgers(
+    transaction: &rusqlite::Transaction<'_>,
+    policy: &RelationshipMemoryRetentionPolicy,
+    now: i64,
+    report: MemoryPurgeReport,
+) -> Result<(), MemoryStoreError> {
+    let run_id = uuid::Uuid::new_v4().to_string();
+    transaction.execute(
+        "INSERT INTO relationship_memory_retention_runs (run_id, started_at, completed_at, policy_revision, clock_watermark, expired_count, superseded_count) VALUES (?1, ?2, ?2, ?3, ?2, ?4, ?5)",
+        params![run_id, now, i64::try_from(policy.revision()).map_err(|_| retention_error())?, report.expired_count, report.superseded_count],
+    ).map_err(|_| retention_error())?;
+    transaction.execute(
+        "INSERT INTO relationship_memory_retention_batches (batch_id, run_id, occurred_at, attempted_limit, expired_count, superseded_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![uuid::Uuid::new_v4().to_string(), run_id, now, policy.batch_limit(), report.expired_count, report.superseded_count],
+    ).map_err(|_| retention_error())?;
+    Ok(())
 }
 
 fn component_objects_exist(
@@ -800,3 +943,7 @@ mod v2_tests;
 #[cfg(test)]
 #[path = "memory_sqlite_hardening_tests.rs"]
 mod hardening_tests;
+
+#[cfg(test)]
+#[path = "memory_sqlite_retention_tests.rs"]
+mod retention_tests;

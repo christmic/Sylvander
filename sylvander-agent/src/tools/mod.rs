@@ -23,7 +23,7 @@ pub use memory::{
     MemoryScope, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
 };
 pub use memory_read::MemoryReadTool;
-pub use memory_sqlite::SqliteMemoryStore;
+pub use memory_sqlite::{MemoryPurgeReport, SqliteMemoryMaintenance, SqliteMemoryStore};
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
 pub use read::ReadTool;
