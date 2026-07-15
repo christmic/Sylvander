@@ -218,3 +218,137 @@ async fn two_connections_allow_only_one_activation_and_rollback() {
         Err(ProviderRegistryError::Conflict { expected: 3, .. })
     ));
 }
+
+#[tokio::test]
+async fn bounded_provider_pages_are_exclusive_and_survive_restart() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry.db");
+    let registry = AgentRegistry::open(&path).await.unwrap();
+    install_credential(&registry).await;
+    registry
+        .seed_provider(provider(1, "https://one.invalid"))
+        .await
+        .unwrap();
+    for revision in 2..=5 {
+        registry
+            .stage_provider(
+                1,
+                provider(revision, &format!("https://{revision}.invalid")),
+            )
+            .await
+            .unwrap();
+    }
+    registry
+        .activate_provider("provider/main", 4, 1)
+        .await
+        .unwrap();
+
+    let first = registry
+        .inspect_provider_page("provider/main", None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first.active_revision, 4);
+    assert_eq!(
+        first
+            .revisions
+            .iter()
+            .map(|stored| stored.definition.revision)
+            .collect::<Vec<_>>(),
+        [5, 4]
+    );
+    assert_eq!(first.next_before_revision, Some(4));
+    assert!(first.revisions[1].active);
+    drop(registry);
+
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    let second = reopened
+        .inspect_provider_page("provider/main", first.next_before_revision, 2)
+        .await
+        .unwrap();
+    assert_eq!(second.active_revision, 4);
+    assert_eq!(
+        second
+            .revisions
+            .iter()
+            .map(|stored| stored.definition.revision)
+            .collect::<Vec<_>>(),
+        [3, 2]
+    );
+    assert_eq!(second.next_before_revision, Some(2));
+    let final_page = reopened
+        .inspect_provider_page("provider/main", Some(2), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        final_page
+            .revisions
+            .iter()
+            .map(|stored| stored.definition.revision)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(final_page.next_before_revision, None);
+}
+
+#[tokio::test]
+async fn bounded_provider_page_distinguishes_unknown_and_integrity_failures() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_credential(&registry).await;
+    assert!(matches!(
+        registry
+            .inspect_provider_page("provider/unknown", None, 10)
+            .await,
+        Err(ProviderRegistryError::UnknownProvider(provider))
+            if provider == "provider/unknown"
+    ));
+    registry
+        .seed_provider(provider(1, "https://one.invalid"))
+        .await
+        .unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute("DELETE FROM provider_registry_heads", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_provider_page("provider/main", None, 10)
+            .await,
+        Err(ProviderRegistryError::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
+    ));
+
+    let registry = AgentRegistry::open(directory.path().join("tampered.db"))
+        .await
+        .unwrap();
+    install_credential(&registry).await;
+    registry
+        .seed_provider(provider(1, "https://one.invalid"))
+        .await
+        .unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute("UPDATE provider_definitions SET digest='tampered'", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_provider_page("provider/main", None, 10)
+            .await,
+        Err(ProviderRegistryError::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
+    ));
+}
