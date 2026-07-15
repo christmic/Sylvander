@@ -234,3 +234,130 @@ async fn two_connections_allow_only_one_model_activation_and_rollback() {
         Err(ModelRegistryError::Conflict { expected: 3, .. })
     ));
 }
+
+#[tokio::test]
+async fn bounded_model_pages_preserve_qualified_identity_across_restart() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry.db");
+    let registry = AgentRegistry::open(&path).await.unwrap();
+    install_providers(&registry).await;
+    registry.seed_model(model("alpha", 1, 100)).await.unwrap();
+    registry.seed_model(model("beta", 1, 900)).await.unwrap();
+    for revision in 2..=5 {
+        registry
+            .stage_model(1, model("alpha", revision, 100 + revision as u32))
+            .await
+            .unwrap();
+    }
+    registry
+        .activate_model(("alpha", "shared"), 4, 1)
+        .await
+        .unwrap();
+
+    let first = registry
+        .inspect_model_page(("alpha", "shared"), None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first.active_revision, 4);
+    assert_eq!(
+        first
+            .revisions
+            .iter()
+            .map(|stored| stored.definition.revision)
+            .collect::<Vec<_>>(),
+        [5, 4]
+    );
+    assert!(first.revisions[1].active);
+    assert!(first.revisions.iter().all(|stored| {
+        stored.definition.provider_id == "alpha" && stored.definition.model_id == "shared"
+    }));
+    assert_eq!(first.next_before_revision, Some(4));
+    drop(registry);
+
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    let second = reopened
+        .inspect_model_page(("alpha", "shared"), first.next_before_revision, 2)
+        .await
+        .unwrap();
+    assert_eq!(second.active_revision, 4);
+    assert_eq!(
+        second
+            .revisions
+            .iter()
+            .map(|stored| stored.definition.revision)
+            .collect::<Vec<_>>(),
+        [3, 2]
+    );
+    assert_eq!(second.next_before_revision, Some(2));
+    let final_page = reopened
+        .inspect_model_page(("alpha", "shared"), Some(2), 2)
+        .await
+        .unwrap();
+    assert_eq!(final_page.revisions[0].definition.revision, 1);
+    assert_eq!(final_page.next_before_revision, None);
+    let beta = reopened
+        .inspect_model_page(("beta", "shared"), None, 2)
+        .await
+        .unwrap();
+    assert_eq!(beta.revisions.len(), 1);
+    assert_eq!(beta.revisions[0].definition.context_window, 900);
+}
+
+#[tokio::test]
+async fn bounded_model_page_distinguishes_unknown_and_integrity_failures() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install_providers(&registry).await;
+    assert!(matches!(
+        registry
+            .inspect_model_page(("alpha", "unknown"), None, 10)
+            .await,
+        Err(ModelRegistryError::UnknownModel(identity)) if identity == "alpha/unknown"
+    ));
+    registry.seed_model(model("alpha", 1, 100)).await.unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute(
+                    "DELETE FROM model_registry_heads WHERE provider_id='alpha' AND model_id='shared'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_model_page(("alpha", "shared"), None, 10)
+            .await,
+        Err(ModelRegistryError::Registry(AgentRegistryError::Integrity(
+            _
+        )))
+    ));
+
+    let registry = AgentRegistry::open(directory.path().join("tampered.db"))
+        .await
+        .unwrap();
+    install_providers(&registry).await;
+    registry.seed_model(model("alpha", 1, 100)).await.unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute("UPDATE model_definitions SET digest='tampered'", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_model_page(("alpha", "shared"), None, 10)
+            .await,
+        Err(ModelRegistryError::Registry(AgentRegistryError::Integrity(
+            _
+        )))
+    ));
+}
