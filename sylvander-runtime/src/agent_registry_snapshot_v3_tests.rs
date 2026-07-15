@@ -196,3 +196,29 @@ async fn v2_identity_prevents_parallel_v3_snapshot() {
         }) if agent_id == "assistant"
     ));
 }
+
+#[tokio::test]
+async fn v3_identity_prevents_parallel_v2_snapshot() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    install(&registry).await;
+    registry.stage_agent_snapshot_v3(selection()).await.unwrap();
+
+    assert!(matches!(
+        registry
+            .stage_agent_snapshot(AgentSnapshotSelection {
+                agent_id: "assistant".into(),
+                agent_revision: 1,
+                provider_id: "alpha".into(),
+                allowed_model_ids: BTreeSet::from(["shared".into()]),
+                default_model_id: "shared".into(),
+            })
+            .await,
+        Err(crate::agent_registry_snapshot::AgentSnapshotError::SnapshotSchemaConflict {
+            agent_id,
+            revision: 1
+        }) if agent_id == "assistant"
+    ));
+}
