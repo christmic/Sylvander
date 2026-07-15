@@ -693,3 +693,7 @@ mod tests;
 #[cfg(test)]
 #[path = "memory_sqlite_v2_tests.rs"]
 mod v2_tests;
+
+#[cfg(test)]
+#[path = "memory_sqlite_hardening_tests.rs"]
+mod hardening_tests;
