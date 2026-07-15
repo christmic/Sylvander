@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::config::{SecretRef, SystemSecretResolver};
-use crate::registry_domain::CredentialBindingRevision;
+use crate::registry_domain::{CredentialBindingRevision, ModelDefinition};
 
 const TEXT_STREAM: &str = "\
 event: message_start
@@ -182,6 +182,22 @@ fn stored_provider(revision: u64, kind: &str, base_url: String) -> ProviderDefin
         kind: kind.into(),
         base_url,
         credential_binding_id: "provider:anthropic:api_key".into(),
+    }
+}
+
+fn stored_model(provider_id: &str, capabilities: &[&str]) -> ModelDefinition {
+    ModelDefinition {
+        provider_id: provider_id.into(),
+        model_id: "claude-test".into(),
+        revision: 1,
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        capabilities: capabilities
+            .iter()
+            .map(|capability| (*capability).to_owned())
+            .collect(),
+        lifecycle: sylvander_protocol::ModelLifecycle::Active,
+        pricing: None,
     }
 }
 
@@ -398,6 +414,57 @@ fn factory_preflight_is_redacted_and_never_resolves_credentials() {
     factory.create(valid, source.clone()).unwrap();
     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
     assert!(source.bindings.lock().unwrap().is_empty());
+}
+
+#[test]
+fn model_preflight_accepts_exactly_the_adapter_capability_surface() {
+    let factory: &dyn ProviderAdapterFactory = &AnthropicProviderFactory;
+    let provider = stored_provider(3, "anthropic_compatible", "https://example.invalid".into());
+    let model = stored_model(
+        "anthropic",
+        &[
+            "extended_thinking",
+            "prompt_caching",
+            "structured_output",
+            "tool_use",
+            "vision",
+            "document_input",
+        ],
+    );
+    factory.preflight(&provider, &model).unwrap();
+
+    let historical = stored_model("anthropic", &["reasoning"]);
+    factory.preflight(&provider, &historical).unwrap();
+}
+
+#[test]
+fn model_preflight_fails_closed_with_redacted_typed_errors() {
+    let factory: &dyn ProviderAdapterFactory = &AnthropicProviderFactory;
+    let provider = stored_provider(3, "anthropic_compatible", "https://example.invalid".into());
+
+    let mismatch = factory
+        .preflight(&provider, &stored_model("other-provider", &["tool_use"]))
+        .unwrap_err();
+    assert_eq!(mismatch, ProviderFactoryError::ModelProviderMismatch);
+
+    let unsupported = factory
+        .preflight(
+            &provider,
+            &stored_model("anthropic", &["secret_future_capability"]),
+        )
+        .unwrap_err();
+    assert_eq!(
+        unsupported,
+        ProviderFactoryError::UnsupportedModelCapability
+    );
+    assert!(!unsupported.to_string().contains("secret_future_capability"));
+    assert!(!format!("{unsupported:?}").contains("secret_future_capability"));
+
+    let malformed = factory
+        .preflight(&provider, &stored_model("anthropic", &["TOOL_USE"]))
+        .unwrap_err();
+    assert_eq!(malformed, ProviderFactoryError::InvalidModelDefinition);
+    assert!(!malformed.to_string().contains("TOOL_USE"));
 }
 
 #[tokio::test]
