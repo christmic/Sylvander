@@ -18,7 +18,110 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sylvander_protocol::SessionContext;
-use sylvander_protocol::types::SessionId;
+use sylvander_protocol::types::{AgentId, SessionId, UserId};
+
+/// Stable ownership domain for a memory record. Session state and user
+/// profiles are intentionally stored by their own services.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryScope {
+    Relationship,
+    AgentPrivateCandidate,
+    AgentCanonical,
+    WorkspaceKnowledge,
+}
+
+/// Owner shape determines the scope; invalid scope/owner combinations cannot
+/// be represented.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum MemoryOwner {
+    Relationship { user_id: UserId, agent_id: AgentId },
+    AgentPrivateCandidate { agent_id: AgentId },
+    AgentCanonical { agent_id: AgentId },
+    WorkspaceKnowledge { workspace_id: String },
+}
+
+impl MemoryOwner {
+    #[must_use]
+    pub const fn scope(&self) -> MemoryScope {
+        match self {
+            Self::Relationship { .. } => MemoryScope::Relationship,
+            Self::AgentPrivateCandidate { .. } => MemoryScope::AgentPrivateCandidate,
+            Self::AgentCanonical { .. } => MemoryScope::AgentCanonical,
+            Self::WorkspaceKnowledge { .. } => MemoryScope::WorkspaceKnowledge,
+        }
+    }
+
+    #[must_use]
+    pub fn relationship(ctx: &SessionContext) -> Self {
+        Self::Relationship {
+            user_id: ctx.identity.user_id.clone(),
+            agent_id: ctx.identity.agent_id.clone(),
+        }
+    }
+}
+
+impl From<SessionContext> for MemoryOwner {
+    fn from(ctx: SessionContext) -> Self {
+        Self::relationship(&ctx)
+    }
+}
+
+/// Runtime actor class. Guardian is deliberately distinct from a generic
+/// system task so future governed mutations cannot inherit ambient authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryActorKind {
+    Worker,
+    Guardian,
+    SystemService,
+}
+
+/// Identity snapshot issued by the runtime for one memory operation. It is not
+/// part of any model-facing tool schema.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryExecutionContext {
+    pub actor: MemoryActorKind,
+    pub user_id: Option<UserId>,
+    pub agent_id: Option<AgentId>,
+    pub session_id: Option<SessionId>,
+    pub authorized_workspace_ids: Vec<String>,
+    pub trace_id: Option<String>,
+}
+
+impl MemoryExecutionContext {
+    #[must_use]
+    pub fn worker(session: &SessionContext) -> Self {
+        Self {
+            actor: MemoryActorKind::Worker,
+            user_id: Some(session.identity.user_id.clone()),
+            agent_id: Some(session.identity.agent_id.clone()),
+            session_id: Some(session.identity.session_id.clone()),
+            authorized_workspace_ids: Vec::new(),
+            trace_id: session.request.trace_id.clone(),
+        }
+    }
+
+    pub fn relationship_owner(&self) -> Result<MemoryOwner, MemoryStoreError> {
+        if self.actor != MemoryActorKind::Worker {
+            return Err(MemoryStoreError::AccessDenied(
+                "actor cannot derive worker relationship ownership".into(),
+            ));
+        }
+        let (Some(user_id), Some(agent_id), Some(_session_id)) =
+            (&self.user_id, &self.agent_id, &self.session_id)
+        else {
+            return Err(MemoryStoreError::AccessDenied(
+                "worker memory context is incomplete".into(),
+            ));
+        };
+        Ok(MemoryOwner::Relationship {
+            user_id: user_id.clone(),
+            agent_id: agent_id.clone(),
+        })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // MemoryEntry
@@ -33,7 +136,7 @@ pub struct MemoryEntry {
     /// Who created this memory. The store enforces per-identity
     /// visibility: a user can only see their own memories (and
     /// memories explicitly shared into their session by other agents).
-    pub owner: SessionContext,
+    pub owner: MemoryOwner,
 
     /// What kind of memory this is. Use this to filter "show me
     /// preferences only" or "show me all decisions".
@@ -79,10 +182,14 @@ impl MemoryEntry {
     /// owning session context. Kind defaults to `AgentNote`;
     /// importance to `Medium`.
     #[must_use]
-    pub fn new(id: impl Into<String>, content: impl Into<String>, owner: SessionContext) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        content: impl Into<String>,
+        owner: impl Into<MemoryOwner>,
+    ) -> Self {
         Self {
             id: id.into(),
-            owner,
+            owner: owner.into(),
             kind: MemoryKind::AgentNote,
             content: content.into(),
             references: Vec::new(),
@@ -266,8 +373,8 @@ pub enum MemoryStoreError {
 // ---------------------------------------------------------------------------
 
 /// An in-memory memory store backed by a `Vec<MemoryEntry>`. Enforces
-/// per-identity visibility: `search` and `get` only return entries
-/// whose `owner.identity` matches the caller's.
+/// per-identity visibility: `search` and `get` only return entries whose typed
+/// relationship owner matches the caller's runtime identity.
 ///
 /// Search is case-insensitive substring matching on `content`. M-B
 /// Phase 2 will replace this with FTS5 / embedding search.
@@ -361,8 +468,8 @@ impl MemoryStore for InMemoryMemoryStore {
 /// Two memories "belong to" the same identity if user + agent
 /// match. (Session id is intentionally excluded — memories persist
 /// across sessions by design.)
-fn same_owner(a: &SessionContext, b: &SessionContext) -> bool {
-    a.identity.user_id == b.identity.user_id && a.identity.agent_id == b.identity.agent_id
+fn same_owner(owner: &MemoryOwner, ctx: &SessionContext) -> bool {
+    owner == &MemoryOwner::relationship(ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -686,5 +793,24 @@ mod tests {
         assert_eq!(entry.importance, Importance::High);
         assert_eq!(entry.references.len(), 1);
         assert_eq!(entry.tags, ["architecture"]);
+    }
+
+    #[test]
+    fn runtime_context_derives_only_worker_relationship_ownership() {
+        let session = alice_session();
+        let worker = MemoryExecutionContext::worker(&session);
+        assert_eq!(
+            worker.relationship_owner().unwrap(),
+            MemoryOwner::Relationship {
+                user_id: UserId::new("alice"),
+                agent_id: AgentId::new("a1"),
+            }
+        );
+        let mut guardian = worker;
+        guardian.actor = MemoryActorKind::Guardian;
+        assert!(matches!(
+            guardian.relationship_owner(),
+            Err(MemoryStoreError::AccessDenied(_))
+        ));
     }
 }

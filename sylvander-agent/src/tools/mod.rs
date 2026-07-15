@@ -16,7 +16,10 @@ pub mod write;
 pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;
 pub use edit::EditTool;
-pub use memory::{InMemoryMemoryStore, MemoryEntry, MemoryStore, MemoryStoreError};
+pub use memory::{
+    InMemoryMemoryStore, MemoryActorKind, MemoryEntry, MemoryExecutionContext, MemoryOwner,
+    MemoryScope, MemoryStore, MemoryStoreError,
+};
 pub use memory_read::MemoryReadTool;
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
