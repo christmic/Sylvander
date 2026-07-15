@@ -3,10 +3,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::config::{SecretResolver, SecretValue};
+use crate::config::{SecretRef, SecretResolver, SecretValue};
 use crate::registry_domain::{
-    CredentialBindingRevision, CredentialBindingView, StoredRevision, canonical_secret_reference,
+    CredentialBindingRevision, CredentialBindingView, SecretReferenceKind, StoredRevision,
+    canonical_secret_reference,
 };
+
+const MAX_CREDENTIAL_PAGE_SIZE: u16 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CredentialBindingPage {
+    pub active_generation: u64,
+    pub generations: Vec<CredentialBindingView>,
+    pub next_before_generation: Option<u64>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CredentialRegistryError {
@@ -241,6 +251,144 @@ impl AgentRegistry {
         }
         Ok(views)
     }
+
+    /// Inspect one bounded generation page without resolving secret material.
+    pub(crate) async fn inspect_credential_page(
+        &self,
+        binding_id: &str,
+        before_generation: Option<u64>,
+        limit: u16,
+    ) -> Result<CredentialBindingPage, CredentialRegistryError> {
+        if !(1..=MAX_CREDENTIAL_PAGE_SIZE).contains(&limit) || before_generation == Some(0) {
+            return Err(
+                AgentRegistryError::Invalid("credential page bounds are invalid".into()).into(),
+            );
+        }
+        let binding_id = binding_id.to_owned();
+        let before = before_generation.map(sql_index).transpose()?;
+        let sql_limit = i64::from(limit) + 1;
+        self.run_with(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "WITH state AS (
+                       SELECT
+                         (SELECT active_generation FROM credential_binding_heads WHERE binding_id=?1) AS active_generation,
+                         EXISTS(SELECT 1 FROM credential_binding_revisions WHERE binding_id=?1) AS has_revisions,
+                         EXISTS(
+                           SELECT 1 FROM credential_binding_heads h
+                           JOIN credential_binding_revisions d
+                             ON d.binding_id=h.binding_id AND d.generation=h.active_generation
+                           WHERE h.binding_id=?1
+                         ) AS active_exists
+                     )
+                     SELECT state.active_generation, state.has_revisions, state.active_exists,
+                            d.generation, d.reference_json, d.digest, d.created_at
+                     FROM state
+                     LEFT JOIN credential_binding_revisions d
+                       ON d.binding_id=?1 AND (?2 IS NULL OR d.generation < ?2)
+                     ORDER BY d.generation DESC
+                     LIMIT ?3",
+                )
+                .map_err(storage)?;
+            let mut rows = statement
+                .query(params![binding_id, before, sql_limit])
+                .map_err(storage)?;
+            let mut active_generation = None;
+            let mut views = Vec::with_capacity(usize::from(limit) + 1);
+            while let Some(row) = rows.next().map_err(storage)? {
+                let active = row.get::<_, Option<i64>>(0).map_err(storage)?;
+                let has_revisions = row.get::<_, bool>(1).map_err(storage)?;
+                let active_exists = row.get::<_, bool>(2).map_err(storage)?;
+                let Some(active) = active else {
+                    return if has_revisions {
+                        Err(AgentRegistryError::Integrity(
+                            "credential binding head is missing".into(),
+                        )
+                        .into())
+                    } else {
+                        Err(CredentialRegistryError::UnknownBinding(binding_id))
+                    };
+                };
+                if !active_exists {
+                    return Err(AgentRegistryError::Integrity(
+                        "credential active generation is missing".into(),
+                    )
+                    .into());
+                }
+                let active = sql_generation(active)?;
+                active_generation = Some(active);
+                let Some(generation) = row.get::<_, Option<i64>>(3).map_err(storage)? else {
+                    continue;
+                };
+                let reference_json = required_column(row.get(4).map_err(storage)?)?;
+                let digest = required_column(row.get(5).map_err(storage)?)?;
+                let created_at = required_column(row.get(6).map_err(storage)?)?;
+                views.push(decode_view(
+                    &binding_id,
+                    generation,
+                    reference_json,
+                    digest,
+                    created_at,
+                    active,
+                )?);
+            }
+            let active_generation = active_generation.ok_or_else(|| {
+                CredentialRegistryError::UnknownBinding(binding_id.clone())
+            })?;
+            let next_before_generation = (views.len() > usize::from(limit))
+                .then(|| views[usize::from(limit) - 1].generation);
+            views.truncate(usize::from(limit));
+            Ok(CredentialBindingPage {
+                active_generation,
+                generations: views,
+                next_before_generation,
+            })
+        })
+        .await
+    }
+}
+
+fn required_column<T>(value: Option<T>) -> Result<T, CredentialRegistryError> {
+    value.ok_or_else(|| {
+        AgentRegistryError::Integrity("credential revision row is incomplete".into()).into()
+    })
+}
+
+fn decode_view(
+    binding_id: &str,
+    generation: i64,
+    reference_json: String,
+    stored_digest: String,
+    created_at: i64,
+    active_generation: u64,
+) -> Result<CredentialBindingView, CredentialRegistryError> {
+    let generation = sql_generation(generation)?;
+    let reference: SecretRef =
+        serde_json::from_str(&reference_json).map_err(AgentRegistryError::serde)?;
+    let definition = CredentialBindingRevision {
+        binding_id: binding_id.into(),
+        generation,
+        reference,
+    };
+    definition.validate()?;
+    let (_, expected_digest) = canonical_secret_reference(&definition.reference)?;
+    if stored_digest != expected_digest {
+        return Err(
+            AgentRegistryError::Integrity("credential reference digest mismatch".into()).into(),
+        );
+    }
+    Ok(CredentialBindingView {
+        binding_id: definition.binding_id,
+        generation,
+        reference_kind: match definition.reference {
+            SecretRef::Env { .. } => SecretReferenceKind::Environment,
+            SecretRef::File { .. } => SecretReferenceKind::File,
+        },
+        reference_configured: true,
+        reference_digest_sha256: stored_digest,
+        created_at,
+        active: generation == active_generation,
+    })
 }
 
 async fn set_head(
