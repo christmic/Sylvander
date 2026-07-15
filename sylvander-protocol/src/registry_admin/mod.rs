@@ -12,7 +12,9 @@ mod view;
 pub use draft::CredentialSecretReferenceDraft;
 pub use error::{RegistryAdminError, RegistryAdminErrorCode, RegistryAdminErrorDetails};
 pub use request::{
-    DEFAULT_REGISTRY_REVISION_PAGE_SIZE, MAX_REGISTRY_REVISION_PAGE_SIZE, RegistryAdminRequest,
+    DEFAULT_REGISTRY_REVISION_PAGE_SIZE, MAX_REGISTRY_REVISION_PAGE_SIZE,
+    REGISTRY_ADMIN_MUTATION_MIN_UI_PROTOCOL_VERSION, REGISTRY_ADMIN_READ_MIN_UI_PROTOCOL_VERSION,
+    RegistryAdminRequest,
 };
 pub use view::{
     CredentialGenerationView, CredentialReferenceKind, ModelRevisionView, ProviderRevisionView,

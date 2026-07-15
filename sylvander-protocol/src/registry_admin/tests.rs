@@ -498,3 +498,29 @@ fn credential_lifecycle_results_and_conflicts_are_typed_and_redacted() {
     .unwrap();
     assert_eq!(legacy.details, None);
 }
+
+#[test]
+fn every_registry_request_has_an_explicit_minimum_protocol_version() {
+    let reads = [
+        json!({"operation":"inspect_provider_revision","provider_id":"p","revision":1}),
+        json!({"operation":"list_provider_revisions","provider_id":"p"}),
+        json!({"operation":"inspect_model_revision","provider_id":"p","model_id":"m","revision":1}),
+        json!({"operation":"list_model_revisions","provider_id":"p","model_id":"m"}),
+        json!({"operation":"inspect_credential_generation","binding_id":"b","generation":1}),
+        json!({"operation":"list_credential_generations","binding_id":"b"}),
+    ];
+    let mutations = [
+        json!({"operation":"create_credential_binding","binding_id":"b","reference":{"source":"environment","name":"K"}}),
+        json!({"operation":"stage_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1,"reference":{"source":"file","path":"/k"}}),
+        json!({"operation":"activate_credential_generation","binding_id":"b","generation":2,"expected_active_generation":1}),
+        json!({"operation":"rollback_credential_generation","binding_id":"b","target_generation":1,"expected_active_generation":2}),
+    ];
+    for wire in reads {
+        let request: RegistryAdminRequest = serde_json::from_value(wire).unwrap();
+        assert_eq!(request.minimum_ui_protocol_version(), 2);
+    }
+    for wire in mutations {
+        let request: RegistryAdminRequest = serde_json::from_value(wire).unwrap();
+        assert_eq!(request.minimum_ui_protocol_version(), 3);
+    }
+}
