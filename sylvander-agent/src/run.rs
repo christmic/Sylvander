@@ -378,7 +378,17 @@ impl AgentRun {
         provider: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
     ) -> AgentRunBuilder {
-        AgentRunBuilder::new_provider(spec, provider, model)
+        AgentRunBuilder::new_single_provider(spec, provider, model)
+    }
+
+    /// Build a run around an immutable provider-qualified router.
+    #[must_use]
+    pub fn qualified_router_builder(
+        spec: AgentSpec,
+        router: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> AgentRunBuilder {
+        AgentRunBuilder::new_qualified_router(spec, router, model)
     }
 
     /// Unique agent identifier.
@@ -1582,11 +1592,7 @@ impl AgentRunInner {
         }
         let mut snapshot = self.loop_config.clone();
         snapshot
-            .apply_runtime_model(
-                &model.selection.provider_id,
-                &model.shadow,
-                model.exact.as_ref(),
-            )
+            .apply_runtime_model(&model.selection, &model.shadow, model.exact.as_ref())
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
         snapshot.reasoning_effort = reasoning_effort;
         Ok(snapshot)
@@ -2493,8 +2499,12 @@ pub struct AgentRunBuilder {
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     available_models: Vec<ModelInfo>,
     available_provider_models: Vec<ProviderModelInfo>,
-    model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
+    legacy_model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
+    legacy_model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
+    qualified_model_lifecycles:
+        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
+    qualified_model_pricing:
+        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
     prompt_profiles: HashMap<String, String>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
@@ -2504,8 +2514,12 @@ pub struct AgentRunBuilder {
 
 enum AgentRunModelBackend {
     Legacy(AnthropicClient),
-    Provider {
+    SingleProvider {
         provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    },
+    QualifiedRouter {
+        router: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
     },
 }
@@ -2515,12 +2529,26 @@ impl AgentRunBuilder {
         Self::with_backend(spec, AgentRunModelBackend::Legacy(client))
     }
 
-    fn new_provider(
+    fn new_single_provider(
         spec: AgentSpec,
         provider: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
     ) -> Self {
-        Self::with_backend(spec, AgentRunModelBackend::Provider { provider, model })
+        Self::with_backend(
+            spec,
+            AgentRunModelBackend::SingleProvider { provider, model },
+        )
+    }
+
+    fn new_qualified_router(
+        spec: AgentSpec,
+        router: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> Self {
+        Self::with_backend(
+            spec,
+            AgentRunModelBackend::QualifiedRouter { router, model },
+        )
     }
 
     fn with_backend(spec: AgentSpec, backend: AgentRunModelBackend) -> Self {
@@ -2535,8 +2563,10 @@ impl AgentRunBuilder {
             model_capabilities: None,
             available_models: Vec::new(),
             available_provider_models: Vec::new(),
-            model_lifecycles: HashMap::new(),
-            model_pricing: HashMap::new(),
+            legacy_model_lifecycles: HashMap::new(),
+            legacy_model_pricing: HashMap::new(),
+            qualified_model_lifecycles: HashMap::new(),
+            qualified_model_pricing: HashMap::new(),
             prompt_profiles: HashMap::new(),
             approval_enabled: false,
             approval_rules: Vec::new(),
@@ -2600,7 +2630,17 @@ impl AgentRunBuilder {
         mut self,
         lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     ) -> Self {
-        self.model_lifecycles = lifecycles;
+        self.legacy_model_lifecycles = lifecycles;
+        self
+    }
+
+    /// Attach lifecycle truth to exact provider-qualified models.
+    #[must_use]
+    pub fn qualified_model_lifecycles(
+        mut self,
+        lifecycles: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
+    ) -> Self {
+        self.qualified_model_lifecycles = lifecycles;
         self
     }
 
@@ -2610,7 +2650,17 @@ impl AgentRunBuilder {
         mut self,
         pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     ) -> Self {
-        self.model_pricing = pricing;
+        self.legacy_model_pricing = pricing;
+        self
+    }
+
+    /// Attach pricing snapshots to exact provider-qualified models.
+    #[must_use]
+    pub fn qualified_model_pricing(
+        mut self,
+        pricing: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
+    ) -> Self {
+        self.qualified_model_pricing = pricing;
         self
     }
 
@@ -2677,7 +2727,9 @@ impl AgentRunBuilder {
                 .and_then(|cfg| cfg.build().ok())
         };
 
-        let provider_backend = matches!(&self.backend, AgentRunModelBackend::Provider { .. });
+        let provider_backend = !matches!(&self.backend, AgentRunModelBackend::Legacy(_));
+        let qualified_router =
+            matches!(&self.backend, AgentRunModelBackend::QualifiedRouter { .. });
         let (mut model_info, primary_selection, primary_exact) = match &self.backend {
             AgentRunModelBackend::Legacy(_) => {
                 let shadow = self.spec.to_model_info();
@@ -2687,7 +2739,8 @@ impl AgentRunBuilder {
                 };
                 (shadow, selection, None)
             }
-            AgentRunModelBackend::Provider { model, .. } => {
+            AgentRunModelBackend::SingleProvider { model, .. }
+            | AgentRunModelBackend::QualifiedRouter { model, .. } => {
                 if model.reference.provider != self.spec.model.provider
                     || model.reference.model != self.spec.model.model_name
                 {
@@ -2716,6 +2769,13 @@ impl AgentRunBuilder {
         if provider_backend && !self.available_models.is_empty() {
             return Err(AgentRunError::Build(
                 "provider catalogs require exact provider model metadata".into(),
+            ));
+        }
+        if qualified_router
+            && (!self.legacy_model_lifecycles.is_empty() || !self.legacy_model_pricing.is_empty())
+        {
+            return Err(AgentRunError::Build(
+                "qualified routers require provider-qualified model metadata".into(),
             ));
         }
         let mut catalog = Vec::new();
@@ -2748,11 +2808,16 @@ impl AgentRunBuilder {
             .map(|(selection, shadow, exact)| {
                 let model = RuntimeModel {
                     lifecycle: self
-                        .model_lifecycles
-                        .get(&selection.model_id)
+                        .qualified_model_lifecycles
+                        .get(&selection)
+                        .or_else(|| self.legacy_model_lifecycles.get(&selection.model_id))
                         .cloned()
                         .unwrap_or_default(),
-                    pricing: self.model_pricing.get(&selection.model_id).copied(),
+                    pricing: self
+                        .qualified_model_pricing
+                        .get(&selection)
+                        .or_else(|| self.legacy_model_pricing.get(&selection.model_id))
+                        .copied(),
                     selection: selection.clone(),
                     shadow,
                     exact,
@@ -2779,8 +2844,11 @@ impl AgentRunBuilder {
             AgentRunModelBackend::Legacy(client) => {
                 AgentLoop::builder().client(client).model(model_info)
             }
-            AgentRunModelBackend::Provider { provider, model } => AgentLoop::builder()
+            AgentRunModelBackend::SingleProvider { provider, model } => AgentLoop::builder()
                 .provider(provider)
+                .provider_model(model),
+            AgentRunModelBackend::QualifiedRouter { router, model } => AgentLoop::builder()
+                .qualified_router(router)
                 .provider_model(model),
         }
         .max_iterations(self.spec.behavior.max_iterations)
@@ -3020,6 +3088,100 @@ mod tests {
         assert_eq!(
             requests[0].model,
             sylvander_llm_core::ModelRef::new("local", "model-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn qualified_router_crosses_providers_without_metadata_collisions() {
+        let mut spec = AgentSpec::builder()
+            .id("router-agent")
+            .name("Router")
+            .model_name("shared")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let router = Arc::new(RecordingProvider::default());
+        let local = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "shared"),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let remote = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("remote", "shared"),
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let local_selection = sylvander_protocol::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "shared".into(),
+        };
+        let remote_selection = sylvander_protocol::ModelSelection {
+            provider_id: "remote".into(),
+            model_id: "shared".into(),
+        };
+        let remote_pricing = sylvander_protocol::ModelPricing {
+            input_usd_micros_per_million: 11,
+            output_usd_micros_per_million: 22,
+            cache_write_usd_micros_per_million: None,
+            cache_read_usd_micros_per_million: None,
+        };
+        let run = AgentRun::qualified_router_builder(spec, router.clone(), local)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .available_provider_models(vec![remote])
+            .qualified_model_lifecycles(HashMap::from([
+                (local_selection, sylvander_protocol::ModelLifecycle::Active),
+                (
+                    remote_selection.clone(),
+                    sylvander_protocol::ModelLifecycle::Deprecated { replacement: None },
+                ),
+            ]))
+            .qualified_model_pricing(HashMap::from([(remote_selection.clone(), remote_pricing)]))
+            .build()
+            .unwrap();
+
+        let advertised = run.runtime_model_info().await;
+        let local = advertised
+            .models
+            .iter()
+            .find(|model| model.provider == "local" && model.id == "shared")
+            .unwrap();
+        let remote = advertised
+            .models
+            .iter()
+            .find(|model| model.provider == "remote" && model.id == "shared")
+            .unwrap();
+        assert_eq!(local.lifecycle, sylvander_protocol::ModelLifecycle::Active);
+        assert_eq!(local.pricing, None);
+        assert!(matches!(
+            remote.lifecycle,
+            sylvander_protocol::ModelLifecycle::Deprecated { .. }
+        ));
+        assert_eq!(remote.pricing, Some(remote_pricing));
+
+        run.select_qualified_model(remote_selection, sylvander_protocol::ReasoningEffort::Off)
+            .await
+            .unwrap();
+        let selected = {
+            let runtime = run.inner.runtime_models.read().await;
+            runtime.available.get(&runtime.current).unwrap().clone()
+        };
+        let snapshot = run
+            .inner
+            .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
+        crate::loop_::run(
+            &snapshot,
+            vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+                "hello",
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            router.requests.lock().unwrap()[0].model,
+            sylvander_llm_core::ModelRef::new("remote", "shared")
         );
     }
 
