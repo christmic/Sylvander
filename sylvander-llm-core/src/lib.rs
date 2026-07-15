@@ -9,6 +9,7 @@ pub mod model;
 pub mod provider;
 pub mod types;
 pub mod usage;
+pub mod validation;
 
 pub use error::{ProviderError, ProviderErrorKind, ProviderErrorPhase};
 pub use model::{ModelCapabilities, ModelInfo, ModelRef};
@@ -19,3 +20,4 @@ pub use types::{
     StopReason, SystemInstruction, ToolDefinition, ToolResultContent,
 };
 pub use usage::TokenUsage;
+pub use validation::*;
