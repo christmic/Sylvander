@@ -151,6 +151,16 @@ Agent to change or deploy itself without the gated workflow in P5.
 See [`runtime-evidence.md`](runtime-evidence.md) for the data model, recovery,
 retention, query, and self-improvement boundary.
 
+`server.memory_maintenance` declares the bounded production retention policy
+for durable Agent memory. The declared defaults are a 365-day TTL, a maximum
+TTL of 1825 days, a 7-day expired-row recovery grace, and 30-day retention for
+superseded rows. The maintenance budget is hourly batches of 500, with at most
+20 batches per run. Every value is finite and range-checked; unknown fields and
+configurations where `default_ttl_days` exceeds `max_ttl_days` fail startup.
+There is no unbounded or legacy-environment fallback. Runtime enforcement,
+scheduled backup, and restore are separate implementation batches and are not
+claimed by this configuration contract alone.
+
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
 the future run ledger; replacing it during restore is a correctness defect.

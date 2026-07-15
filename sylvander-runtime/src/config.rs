@@ -48,6 +48,8 @@ pub struct ServerSettings {
     pub memory_db: Option<PathBuf>,
     pub workspace_journal: Option<PathBuf>,
     #[serde(default)]
+    pub memory_maintenance: MemoryMaintenanceSettings,
+    #[serde(default)]
     pub approval: ApprovalSettings,
     #[serde(default)]
     pub evidence: EvidenceSettings,
@@ -63,11 +65,90 @@ impl Default for ServerSettings {
             session_db: None,
             memory_db: None,
             workspace_journal: None,
+            memory_maintenance: MemoryMaintenanceSettings::default(),
             approval: ApprovalSettings::default(),
             evidence: EvidenceSettings::default(),
             boundary: BoundarySettings::default(),
         }
     }
+}
+
+/// Bounded production maintenance policy for durable Agent memory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryMaintenanceSettings {
+    #[serde(default)]
+    pub retention: MemoryRetentionSettings,
+    #[serde(default = "default_memory_maintenance_interval_seconds")]
+    pub interval_seconds: u32,
+    #[serde(default = "default_memory_maintenance_batch_size")]
+    pub batch_size: u32,
+    #[serde(default = "default_memory_maintenance_max_batches")]
+    pub max_batches_per_run: u32,
+}
+
+impl Default for MemoryMaintenanceSettings {
+    fn default() -> Self {
+        Self {
+            retention: MemoryRetentionSettings::default(),
+            interval_seconds: default_memory_maintenance_interval_seconds(),
+            batch_size: default_memory_maintenance_batch_size(),
+            max_batches_per_run: default_memory_maintenance_max_batches(),
+        }
+    }
+}
+
+/// Finite lifetime and purge grace policy. No field permits unbounded storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRetentionSettings {
+    #[serde(default = "default_memory_ttl_days")]
+    pub default_ttl_days: u32,
+    #[serde(default = "default_memory_max_ttl_days")]
+    pub max_ttl_days: u32,
+    #[serde(default = "default_expired_memory_grace_days")]
+    pub expired_grace_days: u32,
+    #[serde(default = "default_superseded_memory_retention_days")]
+    pub superseded_retention_days: u32,
+}
+
+impl Default for MemoryRetentionSettings {
+    fn default() -> Self {
+        Self {
+            default_ttl_days: default_memory_ttl_days(),
+            max_ttl_days: default_memory_max_ttl_days(),
+            expired_grace_days: default_expired_memory_grace_days(),
+            superseded_retention_days: default_superseded_memory_retention_days(),
+        }
+    }
+}
+
+const fn default_memory_ttl_days() -> u32 {
+    365
+}
+
+const fn default_memory_max_ttl_days() -> u32 {
+    5 * 365
+}
+
+const fn default_expired_memory_grace_days() -> u32 {
+    7
+}
+
+const fn default_superseded_memory_retention_days() -> u32 {
+    30
+}
+
+const fn default_memory_maintenance_interval_seconds() -> u32 {
+    3_600
+}
+
+const fn default_memory_maintenance_batch_size() -> u32 {
+    500
+}
+
+const fn default_memory_maintenance_max_batches() -> u32 {
+    20
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,6 +471,50 @@ impl ServerConfig {
             && !(1..=3650).contains(&self.server.evidence.retention_days)
         {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
+        }
+        let memory = &self.server.memory_maintenance;
+        let retention = &memory.retention;
+        if !(1..=5 * 365).contains(&retention.default_ttl_days) {
+            errors.push(
+                "server memory_maintenance retention default_ttl_days must be between 1 and 1825"
+                    .into(),
+            );
+        }
+        if !(1..=5 * 365).contains(&retention.max_ttl_days) {
+            errors.push(
+                "server memory_maintenance retention max_ttl_days must be between 1 and 1825"
+                    .into(),
+            );
+        }
+        if retention.default_ttl_days > retention.max_ttl_days {
+            errors.push(
+                "server memory_maintenance retention default_ttl_days must not exceed max_ttl_days"
+                    .into(),
+            );
+        }
+        if retention.expired_grace_days > 365 {
+            errors.push(
+                "server memory_maintenance retention expired_grace_days must not exceed 365".into(),
+            );
+        }
+        if !(1..=3650).contains(&retention.superseded_retention_days) {
+            errors.push(
+                "server memory_maintenance retention superseded_retention_days must be between 1 and 3650"
+                    .into(),
+            );
+        }
+        if !(60..=86_400).contains(&memory.interval_seconds) {
+            errors.push(
+                "server memory_maintenance interval_seconds must be between 60 and 86400".into(),
+            );
+        }
+        if !(1..=10_000).contains(&memory.batch_size) {
+            errors.push("server memory_maintenance batch_size must be between 1 and 10000".into());
+        }
+        if !(1..=100).contains(&memory.max_batches_per_run) {
+            errors.push(
+                "server memory_maintenance max_batches_per_run must be between 1 and 100".into(),
+            );
         }
         if !(1024..=16 * 1024 * 1024).contains(&self.server.boundary.max_request_bytes) {
             errors

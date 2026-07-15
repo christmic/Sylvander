@@ -84,6 +84,86 @@ fn valid_configuration_parses_and_resolves_references() {
         config.model_providers[0].api_key,
         SecretRef::Env { ref name } if name == "MODEL_API_KEY"
     ));
+    assert_eq!(
+        config.server.memory_maintenance,
+        MemoryMaintenanceSettings::default()
+    );
+}
+
+#[test]
+fn memory_maintenance_policy_parses_strict_nested_configuration() {
+    let input = valid_toml().replace(
+        "data_dir = \"/var/lib/sylvander\"",
+        r#"data_dir = "/var/lib/sylvander"
+
+[server.memory_maintenance]
+interval_seconds = 900
+batch_size = 250
+max_batches_per_run = 8
+
+[server.memory_maintenance.retention]
+default_ttl_days = 90
+max_ttl_days = 730
+expired_grace_days = 3
+superseded_retention_days = 14"#,
+    );
+    let config = ServerConfig::from_toml(&input).unwrap();
+    let maintenance = config.server.memory_maintenance;
+    assert_eq!(maintenance.interval_seconds, 900);
+    assert_eq!(maintenance.batch_size, 250);
+    assert_eq!(maintenance.max_batches_per_run, 8);
+    assert_eq!(maintenance.retention.default_ttl_days, 90);
+    assert_eq!(maintenance.retention.max_ttl_days, 730);
+    assert_eq!(maintenance.retention.expired_grace_days, 3);
+    assert_eq!(maintenance.retention.superseded_retention_days, 14);
+}
+
+#[test]
+fn memory_maintenance_rejects_unknown_and_unbounded_values() {
+    for unknown in [
+        "[server.memory_maintenance]\nbackup_directory = \"/tmp\"",
+        "[server.memory_maintenance.retention]\nforever = true",
+    ] {
+        let input = valid_toml().replace(
+            "data_dir = \"/var/lib/sylvander\"",
+            &format!("data_dir = \"/var/lib/sylvander\"\n\n{unknown}"),
+        );
+        assert!(ServerConfig::from_toml(&input).unwrap_err().errors[0].contains("unknown field"));
+    }
+
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    let maintenance = &mut config.server.memory_maintenance;
+    maintenance.retention.default_ttl_days = 0;
+    maintenance.retention.max_ttl_days = 1_826;
+    maintenance.retention.expired_grace_days = 366;
+    maintenance.retention.superseded_retention_days = 0;
+    maintenance.interval_seconds = 59;
+    maintenance.batch_size = 0;
+    maintenance.max_batches_per_run = 101;
+    let joined = config.validate().unwrap_err().errors.join("\n");
+    for field in [
+        "default_ttl_days",
+        "max_ttl_days",
+        "expired_grace_days",
+        "superseded_retention_days",
+        "interval_seconds",
+        "batch_size",
+        "max_batches_per_run",
+    ] {
+        assert!(joined.contains(field), "missing validation for {field}");
+    }
+
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    config.server.memory_maintenance.retention.default_ttl_days = 31;
+    config.server.memory_maintenance.retention.max_ttl_days = 30;
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .errors
+            .iter()
+            .any(|error| error.contains("must not exceed max_ttl_days"))
+    );
 }
 
 #[test]
