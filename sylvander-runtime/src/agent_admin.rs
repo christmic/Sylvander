@@ -512,13 +512,8 @@ fn validate_against_catalog(
     catalog: &ServerConfig,
     definition: &AgentDefinitionConfig,
 ) -> Result<(), AgentAdminError> {
-    let mut candidate = catalog.clone();
-    candidate
-        .agents
-        .retain(|item| item.spec.id != definition.spec.id);
-    candidate.agents.push(definition.clone());
-    candidate
-        .validate()
+    catalog
+        .validate_agent_shape_and_environment(definition)
         .map_err(|_| invalid_definition("Agent definition does not match the runtime catalog"))
 }
 
@@ -545,17 +540,17 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     }
     let mut seen = HashSet::new();
     for model in &draft.allowed_models {
-        if model.provider_id.trim().is_empty()
-            || model.model_id.trim().is_empty()
-            || !seen.insert((&model.provider_id, &model.model_id))
-        {
+        let provider = model.provider_id.trim();
+        let model_id = model.model_id.trim();
+        if provider.is_empty() || model_id.is_empty() || !seen.insert((provider, model_id)) {
             return Err(invalid_definition(
                 "allowed models must contain unique qualified identities",
             ));
         }
     }
     if !draft.allowed_models.iter().any(|model| {
-        model.provider_id == draft.provider_id && model.model_id == draft.default_model_id
+        model.provider_id.trim() == draft.provider_id.trim()
+            && model.model_id.trim() == draft.default_model_id.trim()
     }) {
         return Err(invalid_definition(
             "allowed models must contain the Agent default model",
@@ -912,18 +907,32 @@ id = "sonnet"
     }
 
     #[test]
-    fn catalog_rejects_unknown_allowed_provider_or_model() {
+    fn boot_catalog_rejects_unknown_allowed_provider_or_model() {
         for unknown in [model("missing", "sonnet"), model("secondary", "missing")] {
             let mut candidate = draft();
             candidate.allowed_models.push(unknown);
             let definition = definition_from_draft(candidate).unwrap();
-            assert_eq!(
-                validate_against_catalog(&catalog(), &definition)
-                    .unwrap_err()
-                    .code,
-                AgentAdminErrorCode::InvalidDefinition
-            );
+            let mut boot_catalog = catalog();
+            boot_catalog.agents.push(definition);
+            assert!(boot_catalog.validate().is_err());
         }
+    }
+
+    #[test]
+    fn update_rejects_unknown_execution_target() {
+        let mut definition = definition_from_draft(draft()).unwrap();
+        definition.agent_workspace = Some(WorkspaceBindingConfig {
+            execution_target: "missing-target".into(),
+            path: "/workspace".into(),
+            read_only: false,
+        });
+
+        assert_eq!(
+            validate_against_catalog(&catalog(), &definition)
+                .unwrap_err()
+                .code,
+            AgentAdminErrorCode::InvalidDefinition
+        );
     }
 
     #[test]
@@ -936,7 +945,7 @@ id = "sonnet"
     }
 
     #[tokio::test]
-    async fn update_dispatch_is_a_plan_and_does_not_write_the_registry() {
+    async fn dynamic_qualified_update_is_a_plan_and_does_not_write_the_registry() {
         let catalog = ServerConfig::from_toml(
             r#"
 schema_version = 1
@@ -965,12 +974,16 @@ model_name = "sonnet"
             .unwrap();
         let mut principal = AuthenticatedPrincipal::user("system", AuthenticationMethod::Internal);
         principal.kind = PrincipalKind::System;
+        let mut candidate = draft();
+        candidate.provider_id = "discovered-provider".into();
+        candidate.default_model_id = "discovered-model".into();
+        candidate.allowed_models = vec![model("discovered-provider", "discovered-model")];
         let dispatch = AgentAdminService::new(&registry, &catalog)
             .dispatch(
                 Some(&principal),
                 AgentAdminRequest::UpdateDefinition {
                     expected_active_revision: 1,
-                    definition: Box::new(draft()),
+                    definition: Box::new(candidate),
                 },
             )
             .await;
