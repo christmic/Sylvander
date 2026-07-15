@@ -90,6 +90,24 @@ mod tests {
     }
 
     #[test]
+    fn session_prompt_is_write_only_in_the_ui_schema() {
+        let schema = ui_protocol_schema();
+        assert!(
+            has_property(&schema["client_message"], "system_prompt"),
+            "clients must be able to write a session prompt override"
+        );
+        assert!(
+            !has_property(
+                &schema["server_message"]["$defs"]["RedactedSessionConfigOverrides"],
+                "system_prompt"
+            ),
+            "server session override responses must not publish raw prompt input"
+        );
+        let encoded = serde_json::to_string(&schema["server_message"]).unwrap();
+        assert!(encoded.contains("RedactedSessionConfigOverrides"));
+    }
+
+    #[test]
     fn agent_administration_schema_exposes_lifecycle_without_secret_values() {
         let encoded = serde_json::to_string(&agent_admin_protocol_schema()).unwrap();
         for operation in [
