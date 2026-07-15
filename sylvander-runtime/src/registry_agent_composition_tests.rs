@@ -1,0 +1,204 @@
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use serde_json::json;
+use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
+use sylvander_agent::session_store::{
+    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+};
+use sylvander_protocol::{BusMessage, SessionConfigOverrides, SessionMetadata};
+use tempfile::tempdir;
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use super::*;
+use crate::agent_registry::AgentRegistry;
+use crate::agent_registry_snapshot::AgentSnapshotSelection;
+use crate::config::{SecretRef, ServerConfig};
+use crate::registry_domain::CredentialBindingRevision;
+
+const TEXT_STREAM: &str = "\
+event: message_start
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"model-a\",\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}
+
+event: content_block_start
+data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}
+
+event: content_block_delta
+data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}
+
+event: content_block_stop
+data: {\"type\":\"content_block_stop\",\"index\":0}
+
+event: message_delta
+data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}
+
+event: message_stop
+data: {\"type\":\"message_stop\"}
+
+";
+
+fn config(base_url: &str, secret_path: &std::path::Path) -> ServerConfig {
+    ServerConfig::from_toml(&format!(
+        r#"
+schema_version = 1
+
+[[model_providers]]
+id = "alpha"
+base_url = "{base_url}"
+
+[model_providers.api_key]
+source = "file"
+path = "{}"
+
+[[model_providers.models]]
+id = "model-a"
+context_window = 100000
+max_output_tokens = 4096
+capabilities = ["tool_use", "prompt_caching"]
+
+[[model_providers.models]]
+id = "model-b"
+context_window = 80000
+max_output_tokens = 2048
+capabilities = ["tool_use"]
+
+[[agents]]
+[agents.spec]
+id = "assistant"
+name = "Assistant"
+[agents.spec.model]
+provider = "alpha"
+model_name = "model-a"
+"#,
+        secret_path.display()
+    ))
+    .unwrap()
+}
+
+async fn expect_request(server: &MockServer, key: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", format!("Bearer {key}")))
+        .and(body_partial_json(json!({"model": "model-a"})))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(TEXT_STREAM, "text/event-stream"))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+async fn persisted_session(
+    agent: &ConfiguredAgent,
+    store: &SqliteSessionStore,
+    name: &str,
+) -> sylvander_agent::spec::SessionId {
+    let metadata = SessionMetadata {
+        workspace: std::path::PathBuf::from("/workspace"),
+        name: name.into(),
+        user_id: "user".into(),
+    };
+    let session_id = agent.run.join_session(metadata.clone()).await;
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        name,
+        SessionLifetime::Persistent,
+        metadata,
+        vec![agent.spec.id.clone()],
+    );
+    stored.effective_config = Some(
+        resolve_session_config(agent, &SessionConfigOverrides::default(), None, None).unwrap(),
+    );
+    store.save(&stored).await.unwrap();
+    session_id
+}
+
+#[tokio::test]
+async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
+    let directory = tempdir().unwrap();
+    let first_secret = directory.path().join("first.secret");
+    let second_secret = directory.path().join("second.secret");
+    std::fs::write(&first_secret, "first-key\n").unwrap();
+    std::fs::write(&second_secret, "second-key\n").unwrap();
+    let pinned_server = MockServer::start().await;
+    let newer_server = MockServer::start().await;
+    expect_request(&pinned_server, "first-key").await;
+    expect_request(&pinned_server, "second-key").await;
+
+    let config = config(&pinned_server.uri(), &first_secret);
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    registry.bootstrap_registries(&config).await.unwrap();
+    registry.seed(&config).await.unwrap();
+    registry
+        .stage_agent_snapshot(AgentSnapshotSelection {
+            agent_id: "assistant".into(),
+            agent_revision: 1,
+            provider_id: "alpha".into(),
+            allowed_model_ids: BTreeSet::from(["model-a".into(), "model-b".into()]),
+            default_model_id: "model-a".into(),
+        })
+        .await
+        .unwrap();
+    let snapshot = registry
+        .resolve_registry_composition(&config.agents[0].spec.id, 1)
+        .await
+        .unwrap();
+
+    let mut newer_provider = snapshot.provider.clone();
+    newer_provider.revision = 2;
+    newer_provider.base_url = newer_server.uri();
+    registry.stage_provider(1, newer_provider).await.unwrap();
+    registry.activate_provider("alpha", 2, 1).await.unwrap();
+
+    let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let sessions: Arc<dyn SessionStore> = store.clone();
+    let agent =
+        build_registry_agent(&config, snapshot.clone(), registry.clone(), bus, sessions).unwrap();
+    let runtime = agent.run.runtime_model_info().await;
+    assert_eq!(runtime.current_model, "model-a");
+    assert_eq!(runtime.models.len(), 2);
+    assert!(runtime.models.iter().all(|model| model.provider == "alpha"));
+
+    let first_session = persisted_session(&agent, &store, "first").await;
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(
+            first_session,
+            "user",
+            "first request",
+        ))
+        .await
+        .unwrap();
+    registry
+        .stage_credential(
+            1,
+            CredentialBindingRevision {
+                binding_id: snapshot.credential_binding_id.clone(),
+                generation: 2,
+                reference: SecretRef::File {
+                    path: second_secret,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    registry
+        .activate_credential(&snapshot.credential_binding_id, 2, 1)
+        .await
+        .unwrap();
+    let second_session = persisted_session(&agent, &store, "second").await;
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(
+            second_session,
+            "user",
+            "second request",
+        ))
+        .await
+        .unwrap();
+
+    pinned_server.verify().await;
+    assert!(newer_server.received_requests().await.unwrap().is_empty());
+}
