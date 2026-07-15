@@ -55,6 +55,25 @@ placeholder is not implementation.
     prepare changes in an isolated worktree. It may not silently modify or
     merge the running production version.
 
+### 2.1 Pre-release compatibility and memory activation policy
+
+Until a stable release declares otherwise, new implementation targets only
+the current schema and current public/internal interfaces. Compatibility
+adapters, fallback behavior, automatic data migration, and downgrade paths are
+not implicit requirements. They may be added only when the user explicitly
+approves their source version, target version, failure policy, test matrix, and
+removal plan. An older or unknown durable schema fails closed; the runtime must
+not repair it heuristically or substitute an ephemeral backend.
+
+Production long-term memory is a durable store opened by the Runtime
+composition root and explicitly injected into every active and historical
+Agent revision that uses it. `AgentSpec.memory_stores` is declarative metadata,
+not authority for `AgentRunBuilder` to open a database. `InMemoryMemoryStore`
+is limited to tests, fixtures, and an explicitly selected ephemeral development
+mode; it is never a production fallback. Platform inspection reports only the
+Runtime-injected backend as `Active` and keeps unactivated declarations
+`Configured` without exposing storage paths.
+
 ## 3. Target domain model
 
 ### 3.1 AgentDefinition
@@ -224,7 +243,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A12 | AGENTS.md | missing | Repository guides exist for developers, but the running Agent does not discover or assemble workspace instructions. |
 | A13 | Skills | missing | Protocol/UI placeholders can display Skills, but the Agent has no Skill discovery, trust, activation, or instruction loading runtime. |
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
-| A15 | Agent memory | defect | The server injects `InMemoryMemoryStore`; `MemoryStoreConfig` says SQLite is planned and rejects it. Agent memory is lost on restart. |
+| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`, and revision, expiry, and immutable provenance survive restart. The latest schema is fail-closed and never falls back to InMemory. CAS update, supersede, retention/purge governance, backup/recovery, and the corresponding exact mutation-audit acceptance remain. |
 | A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
 | A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
@@ -237,7 +256,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A25 | Self-improvement | missing | There is no evidence selection, evaluation corpus, proposal, experiment, comparison, or human merge gate. |
 | A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
 | A27 | Secrets | partial | Typed environment/file references, bounded zeroizing values, request-scoped Provider resolution, immutable generations, live rotation, activation preflight, and redacted administration are implemented. External secret backends, lease renewal, and uniform channel-credential rotation remain. |
-| A28 | Database migrations | partial | SQLite uses create-if-missing and targeted column checks. There is no explicit schema version, ordered migration ledger, backup/restore verification, or downgrade policy. |
+| A28 | Database migrations | partial | Registry components and relationship memory have explicit component ledgers. Relationship memory accepts only its exact latest schema and rejects unmanaged, older, future, or damaged layouts without repair or fallback. This is deliberate latest-only validation, not migration support. Session/evidence schema convergence, backup/restore drills, and any explicitly approved upgrade or downgrade migration remain. |
 | A29 | Shutdown and recovery | partial | Runtime boot restores durable sessions and interrupted evidence, and shutdown uses bounded cooperative channel/Agent drain. Full crash orchestration, executor leases, and per-instance recovery policy remain incomplete. |
 | A30 | Observability and operations | partial | Structured tracing and health endpoints exist. Metrics, readiness dependencies, per-instance health, queue/backpressure visibility, audit export, and operational diagnostics are incomplete. |
 | A31 | Concurrency isolation | implemented | Agent turns use per-session locks and active-turn cancellation; real-runtime PTY tests cover multi-client session isolation. This must remain a regression gate. |
@@ -375,9 +394,40 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   `sylvander-agent/src/run.rs`, protocol schema/redaction tests, real Unix and
   WebSocket response tests, provider-wire composition tests, and runtime
   restart acceptance in `registry_agent_composition_tests.rs`.
-- [ ] **P1.4 Durable memory:** Agent-namespaced SQLite memory, retrieval/write
-  policy, provenance, retention/deletion, backup, and migration from configured
-  stores.
+- [ ] **P1.4 Durable memory:** durable Agent-owned memory lifecycle and
+  governance. This item remains open; the completed storage foundation is not
+  the full lifecycle.
+  - [x] Derive relationship ownership and provenance from trusted runtime
+    context, not model input; isolate records by `(user_id, agent_id)` and keep
+    missing and foreign records indistinguishable.
+  - [x] Persist relationship memory in the production SQLite database with
+    bounded retrieval/write/delete inputs, revision, absolute expiry,
+    supersession linkage, immutable provenance, and content-safe append-only
+    audit storage.
+  - [x] Open one durable store in `Runtime::boot_config` and inject the same
+    instance into all revision compositions. Agent declarations never open a
+    backend, and production never falls back to `InMemoryMemoryStore`.
+  - [x] Enforce the exact latest relationship-memory schema. Unmanaged, older,
+    future, missing-trigger, or malformed schemas fail startup without repair;
+    restart tests preserve owner isolation, revision, provenance, and expiry.
+  - [ ] Add public/internal compare-and-swap update with immutable origin,
+    monotonic revision, atomic audit, conflict tests, and no partial mutation.
+  - [ ] Add an atomic supersede transition that links old and replacement
+    records, hides the old record from ordinary recall, and records both sides
+    without a visibility gap.
+  - [ ] Implement configured retention and physical purge/deletion governance,
+    including bounded batches, authorization, crash recovery, and exact audit
+    assertions for update, supersede, expiry, purge, and delete transitions.
+  - [ ] Add backup/restore verification and only those schema/data migrations
+    that receive explicit approval under section 2.1.
+
+  Current evidence: `acd5ab661` (runtime-derived ownership), `73316754f` and
+  `e0ebfaae5` (SQLite persistence and contract tests), `1d11d8fc9` (one store
+  across revisions), `0977357ec` (truthful activation reporting), `75d280b15`
+  and `c5c4efc73` (latest schema, append/delete audit, and fail-closed schema
+  tests), and `ccc8b75ab` (production boot, owner isolation, and restart field
+  fidelity). G0 must not be marked complete until every remaining P1.4 gate
+  above has implementation and acceptance evidence.
 - [ ] **P1.5 Optional Provider catalog synchronization:** let adapters that
   expose a remote model catalog enumerate it, reconcile discovered metadata
   against the Registry SSOT, report drift and health, and never silently
