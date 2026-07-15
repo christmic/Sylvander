@@ -164,12 +164,11 @@ pub(crate) trait ProviderAdapterFactory: Send + Sync {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AnthropicProviderFactory;
 
-impl ProviderAdapterFactory for AnthropicProviderFactory {
-    fn create(
-        &self,
-        provider: ProviderDefinition,
-        credentials: Arc<dyn ActiveCredentialSource>,
-    ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
+impl AnthropicProviderFactory {
+    /// Validate a prospective definition without consulting credential state.
+    pub(crate) fn validate_definition(
+        provider: &ProviderDefinition,
+    ) -> Result<(), ProviderFactoryError> {
         if provider.kind != "anthropic_compatible" {
             return Err(ProviderFactoryError::UnsupportedKind);
         }
@@ -180,7 +179,18 @@ impl ProviderAdapterFactory for AnthropicProviderFactory {
             .api_key("factory-validation-only")
             .base_url(&provider.base_url)
             .build()
-            .map_err(|_| ProviderFactoryError::InvalidDefinition)?;
+            .map(|_| ())
+            .map_err(|_| ProviderFactoryError::InvalidDefinition)
+    }
+}
+
+impl ProviderAdapterFactory for AnthropicProviderFactory {
+    fn create(
+        &self,
+        provider: ProviderDefinition,
+        credentials: Arc<dyn ActiveCredentialSource>,
+    ) -> Result<Arc<dyn ModelProvider>, ProviderFactoryError> {
+        Self::validate_definition(&provider)?;
 
         Ok(Arc::new(RequestScopedAnthropicProvider::new(
             provider.id,

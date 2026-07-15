@@ -321,28 +321,32 @@ async fn factory_preserves_pinned_identity_binding_and_base_url() {
 }
 
 #[test]
-fn factory_rejects_wrong_kind_and_invalid_definition_without_details() {
+fn factory_preflight_is_redacted_and_never_resolves_credentials() {
     let factory = AnthropicProviderFactory;
-    let source: Arc<dyn ActiveCredentialSource> = Arc::new(MockSource::new([]));
-    let unsupported = factory
-        .create(
-            stored_provider(1, "secret-provider-kind", "https://example.invalid".into()),
-            source.clone(),
-        )
-        .err()
-        .unwrap();
+    let source = Arc::new(MockSource::new([]));
+    let unsupported = AnthropicProviderFactory::validate_definition(&stored_provider(
+        1,
+        "secret-provider-kind",
+        "https://example.invalid".into(),
+    ))
+    .unwrap_err();
     assert_eq!(unsupported, ProviderFactoryError::UnsupportedKind);
     assert_eq!(unsupported.to_string(), "provider kind is unsupported");
     assert!(!format!("{unsupported:?}").contains("secret-provider-kind"));
 
-    let invalid = factory
-        .create(
-            stored_provider(2, "anthropic_compatible", "not a url".into()),
-            source,
-        )
-        .err()
-        .unwrap();
+    let invalid = AnthropicProviderFactory::validate_definition(&stored_provider(
+        2,
+        "anthropic_compatible",
+        "not a url".into(),
+    ))
+    .unwrap_err();
     assert_eq!(invalid, ProviderFactoryError::InvalidDefinition);
     assert_eq!(invalid.to_string(), "provider definition is invalid");
     assert!(!format!("{invalid:?}").contains("not a url"));
+
+    let valid = stored_provider(3, "anthropic_compatible", "https://example.invalid".into());
+    AnthropicProviderFactory::validate_definition(&valid).unwrap();
+    factory.create(valid, source.clone()).unwrap();
+    assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+    assert!(source.bindings.lock().unwrap().is_empty());
 }
