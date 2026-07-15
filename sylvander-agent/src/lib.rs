@@ -129,8 +129,8 @@ pub mod prelude {
         EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry,
         MemoryExecutionContext, MemoryExpiryPatch, MemoryOwner, MemoryPatch, MemoryProvenance,
         MemoryProvenanceSource, MemoryReadTool, MemoryScope, MemoryStore, MemoryStoreError,
-        MemoryWriteTool, PresentPlanTool, ReadTool, SqliteMemoryStore, StartBackgroundTaskTool,
-        UpdatePlanTool, WriteTool,
+        MemoryWriteTool, PresentPlanTool, ReadTool, RelationshipMemoryRetentionPolicy,
+        SqliteMemoryStore, StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;

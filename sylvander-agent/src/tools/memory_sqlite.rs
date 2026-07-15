@@ -11,12 +11,13 @@ use sylvander_protocol::types::{AgentId, UserId};
 use super::memory::{
     Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
     MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryPatch, MemoryProvenance,
-    MemoryProvenanceSource, MemoryStore, MemoryStoreError, apply_patch, memory_not_visible,
-    next_revision, validate_append, validate_memory_id, validate_patch, validate_revision,
+    MemoryProvenanceSource, MemoryStore, MemoryStoreError, RelationshipMemoryRetentionPolicy,
+    apply_patch, memory_not_visible, next_revision, validate_append, validate_memory_id,
+    validate_patch, validate_revision,
 };
 
 const COMPONENT: &str = "relationship_memory";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS relationship_memories (
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS relationship_memories (
   origin_trace_id TEXT,
   origin_source TEXT NOT NULL,
   provenance_trusted INTEGER NOT NULL CHECK (provenance_trusted IN (0, 1)),
+  retention_policy_revision INTEGER NOT NULL CHECK (retention_policy_revision >= 1),
   PRIMARY KEY (owner_user, owner_agent, id)
 );
 CREATE INDEX IF NOT EXISTS relationship_memories_search
@@ -71,13 +73,41 @@ CREATE TRIGGER IF NOT EXISTS relationship_memory_audit_no_delete
 BEFORE DELETE ON relationship_memory_audit BEGIN
   SELECT RAISE(ABORT, 'memory audit is append-only');
 END;
+CREATE TABLE IF NOT EXISTS relationship_memory_retention_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  clock_watermark INTEGER NOT NULL,
+  policy_revision INTEGER NOT NULL CHECK (policy_revision >= 1),
+  default_ttl_days INTEGER NOT NULL CHECK (default_ttl_days > 0),
+  max_ttl_days INTEGER NOT NULL CHECK (max_ttl_days >= default_ttl_days),
+  expiry_grace_days INTEGER NOT NULL CHECK (expiry_grace_days >= 0),
+  superseded_retention_days INTEGER NOT NULL CHECK (superseded_retention_days >= 0),
+  batch_limit INTEGER NOT NULL CHECK (batch_limit > 0)
+);
+CREATE TABLE IF NOT EXISTS relationship_memory_retention_runs (
+  run_id TEXT PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  completed_at INTEGER NOT NULL,
+  policy_revision INTEGER NOT NULL CHECK (policy_revision >= 1),
+  clock_watermark INTEGER NOT NULL,
+  expired_count INTEGER NOT NULL CHECK (expired_count >= 0),
+  superseded_count INTEGER NOT NULL CHECK (superseded_count >= 0)
+);
+CREATE TABLE IF NOT EXISTS relationship_memory_retention_batches (
+  batch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES relationship_memory_retention_runs(run_id),
+  occurred_at INTEGER NOT NULL,
+  attempted_limit INTEGER NOT NULL CHECK (attempted_limit > 0),
+  expired_count INTEGER NOT NULL CHECK (expired_count >= 0),
+  superseded_count INTEGER NOT NULL CHECK (superseded_count >= 0)
+);
 ";
-const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, replacement.id, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted FROM relationship_memories m LEFT JOIN relationship_memories replacement ON replacement.record_key = m.superseded_by_record_key";
+const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, replacement.id, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted, m.retention_policy_revision FROM relationship_memories m LEFT JOIN relationship_memories replacement ON replacement.record_key = m.superseded_by_record_key";
 
 /// Durable implementation of the relationship-only [`MemoryStore`] contract.
 #[derive(Clone)]
 pub struct SqliteMemoryStore {
     connection: Arc<Mutex<Connection>>,
+    retention_policy: RelationshipMemoryRetentionPolicy,
 }
 
 impl std::fmt::Debug for SqliteMemoryStore {
@@ -88,20 +118,38 @@ impl std::fmt::Debug for SqliteMemoryStore {
 
 impl SqliteMemoryStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryStoreError> {
-        Self::from_connection(Connection::open(path).map_err(store_error)?)
+        Self::open_with_retention_policy(path, RelationshipMemoryRetentionPolicy::default())
+    }
+
+    pub fn open_with_retention_policy(
+        path: impl AsRef<Path>,
+        policy: RelationshipMemoryRetentionPolicy,
+    ) -> Result<Self, MemoryStoreError> {
+        Self::from_connection(Connection::open(path).map_err(store_error)?, policy)
     }
 
     pub fn open_in_memory() -> Result<Self, MemoryStoreError> {
-        Self::from_connection(Connection::open_in_memory().map_err(store_error)?)
+        Self::open_in_memory_with_retention_policy(RelationshipMemoryRetentionPolicy::default())
     }
 
-    fn from_connection(mut connection: Connection) -> Result<Self, MemoryStoreError> {
+    pub fn open_in_memory_with_retention_policy(
+        policy: RelationshipMemoryRetentionPolicy,
+    ) -> Result<Self, MemoryStoreError> {
+        Self::from_connection(Connection::open_in_memory().map_err(store_error)?, policy)
+    }
+
+    fn from_connection(
+        mut connection: Connection,
+        retention_policy: RelationshipMemoryRetentionPolicy,
+    ) -> Result<Self, MemoryStoreError> {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
         migrate(&mut connection)?;
+        activate_policy(&mut connection, &retention_policy)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            retention_policy,
         })
     }
 
@@ -125,6 +173,7 @@ impl MemoryStore for SqliteMemoryStore {
         append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
+        let append = self.retention_policy.apply_append(append)?;
         validate_append(&append)?;
         let now = crate::session::now_secs();
         let entry = MemoryEntry::materialize(
@@ -132,6 +181,7 @@ impl MemoryStore for SqliteMemoryStore {
             owner,
             append,
             ctx.provenance(),
+            self.retention_policy.revision(),
             now,
         )?;
         let record_key = uuid::Uuid::new_v4().to_string();
@@ -213,6 +263,7 @@ impl MemoryStore for SqliteMemoryStore {
         };
         validate_memory_id(id)?;
         validate_patch(&patch)?;
+        self.retention_policy.validate_patch(&patch)?;
         validate_revision(expected_revision)?;
         let now = crate::session::now_secs();
         self.with_connection(|connection| {
@@ -262,6 +313,7 @@ impl MemoryStore for SqliteMemoryStore {
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
+        let replacement = self.retention_policy.apply_append(replacement)?;
         validate_append(&replacement)?;
         validate_revision(expected_revision)?;
         let (user_id, agent_id) = match &owner {
@@ -274,6 +326,7 @@ impl MemoryStore for SqliteMemoryStore {
             owner,
             replacement,
             ctx.provenance(),
+            self.retention_policy.revision(),
             now,
         )?;
         let replacement_key = uuid::Uuid::new_v4().to_string();
@@ -448,7 +501,7 @@ fn verify_schema(connection: &Connection) -> Result<(), MemoryStoreError> {
 fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemoryStoreError> {
     let mut statement = connection
         .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit')) ORDER BY type, name, tbl_name",
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit', 'relationship_memory_retention_state', 'relationship_memory_retention_runs', 'relationship_memory_retention_batches')) ORDER BY type, name, tbl_name",
         )
         .map_err(|_| schema_error())?;
     statement
@@ -467,6 +520,51 @@ fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemorySt
 
 fn normalize_sql(sql: &str) -> String {
     sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn activate_policy(
+    connection: &mut Connection,
+    policy: &RelationshipMemoryRetentionPolicy,
+) -> Result<(), MemoryStoreError> {
+    let now = crate::session::now_secs();
+    let policy_revision_sql = i64::try_from(policy.revision()).map_err(|_| retention_error())?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| retention_error())?;
+    let existing: Option<(u64, u32, u32, u32, u32, u32, i64)> = transaction
+        .query_row(
+            "SELECT policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit, clock_watermark FROM relationship_memory_retention_state WHERE singleton = 1",
+            [],
+            |row| Ok((read_revision(row, 0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .optional()
+        .map_err(|_| retention_error())?;
+    if let Some((revision, default, max, grace, superseded, batch, watermark)) = existing {
+        let same = (default, max, grace, superseded, batch)
+            == (
+                policy.default_ttl_days(),
+                policy.max_ttl_days(),
+                policy.expiry_grace_days(),
+                policy.superseded_retention_days(),
+                policy.batch_limit(),
+            );
+        if revision > policy.revision()
+            || (revision == policy.revision() && !same)
+            || now < watermark
+        {
+            return Err(retention_error());
+        }
+        transaction.execute(
+            "UPDATE relationship_memory_retention_state SET clock_watermark = ?1, policy_revision = ?2, default_ttl_days = ?3, max_ttl_days = ?4, expiry_grace_days = ?5, superseded_retention_days = ?6, batch_limit = ?7 WHERE singleton = 1",
+            params![now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
+        ).map_err(|_| retention_error())?;
+    } else {
+        transaction.execute(
+            "INSERT INTO relationship_memory_retention_state (singleton, clock_watermark, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
+        ).map_err(|_| retention_error())?;
+    }
+    transaction.commit().map_err(|_| retention_error())
 }
 
 fn component_objects_exist(
@@ -521,6 +619,7 @@ fn decode_row(
             source: parse_source(row.get::<_, String>(19)?.as_str(), 19)?,
             trusted: row.get::<_, i64>(20)? == 1,
         },
+        retention_policy_revision: read_revision(row, 21)?,
     })
 }
 
@@ -550,8 +649,8 @@ fn insert_entry(
         return Err(MemoryStoreError::InvalidInput);
     };
     transaction.execute(
-        "INSERT INTO relationship_memories (record_key, owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json, revision, updated_at, expires_at, superseded_by_record_key, origin_actor_kind, origin_user_id, origin_agent_id, origin_session_id, origin_trace_id, origin_source, provenance_trusted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
-        params![record_key, user_id.0, agent_id.0, entry.id, encode(&entry.kind)?, entry.content, encode(&entry.references)?, encode(&entry.tags)?, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, encode(&entry.metadata)?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, actor_value(entry.provenance.actor), option_id(entry.provenance.user_id.as_ref()), option_id(entry.provenance.agent_id.as_ref()), option_id(entry.provenance.session_id.as_ref()), entry.provenance.trace_id, source_value(entry.provenance.source), entry.provenance.trusted],
+        "INSERT INTO relationship_memories (record_key, owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json, revision, updated_at, expires_at, superseded_by_record_key, origin_actor_kind, origin_user_id, origin_agent_id, origin_session_id, origin_trace_id, origin_source, provenance_trusted, retention_policy_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+        params![record_key, user_id.0, agent_id.0, entry.id, encode(&entry.kind)?, entry.content, encode(&entry.references)?, encode(&entry.tags)?, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, encode(&entry.metadata)?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, actor_value(entry.provenance.actor), option_id(entry.provenance.user_id.as_ref()), option_id(entry.provenance.agent_id.as_ref()), option_id(entry.provenance.session_id.as_ref()), entry.provenance.trace_id, source_value(entry.provenance.source), entry.provenance.trusted, i64::try_from(entry.retention_policy_revision).map_err(|_| MemoryStoreError::InvalidInput)?],
     ).map_err(store_error)?;
     Ok(())
 }
@@ -684,6 +783,10 @@ fn store_failure() -> MemoryStoreError {
 
 fn mutation_error() -> MemoryStoreError {
     MemoryStoreError::Store("memory mutation failed".into())
+}
+
+fn retention_error() -> MemoryStoreError {
+    MemoryStoreError::Store("memory retention operation failed".into())
 }
 
 #[cfg(test)]

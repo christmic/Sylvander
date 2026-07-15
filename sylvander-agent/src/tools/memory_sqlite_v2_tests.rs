@@ -192,7 +192,7 @@ async fn update_and_supersede_are_cas_guarded_and_audited() {
     let patch = MemoryPatch {
         content: Some("updated".into()),
         importance: Some(Importance::Critical),
-        expiry: Some(MemoryExpiryPatch::Never),
+        expiry: Some(MemoryExpiryPatch::AfterSeconds(30)),
         ..MemoryPatch::default()
     };
     assert!(matches!(
@@ -208,7 +208,7 @@ async fn update_and_supersede_are_cas_guarded_and_audited() {
     assert_eq!(updated.revision, 2);
     assert_eq!(updated.content, "updated");
     assert_eq!(updated.importance, Importance::Critical);
-    assert_eq!(updated.expires_at, None);
+    assert!(updated.expires_at.is_some());
     assert_eq!(updated.provenance, original.provenance);
 
     assert!(matches!(
