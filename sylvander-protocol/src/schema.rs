@@ -62,6 +62,7 @@ mod tests {
             "update_session_config",
             "submit_feedback",
             "agent_admin",
+            "registry_admin",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }

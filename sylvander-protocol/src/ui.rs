@@ -69,6 +69,9 @@ pub enum UiClientMessage {
     AgentAdmin {
         request: crate::AgentAdminRequest,
     },
+    RegistryAdmin {
+        request: crate::RegistryAdminRequest,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -307,6 +310,9 @@ pub enum UiServerMessage {
     AgentAdmin {
         response: crate::AgentAdminResponse,
     },
+    RegistryAdmin {
+        response: crate::RegistryAdminResponse,
+    },
     RuntimeInfo {
         /// Legacy model-only identity retained for older clients.
         model: String,
@@ -534,5 +540,38 @@ mod tests {
         let json = serde_json::to_value(server).unwrap();
         assert_eq!(json["type"], "agent_admin");
         assert_eq!(json["response"]["error"]["code"], "revision_conflict");
+    }
+
+    #[test]
+    fn registry_administration_uses_one_transport_envelope() {
+        let client = UiClientMessage::RegistryAdmin {
+            request: crate::RegistryAdminRequest::InspectProviderRevision {
+                provider_id: "alpha".into(),
+                revision: 2,
+            },
+        };
+        let client_json = serde_json::to_value(&client).unwrap();
+        assert_eq!(client_json["type"], "registry_admin");
+        assert_eq!(
+            serde_json::from_value::<UiClientMessage>(client_json).unwrap(),
+            client
+        );
+
+        let server = UiServerMessage::RegistryAdmin {
+            response: crate::RegistryAdminResponse::Error {
+                error: crate::RegistryAdminError {
+                    code: crate::RegistryAdminErrorCode::StorageUnavailable,
+                    message: "registry unavailable".into(),
+                    provider_id: None,
+                    revision: None,
+                },
+            },
+        };
+        let server_json = serde_json::to_value(&server).unwrap();
+        assert_eq!(server_json["type"], "registry_admin");
+        assert_eq!(
+            serde_json::from_value::<UiServerMessage>(server_json).unwrap(),
+            server
+        );
     }
 }

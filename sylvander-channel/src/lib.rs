@@ -38,9 +38,10 @@ use sylvander_agent::bus::MessageBus;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
-    AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionId, UiClientMessage,
+    AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
+    RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse,
+    RunFeedback, SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest,
+    SessionCreateRequest, SessionId, UiClientMessage,
 };
 
 /// Transport-neutral UI service boundary owned by the runtime.
@@ -98,6 +99,17 @@ pub trait UiService: Send + Sync {
     ) -> AgentAdminResponse {
         unavailable_agent_admin_response()
     }
+
+    /// Apply one privileged registry administration request.
+    ///
+    /// Runtimes that have not installed a registry service fail closed.
+    async fn registry_admin(
+        &self,
+        _boundary: &BoundaryContext,
+        _request: RegistryAdminRequest,
+    ) -> RegistryAdminResponse {
+        unavailable_registry_admin_response()
+    }
 }
 
 /// Content-free response used when the runtime has no Agent administration
@@ -112,6 +124,20 @@ pub fn unavailable_agent_admin_response() -> AgentAdminResponse {
             revision: None,
             expected_active_revision: None,
             actual_active_revision: None,
+        },
+    }
+}
+
+/// Content-free response used when no registry administration service exists.
+/// The request identity and revision are intentionally not reflected.
+#[must_use]
+pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
+    RegistryAdminResponse::Error {
+        error: RegistryAdminError {
+            code: RegistryAdminErrorCode::Unauthorized,
+            message: "Registry administration service is unavailable".into(),
+            provider_id: None,
+            revision: None,
         },
     }
 }
@@ -444,6 +470,35 @@ mod tests {
             }
         ));
         assert!(!json.contains("private-agent"));
+        assert!(!json.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_default_fails_closed_without_reflecting_request() {
+        let boundary = BoundaryContext::unauthenticated("unix", "unix", "request-1");
+        let response = DefaultUiService
+            .registry_admin(
+                &boundary,
+                RegistryAdminRequest::InspectProviderRevision {
+                    provider_id: "private-provider".into(),
+                    revision: 42,
+                },
+            )
+            .await;
+        let json = serde_json::to_string(&response).expect("serialize response");
+
+        assert!(matches!(
+            response,
+            RegistryAdminResponse::Error {
+                error: RegistryAdminError {
+                    code: RegistryAdminErrorCode::Unauthorized,
+                    provider_id: None,
+                    revision: None,
+                    ..
+                }
+            }
+        ));
+        assert!(!json.contains("private-provider"));
         assert!(!json.contains("42"));
     }
 
