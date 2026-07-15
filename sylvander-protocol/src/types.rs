@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const UI_PROTOCOL_MIN_VERSION: u16 = 1;
-pub const UI_PROTOCOL_MAX_VERSION: u16 = 2;
+pub const UI_PROTOCOL_MAX_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolHello {
@@ -1534,14 +1534,21 @@ mod tests {
         };
         assert_eq!(negotiate_ui_protocol(&legacy), Ok(1));
 
-        let current = UiProtocolHello {
+        let version_two = UiProtocolHello {
             max_version: 2,
             ..legacy.clone()
         };
-        assert_eq!(negotiate_ui_protocol(&current), Ok(2));
+        assert_eq!(negotiate_ui_protocol(&version_two), Ok(2));
+
+        let current = UiProtocolHello {
+            min_version: 3,
+            max_version: 3,
+            ..legacy.clone()
+        };
+        assert_eq!(negotiate_ui_protocol(&current), Ok(3));
 
         let incompatible = UiProtocolHello {
-            min_version: 3,
+            min_version: 4,
             max_version: 4,
             ..legacy
         };

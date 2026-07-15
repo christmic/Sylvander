@@ -355,12 +355,15 @@ impl Channel for UnixChannel {
 
 fn ui_protocol_capabilities() -> Vec<String> {
     [
+        "agent_administration",
         "attachments",
         "approval_scopes",
         "compaction",
+        "credential_registry_lifecycle",
         "diagnostics",
         "model_selection",
         "plans",
+        "registry_administration",
         "session_replay",
         "sessions",
         "tasks",
@@ -1773,30 +1776,42 @@ mod tests {
                     .is_some_and(|principal| principal.has_role("admin")),
                 "non-administrator reached registry dispatch"
             );
-            let sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
-                provider_id,
-                revision,
-            } = request
-            else {
-                unreachable!()
-            };
-            sylvander_protocol::RegistryAdminResponse::Success {
-                result: Box::new(
-                    sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
-                        revision: sylvander_protocol::ProviderRevisionView {
-                            definition: sylvander_protocol::RedactedProviderDefinition {
-                                provider_id,
-                                revision,
-                                kind: "mock".into(),
-                                base_url_sha256: "base-digest".into(),
-                                credential_binding_id_sha256: "binding-digest".into(),
-                            },
-                            digest_sha256: "definition-digest".into(),
+            let result = match request {
+                sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                    provider_id,
+                    revision,
+                } => sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                    revision: sylvander_protocol::ProviderRevisionView {
+                        definition: sylvander_protocol::RedactedProviderDefinition {
+                            provider_id,
+                            revision,
+                            kind: "mock".into(),
+                            base_url_sha256: "base-digest".into(),
+                            credential_binding_id_sha256: "binding-digest".into(),
+                        },
+                        digest_sha256: "definition-digest".into(),
+                        created_at_unix_secs: 7,
+                        active: true,
+                    },
+                },
+                sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding { .. } => {
+                    sylvander_protocol::RegistryAdminResult::CredentialBindingCreated {
+                        generation: sylvander_protocol::CredentialGenerationView {
+                            binding_id_sha256: "binding-id-digest".into(),
+                            generation: 1,
+                            reference_kind:
+                                sylvander_protocol::CredentialReferenceKind::Environment,
+                            reference_configured: true,
+                            reference_digest_sha256: "reference-digest".into(),
                             created_at_unix_secs: 7,
                             active: true,
                         },
-                    },
-                ),
+                    }
+                }
+                _ => unreachable!(),
+            };
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(result),
             }
         }
     }
@@ -2057,16 +2072,8 @@ mod tests {
         assert!(!json.contains("42"));
     }
 
-    async fn dispatch_registry_admin_as(
-        principal: sylvander_protocol::AuthenticatedPrincipal,
-    ) -> ServerMsg {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
-            readiness: None,
-        };
-        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+    fn inspect_registry_request() -> ClientMsg {
+        serde_json::from_value(serde_json::json!({
             "type": "registry_admin",
             "request": {
                 "operation": "inspect_provider_revision",
@@ -2074,7 +2081,19 @@ mod tests {
                 "revision": 9
             }
         }))
-        .expect("decode registry request");
+        .expect("decode registry request")
+    }
+
+    async fn dispatch_client_message_as(
+        principal: sylvander_protocol::AuthenticatedPrincipal,
+        request: ClientMsg,
+    ) -> ServerMsg {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(Arc::new(EmptyUiService)),
+            readiness: None,
+        };
         let boundary = sylvander_protocol::BoundaryContext::authenticated(
             principal,
             "unix-test",
@@ -2106,7 +2125,7 @@ mod tests {
             sylvander_protocol::AuthenticationMethod::UnixPeer,
         );
         principal.roles.push("admin".into());
-        let response = dispatch_registry_admin_as(principal).await;
+        let response = dispatch_client_message_as(principal, inspect_registry_request()).await;
         let wire = serde_json::to_string(&response).expect("encode registry response");
         let decoded: ServerMsg = serde_json::from_str(&wire).expect("decode registry response");
 
@@ -2130,10 +2149,62 @@ mod tests {
             sylvander_protocol::AuthenticationMethod::UnixPeer,
         );
         assert!(matches!(
-            dispatch_registry_admin_as(principal).await,
+            dispatch_client_message_as(principal, inspect_registry_request()).await,
             ServerMsg::BoundaryDenied { error }
                 if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
                     && error.operation == "registry_admin"
+        ));
+    }
+
+    #[test]
+    fn server_advertises_administration_capabilities() {
+        let capabilities = ui_protocol_capabilities();
+        for capability in [
+            "agent_administration",
+            "registry_administration",
+            "credential_registry_lifecycle",
+        ] {
+            assert!(capabilities.iter().any(|item| item == capability));
+        }
+    }
+
+    #[tokio::test]
+    async fn credential_create_round_trip_returns_only_redacted_view() {
+        let binding_id = "credential/private-binding";
+        let locator = "PRIVATE_PROVIDER_API_KEY";
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": binding_id,
+                "reference": {
+                    "source": "environment",
+                    "name": locator
+                }
+            }
+        }))
+        .expect("decode credential create request");
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        principal.roles.push("admin".into());
+
+        let response = dispatch_client_message_as(principal, request).await;
+        let wire = serde_json::to_string(&response).expect("encode credential response");
+        assert!(!wire.contains(binding_id));
+        assert!(!wire.contains(locator));
+        assert!(matches!(
+            response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::CredentialBindingCreated { generation }
+                    if generation.generation == 1
+                        && generation.reference_configured
+                        && generation.binding_id_sha256 == "binding-id-digest"
+            )
         ));
     }
 
