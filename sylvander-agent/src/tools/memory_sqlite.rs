@@ -17,7 +17,9 @@ use super::memory::{
 };
 
 mod backup;
-pub use backup::{MemoryBackupArtifact, MemoryBackupManifest, SqliteMemoryAdmin};
+pub use backup::{
+    MemoryBackupArtifact, MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin,
+};
 
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 3;
