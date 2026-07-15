@@ -9,7 +9,7 @@ use sylvander_agent::run::AgentRun;
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::AgentSpec;
 use sylvander_agent::tool::ToolRegistry;
-use sylvander_agent::tools::memory::InMemoryMemoryStore;
+use sylvander_agent::tools::memory::MemoryStore;
 use sylvander_agent::tools::{
     AskUserTool, EditTool, MemoryReadTool, PresentPlanTool, ReadTool, StartBackgroundTaskTool,
     UpdatePlanTool, WriteTool,
@@ -60,6 +60,8 @@ pub struct ConfiguredAgent {
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
     pub execution_targets: HashSet<String>,
+    #[cfg(test)]
+    memory_store: Arc<dyn MemoryStore>,
     prompt_resolver: Arc<PromptResolver>,
     revision_bindings: Option<RegistryRevisionBindings>,
 }
@@ -69,12 +71,22 @@ pub fn build_agents(
     config: &ServerConfig,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
     secrets: &dyn SecretResolver,
 ) -> Result<Vec<ConfiguredAgent>, CompositionError> {
     config
         .agents
         .iter()
-        .map(|agent| build_agent(config, agent, bus.clone(), sessions.clone(), secrets))
+        .map(|agent| {
+            build_agent(
+                config,
+                agent,
+                bus.clone(),
+                sessions.clone(),
+                memory.clone(),
+                secrets,
+            )
+        })
         .collect()
 }
 
@@ -83,6 +95,7 @@ pub(crate) fn build_agent(
     definition: &AgentDefinitionConfig,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
     secrets: &dyn SecretResolver,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let provider = config
@@ -130,13 +143,12 @@ pub(crate) fn build_agent(
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, definition, &default_selection, &mut spec)?;
 
-    let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
 
     let builder = AgentRun::builder(spec.clone(), client)
         .bus(bus)
         .session_store(sessions)
-        .memory(memory)
+        .memory(memory.clone())
         .override_tools(tools)
         .available_models(model_list)
         .prompt_resolver(prompt_resolver.clone())
@@ -152,6 +164,8 @@ pub(crate) fn build_agent(
         approval_enabled: config.server.approval.enabled,
         definition: definition.clone(),
         execution_targets: execution_targets(config),
+        #[cfg(test)]
+        memory_store: memory,
         prompt_resolver,
         revision_bindings: None,
     })
@@ -165,6 +179,7 @@ pub(crate) fn build_registry_agent(
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     build_registry_agent_with_resolver(
         config,
@@ -172,6 +187,7 @@ pub(crate) fn build_registry_agent(
         registry,
         bus,
         sessions,
+        memory,
         Arc::new(SystemSecretResolver),
     )
 }
@@ -183,6 +199,7 @@ pub(crate) fn build_registry_agent_with_resolver(
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
     resolver: Arc<dyn CredentialSecretResolver>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let RegistryCompositionSnapshot {
@@ -222,7 +239,6 @@ pub(crate) fn build_registry_agent_with_resolver(
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_selection, &mut spec)?;
 
-    let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
     let lifecycles = definitions
         .iter()
@@ -235,7 +251,7 @@ pub(crate) fn build_registry_agent_with_resolver(
     let mut builder = AgentRun::provider_builder(spec.clone(), provider_adapter, primary)
         .bus(bus)
         .session_store(sessions)
-        .memory(memory)
+        .memory(memory.clone())
         .override_tools(tools)
         .available_provider_models(provider_models)
         .model_lifecycles(lifecycles)
@@ -253,6 +269,8 @@ pub(crate) fn build_registry_agent_with_resolver(
         approval_enabled: config.server.approval.enabled,
         definition,
         execution_targets: execution_targets(config),
+        #[cfg(test)]
+        memory_store: memory,
         prompt_resolver,
         revision_bindings: Some(revision_bindings),
     })
@@ -266,6 +284,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
+    memory: Arc<dyn MemoryStore>,
     resolver: Arc<dyn CredentialSecretResolver>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let VersionedRegistryCompositionSnapshot {
@@ -319,7 +338,6 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
-    let memory = Arc::new(InMemoryMemoryStore::new());
     let tools = default_tools(memory.clone());
     let lifecycles = definitions
         .iter()
@@ -350,7 +368,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
     let builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
         .session_store(sessions)
-        .memory(memory)
+        .memory(memory.clone())
         .override_tools(tools)
         .available_provider_models(provider_models)
         .qualified_model_lifecycles(lifecycles)
@@ -367,9 +385,18 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         approval_enabled: config.server.approval.enabled,
         definition,
         execution_targets: execution_targets(config),
+        #[cfg(test)]
+        memory_store: memory,
         prompt_resolver,
         revision_bindings: Some(revision_bindings),
     })
+}
+
+impl ConfiguredAgent {
+    #[cfg(test)]
+    pub(crate) fn uses_memory_store(&self, store: &Arc<dyn MemoryStore>) -> bool {
+        Arc::ptr_eq(&self.memory_store, store)
+    }
 }
 
 /// Resolve sparse session overrides against one immutable Agent definition.
@@ -559,7 +586,7 @@ fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> Sessi
     }
 }
 
-fn default_tools(memory: Arc<InMemoryMemoryStore>) -> ToolRegistry {
+pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
     ToolRegistry::new()
         .register(ReadTool::new("/"))
         .register(WriteTool::new("/"))
@@ -938,6 +965,7 @@ mod tests {
     use super::*;
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_agent::tools::InMemoryMemoryStore;
     use sylvander_protocol::ModelSelection;
 
     #[test]
@@ -1123,6 +1151,7 @@ model_name = "shared"
             registry,
             bus,
             sessions,
+            Arc::new(InMemoryMemoryStore::new()),
             Arc::new(crate::config::SystemSecretResolver),
         )
         .unwrap();
@@ -1212,6 +1241,7 @@ model_name = "shared"
             registry,
             bus,
             sessions,
+            Arc::new(InMemoryMemoryStore::new()),
             Arc::new(crate::config::SystemSecretResolver),
         );
         let Err(error) = result else {
@@ -1298,8 +1328,14 @@ path = "/tmp/sylvander-test.sock"
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
 
-        let mut agents =
-            build_agents(&config, bus, sessions, &crate::config::SystemSecretResolver).unwrap();
+        let mut agents = build_agents(
+            &config,
+            bus,
+            sessions,
+            Arc::new(InMemoryMemoryStore::new()),
+            &crate::config::SystemSecretResolver,
+        )
+        .unwrap();
 
         assert_eq!(agents.len(), 1);
         assert_eq!(
