@@ -254,6 +254,26 @@ impl MemoryAppend {
     }
 }
 
+/// Caller-controlled changes to an active relationship memory. Omitted fields
+/// remain unchanged; ownership and provenance are never patchable.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MemoryPatch {
+    pub kind: Option<MemoryKind>,
+    pub content: Option<String>,
+    pub references: Option<Vec<MemoryReference>>,
+    pub tags: Option<Vec<String>>,
+    pub importance: Option<Importance>,
+    pub metadata: Option<HashMap<String, String>>,
+    pub expiry: Option<MemoryExpiryPatch>,
+}
+
+/// Explicit expiry mutation; absence from [`MemoryPatch`] means preserve it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryExpiryPatch {
+    Never,
+    AfterSeconds(u64),
+}
+
 /// Immutable origin recorded when a memory is created. These fields are
 /// derived from the runtime execution context, never from [`MemoryAppend`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +495,24 @@ pub trait MemoryStore: Send + Sync {
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError>;
 
+    /// Patch an active entry using optimistic concurrency.
+    async fn update_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        patch: MemoryPatch,
+    ) -> Result<MemoryEntry, MemoryStoreError>;
+
+    /// Atomically replace an active entry and retire the previous revision.
+    async fn supersede_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        replacement: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError>;
+
     /// Delete a relationship entry without revealing another owner's entry.
     async fn delete_relationship(
         &self,
@@ -603,6 +641,64 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(results)
     }
 
+    async fn update_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        patch: MemoryPatch,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_memory_id(id)?;
+        validate_patch(&patch)?;
+        validate_revision(expected_revision)?;
+        let now = crate::session::now_secs();
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.id == id && entry.owner == owner && is_active(entry, now))
+            .ok_or_else(memory_not_visible)?;
+        if entry.revision != expected_revision {
+            return Err(MemoryStoreError::Conflict);
+        }
+        apply_patch(entry, patch, now)?;
+        Ok(entry.clone())
+    }
+
+    async fn supersede_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        replacement: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_memory_id(id)?;
+        validate_append(&replacement)?;
+        validate_revision(expected_revision)?;
+        let now = crate::session::now_secs();
+        let replacement = MemoryEntry::materialize(
+            uuid::Uuid::new_v4().to_string(),
+            owner.clone(),
+            replacement,
+            ctx.provenance(),
+            now,
+        )?;
+        let mut entries = self.entries.write().await;
+        let original = entries
+            .iter_mut()
+            .find(|entry| entry.id == id && entry.owner == owner && is_active(entry, now))
+            .ok_or_else(memory_not_visible)?;
+        if original.revision != expected_revision {
+            return Err(MemoryStoreError::Conflict);
+        }
+        original.revision = next_revision(original.revision)?;
+        original.updated_at = now;
+        original.superseded_by = Some(replacement.id.clone());
+        entries.push(replacement.clone());
+        Ok(replacement)
+    }
+
     async fn delete_relationship(
         &self,
         ctx: &MemoryExecutionContext,
@@ -611,13 +707,12 @@ impl MemoryStore for InMemoryMemoryStore {
     ) -> Result<(), MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
-        if expected_revision == 0 {
-            return Err(MemoryStoreError::InvalidInput);
-        }
+        validate_revision(expected_revision)?;
+        let now = crate::session::now_secs();
         let mut entries = self.entries.write().await;
         let Some(index) = entries
             .iter()
-            .position(|entry| entry.id == id && entry.owner == owner)
+            .position(|entry| entry.id == id && entry.owner == owner && is_active(entry, now))
         else {
             return Err(memory_not_visible());
         };
@@ -671,6 +766,75 @@ pub(super) fn validate_append(append: &MemoryAppend) -> Result<(), MemoryStoreEr
     {
         return Err(MemoryStoreError::InvalidInput);
     }
+    Ok(())
+}
+
+pub(super) fn validate_patch(patch: &MemoryPatch) -> Result<(), MemoryStoreError> {
+    if patch == &MemoryPatch::default() {
+        return Err(MemoryStoreError::InvalidInput);
+    }
+    let candidate = MemoryAppend {
+        kind: patch.kind.clone().unwrap_or(MemoryKind::AgentNote),
+        content: patch.content.clone().unwrap_or_else(|| "valid".into()),
+        references: patch.references.clone().unwrap_or_default(),
+        tags: patch.tags.clone().unwrap_or_default(),
+        importance: patch.importance.unwrap_or_default(),
+        metadata: patch.metadata.clone().unwrap_or_default(),
+        expires_after_secs: match patch.expiry {
+            Some(MemoryExpiryPatch::AfterSeconds(seconds)) => Some(seconds),
+            _ => None,
+        },
+    };
+    validate_append(&candidate)
+}
+
+pub(super) fn validate_revision(revision: u64) -> Result<(), MemoryStoreError> {
+    if revision == 0 || i64::try_from(revision).is_err() {
+        return Err(MemoryStoreError::InvalidInput);
+    }
+    Ok(())
+}
+
+pub(super) fn next_revision(revision: u64) -> Result<u64, MemoryStoreError> {
+    revision.checked_add(1).ok_or(MemoryStoreError::Conflict)
+}
+
+pub(super) fn apply_patch(
+    entry: &mut MemoryEntry,
+    patch: MemoryPatch,
+    now: i64,
+) -> Result<(), MemoryStoreError> {
+    if let Some(kind) = patch.kind {
+        entry.kind = kind;
+    }
+    if let Some(content) = patch.content {
+        entry.content = content;
+    }
+    if let Some(references) = patch.references {
+        entry.references = references;
+    }
+    if let Some(tags) = patch.tags {
+        entry.tags = tags;
+    }
+    if let Some(importance) = patch.importance {
+        entry.importance = importance;
+    }
+    if let Some(metadata) = patch.metadata {
+        entry.metadata = metadata;
+    }
+    if let Some(expiry) = patch.expiry {
+        entry.expires_at = match expiry {
+            MemoryExpiryPatch::Never => None,
+            MemoryExpiryPatch::AfterSeconds(seconds) => Some(
+                now.checked_add(
+                    i64::try_from(seconds).map_err(|_| MemoryStoreError::InvalidInput)?,
+                )
+                .ok_or(MemoryStoreError::InvalidInput)?,
+            ),
+        };
+    }
+    entry.revision = next_revision(entry.revision)?;
+    entry.updated_at = now;
     Ok(())
 }
 
@@ -851,6 +1015,18 @@ mod tests {
                 Err(MemoryStoreError::AccessDenied)
             ));
             assert!(matches!(
+                store
+                    .update_relationship(&ctx, "valid-id", 1, MemoryPatch::default())
+                    .await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
+            assert!(matches!(
+                store
+                    .supersede_relationship(&ctx, "valid-id", 1, MemoryAppend::new("forbidden"))
+                    .await,
+                Err(MemoryStoreError::AccessDenied)
+            ));
+            assert!(matches!(
                 store.delete_relationship(&ctx, "valid-id", 1).await,
                 Err(MemoryStoreError::AccessDenied)
             ));
@@ -966,6 +1142,66 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn update_and_supersede_are_cas_guarded_and_hide_inactive() {
+        let store = InMemoryMemoryStore::new();
+        let ctx = worker(&session("alice", "a1", "s1"));
+        let original = store
+            .append_relationship(&ctx, MemoryAppend::new("old").with_ttl(60))
+            .await
+            .unwrap();
+        let patch = MemoryPatch {
+            content: Some("updated".into()),
+            importance: Some(Importance::Critical),
+            expiry: Some(MemoryExpiryPatch::Never),
+            ..MemoryPatch::default()
+        };
+        assert!(matches!(
+            store
+                .update_relationship(&ctx, &original.id, 2, patch.clone())
+                .await,
+            Err(MemoryStoreError::Conflict)
+        ));
+        let updated = store
+            .update_relationship(&ctx, &original.id, 1, patch)
+            .await
+            .unwrap();
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.content, "updated");
+        assert_eq!(updated.importance, Importance::Critical);
+        assert_eq!(updated.expires_at, None);
+        assert_eq!(updated.provenance, original.provenance);
+
+        let replacement = store
+            .supersede_relationship(
+                &ctx,
+                &original.id,
+                updated.revision,
+                MemoryAppend::new("replacement"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replacement.revision, 1);
+        assert!(
+            store
+                .get_relationship(&ctx, &original.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .search_relationship(&ctx, "", MemoryFilter::default())
+                .await
+                .unwrap(),
+            [replacement]
+        );
+        assert!(matches!(
+            store.delete_relationship(&ctx, &original.id, 3).await,
+            Err(MemoryStoreError::NotFound)
+        ));
     }
 
     #[test]

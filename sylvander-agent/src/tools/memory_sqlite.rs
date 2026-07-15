@@ -10,8 +10,9 @@ use sylvander_protocol::types::{AgentId, UserId};
 
 use super::memory::{
     Importance, MAX_MEMORY_QUERY_BYTES, MAX_MEMORY_RESULTS, MemoryAppend, MemoryEntry,
-    MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryProvenance, MemoryProvenanceSource,
-    MemoryStore, MemoryStoreError, memory_not_visible, validate_append, validate_memory_id,
+    MemoryExecutionContext, MemoryFilter, MemoryOwner, MemoryPatch, MemoryProvenance,
+    MemoryProvenanceSource, MemoryStore, MemoryStoreError, apply_patch, memory_not_visible,
+    next_revision, validate_append, validate_memory_id, validate_patch, validate_revision,
 };
 
 const COMPONENT: &str = "relationship_memory";
@@ -132,23 +133,22 @@ impl MemoryStore for SqliteMemoryStore {
             ctx.provenance(),
             now,
         )?;
-        let MemoryOwner::Relationship { user_id, agent_id } = &entry.owner else {
-            unreachable!("relationship context returned another scope")
-        };
-        let kind = encode(&entry.kind)?;
-        let references = encode(&entry.references)?;
-        let tags = encode(&entry.tags)?;
-        let metadata = encode(&entry.metadata)?;
         let record_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            transaction.execute(
-                "INSERT INTO relationship_memories (record_key, owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json, revision, updated_at, expires_at, superseded_by_record_key, origin_actor_kind, origin_user_id, origin_agent_id, origin_session_id, origin_trace_id, origin_source, provenance_trusted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
-                params![record_key, user_id.0, agent_id.0, entry.id, kind, entry.content, references, tags, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, metadata, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, actor_value(entry.provenance.actor), option_id(entry.provenance.user_id.as_ref()), option_id(entry.provenance.agent_id.as_ref()), option_id(entry.provenance.session_id.as_ref()), entry.provenance.trace_id, source_value(entry.provenance.source), entry.provenance.trusted],
-            ).map_err(store_error)?;
-            append_audit(&transaction, ctx, &record_key, "append", None, Some(1), now, 0x3f)?;
+            insert_entry(&transaction, &record_key, &entry)?;
+            append_audit(
+                &transaction,
+                ctx,
+                &record_key,
+                "append",
+                None,
+                Some(1),
+                now,
+                0x3f,
+            )?;
             transaction.commit().map_err(store_error)
         })?;
         Ok(entry)
@@ -160,6 +160,7 @@ impl MemoryStore for SqliteMemoryStore {
         query: &str,
         filter: MemoryFilter,
     ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
         if query.len() > MAX_MEMORY_QUERY_BYTES
             || filter
                 .limit
@@ -167,7 +168,6 @@ impl MemoryStore for SqliteMemoryStore {
         {
             return Err(MemoryStoreError::InvalidInput);
         }
-        let owner = ctx.relationship_owner()?;
         let MemoryOwner::Relationship { user_id, agent_id } = owner else {
             unreachable!("relationship constructor returned another scope")
         };
@@ -200,6 +200,104 @@ impl MemoryStore for SqliteMemoryStore {
         })
     }
 
+    async fn update_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        patch: MemoryPatch,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let MemoryOwner::Relationship { user_id, agent_id } = ctx.relationship_owner()? else {
+            unreachable!("relationship constructor returned another scope")
+        };
+        validate_memory_id(id)?;
+        validate_patch(&patch)?;
+        validate_revision(expected_revision)?;
+        let now = crate::session::now_secs();
+        self.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| mutation_error())?;
+            let (record_key, revision) = select_active_record(
+                &transaction,
+                &user_id,
+                &agent_id,
+                id,
+                now,
+            )?
+            .ok_or_else(memory_not_visible)?;
+            if revision != expected_revision {
+                return Err(MemoryStoreError::Conflict);
+            }
+            let mut entry = transaction
+                .query_row(
+                    &format!("{ENTRY_SELECT} WHERE m.record_key = ?1"),
+                    [&record_key],
+                    |row| decode_row(row, &user_id, &agent_id),
+                )
+                .map_err(|_| mutation_error())?;
+            apply_patch(&mut entry, patch, now)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE relationship_memories SET kind_json = ?1, content = ?2, references_json = ?3, tags_json = ?4, importance = ?5, metadata_json = ?6, revision = ?7, updated_at = ?8, expires_at = ?9 WHERE record_key = ?10 AND revision = ?11 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?8)",
+                    params![encode(&entry.kind).map_err(|_| mutation_error())?, entry.content, encode(&entry.references).map_err(|_| mutation_error())?, encode(&entry.tags).map_err(|_| mutation_error())?, importance_value(entry.importance), encode(&entry.metadata).map_err(|_| mutation_error())?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, record_key, i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?],
+                )
+                .map_err(|_| mutation_error())?;
+            if changed != 1 {
+                return Err(MemoryStoreError::Conflict);
+            }
+            append_audit(&transaction, ctx, &record_key, "update", Some(revision), Some(entry.revision), now, 0x3f).map_err(|_| mutation_error())?;
+            transaction.commit().map_err(|_| mutation_error())?;
+            Ok(entry)
+        })
+    }
+
+    async fn supersede_relationship(
+        &self,
+        ctx: &MemoryExecutionContext,
+        id: &str,
+        expected_revision: u64,
+        replacement: MemoryAppend,
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let owner = ctx.relationship_owner()?;
+        validate_memory_id(id)?;
+        validate_append(&replacement)?;
+        validate_revision(expected_revision)?;
+        let (user_id, agent_id) = match &owner {
+            MemoryOwner::Relationship { user_id, agent_id } => (user_id.clone(), agent_id.clone()),
+            _ => unreachable!("relationship constructor returned another scope"),
+        };
+        let now = crate::session::now_secs();
+        let replacement = MemoryEntry::materialize(
+            uuid::Uuid::new_v4().to_string(),
+            owner,
+            replacement,
+            ctx.provenance(),
+            now,
+        )?;
+        let replacement_key = uuid::Uuid::new_v4().to_string();
+        self.with_connection(|connection| {
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| mutation_error())?;
+            let (record_key, revision) = select_active_record(&transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
+            if revision != expected_revision {
+                return Err(MemoryStoreError::Conflict);
+            }
+            let next = next_revision(revision)?;
+            insert_entry(&transaction, &replacement_key, &replacement).map_err(|_| mutation_error())?;
+            let changed = transaction.execute(
+                "UPDATE relationship_memories SET superseded_by_record_key = ?1, revision = ?2, updated_at = ?3 WHERE record_key = ?4 AND revision = ?5 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?3) AND record_key <> ?1 AND EXISTS (SELECT 1 FROM relationship_memories replacement WHERE replacement.record_key = ?1 AND replacement.owner_user = relationship_memories.owner_user AND replacement.owner_agent = relationship_memories.owner_agent AND replacement.superseded_by_record_key IS NULL)",
+                params![replacement_key, i64::try_from(next).map_err(|_| MemoryStoreError::InvalidInput)?, now, record_key, i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?],
+            ).map_err(|_| mutation_error())?;
+            if changed != 1 {
+                return Err(MemoryStoreError::Conflict);
+            }
+            append_audit(&transaction, ctx, &replacement_key, "append", None, Some(1), now, 0x3f).map_err(|_| mutation_error())?;
+            append_audit(&transaction, ctx, &record_key, "supersede", Some(revision), Some(next), now, 0x40).map_err(|_| mutation_error())?;
+            transaction.commit().map_err(|_| mutation_error())?;
+            Ok(replacement)
+        })
+    }
+
     async fn delete_relationship(
         &self,
         ctx: &MemoryExecutionContext,
@@ -210,9 +308,7 @@ impl MemoryStore for SqliteMemoryStore {
             unreachable!("relationship constructor returned another scope")
         };
         validate_memory_id(id)?;
-        if expected_revision == 0 {
-            return Err(MemoryStoreError::InvalidInput);
-        }
+        validate_revision(expected_revision)?;
         let expected_revision =
             i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?;
         let now = crate::session::now_secs();
@@ -222,8 +318,8 @@ impl MemoryStore for SqliteMemoryStore {
                 .map_err(delete_error)?;
             let visible: Option<(String, i64)> = transaction
                 .query_row(
-                    "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3",
-                    params![user_id.0, agent_id.0, id],
+                    "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?4)",
+                    params![user_id.0, agent_id.0, id, now],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
@@ -404,6 +500,38 @@ fn decode_row(
     })
 }
 
+fn select_active_record(
+    transaction: &rusqlite::Transaction<'_>,
+    user_id: &UserId,
+    agent_id: &AgentId,
+    id: &str,
+    now: i64,
+) -> Result<Option<(String, u64)>, MemoryStoreError> {
+    transaction
+        .query_row(
+            "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?4)",
+            params![user_id.0, agent_id.0, id, now],
+            |row| Ok((row.get(0)?, read_revision(row, 1)?)),
+        )
+        .optional()
+        .map_err(|_| mutation_error())
+}
+
+fn insert_entry(
+    transaction: &rusqlite::Transaction<'_>,
+    record_key: &str,
+    entry: &MemoryEntry,
+) -> Result<(), MemoryStoreError> {
+    let MemoryOwner::Relationship { user_id, agent_id } = &entry.owner else {
+        return Err(MemoryStoreError::InvalidInput);
+    };
+    transaction.execute(
+        "INSERT INTO relationship_memories (record_key, owner_user, owner_agent, id, kind_json, content, references_json, tags_json, importance, created_at, last_accessed, access_count, metadata_json, revision, updated_at, expires_at, superseded_by_record_key, origin_actor_kind, origin_user_id, origin_agent_id, origin_session_id, origin_trace_id, origin_source, provenance_trusted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+        params![record_key, user_id.0, agent_id.0, entry.id, encode(&entry.kind)?, entry.content, encode(&entry.references)?, encode(&entry.tags)?, importance_value(entry.importance), entry.created_at, entry.last_accessed, entry.access_count, encode(&entry.metadata)?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, actor_value(entry.provenance.actor), option_id(entry.provenance.user_id.as_ref()), option_id(entry.provenance.agent_id.as_ref()), option_id(entry.provenance.session_id.as_ref()), entry.provenance.trace_id, source_value(entry.provenance.source), entry.provenance.trusted],
+    ).map_err(store_error)?;
+    Ok(())
+}
+
 fn encode(value: &impl serde::Serialize) -> Result<String, MemoryStoreError> {
     serde_json::to_string(value).map_err(|error| MemoryStoreError::Store(error.to_string()))
 }
@@ -524,6 +652,10 @@ fn search_error(error: rusqlite::Error) -> MemoryStoreError {
 }
 fn delete_error(error: rusqlite::Error) -> MemoryStoreError {
     MemoryStoreError::Delete(error.to_string())
+}
+
+fn mutation_error() -> MemoryStoreError {
+    MemoryStoreError::Store("memory mutation failed".into())
 }
 
 #[cfg(test)]
