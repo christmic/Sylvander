@@ -3425,6 +3425,54 @@ model_name = "model-a"
             sylvander_protocol::RegistryAdminResponse::Error { error }
                 if error.code == sylvander_protocol::RegistryAdminErrorCode::UnknownRevision
         ));
+        let primary_binding = runtime
+            .revision_provider
+            .as_ref()
+            .unwrap()
+            .registry
+            .load_active_provider("primary")
+            .await
+            .unwrap()
+            .unwrap()
+            .definition
+            .credential_binding_id;
+        let create_provider = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::CreateProvider {
+                provider_id: "secondary".into(),
+                definition: sylvander_protocol::ProviderDefinitionDraft {
+                    kind: "anthropic_compatible".into(),
+                    base_url: model_server.uri(),
+                    credential_binding_id: primary_binding,
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            create_provider,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
+        let create_model = sylvander_channel::UiService::registry_admin(
+            runtime.ui_service.as_ref(),
+            &administrator,
+            sylvander_protocol::RegistryAdminRequest::CreateModel {
+                provider_id: "secondary".into(),
+                model_id: "model-c".into(),
+                definition: sylvander_protocol::ModelDefinitionDraft {
+                    context_window: 100_000,
+                    max_output_tokens: 4096,
+                    capabilities: vec!["tool_use".into()],
+                    lifecycle: sylvander_protocol::ModelLifecycleDraft::Active {},
+                    pricing: None,
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            create_model,
+            sylvander_protocol::RegistryAdminResponse::Success { .. }
+        ));
         let binding_id = "credential/runtime-audit";
         let create_credential = sylvander_channel::UiService::registry_admin(
             runtime.ui_service.as_ref(),
@@ -3516,6 +3564,17 @@ model_name = "model-a"
                 && audit.outcome == "failed"
                 && audit.error_code.as_deref() == Some("unknown_revision")
         }));
+        for (operation, resource_kind, version) in [
+            ("create_provider", "provider", 1),
+            ("create_model", "model", 1),
+        ] {
+            assert!(registry_audits.iter().any(|audit| {
+                audit.operation == operation
+                    && audit.resource_kind == resource_kind
+                    && audit.version == Some(version)
+                    && audit.outcome == "succeeded"
+            }));
+        }
         for (operation, version, outcome) in [
             ("create_credential_binding", 1, "succeeded"),
             ("stage_credential_generation", 2, "succeeded"),
