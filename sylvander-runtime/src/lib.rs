@@ -28,6 +28,8 @@ pub mod agent_registry;
 mod agent_registry_snapshot;
 #[cfg(test)]
 mod agent_registry_snapshot_tests;
+#[allow(dead_code)] // versioned contract staged before SQL composition wiring
+mod agent_registry_snapshot_v3;
 mod boundary;
 pub mod composition;
 pub mod config;
