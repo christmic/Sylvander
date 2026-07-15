@@ -119,6 +119,8 @@ struct SylvanderSessionSidebar: View {
 
     private func sessionRow(_ session: SylvanderSession) -> some View {
         let selected = store.selectedSessionID == session.id
+        let activity = store.activity(for: session.id)
+        let unread = store.unreadSessionIDs.contains(session.id)
         return Button {
             withAnimation(.easeOut(duration: 0.16)) {
                 store.selectedSessionID = session.id
@@ -126,9 +128,10 @@ struct SylvanderSessionSidebar: View {
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Circle()
-                    .fill(presenceColor(session.presence))
-                    .frame(width: 6, height: 6)
+                    .fill(activityColor(activity))
+                    .frame(width: unread ? 8 : 6, height: unread ? 8 : 6)
                     .padding(.top, 5)
+                    .shadow(color: unread ? activityColor(activity).opacity(0.7) : .clear, radius: 4)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(session.label)
@@ -147,9 +150,9 @@ struct SylvanderSessionSidebar: View {
 
                 Spacer(minLength: 4)
 
-                Text(session.presence.rawValue)
+                Text(activity.rawValue)
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(presenceColor(session.presence))
+                    .foregroundStyle(activityColor(activity))
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
@@ -162,6 +165,7 @@ struct SylvanderSessionSidebar: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(session.label), \(activity.rawValue)\(unread ? ", unread" : "")")
         .contextMenu {
             Button("Rename…") {
                 renameDraft = session.label
@@ -197,18 +201,23 @@ struct SylvanderSessionSidebar: View {
     }
 
     private var continuingSessions: [SylvanderSession] {
-        store.filteredSessions.filter { $0.presence == .active }
+        store.filteredSessions.filter {
+            [.running, .waiting].contains(store.activity(for: $0.id)) || $0.presence == .active
+        }
     }
 
     private var recentSessions: [SylvanderSession] {
-        store.filteredSessions.filter { $0.presence != .active }
+        let continuingIDs = Set(continuingSessions.map(\.id))
+        return store.filteredSessions.filter { !continuingIDs.contains($0.id) }
     }
 
-    private func presenceColor(_ presence: SylvanderSession.Presence) -> Color {
-        switch presence {
-        case .active: SylvanderWorkspacePalette.active
-        case .idle: SylvanderWorkspacePalette.idle
-        case .away: SylvanderWorkspacePalette.muted
+    private func activityColor(_ activity: SylvanderSessionActivity) -> Color {
+        switch activity {
+        case .idle: SylvanderWorkspacePalette.muted
+        case .running: SylvanderWorkspacePalette.active
+        case .waiting: SylvanderWorkspacePalette.idle
+        case .complete: SylvanderWorkspacePalette.complete
+        case .failed: SylvanderWorkspacePalette.signal
         }
     }
 

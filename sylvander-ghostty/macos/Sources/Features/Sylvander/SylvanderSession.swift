@@ -49,4 +49,12 @@ struct SylvanderAgent: Decodable, Hashable, Identifiable, Sendable {
         let path: String
     }
 }
+
+enum SylvanderSessionActivity: String, Sendable {
+    case idle = "READY"
+    case running = "RUNNING"
+    case waiting = "NEEDS YOU"
+    case complete = "DONE"
+    case failed = "FAILED"
+}
 #endif

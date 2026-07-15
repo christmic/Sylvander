@@ -27,17 +27,24 @@ final class SylvanderSessionStore: ObservableObject {
             } else {
                 defaults.removeObject(forKey: Self.selectedSessionDefaultsKey)
             }
+            if let selectedSessionID {
+                unreadSessionIDs.remove(selectedSessionID)
+            }
         }
     }
     @Published var query = ""
     @Published private(set) var connectionState: ConnectionState = .connecting
     @Published private(set) var operationState: OperationState = .idle
     @Published private(set) var operationError: String?
+    @Published private(set) var activities: [String: SylvanderSessionActivity] = [:]
+    @Published private(set) var unreadSessionIDs: Set<String> = []
 
     private let client: any SylvanderSessionFetching
     private let defaults: UserDefaults
     private var refreshTask: Task<Void, Never>?
     private var pendingSelectionID: String?
+    private var activityTasks: [String: Task<Void, Never>] = [:]
+    private var activityStartedAt: [String: ContinuousClock.Instant] = [:]
 
     init(
         client: any SylvanderSessionFetching = SylvanderSessionClient(),
@@ -50,6 +57,7 @@ final class SylvanderSessionStore: ObservableObject {
 
     deinit {
         refreshTask?.cancel()
+        activityTasks.values.forEach { $0.cancel() }
     }
 
     var filteredSessions: [SylvanderSession] {
@@ -59,6 +67,10 @@ final class SylvanderSessionStore: ObservableObject {
             $0.label.localizedCaseInsensitiveContains(term) ||
                 $0.workspace.localizedCaseInsensitiveContains(term)
         }
+    }
+
+    func activity(for sessionID: String) -> SylvanderSessionActivity {
+        activities[sessionID] ?? .idle
     }
 
     func refresh() {
@@ -183,6 +195,50 @@ final class SylvanderSessionStore: ObservableObject {
             selectedSessionID = sessions.first?.id
         }
         connectionState = .online
+        reconcileActivityMonitors()
+    }
+
+    private func reconcileActivityMonitors() {
+        let validIDs = Set(sessions.map(\.id))
+        for sessionID in Set(activityTasks.keys).subtracting(validIDs) {
+            activityTasks.removeValue(forKey: sessionID)?.cancel()
+            activities[sessionID] = nil
+            unreadSessionIDs.remove(sessionID)
+            activityStartedAt[sessionID] = nil
+        }
+        for sessionID in validIDs where activityTasks[sessionID] == nil {
+            activityStartedAt[sessionID] = .now
+            activityTasks[sessionID] = Task { [weak self, client] in
+                var retryDelay = 1
+                while !Task.isCancelled {
+                    do {
+                        for try await activity in client.activityEvents(for: sessionID) {
+                            guard !Task.isCancelled else { return }
+                            self?.apply(activity, to: sessionID)
+                            retryDelay = 1
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        // Discovery owns the visible connection error; monitors reconnect quietly.
+                    }
+                    try? await Task.sleep(for: .seconds(retryDelay))
+                    retryDelay = min(retryDelay * 2, 15)
+                }
+            }
+        }
+    }
+
+    func apply(_ activity: SylvanderSessionActivity, to sessionID: String) {
+        let changed = activities[sessionID] != activity
+        activities[sessionID] = activity
+        guard changed, sessionID != selectedSessionID else { return }
+        let hasFinishedPriming = activityStartedAt[sessionID].map {
+            $0.duration(to: .now) >= .seconds(1)
+        } ?? true
+        if hasFinishedPriming {
+            unreadSessionIDs.insert(sessionID)
+        }
     }
 }
 #endif

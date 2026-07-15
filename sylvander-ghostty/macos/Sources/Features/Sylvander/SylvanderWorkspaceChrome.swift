@@ -13,6 +13,7 @@ enum SylvanderWorkspacePalette {
     static let active = Color(red: 0.459, green: 0.655, blue: 0.910)
     static let idle = Color(red: 0.851, green: 0.686, blue: 0.384)
     static let signal = Color(red: 0.878, green: 0.424, blue: 0.459)
+    static let complete = Color(red: 0.345, green: 0.722, blue: 0.655)
 }
 
 struct SylvanderSessionContextBar: View {

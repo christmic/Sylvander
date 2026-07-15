@@ -9,6 +9,7 @@ protocol SylvanderSessionFetching: Sendable {
     func renameSession(id: String, label: String) async throws
     func archiveSession(id: String) async throws
     func deleteSession(id: String) async throws
+    func activityEvents(for id: String) -> AsyncThrowingStream<SylvanderSessionActivity, Error>
 }
 
 extension SylvanderSessionFetching {
@@ -19,6 +20,9 @@ extension SylvanderSessionFetching {
     func renameSession(id: String, label: String) async throws { throw SylvanderSessionClient.ClientError.unsupportedOperation }
     func archiveSession(id: String) async throws { throw SylvanderSessionClient.ClientError.unsupportedOperation }
     func deleteSession(id: String) async throws { throw SylvanderSessionClient.ClientError.unsupportedOperation }
+    func activityEvents(for id: String) -> AsyncThrowingStream<SylvanderSessionActivity, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
 }
 
 struct SylvanderSessionClient: SylvanderSessionFetching {
@@ -96,6 +100,42 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         }
     }
 
+    func activityEvents(for id: String) -> AsyncThrowingStream<SylvanderSessionActivity, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
+                defer { connection.cancel() }
+                do {
+                    try await connection.startAndWait()
+                    try await connection.sendLine(Self.helloLine)
+                    try Self.validateHandshake(
+                        try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
+                    )
+                    let message = try JSONSerialization.data(withJSONObject: [
+                        "type": "load_session",
+                        "session_id": id,
+                    ], options: [.sortedKeys])
+                    guard let line = String(data: message, encoding: .utf8) else {
+                        throw ClientError.invalidRequest
+                    }
+                    try await connection.sendLine(line)
+                    while !Task.isCancelled {
+                        let data = try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
+                        if let activity = Self.decodeActivity(data) {
+                            continuation.yield(activity)
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     private func request<T>(
         _ message: [String: Any],
         decode: (Data) throws -> T
@@ -152,6 +192,27 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
             throw ClientError.unexpectedMessage(envelope.type)
         }
         return envelope.agents ?? []
+    }
+
+    static func decodeActivity(_ data: Data) -> SylvanderSessionActivity? {
+        guard let envelope = try? JSONDecoder().decode(ActivityEnvelope.self, from: data) else { return nil }
+        switch envelope.type {
+        case "iteration_start", "text_delta", "thinking_delta", "tool_call", "tool_output_delta",
+             "model_retry", "task_started", "task_progress":
+            return .running
+        case "approval_request", "ask_user", "plan_proposed", "interaction_timeout":
+            return .waiting
+        case "done", "task_completed":
+            return .complete
+        case "error", "task_failed", "compaction_failed", "workspace_rollback_failed":
+            return .failed
+        case "tool_result" where envelope.isError == true:
+            return .failed
+        case "turn_interrupted", "task_cancelled":
+            return .idle
+        default:
+            return nil
+        }
     }
 
     private static func decodeAction(_ data: Data, expectedType: String) throws -> ActionEnvelope {
@@ -231,6 +292,16 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
             case type
             case sessionID = "session_id"
             case message
+        }
+    }
+
+    private struct ActivityEnvelope: Decodable {
+        let type: String
+        let isError: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case isError = "is_error"
         }
     }
 }
