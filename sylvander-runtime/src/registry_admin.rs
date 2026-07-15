@@ -3,7 +3,8 @@
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{
     AuthenticatedPrincipal, CredentialGenerationView, CredentialReferenceKind,
-    CredentialSecretReferenceDraft, ModelRevisionView, ProviderDefinitionDraft,
+    CredentialSecretReferenceDraft, ModelDefinitionDraft, ModelLifecycle, ModelLifecycleDraft,
+    ModelPricing, ModelPricingDraft, ModelRevisionView, ProviderDefinitionDraft,
     ProviderRevisionView, RedactedModelDefinition, RedactedProviderDefinition, RegistryAdminError,
     RegistryAdminErrorCode, RegistryAdminErrorDetails, RegistryAdminRequest, RegistryAdminResponse,
     RegistryAdminResult,
@@ -97,6 +98,50 @@ impl<'a> RegistryAdminService<'a> {
             } => {
                 self.list_models(provider_id, model_id, before_revision, limit)
                     .await
+            }
+            RegistryAdminRequest::CreateModel {
+                provider_id,
+                model_id,
+                definition,
+            } => self.create_model(provider_id, model_id, definition).await,
+            RegistryAdminRequest::StageModelRevision {
+                provider_id,
+                model_id,
+                revision,
+                expected_active_revision,
+                definition,
+            } => {
+                self.stage_model(
+                    provider_id,
+                    model_id,
+                    revision,
+                    expected_active_revision,
+                    definition,
+                )
+                .await
+            }
+            RegistryAdminRequest::ActivateModelRevision {
+                provider_id,
+                model_id,
+                revision,
+                expected_active_revision,
+            } => {
+                self.activate_model(provider_id, model_id, revision, expected_active_revision)
+                    .await
+            }
+            RegistryAdminRequest::RollbackModelRevision {
+                provider_id,
+                model_id,
+                target_revision,
+                expected_active_revision,
+            } => {
+                self.rollback_model(
+                    provider_id,
+                    model_id,
+                    target_revision,
+                    expected_active_revision,
+                )
+                .await
             }
             RegistryAdminRequest::InspectCredentialGeneration {
                 binding_id,
@@ -309,7 +354,87 @@ impl<'a> RegistryAdminService<'a> {
                     next_before_revision: page.next_before_revision,
                 })
             }
-            Err(source) => failure(map_model_error(source, provider_id, model_id)),
+            Err(source) => failure(map_model_error(source, provider_id, model_id, None)),
+        }
+    }
+
+    async fn create_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+        draft: ModelDefinitionDraft,
+    ) -> RegistryAdminResponse {
+        let definition = model_definition(provider_id.clone(), model_id.clone(), 1, draft);
+        match self.registry.create_model(definition).await {
+            Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
+                RegistryAdminResult::ModelCreated { revision }
+            }),
+            Err(source) => failure(map_model_error(source, provider_id, model_id, Some(1))),
+        }
+    }
+
+    async fn stage_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+        revision: u64,
+        expected_active: u64,
+        draft: ModelDefinitionDraft,
+    ) -> RegistryAdminResponse {
+        let definition = model_definition(provider_id.clone(), model_id.clone(), revision, draft);
+        match self.registry.stage_model(expected_active, definition).await {
+            Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
+                RegistryAdminResult::ModelRevisionStaged { revision }
+            }),
+            Err(source) => failure(map_model_error(
+                source,
+                provider_id,
+                model_id,
+                Some(revision),
+            )),
+        }
+    }
+
+    async fn activate_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+        revision: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .activate_model((&provider_id, &model_id), revision, expected_active)
+            .await
+        {
+            Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
+                RegistryAdminResult::ModelRevisionActivated { revision }
+            }),
+            Err(source) => failure(map_model_error(
+                source,
+                provider_id,
+                model_id,
+                Some(revision),
+            )),
+        }
+    }
+
+    async fn rollback_model(
+        &self,
+        provider_id: String,
+        model_id: String,
+        target: u64,
+        expected_active: u64,
+    ) -> RegistryAdminResponse {
+        match self
+            .registry
+            .rollback_model((&provider_id, &model_id), target, expected_active)
+            .await
+        {
+            Ok(stored) => model_revision_response(&stored, provider_id, model_id, |revision| {
+                RegistryAdminResult::ModelRevisionRolledBack { revision }
+            }),
+            Err(source) => failure(map_model_error(source, provider_id, model_id, Some(target))),
         }
     }
 
@@ -562,6 +687,38 @@ fn provider_definition(
     }
 }
 
+fn model_definition(
+    provider_id: String,
+    model_id: String,
+    revision: u64,
+    draft: ModelDefinitionDraft,
+) -> ModelDefinition {
+    ModelDefinition {
+        provider_id,
+        model_id,
+        revision,
+        context_window: draft.context_window,
+        max_output_tokens: draft.max_output_tokens,
+        capabilities: draft.capabilities.into_iter().collect(),
+        lifecycle: match draft.lifecycle {
+            ModelLifecycleDraft::Active {} => ModelLifecycle::Active,
+            ModelLifecycleDraft::Deprecated { replacement } => {
+                ModelLifecycle::Deprecated { replacement }
+            }
+        },
+        pricing: draft.pricing.map(model_pricing),
+    }
+}
+
+fn model_pricing(pricing: ModelPricingDraft) -> ModelPricing {
+    ModelPricing {
+        input_usd_micros_per_million: pricing.input_usd_micros_per_million,
+        output_usd_micros_per_million: pricing.output_usd_micros_per_million,
+        cache_write_usd_micros_per_million: pricing.cache_write_usd_micros_per_million,
+        cache_read_usd_micros_per_million: pricing.cache_read_usd_micros_per_million,
+    }
+}
+
 #[must_use]
 pub(crate) fn is_registry_administrator(principal: Option<&AuthenticatedPrincipal>) -> bool {
     is_agent_administrator(principal)
@@ -612,6 +769,23 @@ fn redact_model_revision(
         created_at_unix_secs: revision.created_at,
         active: revision.active,
     })
+}
+
+fn model_revision_response(
+    stored: &StoredRevision<ModelDefinition>,
+    provider_id: String,
+    model_id: String,
+    result: impl FnOnce(ModelRevisionView) -> RegistryAdminResult,
+) -> RegistryAdminResponse {
+    match redact_model_revision(stored) {
+        Ok(revision) => success(result(revision)),
+        Err(source) => failure(map_model_storage_error(
+            source,
+            provider_id,
+            model_id,
+            Some(stored.definition.revision),
+        )),
+    }
 }
 
 fn redact_credential_generation(view: &CredentialBindingView) -> CredentialGenerationView {
@@ -786,8 +960,23 @@ fn map_model_error(
     source: ModelRegistryError,
     provider_id: String,
     model_id: String,
+    requested_revision: Option<u64>,
 ) -> RegistryAdminError {
     match source {
+        ModelRegistryError::InvalidDefinition => model_error(
+            RegistryAdminErrorCode::InvalidRequest,
+            "model revision is invalid",
+            provider_id,
+            model_id,
+            requested_revision,
+        ),
+        ModelRegistryError::AlreadyExists { .. } => model_error(
+            RegistryAdminErrorCode::ModelAlreadyExists,
+            "model already exists",
+            provider_id,
+            model_id,
+            requested_revision,
+        ),
         ModelRegistryError::UnknownProvider(_) => model_error(
             RegistryAdminErrorCode::UnknownProvider,
             "provider is unknown",
@@ -809,23 +998,54 @@ fn map_model_error(
             model_id,
             Some(revision),
         ),
+        ModelRegistryError::Conflict {
+            expected, actual, ..
+        } => model_error_details(
+            RegistryAdminErrorCode::ActiveRevisionConflict,
+            "model active revision changed",
+            provider_id,
+            model_id,
+            requested_revision,
+            RegistryAdminErrorDetails::ActiveRevisionConflict {
+                expected_active_revision: expected,
+                actual_active_revision: actual,
+            },
+        ),
+        ModelRegistryError::NonSequential {
+            expected, actual, ..
+        } => model_error_details(
+            RegistryAdminErrorCode::NonSequentialRevision,
+            "model revision is not sequential",
+            provider_id,
+            model_id,
+            Some(actual),
+            RegistryAdminErrorDetails::NonSequentialRevision {
+                expected_revision: expected,
+                actual_revision: actual,
+            },
+        ),
+        ModelRegistryError::RevisionCollision { revision, .. } => model_error_details(
+            RegistryAdminErrorCode::RevisionCollision,
+            "model revision has different content",
+            provider_id,
+            model_id,
+            Some(revision),
+            RegistryAdminErrorDetails::RevisionCollision { revision },
+        ),
+        ModelRegistryError::InvalidRollback { target, actual } => model_error_details(
+            RegistryAdminErrorCode::InvalidRevisionRollback,
+            "model rollback target is invalid",
+            provider_id,
+            model_id,
+            Some(target),
+            RegistryAdminErrorDetails::InvalidRevisionRollback {
+                target_revision: target,
+                actual_active_revision: actual,
+            },
+        ),
         ModelRegistryError::Registry(source) => {
-            map_model_storage_error(source, provider_id, model_id, None)
+            map_model_storage_error(source, provider_id, model_id, requested_revision)
         }
-        ModelRegistryError::InvalidDefinition => model_error(
-            RegistryAdminErrorCode::InvalidRequest,
-            "model revision is invalid",
-            provider_id,
-            model_id,
-            None,
-        ),
-        _ => model_error(
-            RegistryAdminErrorCode::Internal,
-            "model registry operation failed",
-            provider_id,
-            model_id,
-            None,
-        ),
     }
 }
 
@@ -872,6 +1092,20 @@ fn model_error(
         revision,
         generation: None,
         details: None,
+    }
+}
+
+fn model_error_details(
+    code: RegistryAdminErrorCode,
+    message: &'static str,
+    provider_id: String,
+    model_id: String,
+    revision: Option<u64>,
+    details: RegistryAdminErrorDetails,
+) -> RegistryAdminError {
+    RegistryAdminError {
+        details: Some(Box::new(details)),
+        ..model_error(code, message, provider_id, model_id, revision)
     }
 }
 
