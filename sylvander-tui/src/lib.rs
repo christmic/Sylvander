@@ -13,6 +13,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod dirty;
 pub mod event;
+pub mod host_bridge;
 pub mod input;
 pub mod keymap;
 pub mod markdown;
