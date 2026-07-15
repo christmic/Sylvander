@@ -327,6 +327,9 @@ async fn handle_client_msg(
                             "agent_discovery".into(),
                             "session_config".into(),
                             "feedback".into(),
+                            "agent_administration".into(),
+                            "registry_administration".into(),
+                            "credential_registry_lifecycle".into(),
                         ],
                     },
                 });
@@ -785,6 +788,100 @@ mod tests {
         states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
     }
 
+    struct CredentialRegistryUi {
+        received: Mutex<Option<sylvander_protocol::RegistryAdminRequest>>,
+    }
+
+    #[async_trait]
+    impl UiService for CredentialRegistryUi {
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin"))
+            {
+                Ok(())
+            } else {
+                Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "registry_admin",
+                ))
+            }
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn update_session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+
+        async fn registry_admin(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::RegistryAdminRequest,
+        ) -> sylvander_protocol::RegistryAdminResponse {
+            *self.received.lock().await = Some(request);
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(
+                    sylvander_protocol::RegistryAdminResult::CredentialBindingCreated {
+                        generation: sylvander_protocol::CredentialGenerationView {
+                            binding_id_sha256: "binding-digest".into(),
+                            generation: 1,
+                            reference_kind:
+                                sylvander_protocol::CredentialReferenceKind::Environment,
+                            reference_configured: true,
+                            reference_digest_sha256: "reference-digest".into(),
+                            created_at_unix_secs: 7,
+                            active: true,
+                        },
+                    },
+                ),
+            }
+        }
+    }
+
     fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
         use sylvander_protocol::{
             SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
@@ -996,6 +1093,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn welcome_declares_administration_and_credential_lifecycle_capabilities() {
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: None,
+            readiness: None,
+        };
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "client",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::Hello {
+                protocol: sylvander_protocol::UiProtocolHello {
+                    client_name: "test-client".into(),
+                    min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+                    max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+                    capabilities: Vec::new(),
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let ServerMsg::Welcome { protocol } = rx.recv().await.expect("welcome response") else {
+            panic!("hello must receive welcome")
+        };
+        for capability in [
+            "agent_administration",
+            "registry_administration",
+            "credential_registry_lifecycle",
+        ] {
+            assert!(
+                protocol.capabilities.iter().any(|item| item == capability),
+                "missing {capability} capability"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn agent_admin_dispatches_through_the_ui_service() {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
@@ -1145,6 +1288,82 @@ mod tests {
                         && revision.definition.revision == 9
             )
         ));
+    }
+
+    #[tokio::test]
+    async fn credential_binding_create_dispatches_reference_without_echoing_it() {
+        const BINDING_ID: &str = "credential/private-provider";
+        const ENVIRONMENT_NAME: &str = "SYLVANDER_PRIVATE_PROVIDER_TOKEN";
+
+        let ui = Arc::new(CredentialRegistryUi {
+            received: Mutex::new(None),
+        });
+        let context = ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(ui.clone()),
+            readiness: None,
+        };
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        principal.roles.push("admin".into());
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": BINDING_ID,
+                "reference": {
+                    "source": "environment",
+                    "name": ENVIRONMENT_NAME
+                }
+            }
+        }))
+        .expect("decode credential binding request");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            request,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let received = ui
+            .received
+            .lock()
+            .await
+            .take()
+            .expect("registry service received request");
+        assert!(matches!(
+            received,
+            sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+                binding_id,
+                reference:
+                    sylvander_protocol::CredentialSecretReferenceDraft::Environment { name },
+            } if binding_id == BINDING_ID && name == ENVIRONMENT_NAME
+        ));
+
+        let response = rx.recv().await.expect("credential registry response");
+        assert!(matches!(
+            &response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::CredentialBindingCreated { generation }
+                    if generation.binding_id_sha256 == "binding-digest"
+                        && generation.reference_digest_sha256 == "reference-digest"
+                        && generation.reference_configured
+            )
+        ));
+        let wire = serde_json::to_string(&response).expect("encode credential registry response");
+        assert!(!wire.contains(BINDING_ID));
+        assert!(!wire.contains(ENVIRONMENT_NAME));
     }
 
     #[tokio::test]

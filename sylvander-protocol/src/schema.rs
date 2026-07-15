@@ -48,10 +48,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_v2_schema_keeps_v1_and_new_operations_visible() {
+    fn generated_v3_schema_keeps_legacy_and_current_operations_visible() {
         let schema = ui_protocol_schema();
         assert_eq!(schema["protocol"]["min_version"], 1);
-        assert_eq!(schema["protocol"]["max_version"], 2);
+        assert_eq!(schema["protocol"]["max_version"], 3);
         let encoded = serde_json::to_string(&schema).unwrap();
         for operation in [
             "chat",
