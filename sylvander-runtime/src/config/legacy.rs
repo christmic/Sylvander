@@ -154,6 +154,7 @@ impl ServerConfig {
                 session_db: values.get("SYLVANDER_SESSION_DB").map(PathBuf::from),
                 memory_db: values.get("SYLVANDER_MEMORY_DB").map(PathBuf::from),
                 workspace_journal: values.get("SYLVANDER_WORKSPACE_JOURNAL").map(PathBuf::from),
+                memory_maintenance: super::MemoryMaintenanceSettings::default(),
                 approval: ApprovalSettings {
                     enabled: values.contains_key("SYLVANDER_APPROVAL"),
                     persistent_store: values.get("SYLVANDER_APPROVAL_STORE").map(PathBuf::from),
@@ -355,6 +356,20 @@ mod tests {
         assert_eq!(
             config.server.memory_db,
             Some(PathBuf::from("/srv/sylvander/memory.db"))
+        );
+    }
+
+    #[test]
+    fn legacy_environment_cannot_override_memory_maintenance_policy() {
+        let mut values = required_values();
+        values.insert("SYLVANDER_MEMORY_RETENTION_DAYS".into(), "9999".into());
+        values.insert("SYLVANDER_MEMORY_BATCH_SIZE".into(), "0".into());
+
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+
+        assert_eq!(
+            config.server.memory_maintenance,
+            super::super::MemoryMaintenanceSettings::default()
         );
     }
 
