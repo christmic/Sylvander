@@ -224,7 +224,7 @@ impl SqliteMemoryMaintenance {
             advance_retention_clock(&transaction, policy.revision(), now)?;
             let candidates = {
                 let mut statement = transaction.prepare(
-                    "SELECT m.record_key, m.revision, CASE WHEN m.superseded_by_record_key IS NOT NULL THEN 1 ELSE 0 END FROM relationship_memories m WHERE (m.superseded_by_record_key IS NOT NULL AND m.updated_at <= ?1) OR (m.superseded_by_record_key IS NULL AND m.expires_at IS NOT NULL AND m.expires_at <= ?2 AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = m.record_key)) ORDER BY COALESCE(m.expires_at, m.updated_at), m.record_key LIMIT ?3",
+                    "SELECT m.record_key, m.revision, CASE WHEN m.superseded_by_record_key IS NOT NULL THEN 1 ELSE 0 END FROM relationship_memories m WHERE ((m.superseded_by_record_key IS NOT NULL AND m.updated_at <= ?1) OR (m.superseded_by_record_key IS NULL AND m.expires_at IS NOT NULL AND m.expires_at <= ?2)) AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = m.record_key) ORDER BY COALESCE(m.expires_at, m.updated_at), m.record_key LIMIT ?3",
                 ).map_err(|_| retention_error())?;
                 statement
                     .query_map(
@@ -239,7 +239,7 @@ impl SqliteMemoryMaintenance {
             for (record_key, revision, superseded) in candidates {
                 append_maintenance_audit(&transaction, &record_key, revision, now, superseded)?;
                 if transaction.execute(
-                    "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2",
+                    "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2 AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = relationship_memories.record_key)",
                     params![record_key, i64::try_from(revision).map_err(|_| retention_error())?],
                 ).map_err(|_| retention_error())? != 1 {
                     return Err(retention_error());
@@ -358,6 +358,7 @@ impl MemoryStore for SqliteMemoryStore {
         validate_memory_id(id)?;
         validate_patch(&patch)?;
         self.retention_policy.validate_patch(&patch)?;
+        let updates_expiry = patch.expiry.is_some();
         validate_revision(expected_revision)?;
         let now = crate::session::now_secs();
         self.with_connection(|connection| {
@@ -385,10 +386,13 @@ impl MemoryStore for SqliteMemoryStore {
                 )
                 .map_err(|_| mutation_error())?;
             apply_patch(&mut entry, patch, now)?;
+            if updates_expiry {
+                entry.retention_policy_revision = self.retention_policy.revision();
+            }
             let changed = transaction
                 .execute(
-                    "UPDATE relationship_memories SET kind_json = ?1, content = ?2, references_json = ?3, tags_json = ?4, importance = ?5, metadata_json = ?6, revision = ?7, updated_at = ?8, expires_at = ?9 WHERE record_key = ?10 AND revision = ?11 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?8)",
-                    params![encode(&entry.kind).map_err(|_| mutation_error())?, entry.content, encode(&entry.references).map_err(|_| mutation_error())?, encode(&entry.tags).map_err(|_| mutation_error())?, importance_value(entry.importance), encode(&entry.metadata).map_err(|_| mutation_error())?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, record_key, i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?],
+                    "UPDATE relationship_memories SET kind_json = ?1, content = ?2, references_json = ?3, tags_json = ?4, importance = ?5, metadata_json = ?6, revision = ?7, updated_at = ?8, expires_at = ?9, retention_policy_revision = ?10 WHERE record_key = ?11 AND revision = ?12 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?8)",
+                    params![encode(&entry.kind).map_err(|_| mutation_error())?, entry.content, encode(&entry.references).map_err(|_| mutation_error())?, encode(&entry.tags).map_err(|_| mutation_error())?, importance_value(entry.importance), encode(&entry.metadata).map_err(|_| mutation_error())?, i64::try_from(entry.revision).map_err(|_| MemoryStoreError::InvalidInput)?, entry.updated_at, entry.expires_at, i64::try_from(entry.retention_policy_revision).map_err(|_| MemoryStoreError::InvalidInput)?, record_key, i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?],
                 )
                 .map_err(|_| mutation_error())?;
             if changed != 1 {
@@ -485,7 +489,7 @@ impl MemoryStore for SqliteMemoryStore {
             }
             let changed = transaction
                 .execute(
-                    "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2",
+                    "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2 AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = relationship_memories.record_key)",
                     params![record_key, expected_revision],
                 )
                 .map_err(delete_error)?;

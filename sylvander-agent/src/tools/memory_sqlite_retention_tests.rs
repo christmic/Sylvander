@@ -1,5 +1,7 @@
 use super::*;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext};
+use crate::tools::memory::{
+    MemoryAppend, MemoryExecutionContext, MemoryExpiryPatch, MemoryPatch, MemoryStoreError,
+};
 use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
@@ -114,6 +116,120 @@ async fn superseded_rows_purge_without_dangling_the_replacement() {
             .await
             .unwrap()
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn purge_orders_a_chain_and_delete_restricts_the_current_replacement() {
+    let store = SqliteMemoryStore::open_in_memory_with_retention_policy(policy(1, 1)).unwrap();
+    let ctx = worker();
+    let a = store
+        .append_relationship(&ctx, MemoryAppend::new("a"))
+        .await
+        .unwrap();
+    let b = store
+        .supersede_relationship(&ctx, &a.id, a.revision, MemoryAppend::new("b"))
+        .await
+        .unwrap();
+    let c = store
+        .supersede_relationship(&ctx, &b.id, b.revision, MemoryAppend::new("c"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.delete_relationship(&ctx, &c.id, c.revision).await,
+        Err(MemoryStoreError::Conflict)
+    ));
+
+    let maintenance = store.maintenance();
+    let now = crate::session::now_secs();
+    assert_eq!(maintenance.purge_at(now).unwrap().superseded_count, 1);
+    store
+        .with_connection(|connection| {
+            let state: (i64, i64) = connection
+                .query_row(
+                    "SELECT COUNT(*) FILTER (WHERE id = ?1), COUNT(*) FILTER (WHERE id = ?2) FROM relationship_memories",
+                    [&a.id, &b.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(store_error)?;
+            assert_eq!(state, (0, 1));
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        store.delete_relationship(&ctx, &c.id, c.revision).await,
+        Err(MemoryStoreError::Conflict)
+    ));
+    assert_eq!(maintenance.purge_at(now).unwrap().superseded_count, 1);
+    store
+        .delete_relationship(&ctx, &c.id, c.revision)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn expiry_patch_adopts_new_policy_while_content_patch_preserves_origin() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let ctx = worker();
+    let store = SqliteMemoryStore::open_with_retention_policy(file.path(), policy(1, 10)).unwrap();
+    let content_entry = store
+        .append_relationship(&ctx, MemoryAppend::new("content"))
+        .await
+        .unwrap();
+    let expiry_entry = store
+        .append_relationship(&ctx, MemoryAppend::new("expiry"))
+        .await
+        .unwrap();
+    drop(store);
+
+    let store = SqliteMemoryStore::open_with_retention_policy(file.path(), policy(2, 10)).unwrap();
+    let content_entry = store
+        .update_relationship(
+            &ctx,
+            &content_entry.id,
+            content_entry.revision,
+            MemoryPatch {
+                content: Some("changed".into()),
+                ..MemoryPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+    let expiry_entry = store
+        .update_relationship(
+            &ctx,
+            &expiry_entry.id,
+            expiry_entry.revision,
+            MemoryPatch {
+                expiry: Some(MemoryExpiryPatch::AfterSeconds(60)),
+                ..MemoryPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(content_entry.retention_policy_revision, 1);
+    assert_eq!(expiry_entry.retention_policy_revision, 2);
+    drop(store);
+
+    let reopened =
+        SqliteMemoryStore::open_with_retention_policy(file.path(), policy(2, 10)).unwrap();
+    assert_eq!(
+        reopened
+            .get_relationship(&ctx, &content_entry.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .retention_policy_revision,
+        1
+    );
+    assert_eq!(
+        reopened
+            .get_relationship(&ctx, &expiry_entry.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .retention_policy_revision,
+        2
     );
 }
 
