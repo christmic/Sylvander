@@ -835,6 +835,7 @@ impl MemoryStore for InMemoryMemoryStore {
         validate_memory_id(id)?;
         validate_patch(&patch)?;
         self.retention_policy.validate_patch(&patch)?;
+        let updates_expiry = patch.expiry.is_some();
         validate_revision(expected_revision)?;
         let now = crate::session::now_secs();
         let mut entries = self.entries.write().await;
@@ -846,6 +847,9 @@ impl MemoryStore for InMemoryMemoryStore {
             return Err(MemoryStoreError::Conflict);
         }
         apply_patch(entry, patch, now)?;
+        if updates_expiry {
+            entry.retention_policy_revision = self.retention_policy.revision();
+        }
         Ok(entry.clone())
     }
 
@@ -903,6 +907,12 @@ impl MemoryStore for InMemoryMemoryStore {
             return Err(memory_not_visible());
         };
         if entries[index].revision != expected_revision {
+            return Err(MemoryStoreError::Conflict);
+        }
+        if entries
+            .iter()
+            .any(|entry| entry.superseded_by.as_deref() == Some(id))
+        {
             return Err(MemoryStoreError::Conflict);
         }
         entries.remove(index);
@@ -1330,6 +1340,70 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_restricts_live_supersession_references() {
+        let store = InMemoryMemoryStore::new();
+        let ctx = worker(&session("alice", "a1", "s1"));
+        let original = store
+            .append_relationship(&ctx, MemoryAppend::new("old"))
+            .await
+            .unwrap();
+        let replacement = store
+            .supersede_relationship(
+                &ctx,
+                &original.id,
+                original.revision,
+                MemoryAppend::new("new"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .delete_relationship(&ctx, &replacement.id, replacement.revision)
+                .await,
+            Err(MemoryStoreError::Conflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn only_expiry_patch_adopts_current_retention_policy_revision() {
+        let policy = RelationshipMemoryRetentionPolicy::new(2, 2, 3, 1, 2, 10).unwrap();
+        let store = InMemoryMemoryStore::with_retention_policy(policy);
+        let ctx = worker(&session("alice", "a1", "s1"));
+        let entry = store
+            .append_relationship(&ctx, MemoryAppend::new("before"))
+            .await
+            .unwrap();
+        store.entries.write().await[0].retention_policy_revision = 1;
+
+        let content = store
+            .update_relationship(
+                &ctx,
+                &entry.id,
+                entry.revision,
+                MemoryPatch {
+                    content: Some("after".into()),
+                    ..MemoryPatch::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(content.retention_policy_revision, 1);
+        let expiry = store
+            .update_relationship(
+                &ctx,
+                &entry.id,
+                content.revision,
+                MemoryPatch {
+                    expiry: Some(MemoryExpiryPatch::AfterSeconds(60)),
+                    ..MemoryPatch::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(expiry.retention_policy_revision, 2);
     }
 
     #[tokio::test]
