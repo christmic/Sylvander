@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_schema_exposes_provider_reads_without_raw_configuration_fields() {
+    fn registry_schema_exposes_registry_reads_without_raw_response_configuration() {
         let schema = registry_admin_protocol_schema();
         let encoded = serde_json::to_string(&schema).unwrap();
         for operation in [
@@ -94,15 +94,29 @@ mod tests {
             "list_provider_revisions",
             "inspect_model_revision",
             "list_model_revisions",
+            "inspect_credential_generation",
+            "list_credential_generations",
             "base_url_sha256",
             "credential_binding_id_sha256",
             "pricing_sha256",
+            "binding_id_sha256",
+            "reference_digest_sha256",
+            "CredentialReferenceKind",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }
-        assert!(!has_property(&schema, "base_url"));
-        assert!(!has_property(&schema, "credential_binding_id"));
-        assert!(!has_property(&schema, "pricing"));
+        let response = &schema["response"];
+        for field in [
+            "base_url",
+            "credential_binding_id",
+            "pricing",
+            "binding_id",
+            "reference",
+            "path",
+            "secret_value",
+        ] {
+            assert!(!has_property(response, field), "response exposed {field}");
+        }
     }
 
     fn has_property(value: &Value, name: &str) -> bool {

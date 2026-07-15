@@ -38,6 +38,17 @@ pub enum RegistryAdminRequest {
         #[serde(default = "default_page_size")]
         limit: u16,
     },
+    InspectCredentialGeneration {
+        binding_id: String,
+        generation: u64,
+    },
+    ListCredentialGenerations {
+        binding_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before_generation: Option<u64>,
+        #[serde(default = "default_page_size")]
+        limit: u16,
+    },
 }
 
 impl RegistryAdminRequest {
@@ -69,6 +80,16 @@ impl RegistryAdminRequest {
             } => validate_provider(provider_id)
                 .and_then(|()| validate_model(model_id))
                 .and_then(|()| validate_page(*before_revision, *limit)),
+            Self::InspectCredentialGeneration {
+                binding_id,
+                generation,
+            } => validate_binding(binding_id).and_then(|()| validate_revision(*generation)),
+            Self::ListCredentialGenerations {
+                binding_id,
+                before_generation,
+                limit,
+            } => validate_binding(binding_id)
+                .and_then(|()| validate_page(*before_generation, *limit)),
         }
     }
 }
@@ -83,6 +104,12 @@ fn validate_model(model_id: &str) -> Result<(), RegistryAdminError> {
     (!model_id.trim().is_empty())
         .then_some(())
         .ok_or_else(|| RegistryAdminError::invalid_request("model identity must be set"))
+}
+
+fn validate_binding(binding_id: &str) -> Result<(), RegistryAdminError> {
+    (!binding_id.trim().is_empty())
+        .then_some(())
+        .ok_or_else(|| RegistryAdminError::invalid_request("credential binding must be set"))
 }
 
 fn validate_revision(revision: u64) -> Result<(), RegistryAdminError> {
@@ -140,6 +167,16 @@ pub enum RegistryAdminResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_before_revision: Option<u64>,
     },
+    CredentialGenerationInspected {
+        generation: CredentialGenerationView,
+    },
+    CredentialGenerationsListed {
+        binding_id_sha256: String,
+        active_generation: u64,
+        generations: Vec<CredentialGenerationView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_before_generation: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -187,15 +224,38 @@ pub struct RedactedModelDefinition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CredentialGenerationView {
+    pub binding_id_sha256: String,
+    pub generation: u64,
+    pub reference_kind: CredentialReferenceKind,
+    pub reference_configured: bool,
+    pub reference_digest_sha256: String,
+    pub created_at_unix_secs: i64,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialReferenceKind {
+    Environment,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RegistryAdminError {
     pub code: RegistryAdminErrorCode,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
+    pub model_id: Option<Box<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id_sha256: Option<Box<str>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }
 
 impl RegistryAdminError {
@@ -206,7 +266,9 @@ impl RegistryAdminError {
             message: message.into(),
             provider_id: None,
             model_id: None,
+            binding_id_sha256: None,
             revision: None,
+            generation: None,
         }
     }
 }
@@ -218,7 +280,9 @@ pub enum RegistryAdminErrorCode {
     InvalidRequest,
     UnknownProvider,
     UnknownModel,
+    UnknownCredentialBinding,
     UnknownRevision,
+    UnknownGeneration,
     StorageUnavailable,
     IntegrityFailure,
     Internal,
@@ -416,5 +480,115 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(legacy.model_id, None);
+    }
+
+    #[test]
+    fn credential_requests_default_validate_and_reject_unknown_fields() {
+        let request: RegistryAdminRequest = serde_json::from_value(json!({
+            "operation": "list_credential_generations",
+            "binding_id": "credential/private"
+        }))
+        .unwrap();
+        assert_eq!(
+            request,
+            RegistryAdminRequest::ListCredentialGenerations {
+                binding_id: "credential/private".into(),
+                before_generation: None,
+                limit: DEFAULT_REGISTRY_REVISION_PAGE_SIZE,
+            }
+        );
+        request.validate().unwrap();
+        assert_eq!(
+            serde_json::from_value::<RegistryAdminRequest>(serde_json::to_value(&request).unwrap())
+                .unwrap(),
+            request
+        );
+
+        for invalid in [
+            RegistryAdminRequest::InspectCredentialGeneration {
+                binding_id: " ".into(),
+                generation: 1,
+            },
+            RegistryAdminRequest::InspectCredentialGeneration {
+                binding_id: "credential/private".into(),
+                generation: 0,
+            },
+            RegistryAdminRequest::ListCredentialGenerations {
+                binding_id: "credential/private".into(),
+                before_generation: Some(0),
+                limit: 50,
+            },
+        ] {
+            assert_eq!(
+                invalid.validate().unwrap_err().code,
+                RegistryAdminErrorCode::InvalidRequest
+            );
+        }
+        assert!(
+            serde_json::from_value::<RegistryAdminRequest>(json!({
+                "operation": "inspect_credential_generation",
+                "binding_id": "credential/private",
+                "generation": 1,
+                "unexpected": true
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn credential_response_only_exposes_binding_and_reference_digests() {
+        let response = RegistryAdminResponse::Success {
+            result: Box::new(RegistryAdminResult::CredentialGenerationInspected {
+                generation: CredentialGenerationView {
+                    binding_id_sha256: "binding-digest".into(),
+                    generation: 2,
+                    reference_kind: CredentialReferenceKind::File,
+                    reference_configured: true,
+                    reference_digest_sha256: "reference-digest".into(),
+                    created_at_unix_secs: 9,
+                    active: true,
+                },
+            }),
+        };
+        let encoded = serde_json::to_value(response).unwrap();
+        let generation = &encoded["result"]["generation"];
+        assert_eq!(generation["binding_id_sha256"], "binding-digest");
+        assert_eq!(generation["reference_kind"], "file");
+        assert_eq!(generation["reference_digest_sha256"], "reference-digest");
+        for field in ["binding_id", "reference", "path", "name", "secret_value"] {
+            assert!(generation.get(field).is_none(), "response exposed {field}");
+        }
+        let text = serde_json::to_string(&encoded).unwrap();
+        for secret in [
+            "credential/private",
+            "/run/private",
+            "SECRET_ENV",
+            "token-value",
+        ] {
+            assert!(!text.contains(secret), "response exposed {secret}");
+        }
+    }
+
+    #[test]
+    fn credential_error_identity_is_hashed_and_new_fields_default_for_legacy_errors() {
+        let current: RegistryAdminError = serde_json::from_value(json!({
+            "code": "unknown_generation",
+            "message": "credential generation is unknown",
+            "binding_id_sha256": "binding-digest",
+            "generation": 2
+        }))
+        .unwrap();
+        assert_eq!(current.binding_id_sha256.as_deref(), Some("binding-digest"));
+        assert_eq!(current.generation, Some(2));
+
+        let legacy: RegistryAdminError = serde_json::from_value(json!({
+            "code": "unknown_revision",
+            "message": "provider revision is unknown",
+            "provider_id": "alpha",
+            "revision": 2
+        }))
+        .unwrap();
+        assert_eq!(legacy.binding_id_sha256, None);
+        assert_eq!(legacy.generation, None);
     }
 }
