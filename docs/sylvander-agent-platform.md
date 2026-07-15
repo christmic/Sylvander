@@ -2,7 +2,7 @@
 
 Status: normative architecture and production backlog
 
-Last audited: 2026-07-14
+Last audited: 2026-07-15
 
 Scope: Agent, runtime, public service protocol, execution, workspaces, channels,
 run evidence, and the self-improvement loop
@@ -215,7 +215,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Redacted Provider/Model/Credential reads and optimistic Credential create/stage/activate/rollback are public, transport-authorized, database-bounded, and durably audited. Provider/Model lifecycle writes, capability discovery, and validated cross-provider session switching remain. |
+| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration now provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Capability discovery and validated cross-provider session switching remain. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -345,10 +345,15 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Expose Credential create/stage/activate/rollback with strict immutable
     generations, optimistic head concurrency, exact-generation availability
     preflight, typed redacted failures, durable pre-mutation intent and terminal
-    audit, UI protocol v3 capability discovery, and Unix/WebSocket round trips.
-  - [ ] Expose Provider/Model lifecycle administration with prospective
-    composition validation, optimistic concurrency, and durable content-free
-    mutation audit.
+    audit, UI protocol v3 negotiation, and Unix/WebSocket round trips.
+  - [x] Expose Provider/Model create/stage/activate/rollback through strict UI
+    protocol v3 drafts with typed redacted failures, SQL compare-and-swap,
+    full-row identity/revision/canonical-JSON/digest verification, Provider
+    adapter preflight, and durable pre-mutation intent plus terminal audit.
+    Component head mutations are future-only: they do not rewrite existing
+    Agent snapshots or sessions. Adopting a new component requires creating and
+    promoting a fully precomposed Agent revision through the existing Agent
+    administration path.
   - [ ] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
     isolation with deterministic local providers.
