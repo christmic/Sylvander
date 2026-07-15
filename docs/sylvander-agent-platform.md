@@ -215,7 +215,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | Production Agent runs now use the provider-neutral request/stream contract, an immutable Provider/Model registry snapshot, request-scoped Credential resolution, and provider-backed compaction. Redacted, admin-only Provider/Model revision inspection is public and durably audited. Credential administration, lifecycle mutations, capability discovery, and validated cross-provider session switching remain. |
+| A06 | Model providers | partial | Production Agent runs now use the provider-neutral request/stream contract, an immutable Provider/Model registry snapshot, request-scoped Credential resolution, and provider-backed compaction. Redacted, admin-only Provider/Model/Credential revision inspection is public, database-bounded, and durably audited. Lifecycle mutations, capability discovery, and validated cross-provider session switching remain. |
 | A07 | Model-specific prompts | partial | Provider/model-compatible prompt profiles, restricted session prompt overrides, prompt digests, and per-field provenance are resolved into effective session state. Shared safety layers, limits, and a complete resolver remain in P1.3. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
@@ -338,12 +338,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     `RuntimeRevisionProvider` composition, persisted Provider/Model session
     pins, deterministic legacy closure, execution-boundary revalidation, and
     request-scoped credential rotation tests in `sylvander-runtime`.
-  - [x] Expose redacted Provider/Model revision inspection through the public
-    protocol with transport authorization, service authorization, immutable
-    exact-version reads, and durable content-free audit.
-  - [ ] Expose redacted Credential inspection and Provider/Model/Credential
-    lifecycle administration with optimistic concurrency and durable
-    content-free mutation audit.
+  - [x] Expose redacted Provider/Model/Credential revision inspection through
+    the public protocol with transport authorization, service authorization,
+    immutable exact-version reads, bounded database pagination, and durable
+    content-free audit.
+  - [ ] Expose Provider/Model/Credential lifecycle administration with
+    optimistic concurrency and durable content-free mutation audit.
   - [ ] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
     isolation with deterministic local providers.
