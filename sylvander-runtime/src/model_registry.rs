@@ -16,6 +16,8 @@ pub(crate) struct ModelRevisionPage {
 pub(crate) enum ModelRegistryError {
     #[error("invalid Model definition")]
     InvalidDefinition,
+    #[error("Model `{identity}` already exists")]
+    AlreadyExists { identity: String },
     #[error("unknown Provider `{0}`")]
     UnknownProvider(String),
     #[error("unknown Model `{0}`")]
@@ -43,6 +45,50 @@ pub(crate) enum ModelRegistryError {
 }
 
 impl AgentRegistry {
+    /// Create a new Model at revision one without bootstrap idempotency.
+    pub(crate) async fn create_model(
+        &self,
+        definition: ModelDefinition,
+    ) -> Result<StoredRevision<ModelDefinition>, ModelRegistryError> {
+        validate(&definition)?;
+        if definition.revision != 1 {
+            return Err(ModelRegistryError::NonSequential {
+                identity: identity(&definition.provider_id, &definition.model_id),
+                expected: 1,
+                actual: definition.revision,
+            });
+        }
+        let provider_id = definition.provider_id.clone();
+        let model_id = definition.model_id.clone();
+        let result_identity = (provider_id.clone(), model_id.clone());
+        let (json, digest) = canonical_definition(&definition)?;
+        self.run_with(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            if model_exists(&transaction, &provider_id, &model_id)? {
+                return Err(ModelRegistryError::AlreadyExists {
+                    identity: identity(&provider_id, &model_id),
+                });
+            }
+            require_provider(&transaction, &provider_id)?;
+            insert_definition(&transaction, &definition, &json, &digest)?;
+            transaction
+                .execute(
+                    "INSERT INTO model_registry_heads \
+                     (provider_id,model_id,active_revision,updated_at) \
+                     VALUES (?1,?2,1,unixepoch())",
+                    params![provider_id, model_id],
+                )
+                .map_err(storage)?;
+            transaction.commit().map_err(storage)
+        })
+        .await?;
+        self.load_active_model((&result_identity.0, &result_identity.1))
+            .await?
+            .ok_or_else(|| AgentRegistryError::Integrity("created Model disappeared".into()).into())
+    }
+
     pub(crate) async fn seed_model(
         &self,
         definition: ModelDefinition,
@@ -497,6 +543,23 @@ fn latest_revision(
         )
         .map_err(storage)?;
     value.map_or(Ok(0), sql_revision)
+}
+
+fn model_exists(
+    connection: &Connection,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<bool, ModelRegistryError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM model_registry_heads \
+                           WHERE provider_id=?1 AND model_id=?2) \
+                    OR EXISTS(SELECT 1 FROM model_definitions \
+                              WHERE provider_id=?1 AND model_id=?2)",
+            params![provider_id, model_id],
+            |row| row.get(0),
+        )
+        .map_err(storage)
 }
 
 fn definition_digest(
