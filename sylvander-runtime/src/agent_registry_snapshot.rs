@@ -63,6 +63,20 @@ impl AgentRegistry {
                     revision: selection.agent_revision,
                 });
             }
+            let has_v3 = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_registry_snapshots_v3 \
+                     WHERE agent_id=?1 AND agent_revision=?2)",
+                    params![selection.agent_id, agent_revision],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(storage)?;
+            if has_v3 {
+                return Err(AgentSnapshotError::SnapshotSchemaConflict {
+                    agent_id: selection.agent_id,
+                    revision: selection.agent_revision,
+                });
+            }
             let provider_revision = active_head(
                 &transaction,
                 "provider_registry_heads",
@@ -340,6 +354,8 @@ pub(crate) enum AgentSnapshotError {
     },
     #[error("Agent registry snapshot `{agent_id}`@{revision} already has different bindings")]
     SnapshotCollision { agent_id: String, revision: u64 },
+    #[error("Agent registry snapshot `{agent_id}`@{revision} already uses the V3 schema")]
+    SnapshotSchemaConflict { agent_id: String, revision: u64 },
     #[error("Agent registry snapshot integrity error: {0}")]
     Integrity(String),
     #[error(transparent)]
