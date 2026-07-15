@@ -508,8 +508,8 @@ impl ServerConfig {
                 "server memory_maintenance interval_seconds must be between 60 and 86400".into(),
             );
         }
-        if !(1..=10_000).contains(&memory.batch_size) {
-            errors.push("server memory_maintenance batch_size must be between 1 and 10000".into());
+        if !(1..=1_000).contains(&memory.batch_size) {
+            errors.push("server memory_maintenance batch_size must be between 1 and 1000".into());
         }
         if !(1..=100).contains(&memory.max_batches_per_run) {
             errors.push(

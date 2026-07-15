@@ -155,8 +155,9 @@ retention, query, and self-improvement boundary.
 for durable Agent memory. The declared defaults are a 365-day TTL, a maximum
 TTL of 1825 days, a 7-day expired-row recovery grace, and 30-day retention for
 superseded rows. The maintenance budget is hourly batches of 500, with at most
-20 batches per run. Every value is finite and range-checked; unknown fields and
-configurations where `default_ttl_days` exceeds `max_ttl_days` fail startup.
+20 batches per run, and no more than 1000 rows in one batch. Every value is
+finite and range-checked; unknown fields and configurations where
+`default_ttl_days` exceeds `max_ttl_days` fail startup.
 There is no unbounded or legacy-environment fallback. Runtime enforcement,
 scheduled backup, and restore are separate implementation batches and are not
 claimed by this configuration contract alone.
