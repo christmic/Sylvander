@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::RegistryAdminError;
+use super::{CredentialSecretReferenceDraft, RegistryAdminError};
 
 pub const DEFAULT_REGISTRY_REVISION_PAGE_SIZE: u16 = 50;
 pub const MAX_REGISTRY_REVISION_PAGE_SIZE: u16 = 100;
@@ -43,6 +43,26 @@ pub enum RegistryAdminRequest {
         #[serde(default = "default_page_size")]
         limit: u16,
     },
+    CreateCredentialBinding {
+        binding_id: String,
+        reference: CredentialSecretReferenceDraft,
+    },
+    StageCredentialGeneration {
+        binding_id: String,
+        generation: u64,
+        expected_active_generation: u64,
+        reference: CredentialSecretReferenceDraft,
+    },
+    ActivateCredentialGeneration {
+        binding_id: String,
+        generation: u64,
+        expected_active_generation: u64,
+    },
+    RollbackCredentialGeneration {
+        binding_id: String,
+        target_generation: u64,
+        expected_active_generation: u64,
+    },
 }
 
 impl RegistryAdminRequest {
@@ -84,6 +104,33 @@ impl RegistryAdminRequest {
                 limit,
             } => validate_binding(binding_id)
                 .and_then(|()| validate_page(*before_generation, *limit)),
+            Self::CreateCredentialBinding {
+                binding_id,
+                reference,
+            } => validate_binding(binding_id).and_then(|()| validate_reference(reference)),
+            Self::StageCredentialGeneration {
+                binding_id,
+                generation,
+                expected_active_generation,
+                reference,
+            } => validate_binding(binding_id)
+                .and_then(|()| validate_generation(*generation))
+                .and_then(|()| validate_generation(*expected_active_generation))
+                .and_then(|()| validate_reference(reference)),
+            Self::ActivateCredentialGeneration {
+                binding_id,
+                generation,
+                expected_active_generation,
+            } => validate_binding(binding_id)
+                .and_then(|()| validate_generation(*generation))
+                .and_then(|()| validate_generation(*expected_active_generation)),
+            Self::RollbackCredentialGeneration {
+                binding_id,
+                target_generation,
+                expected_active_generation,
+            } => validate_binding(binding_id)
+                .and_then(|()| validate_generation(*target_generation))
+                .and_then(|()| validate_generation(*expected_active_generation)),
         }
     }
 }
@@ -110,6 +157,20 @@ fn validate_revision(revision: u64) -> Result<(), RegistryAdminError> {
     (revision > 0)
         .then_some(())
         .ok_or_else(|| RegistryAdminError::invalid_request("revision must be greater than zero"))
+}
+
+fn validate_generation(generation: u64) -> Result<(), RegistryAdminError> {
+    (generation > 0).then_some(()).ok_or_else(|| {
+        RegistryAdminError::invalid_request("credential generation must be greater than zero")
+    })
+}
+
+fn validate_reference(
+    reference: &CredentialSecretReferenceDraft,
+) -> Result<(), RegistryAdminError> {
+    reference.is_configured().then_some(()).ok_or_else(|| {
+        RegistryAdminError::invalid_request("credential reference must be configured")
+    })
 }
 
 fn validate_page(before: Option<u64>, limit: u16) -> Result<(), RegistryAdminError> {

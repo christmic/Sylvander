@@ -4,11 +4,13 @@
 //! digests for sensitive Provider and pricing configuration, never their
 //! configured values.
 
+mod draft;
 mod error;
 mod request;
 mod view;
 
-pub use error::{RegistryAdminError, RegistryAdminErrorCode};
+pub use draft::CredentialSecretReferenceDraft;
+pub use error::{RegistryAdminError, RegistryAdminErrorCode, RegistryAdminErrorDetails};
 pub use request::{
     DEFAULT_REGISTRY_REVISION_PAGE_SIZE, MAX_REGISTRY_REVISION_PAGE_SIZE, RegistryAdminRequest,
 };
@@ -59,6 +61,20 @@ pub enum RegistryAdminResult {
         generations: Vec<CredentialGenerationView>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_before_generation: Option<u64>,
+    },
+    CredentialBindingCreated {
+        generation: CredentialGenerationView,
+    },
+    CredentialGenerationStaged {
+        generation: CredentialGenerationView,
+    },
+    CredentialGenerationActivated {
+        binding_id_sha256: String,
+        active_generation: u64,
+    },
+    CredentialGenerationRolledBack {
+        binding_id_sha256: String,
+        active_generation: u64,
     },
 }
 
