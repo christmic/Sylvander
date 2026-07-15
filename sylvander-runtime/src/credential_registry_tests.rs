@@ -324,3 +324,137 @@ async fn request_scoped_resolution_reloads_rotates_and_fails_closed() {
         2
     );
 }
+
+#[tokio::test]
+async fn bounded_pages_are_descending_exclusive_and_restart_safe() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("registry.db");
+    let registry = AgentRegistry::open(&path).await.unwrap();
+    registry
+        .seed_credential(credential(1, "PROVIDER_KEY_ONE"))
+        .await
+        .unwrap();
+    for generation in 2..=5 {
+        registry
+            .stage_credential(
+                1,
+                credential(generation, &format!("PROVIDER_KEY_{generation}")),
+            )
+            .await
+            .unwrap();
+    }
+    registry
+        .activate_credential("credential/main", 4, 1)
+        .await
+        .unwrap();
+
+    let first = registry
+        .inspect_credential_page("credential/main", None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first.active_generation, 4);
+    assert_eq!(
+        first
+            .generations
+            .iter()
+            .map(|view| view.generation)
+            .collect::<Vec<_>>(),
+        [5, 4]
+    );
+    assert_eq!(first.next_before_generation, Some(4));
+    assert!(first.generations[1].active);
+    drop(registry);
+
+    let reopened = AgentRegistry::open(path).await.unwrap();
+    let second = reopened
+        .inspect_credential_page("credential/main", first.next_before_generation, 2)
+        .await
+        .unwrap();
+    assert_eq!(second.active_generation, 4);
+    assert_eq!(
+        second
+            .generations
+            .iter()
+            .map(|view| view.generation)
+            .collect::<Vec<_>>(),
+        [3, 2]
+    );
+    assert_eq!(second.next_before_generation, Some(2));
+    let final_page = reopened
+        .inspect_credential_page("credential/main", Some(2), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        final_page
+            .generations
+            .iter()
+            .map(|view| view.generation)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(final_page.next_before_generation, None);
+}
+
+#[tokio::test]
+async fn bounded_page_distinguishes_unknown_binding_and_integrity_failures() {
+    let directory = tempdir().unwrap();
+    let registry = AgentRegistry::open(directory.path().join("registry.db"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_credential_page("credential/unknown", None, 10)
+            .await,
+        Err(CredentialRegistryError::UnknownBinding(binding))
+            if binding == "credential/unknown"
+    ));
+    registry
+        .seed_credential(credential(1, "PROVIDER_KEY_ONE"))
+        .await
+        .unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute("DELETE FROM credential_binding_heads", [])
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_credential_page("credential/main", None, 10)
+            .await,
+        Err(CredentialRegistryError::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
+    ));
+
+    let registry = AgentRegistry::open(directory.path().join("tampered.db"))
+        .await
+        .unwrap();
+    registry
+        .seed_credential(credential(1, "PROVIDER_KEY_ONE"))
+        .await
+        .unwrap();
+    registry
+        .run(|connection| {
+            connection
+                .execute(
+                    "UPDATE credential_binding_revisions SET digest='tampered'",
+                    [],
+                )
+                .map(|_| ())
+                .map_err(AgentRegistryError::sqlite)
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        registry
+            .inspect_credential_page("credential/main", None, 10)
+            .await,
+        Err(CredentialRegistryError::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
+    ));
+}
