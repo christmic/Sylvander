@@ -1453,6 +1453,16 @@ impl AgentLoop {
         provider_request: Option<ModelRequest>,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<LoopModelStream, AgentLoopError> {
+        if let ModelBackend::Provider { model, .. } = &self.backend {
+            let provider_request = provider_request.as_ref().ok_or_else(|| {
+                AgentLoopError::Validation("provider request was not built".into())
+            })?;
+            sylvander_llm_core::validate_model_request_capabilities(
+                provider_request,
+                model.capabilities,
+            )
+            .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
+        }
         let max_attempts = self.max_retries + 1;
         for attempt in 0..max_attempts {
             let result = match &self.backend {
@@ -1751,9 +1761,11 @@ mod tests {
     use sylvander_llm_anthropic::api::client::AnthropicClient;
     use sylvander_llm_anthropic::api::model::ModelCapabilities;
     use sylvander_llm_core::{
-        ContentBlock as ProviderBlock, ModelCapabilities as ProviderCapabilities, ModelEventStream,
+        CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent,
+        ImageContent, MediaSource, ModelCapabilities as ProviderCapabilities, ModelEventStream,
         ModelRef, ModelResponse, ModelStreamEvent, ProviderError, ProviderErrorKind,
-        ProviderErrorPhase, ProviderFuture, StopReason as ProviderStopReason, TokenUsage,
+        ProviderErrorPhase, ProviderFuture, StopReason as ProviderStopReason, SystemInstruction,
+        TokenUsage, ToolResultContent,
     };
 
     type ProviderOpen = Result<Vec<Result<ModelStreamEvent, ProviderError>>, ProviderError>;
@@ -2074,6 +2086,190 @@ mod tests {
             stop_reason,
             usage: TokenUsage::default(),
         }))]
+    }
+
+    fn neutral_request() -> ModelRequest {
+        ModelRequest {
+            request_id: "secret-request".into(),
+            model: ModelRef::new("local", "test-model"),
+            system: Vec::new(),
+            messages: vec![ChatMessage::user("hello")],
+            tools: Vec::new(),
+            max_output_tokens: 100,
+            reasoning: None,
+            output_schema: None,
+        }
+    }
+
+    fn neutral_image() -> ImageContent {
+        ImageContent {
+            source: MediaSource::Url {
+                url: "https://secret.invalid/image".into(),
+            },
+            alt_text: None,
+        }
+    }
+
+    fn neutral_document() -> DocumentContent {
+        DocumentContent {
+            source: MediaSource::Url {
+                url: "https://secret.invalid/document".into(),
+            },
+            title: Some("secret-document".into()),
+        }
+    }
+
+    fn provider_loop_with_capabilities(
+        provider: Arc<ScriptedProvider>,
+        capabilities: ProviderCapabilities,
+    ) -> AgentLoop {
+        AgentLoop::builder()
+            .provider(provider)
+            .provider_model(ProviderModelInfo {
+                reference: ModelRef::new("local", "test-model"),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities,
+            })
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn provider_capability_preflight_rejects_before_dispatch() {
+        let mut tool_call = neutral_request();
+        tool_call.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![ProviderBlock::ToolCall {
+                id: "secret-call".into(),
+                name: "secret-tool".into(),
+                arguments: json!({"secret": true}),
+            }],
+        });
+        let mut tool_result = neutral_request();
+        tool_result.messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: vec![ProviderBlock::ToolResult {
+                call_id: "secret-call".into(),
+                content: vec![ToolResultContent::Text {
+                    text: "secret-result".into(),
+                }],
+                is_error: false,
+            }],
+        });
+        let mut reasoning = neutral_request();
+        reasoning.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![ProviderBlock::Reasoning {
+                text: "secret-reasoning".into(),
+                opaque_state: None,
+            }],
+        });
+        let mut image = neutral_request();
+        image.messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: vec![ProviderBlock::Image {
+                image: neutral_image(),
+            }],
+        });
+        let mut document = neutral_request();
+        document.messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: vec![ProviderBlock::Document {
+                document: neutral_document(),
+            }],
+        });
+        let mut schema = neutral_request();
+        schema.output_schema = Some(json!({"secret-schema": true}));
+        let mut cache = neutral_request();
+        cache.system.push(SystemInstruction {
+            text: "secret-system".into(),
+            cache_hint: Some(CacheHint::Ephemeral),
+        });
+
+        let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
+        let loop_ =
+            provider_loop_with_capabilities(provider.clone(), ProviderCapabilities::empty());
+        let legacy = loop_.build_request(&[MessageParam::user("legacy-placeholder")]);
+        for request in [
+            tool_call,
+            tool_result,
+            reasoning,
+            image,
+            document,
+            schema,
+            cache,
+        ] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let Err(error) = loop_
+                .call_model_with_retry(&legacy, Some(request), tx)
+                .await
+            else {
+                panic!("unsupported request reached provider dispatch");
+            };
+            assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
+            assert!(!error.is_retryable());
+            assert!(!error.to_string().contains("secret"));
+        }
+        assert!(provider.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_capability_preflight_dispatches_once_when_fully_supported() {
+        let provider = Arc::new(ScriptedProvider::new([Ok(completed_events(
+            vec![ProviderBlock::Text { text: "ok".into() }],
+            ProviderStopReason::EndTurn,
+        ))]));
+        let all = ProviderCapabilities::TOOL_USE
+            | ProviderCapabilities::REASONING
+            | ProviderCapabilities::STRUCTURED_OUTPUT
+            | ProviderCapabilities::PROMPT_CACHING
+            | ProviderCapabilities::VISION
+            | ProviderCapabilities::DOCUMENT_INPUT;
+        let loop_ = provider_loop_with_capabilities(provider.clone(), all);
+        let legacy = loop_.build_request(&[MessageParam::user("legacy-placeholder")]);
+        let mut request = neutral_request();
+        request.output_schema = Some(json!({"type": "object"}));
+        request.system.push(SystemInstruction {
+            text: "system".into(),
+            cache_hint: Some(CacheHint::Ephemeral),
+        });
+        request.reasoning = Some(sylvander_llm_core::ReasoningConfig { budget_tokens: 10 });
+        request.messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content: vec![
+                ProviderBlock::Reasoning {
+                    text: "reasoning".into(),
+                    opaque_state: None,
+                },
+                ProviderBlock::ToolCall {
+                    id: "call".into(),
+                    name: "tool".into(),
+                    arguments: json!({}),
+                },
+            ],
+        });
+        request.messages.push(ChatMessage {
+            role: ChatRole::User,
+            content: vec![ProviderBlock::ToolResult {
+                call_id: "call".into(),
+                content: vec![
+                    ToolResultContent::Image {
+                        image: neutral_image(),
+                    },
+                    ToolResultContent::Document {
+                        document: neutral_document(),
+                    },
+                ],
+                is_error: false,
+            }],
+        });
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        loop_
+            .call_model_with_retry(&legacy, Some(request), tx)
+            .await
+            .unwrap();
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
