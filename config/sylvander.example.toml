@@ -15,6 +15,7 @@ batch_size = 500
 max_batches_per_run = 20
 
 [server.memory_maintenance.retention]
+revision = 1
 default_ttl_days = 365
 max_ttl_days = 1825
 expired_grace_days = 7

@@ -102,6 +102,7 @@ batch_size = 250
 max_batches_per_run = 8
 
 [server.memory_maintenance.retention]
+revision = 3
 default_ttl_days = 90
 max_ttl_days = 730
 expired_grace_days = 3
@@ -116,6 +117,7 @@ retained_copies = 5"#,
     assert_eq!(maintenance.interval_seconds, 900);
     assert_eq!(maintenance.batch_size, 250);
     assert_eq!(maintenance.max_batches_per_run, 8);
+    assert_eq!(maintenance.retention.revision, 3);
     assert_eq!(maintenance.retention.default_ttl_days, 90);
     assert_eq!(maintenance.retention.max_ttl_days, 730);
     assert_eq!(maintenance.retention.expired_grace_days, 3);
@@ -140,6 +142,7 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
 
     let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
     let maintenance = &mut config.server.memory_maintenance;
+    maintenance.retention.revision = 0;
     maintenance.retention.default_ttl_days = 0;
     maintenance.retention.max_ttl_days = 1_826;
     maintenance.retention.expired_grace_days = 366;
@@ -151,6 +154,7 @@ fn memory_maintenance_rejects_unknown_and_unbounded_values() {
     maintenance.backup.retained_copies = 31;
     let joined = config.validate().unwrap_err().errors.join("\n");
     for field in [
+        "revision",
         "default_ttl_days",
         "max_ttl_days",
         "expired_grace_days",

@@ -164,6 +164,9 @@ claimed by this configuration contract alone. Backup cadence is finite: one
 day by default with seven retained copies, bounded to 1–7 days and 2–30 copies.
 The backup directory is derived beneath `data_dir`; configuration cannot route
 memory snapshots to an arbitrary filesystem path.
+Retention policy revision starts at 1 and is persisted with every row. Any
+policy change must increase it; changing policy values under the same revision
+fails startup instead of silently reinterpreting existing memory.
 
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
