@@ -540,26 +540,26 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     if draft.temperature.is_some_and(|value| !value.is_finite()) || draft.max_tokens == Some(0) {
         return Err(invalid_definition("model tuning values are invalid"));
     }
-    if !draft.allowed_models.is_empty() {
-        let mut seen = HashSet::new();
-        for model in &draft.allowed_models {
-            if model.provider_id.trim().is_empty()
-                || model.model_id.trim().is_empty()
-                || model.provider_id != draft.provider_id
-                || !seen.insert((&model.provider_id, &model.model_id))
-            {
-                return Err(invalid_definition(
-                    "allowed models must be non-empty, unique, and use the Agent provider",
-                ));
-            }
-        }
-        if !draft.allowed_models.iter().any(|model| {
-            model.provider_id == draft.provider_id && model.model_id == draft.default_model_id
-        }) {
+    if draft.allowed_models.is_empty() {
+        return Err(invalid_definition("allowed models must not be empty"));
+    }
+    let mut seen = HashSet::new();
+    for model in &draft.allowed_models {
+        if model.provider_id.trim().is_empty()
+            || model.model_id.trim().is_empty()
+            || !seen.insert((&model.provider_id, &model.model_id))
+        {
             return Err(invalid_definition(
-                "allowed models must contain the Agent default model",
+                "allowed models must contain unique qualified identities",
             ));
         }
+    }
+    if !draft.allowed_models.iter().any(|model| {
+        model.provider_id == draft.provider_id && model.model_id == draft.default_model_id
+    }) {
+        return Err(invalid_definition(
+            "allowed models must contain the Agent default model",
+        ));
     }
     if draft
         .agent_workspace
@@ -757,7 +757,40 @@ fn unknown_revision(agent_id: sylvander_protocol::AgentId, revision: u64) -> Age
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_protocol::{AgentAccessDraft, AgentId, AuthenticationMethod};
+    use sylvander_protocol::{AgentAccessDraft, AgentId, AuthenticationMethod, ModelSelection};
+
+    fn model(provider_id: &str, model_id: &str) -> ModelSelection {
+        ModelSelection {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+        }
+    }
+
+    fn catalog() -> ServerConfig {
+        ServerConfig::from_toml(
+            r#"
+schema_version = 1
+[[model_providers]]
+id = "primary"
+base_url = "https://primary.invalid"
+[model_providers.api_key]
+source = "env"
+name = "PRIMARY_TOKEN"
+[[model_providers.models]]
+id = "sonnet"
+
+[[model_providers]]
+id = "secondary"
+base_url = "https://secondary.invalid"
+[model_providers.api_key]
+source = "env"
+name = "SECONDARY_TOKEN"
+[[model_providers.models]]
+id = "sonnet"
+"#,
+        )
+        .unwrap()
+    }
 
     fn draft() -> AgentDefinitionDraft {
         AgentDefinitionDraft {
@@ -767,10 +800,7 @@ mod tests {
             description: "companion".into(),
             provider_id: "primary".into(),
             default_model_id: "sonnet".into(),
-            allowed_models: vec![sylvander_protocol::ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "sonnet".into(),
-            }],
+            allowed_models: vec![model("primary", "sonnet")],
             temperature: Some(0.2),
             max_tokens: Some(1024),
             system_prompt: "never reveal me".into(),
@@ -855,35 +885,42 @@ mod tests {
     }
 
     #[test]
-    fn allowed_models_are_qualified_unique_and_include_the_default() {
+    fn cross_provider_same_model_id_is_a_valid_exact_allowlist() {
+        let mut candidate = draft();
+        candidate.allowed_models.push(model("secondary", "sonnet"));
+        let definition = definition_from_draft(candidate).unwrap();
+
+        validate_against_catalog(&catalog(), &definition).unwrap();
+        assert_eq!(definition.spec.model.allowed_models.len(), 2);
+    }
+
+    #[test]
+    fn allowed_models_must_be_non_empty_unique_and_include_the_default() {
         for allowed_models in [
-            vec![sylvander_protocol::ModelSelection {
-                provider_id: String::new(),
-                model_id: "sonnet".into(),
-            }],
-            vec![
-                sylvander_protocol::ModelSelection {
-                    provider_id: "primary".into(),
-                    model_id: "sonnet".into(),
-                },
-                sylvander_protocol::ModelSelection {
-                    provider_id: "primary".into(),
-                    model_id: "sonnet".into(),
-                },
-            ],
-            vec![sylvander_protocol::ModelSelection {
-                provider_id: "secondary".into(),
-                model_id: "sonnet".into(),
-            }],
-            vec![sylvander_protocol::ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "haiku".into(),
-            }],
+            Vec::new(),
+            vec![model("primary", "sonnet"), model("primary", "sonnet")],
+            vec![model("secondary", "sonnet")],
+            vec![model("", "sonnet"), model("primary", "sonnet")],
         ] {
             let mut candidate = draft();
             candidate.allowed_models = allowed_models;
             assert_eq!(
                 definition_from_draft(candidate).unwrap_err().code,
+                AgentAdminErrorCode::InvalidDefinition
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_unknown_allowed_provider_or_model() {
+        for unknown in [model("missing", "sonnet"), model("secondary", "missing")] {
+            let mut candidate = draft();
+            candidate.allowed_models.push(unknown);
+            let definition = definition_from_draft(candidate).unwrap();
+            assert_eq!(
+                validate_against_catalog(&catalog(), &definition)
+                    .unwrap_err()
+                    .code,
                 AgentAdminErrorCode::InvalidDefinition
             );
         }
