@@ -6,11 +6,49 @@
 
 > **Product direction update (2026-07-11):**
 > [`sylvander-tui-ux-design.md`](./sylvander-tui-ux-design.md) is the
-> source of truth for the agent conversation experience. Ghostty hosts
-> the unchanged `sylvander-tui` binary in PTY-backed tabs; the earlier
+> source of truth for the agent conversation experience. Ghostty hosts one
+> session-bound `sylvander-tui` process per retained PTY surface and presents
+> those surfaces through a native left session rail, never top session tabs. The earlier
 > native Swift agent-workbench direction in this document is retained
 > only as historical architecture analysis and must not drive new UI
 > implementation.
+
+### Desktop host capability boundary
+
+The macOS host may expose local presentation capabilities that portable TUI
+clients do not have. Each TUI surface receives a process-private Unix socket
+path and a 256-bit random token bound to its server `SessionId`; requests use a
+bounded, versioned JSON line and never travel through the Agent service.
+
+- `/preview image <path>` resolves symlinks and accepts only regular supported
+  images inside that session's workspace, up to 25 MiB.
+- `/preview web <url>` accepts public HTTPS URLs and local development HTTP
+  URLs without embedded credentials. The Inspector defaults to the system
+  browser for JavaScript, authentication, localhost, and developer tools. An
+  explicit Quick Look uses a non-persistent `WKWebView`, disables JavaScript,
+  and rejects cross-origin top-level navigation.
+- Unknown sessions, mismatched tokens, oversized frames, local/private literal
+  addresses, and malformed requests fail closed. Agent output never auto-opens
+  a preview; a user must invoke the local preview command.
+
+### Embedded TUI helper
+
+The macOS product embeds `sylvander-tui` at
+`Contents/Resources/bin/sylvander-tui`. `macos/build.nu` builds the helper first
+and passes its absolute path to Xcode. The `Embed Sylvander TUI` phase rejects a
+missing or non-executable helper, verifies every architecture in `ARCHS`,
+installs it with executable permissions, and signs it with the app identity.
+
+`SYLVANDER_TUI_PATH` remains an explicit development and CI override. Runtime
+launch prefers this override and otherwise resolves only the bundled helper.
+
+Tag releases additionally require `MACOS_CERTIFICATE_P12`,
+`MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`, `APPLE_ID`,
+`APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD` repository secrets. The release job
+creates a two-architecture Archive, verifies its nested signatures, submits it
+to Apple's notary service, staples and assesses the ticket, then publishes a
+draft zip with a SHA-256 checksum. Missing credentials fail the release before
+any distributable artifact is created.
 
 Last audited against the **`b14d92383`** upstream Ghostty commit
 embedded in this repo (F1.12). Update this file if you re-sync
@@ -195,7 +233,7 @@ used by:
 | `src/os/macos.zig` | 31, 46 | Application Support / Cache paths |
 | `src/os/i18n.zig` | 47-67 | gettext domain binding |
 | `macos/Sylvander-Info.plist` | 115 | `ai.oraculo.sylvander` (duplicate, hardcoded) |
-| `macos/Ghostty.xcodeproj/project.pbxproj` | 783+ | `PRODUCT_BUNDLE_IDENTIFIER` (also hardcoded) |
+| `macos/Sylvander.xcodeproj/project.pbxproj` | 783+ | `PRODUCT_BUNDLE_IDENTIFIER` (also hardcoded) |
 
 The last two are set in two places because `PRODUCT_BUNDLE_IDENTIFIER`
 is an Xcode build setting, not a Zig comptime value; we patch
@@ -416,7 +454,7 @@ src/renderer/Options.zig:1-67              Renderer.Options
 src/main_c.zig                              C API entry (top-level)
 include/ghostty.h                            C API contract
 include/module.modulemap                    GhosttyKit module
-macos/Ghostty.xcodeproj/project.pbxproj    Xcode project (patched: bundle id + display name)
+macos/Sylvander.xcodeproj/project.pbxproj  Xcode project (patched: bundle id + display name)
 macos/Sources/Ghostty/Ghostty.App.swift:64  action_cb registration
 macos/Sources/Ghostty/Ghostty.App.swift:434 wakeup_cb
 macos/Sources/Ghostty/Ghostty.App.swift:481 App.action switch (Swift contract)

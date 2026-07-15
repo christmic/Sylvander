@@ -48,7 +48,7 @@ sylvander-ghostty/
 ├── macos/
 │   ├── Sylvander-Info.plist   ← PATCHED file (renamed)
 │   ├── Sylvander.sdef         ← PATCHED file (renamed)
-│   ├── Ghostty.xcodeproj/    ← PATCHED refs (`INFOPLIST_KEY_CFBundleDisplayName`,
+│   ├── Sylvander.xcodeproj/  ← PATCHED refs (`INFOPLIST_KEY_CFBundleDisplayName`,
 │   │                            `PRODUCT_BUNDLE_IDENTIFIER`)
 │   ├── Sources/, Tests/     ← upstream Swift; keep imports of `Ghostty`
 │   └── GhosttyKit.xcframework/  ← upstream name (Swift `import Ghostty`)
@@ -245,11 +245,11 @@ cd sylvander-ghostty/macos
 git mv Ghostty<New>.plist Sylvander<New>.plist
 # 2) update pbxproj INFOPLIST_FILE / filename refs:
 sed -i '' -e 's|Ghostty<New>\.plist|Sylvander<New>.plist|g' \
-       Ghostty.xcodeproj/project.pbxproj
+       Sylvander.xcodeproj/project.pbxproj
 # 3) if it's an Info.plist, also patch CFBundleDisplayName:
 sed -i '' -e 's|INFOPLIST_KEY_CFBundleDisplayName = Ghostty;|INFOPLIST_KEY_CFBundleDisplayName = Sylvander;|g' \
     -e 's|INFOPLIST_KEY_CFBundleDisplayName = "Ghostty<Variant>";|INFOPLIST_KEY_CFBundleDisplayName = "Sylvander<Variant>";|g' \
-       Ghostty.xcodeproj/project.pbxproj
+       Sylvander.xcodeproj/project.pbxproj
 # 4) if it should set a Sylvander bundle id, also adjust
 #    PRODUCT_BUNDLE_IDENTIFIER for the relevant target.
 # 5) zig build -Doptimize=ReleaseFast --summary all
@@ -360,7 +360,7 @@ on any future re-run is fully cache-hit for the dep layer.
 
 ### 8.2 Sparkle workaround (macOS only)
 
-`Ghostty.xcodeproj` references
+`Sylvander.xcodeproj` references
 `https://github.com/sparkle-project/Sparkle` as a SwiftPM
 package. Xcode SPM internally uses git and does **not** honor
 `~/.gitconfig` http.proxy. On this network, the git clone
