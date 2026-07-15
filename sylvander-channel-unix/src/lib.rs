@@ -258,7 +258,7 @@ impl Channel for UnixChannel {
             let client_id_clone = client_id;
             let instance_id = self.instance_id.clone();
             client_tasks.spawn(async move {
-                let mut negotiated = false;
+                let mut negotiated_version = None;
                 while let Some(result) = reader.next().await {
                     let line = match result {
                         Ok(line) => line,
@@ -280,13 +280,13 @@ impl Channel for UnixChannel {
                             let _ = tx.send(ServerMsg::ProtocolError {
                                 error: protocol_error("malformed_message", &e.to_string()),
                             });
-                            if !negotiated {
+                            if negotiated_version.is_none() {
                                 break;
                             }
                             continue;
                         }
                     };
-                    if !negotiated {
+                    if negotiated_version.is_none() {
                         let ClientMsg::Hello { protocol } = msg else {
                             let _ = tx.send(ServerMsg::ProtocolError {
                                 error: protocol_error(
@@ -298,12 +298,12 @@ impl Channel for UnixChannel {
                         };
                         match sylvander_protocol::negotiate_ui_protocol(&protocol) {
                             Ok(version) => {
-                                negotiated = true;
+                                negotiated_version = Some(version);
                                 let _ = tx.send(ServerMsg::Welcome {
                                     protocol: sylvander_protocol::UiProtocolWelcome {
                                         server_name: "sylvander-server".into(),
                                         version,
-                                        capabilities: ui_protocol_capabilities(),
+                                        capabilities: ui_protocol_capabilities(version),
                                     },
                                 });
                             }
@@ -340,6 +340,8 @@ impl Channel for UnixChannel {
                             runtime_control: runtime_control.as_ref(),
                             hub: &reader_hub,
                             client_id,
+                            ui_protocol_version: negotiated_version
+                                .expect("successful handshake records a version"),
                         },
                     )
                     .await;
@@ -353,24 +355,25 @@ impl Channel for UnixChannel {
     }
 }
 
-fn ui_protocol_capabilities() -> Vec<String> {
+fn ui_protocol_capabilities(version: u16) -> Vec<String> {
     [
-        "agent_administration",
-        "attachments",
-        "approval_scopes",
-        "compaction",
-        "credential_registry_lifecycle",
-        "diagnostics",
-        "model_selection",
-        "plans",
-        "registry_administration",
-        "session_replay",
-        "sessions",
-        "tasks",
-        "workspace_rollback",
+        ("agent_administration", 2),
+        ("attachments", 1),
+        ("approval_scopes", 1),
+        ("compaction", 1),
+        ("credential_registry_lifecycle", 3),
+        ("diagnostics", 1),
+        ("model_selection", 1),
+        ("plans", 1),
+        ("registry_administration", 2),
+        ("session_replay", 1),
+        ("sessions", 1),
+        ("tasks", 1),
+        ("workspace_rollback", 1),
     ]
     .into_iter()
-    .map(str::to_owned)
+    .filter(|(_, minimum)| version >= *minimum)
+    .map(|(capability, _)| capability.to_owned())
     .collect()
 }
 
@@ -470,6 +473,7 @@ async fn handle_client_msg(
             runtime_control,
             hub: &hub,
             client_id: 0,
+            ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
         },
     )
     .await;
@@ -484,6 +488,7 @@ struct ClientHandler<'a> {
     runtime_control: Option<&'a sylvander_agent::run::AgentRun>,
     hub: &'a Arc<Mutex<RelayHub>>,
     client_id: u64,
+    ui_protocol_version: u16,
 }
 
 async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>) {
@@ -496,7 +501,19 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         runtime_control,
         hub,
         client_id,
+        ui_protocol_version,
     } = handler;
+    if let ClientMsg::RegistryAdmin { request } = &msg
+        && request.minimum_ui_protocol_version() > ui_protocol_version
+    {
+        let _ = tx.send(ServerMsg::ProtocolError {
+            error: protocol_error(
+                "unsupported_message_version",
+                "message requires a newer UI protocol version",
+            ),
+        });
+        return;
+    }
     if !matches!(&msg, ClientMsg::Chat { .. })
         && let Some(ui) = &ctx.ui
         && let Err(error) = ui.authorize_message(boundary, &msg).await
@@ -1674,13 +1691,19 @@ fn history_text(value: &serde_json::Value) -> Option<String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
     use sylvander_agent::session_store::{
         MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    struct EmptyUiService;
+    #[derive(Default)]
+    struct EmptyUiService {
+        registry_authorizations: AtomicUsize,
+        registry_dispatches: AtomicUsize,
+        allow_registry: bool,
+    }
 
     #[tokio::test]
     async fn oversized_frame_is_rejected_before_deserialization() {
@@ -1698,7 +1721,11 @@ mod tests {
             boundary: &sylvander_protocol::BoundaryContext,
             message: &ClientMsg,
         ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. }) {
+                self.registry_authorizations.fetch_add(1, Ordering::Relaxed);
+            }
             if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && !self.allow_registry
                 && !boundary
                     .principal
                     .as_ref()
@@ -1769,11 +1796,13 @@ mod tests {
             boundary: &sylvander_protocol::BoundaryContext,
             request: sylvander_protocol::RegistryAdminRequest,
         ) -> sylvander_protocol::RegistryAdminResponse {
+            self.registry_dispatches.fetch_add(1, Ordering::Relaxed);
             assert!(
-                boundary
-                    .principal
-                    .as_ref()
-                    .is_some_and(|principal| principal.has_role("admin")),
+                self.allow_registry
+                    || boundary
+                        .principal
+                        .as_ref()
+                        .is_some_and(|principal| principal.has_role("admin")),
                 "non-administrator reached registry dispatch"
             );
             let result = match request {
@@ -1942,7 +1971,7 @@ mod tests {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2091,7 +2120,7 @@ mod tests {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let boundary = sylvander_protocol::BoundaryContext::authenticated(
@@ -2112,6 +2141,7 @@ mod tests {
                 runtime_control: None,
                 hub: &Arc::new(Mutex::new(RelayHub::default())),
                 client_id: 1,
+                ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
             },
         )
         .await;
@@ -2158,14 +2188,117 @@ mod tests {
 
     #[test]
     fn server_advertises_administration_capabilities() {
-        let capabilities = ui_protocol_capabilities();
-        for capability in [
-            "agent_administration",
-            "registry_administration",
-            "credential_registry_lifecycle",
-        ] {
-            assert!(capabilities.iter().any(|item| item == capability));
-        }
+        let v1 = ui_protocol_capabilities(1);
+        let v2 = ui_protocol_capabilities(2);
+        let v3 = ui_protocol_capabilities(3);
+        assert!(!v1.iter().any(|item| item.contains("administration")));
+        assert!(
+            !v1.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(v2.iter().any(|item| item == "agent_administration"));
+        assert!(v2.iter().any(|item| item == "registry_administration"));
+        assert!(
+            !v2.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            v3.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiated_version_gates_registry_mutations_before_dispatch() {
+        let path = socket_path();
+        let service = Arc::new(EmptyUiService {
+            allow_registry: true,
+            ..EmptyUiService::default()
+        });
+        let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
+        let task = tokio::spawn(channel.run(ChannelContext {
+            bus: Arc::new(InProcessMessageBus::new()),
+            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            ui: Some(service.clone()),
+            readiness: None,
+        }));
+        let mutation = serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": "credential/private-binding",
+                "reference": {"source": "environment", "name": "PRIVATE_API_KEY"}
+            }
+        });
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let first = send_and_read(&mut write, &mut lines, mutation.clone()).await;
+        assert_eq!(first["error"]["code"], "handshake_required");
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 0);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 0);
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let hello_v2 = serde_json::json!({
+            "type": "hello",
+            "protocol": {
+                "client_name": "v2-client", "min_version": 2, "max_version": 2,
+                "capabilities": []
+            }
+        });
+        let welcome = send_and_read(&mut write, &mut lines, hello_v2.clone()).await;
+        assert_eq!(welcome["protocol"]["version"], 2);
+        assert!(
+            welcome["protocol"]["capabilities"]
+                .as_array()
+                .is_some_and(|values| values
+                    .iter()
+                    .any(|value| value == "registry_administration"))
+        );
+        assert!(
+            !welcome["protocol"]["capabilities"]
+                .as_array()
+                .is_some_and(|values| values
+                    .iter()
+                    .any(|value| value == "credential_registry_lifecycle"))
+        );
+        let duplicate = send_and_read(&mut write, &mut lines, hello_v2).await;
+        assert_eq!(duplicate["error"]["code"], "duplicate_handshake");
+        let rejected = send_and_read(&mut write, &mut lines, mutation.clone()).await;
+        assert_eq!(rejected["error"]["code"], "unsupported_message_version");
+        let rejected_wire = rejected.to_string();
+        assert!(!rejected_wire.contains("credential/private-binding"));
+        assert!(!rejected_wire.contains("PRIVATE_API_KEY"));
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 0);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 0);
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let welcome = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type": "hello",
+                "protocol": {
+                    "client_name": "v3-client", "min_version": 3, "max_version": 3,
+                    "capabilities": []
+                }
+            }),
+        )
+        .await;
+        assert_eq!(welcome["protocol"]["version"], 3);
+        let accepted = send_and_read(&mut write, &mut lines, mutation).await;
+        assert_eq!(accepted["type"], "registry_admin");
+        assert_eq!(accepted["response"]["status"], "success");
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 1);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 1);
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
@@ -2464,7 +2597,7 @@ mod tests {
         let context = ChannelContext {
             bus: Arc::new(InProcessMessageBus::new()),
             sessions: store.clone(),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let task = tokio::spawn(channel.run(context));
@@ -2638,7 +2771,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         }));
 
@@ -2723,7 +2856,7 @@ mod tests {
         let task = tokio::spawn(channel.run(ChannelContext {
             bus: bus.clone(),
             sessions: store,
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         }));
 
@@ -2825,7 +2958,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2868,7 +3001,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -2948,7 +3081,7 @@ mod tests {
         let context = ChannelContext {
             bus,
             sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
+            ui: Some(Arc::new(EmptyUiService::default())),
             readiness: None,
         };
         let (tx, _rx) = mpsc::unbounded_channel();
