@@ -16,6 +16,8 @@ mod analysis;
 mod analysis_types;
 mod evaluation;
 mod evaluation_types;
+mod proposal;
+mod proposal_types;
 mod recorder;
 
 pub use analysis_types::{
@@ -26,6 +28,10 @@ pub use evaluation_types::{
     EvaluationBaseline, EvaluationCase, EvaluationComparison, EvaluationDatasetRevision,
     EvaluationSplit, MetricMeasurement, RegressionDecision, RegressionMetric, ScoreDirection,
     ScoringAdapterKind, ScoringAdapterRevision, StoredEvaluationBaseline, StoredEvaluationDataset,
+};
+pub use proposal_types::{
+    ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
+    RequiredEvaluation, StoredImprovementProposal,
 };
 pub use recorder::EvidenceRecorder;
 
@@ -1054,6 +1060,12 @@ pub enum EvidenceError {
     EvaluationRevisionConflict,
     #[error("stored evaluation registry data is invalid")]
     InvalidEvaluationData,
+    #[error("improvement proposal is invalid")]
+    InvalidImprovementProposal,
+    #[error("improvement proposal state revision or transition is invalid")]
+    ProposalStateConflict,
+    #[error("stored improvement proposal data is invalid")]
+    InvalidProposalData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
@@ -1153,6 +1165,43 @@ CREATE TABLE IF NOT EXISTS evidence_evaluation_baseline_metrics (
   CHECK (direction IN ('higher_is_better', 'lower_is_better')),
   CHECK (sample_count > 0),
   CHECK (max_regression_basis_points BETWEEN 0 AND 10000)
+);
+CREATE TABLE IF NOT EXISTS evidence_improvement_proposals (
+  id TEXT PRIMARY KEY, cohort_digest_sha256 TEXT NOT NULL,
+  hypothesis TEXT NOT NULL, expected_benefit TEXT NOT NULL, risk TEXT NOT NULL,
+  rollback_plan TEXT NOT NULL, created_by_principal_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL, definition_digest_sha256 TEXT NOT NULL,
+  status TEXT NOT NULL, state_revision INTEGER NOT NULL,
+  CHECK (risk IN ('low', 'medium', 'high')),
+  CHECK (status IN ('draft', 'ready_for_review', 'approved', 'rejected',
+                    'experimenting', 'completed', 'rolled_back')),
+  CHECK (state_revision > 0)
+);
+CREATE TABLE IF NOT EXISTS evidence_improvement_proposal_evidence (
+  proposal_id TEXT NOT NULL REFERENCES evidence_improvement_proposals(id),
+  position INTEGER NOT NULL, locator TEXT NOT NULL, digest_sha256 TEXT NOT NULL,
+  PRIMARY KEY(proposal_id, position)
+);
+CREATE TABLE IF NOT EXISTS evidence_improvement_proposal_components (
+  proposal_id TEXT NOT NULL REFERENCES evidence_improvement_proposals(id),
+  position INTEGER NOT NULL, component TEXT NOT NULL,
+  PRIMARY KEY(proposal_id, position), UNIQUE(proposal_id, component)
+);
+CREATE TABLE IF NOT EXISTS evidence_improvement_proposal_evaluations (
+  proposal_id TEXT NOT NULL REFERENCES evidence_improvement_proposals(id),
+  position INTEGER NOT NULL, dataset_id TEXT NOT NULL,
+  dataset_revision INTEGER NOT NULL, baseline_id TEXT NOT NULL,
+  PRIMARY KEY(proposal_id, position),
+  FOREIGN KEY(dataset_id, dataset_revision)
+    REFERENCES evidence_evaluation_datasets(id, revision),
+  FOREIGN KEY(baseline_id) REFERENCES evidence_evaluation_baselines(id)
+);
+CREATE TABLE IF NOT EXISTS evidence_improvement_proposal_transitions (
+  proposal_id TEXT NOT NULL REFERENCES evidence_improvement_proposals(id),
+  state_revision INTEGER NOT NULL, from_status TEXT NOT NULL,
+  to_status TEXT NOT NULL, principal_digest TEXT NOT NULL,
+  reason TEXT, occurred_at INTEGER NOT NULL,
+  PRIMARY KEY(proposal_id, state_revision)
 );
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
