@@ -41,6 +41,18 @@ impl std::fmt::Debug for StoredUserProfile {
     }
 }
 
+impl StoredUserProfile {
+    pub(crate) fn into_view(self) -> UserProfileView {
+        UserProfileView {
+            revision: self.revision,
+            profile: self.profile,
+            do_not_learn: self.do_not_learn,
+            created_at_unix_secs: self.created_at_unix_secs,
+            updated_at_unix_secs: self.updated_at_unix_secs,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub(crate) enum UserProfileStoreError {
     #[error("invalid user profile {0}")]
@@ -262,13 +274,7 @@ impl UserProfileStore {
         Ok(UserProfileExport {
             schema_version: USER_PROFILE_PROTOCOL_VERSION,
             format: UserProfileExportFormat::Json,
-            profile: UserProfileView {
-                revision: stored.revision,
-                profile: stored.profile,
-                do_not_learn: stored.do_not_learn,
-                created_at_unix_secs: stored.created_at_unix_secs,
-                updated_at_unix_secs: stored.updated_at_unix_secs,
-            },
+            profile: stored.into_view(),
             exported_at_unix_secs: self.clock.now(),
         })
     }
