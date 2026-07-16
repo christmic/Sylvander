@@ -198,6 +198,7 @@ impl ServerConfig {
                         execution_target: "server-local".into(),
                         path: path.clone(),
                         read_only: false,
+                        instruction_focus: None,
                     }
                 }),
                 workspace_mounts: Vec::new(),

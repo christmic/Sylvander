@@ -638,6 +638,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                         execution_target: workspace.execution_target.clone(),
                         path: workspace.path.clone().into(),
                         read_only: workspace.read_only,
+                        instruction_focus: workspace.instruction_focus.clone().map(Into::into),
                     }
                 }),
             });
@@ -4190,6 +4191,7 @@ exec "$@"
             execution_target: "local".into(),
             path: repository.clone(),
             read_only: false,
+            instruction_focus: None,
         };
         let initial_overrides = SessionConfigOverrides {
             user_workspace: Some(requested_workspace.clone()),
@@ -4320,6 +4322,7 @@ exec "$@"
                 execution_target: "local".into(),
                 path: repository.clone(),
                 read_only: false,
+                instruction_focus: None,
             }),
             ..SessionConfigOverrides::default()
         };
@@ -4494,6 +4497,7 @@ exec "$@"
                 execution_target: "container".into(),
                 path: repository.clone(),
                 read_only: false,
+                instruction_focus: None,
             }),
             ..SessionConfigOverrides::default()
         };

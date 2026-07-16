@@ -65,6 +65,7 @@ max_tokens = 32000
 execution_target = "local"
 path = "/workspace/agent-home"
 read_only = false
+instruction_focus = "src/api"
 
 [[agents.workspace_mounts]]
 reference = "shared-lib"
@@ -102,6 +103,13 @@ fn valid_configuration_parses_and_resolves_references() {
     assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
     assert_eq!(config.agents[0].spec.id.0, "assistant");
     assert_eq!(config.agents[0].revision, 7);
+    assert_eq!(
+        config.agents[0]
+            .agent_workspace
+            .as_ref()
+            .and_then(|workspace| workspace.instruction_focus.as_deref()),
+        Some("src/api")
+    );
     assert_eq!(config.agents[0].workspace_mounts[0].reference, "shared-lib");
     assert_eq!(
         config.agents[0].workspace_mounts[0].role,
@@ -118,6 +126,16 @@ fn valid_configuration_parses_and_resolves_references() {
         Some(MemoryIntegrityBackend::File { ref anchor_path })
             if anchor_path == Path::new("/var/lib/sylvander-integrity/anchor.json")
     ));
+}
+
+#[test]
+fn workspace_instruction_focus_cannot_escape_the_binding_root() {
+    let input = valid_toml().replace(
+        "instruction_focus = \"src/api\"",
+        "instruction_focus = \"../outside\"",
+    );
+    let error = ServerConfig::from_toml(&input).unwrap_err().to_string();
+    assert!(error.contains("instruction_focus must stay relative"));
 }
 
 #[test]

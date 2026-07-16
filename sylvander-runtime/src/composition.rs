@@ -572,6 +572,7 @@ pub fn resolve_session_config(
                 execution_target: "local".into(),
                 path: path.to_path_buf(),
                 read_only: false,
+                instruction_focus: None,
             })
         });
     let execution_target = overrides
@@ -792,6 +793,7 @@ fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> Sessi
         execution_target: workspace.execution_target.clone(),
         path: workspace.path.clone().into(),
         read_only: workspace.read_only,
+        instruction_focus: workspace.instruction_focus.clone().map(Into::into),
     }
 }
 
@@ -1708,6 +1710,7 @@ path = "/tmp/sylvander-test.sock"
             execution_target: "local".into(),
             path: "/agent-home".into(),
             read_only: true,
+            instruction_focus: None,
         });
         config.agents[0].workspace_mounts = vec![
             crate::config::WorkspaceMountConfig {
@@ -1717,6 +1720,7 @@ path = "/tmp/sylvander-test.sock"
                     execution_target: "local".into(),
                     path: "/dependencies/shared-lib".into(),
                     read_only: true,
+                    instruction_focus: None,
                 },
                 capabilities: WorkspaceCapabilityPolicy {
                     read: true,
@@ -1732,6 +1736,7 @@ path = "/tmp/sylvander-test.sock"
                     execution_target: "local".into(),
                     path: "/artifacts".into(),
                     read_only: false,
+                    instruction_focus: None,
                 },
                 capabilities: WorkspaceCapabilityPolicy {
                     read: true,
@@ -1837,6 +1842,7 @@ path = "/tmp/sylvander-test.sock"
                     execution_target: "local".into(),
                     path: "/collision".into(),
                     read_only: true,
+                    instruction_focus: None,
                 },
                 capabilities: WorkspaceCapabilityPolicy::default(),
             });
@@ -1867,6 +1873,7 @@ path = "/tmp/sylvander-test.sock"
                     execution_target: "local".into(),
                     path: "/other/project".into(),
                     read_only: false,
+                    instruction_focus: None,
                 }),
                 ..SessionConfigOverrides::default()
             },
@@ -1918,6 +1925,7 @@ path = "/tmp/sylvander-test.sock"
             execution_target: "local".into(),
             path: "/channel/project".into(),
             read_only: true,
+            instruction_focus: None,
         };
         let channel_effective = resolve_session_config(
             &agents[0],

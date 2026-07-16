@@ -1,6 +1,7 @@
 //! Execution-target-neutral workspace instruction and Skill discovery.
 
 use std::collections::HashSet;
+use std::path::{Component, Path, PathBuf};
 
 use crate::workspace_executor::{
     WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
@@ -44,6 +45,30 @@ impl WorkspaceRole {
 pub(crate) struct WorkspaceContextSource<'a> {
     pub executor: &'a dyn WorkspaceExecutor,
     pub target: WorkspaceTarget,
+    pub focus: PathBuf,
+}
+
+impl<'a> WorkspaceContextSource<'a> {
+    #[cfg(test)]
+    pub(crate) fn root(executor: &'a dyn WorkspaceExecutor, target: WorkspaceTarget) -> Self {
+        Self {
+            executor,
+            target,
+            focus: PathBuf::new(),
+        }
+    }
+
+    pub(crate) fn focused(
+        executor: &'a dyn WorkspaceExecutor,
+        target: WorkspaceTarget,
+        focus: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            executor,
+            target,
+            focus: focus.into(),
+        }
+    }
 }
 
 /// Discover immutable prompt context through the workspace execution layer.
@@ -101,28 +126,37 @@ impl Collector {
         role: WorkspaceRole,
         source: &WorkspaceContextSource<'_>,
     ) -> Result<(), WorkspaceExecutorError> {
-        let Ok(listing) = source
-            .executor
-            .list(
-                &source.target,
-                WorkspaceListRequest {
-                    relative_path: ".".into(),
-                    recursive: false,
-                    limits: discovery_limits(),
-                },
-            )
-            .await
-        else {
-            return Ok(());
-        };
-        for name in INSTRUCTION_NAMES {
-            if listing.entries.iter().any(|entry| {
-                entry.relative_path == name
-                    && entry.kind == WorkspaceEntryKind::File
-                    && entry.size <= MAX_DOCUMENT_BYTES as u64
-            }) {
-                self.add(role, "instructions", source, name).await?;
-                break;
+        for directory in instruction_ancestors(&source.focus)? {
+            let relative_directory = if directory.as_os_str().is_empty() {
+                ".".to_owned()
+            } else {
+                directory.to_string_lossy().into_owned()
+            };
+            let Ok(listing) = source
+                .executor
+                .list(
+                    &source.target,
+                    WorkspaceListRequest {
+                        relative_path: relative_directory,
+                        recursive: false,
+                        limits: discovery_limits(),
+                    },
+                )
+                .await
+            else {
+                continue;
+            };
+            for name in INSTRUCTION_NAMES {
+                let path = directory.join(name);
+                let path = path.to_string_lossy();
+                if listing.entries.iter().any(|entry| {
+                    entry.relative_path == path
+                        && entry.kind == WorkspaceEntryKind::File
+                        && entry.size <= MAX_DOCUMENT_BYTES as u64
+                }) {
+                    self.add(role, "instructions", source, &path).await?;
+                    break;
+                }
             }
         }
         Ok(())
@@ -242,6 +276,31 @@ impl Collector {
     }
 }
 
+fn instruction_ancestors(focus: &Path) -> Result<Vec<PathBuf>, WorkspaceExecutorError> {
+    if focus.is_absolute()
+        || focus
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(WorkspaceExecutorError::InvalidPath(
+            focus.display().to_string(),
+        ));
+    }
+    let mut ancestors = vec![PathBuf::new()];
+    let mut current = PathBuf::new();
+    for component in focus.components() {
+        match component {
+            Component::Normal(part) => {
+                current.push(part);
+                ancestors.push(current.clone());
+            }
+            Component::CurDir => {}
+            Component::RootDir | Component::ParentDir | Component::Prefix(_) => unreachable!(),
+        }
+    }
+    Ok(ancestors)
+}
+
 fn discovery_limits() -> WorkspaceQueryLimits {
     WorkspaceQueryLimits {
         max_results: 1_000,
@@ -271,14 +330,14 @@ mod tests {
 
         let executor = LocalExecutor;
         let context = discover(
-            Some(WorkspaceContextSource {
-                executor: &executor,
-                target: WorkspaceTarget::local(agent.path(), true),
-            }),
-            Some(WorkspaceContextSource {
-                executor: &executor,
-                target: WorkspaceTarget::local(task.path(), true),
-            }),
+            Some(WorkspaceContextSource::root(
+                &executor,
+                WorkspaceTarget::local(agent.path(), true),
+            )),
+            Some(WorkspaceContextSource::root(
+                &executor,
+                WorkspaceTarget::local(task.path(), true),
+            )),
         )
         .await
         .unwrap()
@@ -311,10 +370,10 @@ mod tests {
         let executor = LocalExecutor;
         let context = discover(
             None,
-            Some(WorkspaceContextSource {
-                executor: &executor,
-                target: WorkspaceTarget::local(root.path(), true),
-            }),
+            Some(WorkspaceContextSource::root(
+                &executor,
+                WorkspaceTarget::local(root.path(), true),
+            )),
         )
         .await
         .unwrap()
@@ -323,5 +382,40 @@ mod tests {
         assert!(!context.contains("alias"));
         assert!(!context.contains("outside"));
         assert!(!context.contains(&"x".repeat(100)));
+    }
+
+    #[tokio::test]
+    async fn instructions_follow_root_to_focus_hierarchy_with_path_provenance() {
+        let root = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(root.path().join("src/api")).unwrap();
+        std::fs::write(root.path().join("AGENTS.md"), "root guidance").unwrap();
+        std::fs::write(root.path().join("src/AGENT.md"), "source guidance").unwrap();
+        std::fs::write(root.path().join("src/api/AGENTS.md"), "api canonical").unwrap();
+        std::fs::write(root.path().join("src/api/agent.md"), "api alias").unwrap();
+        let executor = LocalExecutor;
+
+        let context = discover(
+            None,
+            Some(WorkspaceContextSource::focused(
+                &executor,
+                WorkspaceTarget::local(root.path(), true),
+                "src/api",
+            )),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let root_position = context.find("root guidance").unwrap();
+        let source_position = context.find("source guidance").unwrap();
+        let api_position = context.find("api canonical").unwrap();
+        assert!(root_position < source_position && source_position < api_position);
+        assert!(!context.contains("api alias"));
+        assert!(context.contains("src/AGENT.md"));
+        assert!(context.contains("src/api/AGENTS.md"));
+        assert!(
+            instruction_ancestors(Path::new("../escape")).is_err(),
+            "focus paths never escape the workspace root"
+        );
     }
 }

@@ -547,6 +547,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                     execution_target: "local".into(),
                     path,
                     read_only: false,
+                    instruction_focus: None,
                 }),
                 ..SessionConfigOverrides::default()
             };

@@ -292,6 +292,9 @@ pub(crate) fn definition_from_draft(
                     .into_string()
                     .expect("non-UTF-8 workspace paths are rejected during validation"),
                 read_only: workspace.read_only,
+                instruction_focus: workspace
+                    .instruction_focus
+                    .map(|focus| focus.to_string_lossy().into_owned()),
             }),
         workspace_mounts: draft
             .workspace_mounts
@@ -308,6 +311,10 @@ pub(crate) fn definition_from_draft(
                         .into_string()
                         .expect("non-UTF-8 workspace paths are rejected during validation"),
                     read_only: mount.binding.read_only,
+                    instruction_focus: mount
+                        .binding
+                        .instruction_focus
+                        .map(|focus| focus.to_string_lossy().into_owned()),
                 },
                 capabilities: mount.capabilities,
             })
@@ -415,6 +422,7 @@ pub(crate) fn draft_from_definition(
                 execution_target: workspace.execution_target.clone(),
                 path: PathBuf::from(&workspace.path),
                 read_only: workspace.read_only,
+                instruction_focus: workspace.instruction_focus.clone().map(Into::into),
             }
         }),
         workspace_mounts: definition
@@ -427,6 +435,7 @@ pub(crate) fn draft_from_definition(
                     execution_target: mount.binding.execution_target.clone(),
                     path: PathBuf::from(&mount.binding.path),
                     read_only: mount.binding.read_only,
+                    instruction_focus: mount.binding.instruction_focus.clone().map(Into::into),
                 },
                 capabilities: mount.capabilities,
             })
@@ -1185,6 +1194,7 @@ id = "sonnet"
             execution_target: "missing-target".into(),
             path: "/workspace".into(),
             read_only: false,
+            instruction_focus: None,
         });
 
         assert_eq!(

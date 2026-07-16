@@ -2092,6 +2092,7 @@ impl AgentRunInner {
                 execution_target: "local".into(),
                 path: metadata.workspace.clone(),
                 read_only: false,
+                instruction_focus: None,
             }),
             workspace_mounts: Vec::new(),
             execution_target: "local".into(),
@@ -2838,6 +2839,12 @@ async fn with_workspace_context(
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
 ) -> Result<String, AgentRunError> {
+    let agent_focus = agent_workspace
+        .and_then(|binding| binding.instruction_focus.clone())
+        .unwrap_or_default();
+    let task_focus = task_workspace
+        .and_then(|binding| binding.instruction_focus.clone())
+        .unwrap_or_default();
     let agent_target = agent_workspace.map(workspace_target);
     let task_target = Some(task_workspace.map_or_else(
         || WorkspaceTarget::local(fallback_task_workspace, true),
@@ -2861,16 +2868,18 @@ async fn with_workspace_context(
         .transpose()?;
     let context = workspace_context::discover_with_report(
         agent_target.zip(agent_executor).map(|(target, executor)| {
-            workspace_context::WorkspaceContextSource {
-                executor: executor.as_ref(),
+            workspace_context::WorkspaceContextSource::focused(
+                executor.as_ref(),
                 target,
-            }
+                agent_focus,
+            )
         }),
         task_target.zip(task_executor).map(|(target, executor)| {
-            workspace_context::WorkspaceContextSource {
-                executor: executor.as_ref(),
+            workspace_context::WorkspaceContextSource::focused(
+                executor.as_ref(),
                 target,
-            }
+                task_focus,
+            )
         }),
     )
     .await
@@ -3668,6 +3677,8 @@ mod tests {
         let task = tempfile::TempDir::new().unwrap();
         std::fs::write(agent_home.path().join("AGENTS.md"), "agent-home-guide").unwrap();
         std::fs::write(task.path().join("agent.md"), "task-guide").unwrap();
+        std::fs::create_dir_all(task.path().join("src/api")).unwrap();
+        std::fs::write(task.path().join("src/api/AGENTS.md"), "focused-task-guide").unwrap();
         std::fs::create_dir_all(task.path().join(".agents/skills/test")).unwrap();
         std::fs::write(
             task.path().join(".agents/skills/test/SKILL.md"),
@@ -3687,6 +3698,7 @@ mod tests {
                 execution_target: "local".into(),
                 path: task.path().into(),
                 read_only: true,
+                instruction_focus: None,
             },
             capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
                 read: true,
@@ -3700,11 +3712,13 @@ mod tests {
                 execution_target: "local".into(),
                 path: agent_home.path().to_path_buf(),
                 read_only: true,
+                instruction_focus: None,
             }),
             Some(&sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: task.path().to_path_buf(),
                 read_only: false,
+                instruction_focus: Some("src/api".into()),
             }),
             &mounts,
             task.path(),
@@ -3725,7 +3739,8 @@ mod tests {
         assert!(skills[0].reloadable);
         let task = prompt.find("task-guide").unwrap();
         let skill = prompt.find("skill-guide").unwrap();
-        assert!(base < agent && agent < task && task < skill);
+        let focused = prompt.find("focused-task-guide").unwrap();
+        assert!(base < agent && agent < task && task < focused && focused < skill);
         assert!(prompt.contains("@docs (dependency): read, git"));
         assert!(prompt.contains("`@reference/path`"));
     }
@@ -3834,11 +3849,13 @@ mod tests {
                 execution_target: "ssh:agent".into(),
                 path: "/remote/agent".into(),
                 read_only: true,
+                instruction_focus: None,
             }),
             Some(&sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "ssh:task".into(),
                 path: "/remote/task".into(),
                 read_only: false,
+                instruction_focus: None,
             }),
             &[],
             Path::new("/attached/task"),
@@ -3885,6 +3902,7 @@ mod tests {
                 execution_target: target_id.into(),
                 path: workspace.into(),
                 read_only: false,
+                instruction_focus: None,
             }),
             workspace_mounts: Vec::new(),
             execution_target: target_id.into(),
@@ -5046,6 +5064,7 @@ mod tests {
                     execution_target: "local".into(),
                     path: task.path().into(),
                     read_only: false,
+                    instruction_focus: None,
                 },
                 capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
                     read: true,
@@ -5061,6 +5080,7 @@ mod tests {
                     execution_target: "local".into(),
                     path: dependency.path().into(),
                     read_only: true,
+                    instruction_focus: None,
                 },
                 capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
                     read: true,
@@ -5150,11 +5170,13 @@ mod tests {
             execution_target: "local".into(),
             path: "/user".into(),
             read_only: false,
+            instruction_focus: None,
         };
         let agent = sylvander_protocol::SessionWorkspaceBinding {
             execution_target: "ssh:agent".into(),
             path: "/agent".into(),
             read_only: true,
+            instruction_focus: None,
         };
         assert_eq!(
             select_workspace_binding(Some(&user), Some(&agent)),

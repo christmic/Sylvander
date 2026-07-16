@@ -610,6 +610,10 @@ pub struct SessionWorkspaceBinding {
     pub path: PathBuf,
     #[serde(default)]
     pub read_only: bool,
+    /// Relative directory whose ancestor chain supplies workspace
+    /// instructions. File tools remain rooted at `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction_focus: Option<PathBuf>,
 }
 
 /// Semantic role of one workspace in the Agent's composed filesystem view.
