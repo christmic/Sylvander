@@ -1040,7 +1040,7 @@ impl AgentRun {
     ///
     /// Chat messages are spawned as separate tasks so `run()` can
     /// concurrently process approval responses (M12).
-    pub(crate) async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
+    pub(crate) async fn run(self, mut inbox: mpsc::Receiver<BusMessage>) {
         // Publish initial status
         let _ = self
             .inner
@@ -3650,7 +3650,7 @@ mod tests {
         );
     }
 
-    async fn next_stream_event(receiver: &mut mpsc::UnboundedReceiver<BusMessage>) -> StreamEvent {
+    async fn next_stream_event(receiver: &mut mpsc::Receiver<BusMessage>) -> StreamEvent {
         loop {
             let message = receiver.recv().await.expect("stream event");
             if let MessageKind::Stream(event) = message.kind {

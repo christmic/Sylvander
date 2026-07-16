@@ -72,7 +72,7 @@ pub struct AgentHandle {
     /// Latest known status (updated from bus messages).
     pub status: AgentStatus,
     /// Receiver for the agent's status updates (engine monitors this).
-    status_rx: mpsc::UnboundedReceiver<BusMessage>,
+    status_rx: mpsc::Receiver<BusMessage>,
     task: Option<JoinHandle<()>>,
     expected_exit: Arc<AtomicBool>,
 }
@@ -272,7 +272,7 @@ impl AgentRunEngine {
             id: handle.id.clone(),
             spec: handle.spec.clone(),
             status: handle.status,
-            status_rx: mpsc::unbounded_channel().1, // dummy — caller uses list_agents for status
+            status_rx: mpsc::channel(1).1, // dummy — caller uses list_agents for status
             task: None,
             expected_exit,
         };
@@ -358,7 +358,7 @@ impl AgentRunEngine {
             id: handle.id.clone(),
             spec: handle.spec.clone(),
             status: handle.status,
-            status_rx: mpsc::unbounded_channel().1,
+            status_rx: mpsc::channel(1).1,
             task: None,
             expected_exit,
         };
@@ -461,7 +461,7 @@ impl AgentRunEngine {
                 id: handle.id.clone(),
                 spec: handle.spec.clone(),
                 status: handle.status,
-                status_rx: mpsc::unbounded_channel().1,
+                status_rx: mpsc::channel(1).1,
                 task: None,
                 expected_exit: handle.expected_exit.clone(),
             });
@@ -476,7 +476,7 @@ impl AgentRunEngine {
             id: h.id.clone(),
             spec: h.spec.clone(),
             status: h.status,
-            status_rx: mpsc::unbounded_channel().1,
+            status_rx: mpsc::channel(1).1,
             task: None,
             expected_exit: h.expected_exit.clone(),
         })
@@ -595,7 +595,7 @@ impl AgentRunEngine {
 }
 
 struct RevisionWorker {
-    inbox: mpsc::UnboundedSender<BusMessage>,
+    inbox: mpsc::Sender<BusMessage>,
     task: JoinHandle<()>,
 }
 
@@ -604,7 +604,7 @@ async fn run_revision_router(
     initial_revision: u64,
     initial_run: AgentRun,
     provider: Arc<dyn RevisionedAgentRunProvider>,
-    mut inbox: mpsc::UnboundedReceiver<BusMessage>,
+    mut inbox: mpsc::Receiver<BusMessage>,
 ) {
     let mut workers = HashMap::new();
     workers.insert(initial_revision, spawn_revision_worker(initial_run));
@@ -621,7 +621,7 @@ async fn run_revision_router(
         }
         if matches!(message.kind, MessageKind::System(SystemMessage::Stop)) {
             for worker in workers.values() {
-                let _ = worker.inbox.send(message.clone());
+                let _ = worker.inbox.send(message.clone()).await;
             }
             break;
         }
@@ -664,9 +664,11 @@ async fn run_revision_router(
             };
             entry.insert(spawn_revision_worker(run));
         }
-        let delivered = workers
-            .get(&revision)
-            .is_some_and(|worker| worker.inbox.send(message).is_ok());
+        let delivered = if let Some(worker) = workers.get(&revision) {
+            worker.inbox.send(message).await.is_ok()
+        } else {
+            false
+        };
         if !delivered {
             warn!(%agent_id, revision, "Agent revision worker exited unexpectedly");
             workers.remove(&revision);
@@ -677,7 +679,7 @@ async fn run_revision_router(
     // emits its terminal status only after receiving Stop.
     let stop = BusMessage::system_stop(agent_id);
     for worker in workers.values() {
-        let _ = worker.inbox.send(stop.clone());
+        let _ = worker.inbox.send(stop.clone()).await;
     }
     for (_, worker) in workers {
         let _ = worker.task.await;
@@ -685,7 +687,7 @@ async fn run_revision_router(
 }
 
 fn spawn_revision_worker(run: AgentRun) -> RevisionWorker {
-    let (inbox, receiver) = mpsc::unbounded_channel();
+    let (inbox, receiver) = mpsc::channel(64);
     let task = tokio::spawn(run.run(receiver));
     RevisionWorker { inbox, task }
 }
