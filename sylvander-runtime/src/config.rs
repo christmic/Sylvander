@@ -647,7 +647,42 @@ pub struct ChannelInstanceConfig {
     pub enabled: bool,
     pub default_agent: String,
     pub default_workspace: Option<WorkspaceBindingConfig>,
+    #[serde(default)]
+    pub supervision: ChannelSupervisionConfig,
     pub transport: ChannelTransportConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelSupervisionConfig {
+    #[serde(default = "default_channel_restart_attempts")]
+    pub max_restart_attempts: u32,
+    #[serde(default = "default_channel_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+    #[serde(default = "default_channel_max_backoff_ms")]
+    pub max_backoff_ms: u64,
+}
+
+impl Default for ChannelSupervisionConfig {
+    fn default() -> Self {
+        Self {
+            max_restart_attempts: default_channel_restart_attempts(),
+            initial_backoff_ms: default_channel_initial_backoff_ms(),
+            max_backoff_ms: default_channel_max_backoff_ms(),
+        }
+    }
+}
+
+const fn default_channel_restart_attempts() -> u32 {
+    5
+}
+
+const fn default_channel_initial_backoff_ms() -> u64 {
+    250
+}
+
+const fn default_channel_max_backoff_ms() -> u64 {
+    5_000
 }
 
 const fn enabled() -> bool {
@@ -1253,6 +1288,26 @@ fn validate_agent_model_catalog(
 }
 
 fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
+    if channel.supervision.max_restart_attempts > 20 {
+        errors.push(format!(
+            "channel {} max_restart_attempts must be at most 20",
+            channel.id
+        ));
+    }
+    if !(10..=60_000).contains(&channel.supervision.initial_backoff_ms) {
+        errors.push(format!(
+            "channel {} initial_backoff_ms must be between 10 and 60000",
+            channel.id
+        ));
+    }
+    if channel.supervision.max_backoff_ms < channel.supervision.initial_backoff_ms
+        || channel.supervision.max_backoff_ms > 300_000
+    {
+        errors.push(format!(
+            "channel {} max_backoff_ms must be at least initial_backoff_ms and at most 300000",
+            channel.id
+        ));
+    }
     match &channel.transport {
         ChannelTransportConfig::Unix { path } => {
             if path.as_os_str().is_empty() {

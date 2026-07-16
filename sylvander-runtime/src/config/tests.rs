@@ -117,6 +117,9 @@ fn valid_configuration_parses_and_resolves_references() {
     );
     assert!(config.agents[0].workspace_mounts[0].capabilities.git);
     assert_eq!(config.channels[0].id, "terminal");
+    assert_eq!(config.channels[0].supervision.max_restart_attempts, 5);
+    assert_eq!(config.channels[0].supervision.initial_backoff_ms, 250);
+    assert_eq!(config.channels[0].supervision.max_backoff_ms, 5_000);
     assert!(matches!(
         config.model_providers[0].api_key,
         SecretRef::Env { ref name } if name == "MODEL_API_KEY"
@@ -126,6 +129,18 @@ fn valid_configuration_parses_and_resolves_references() {
         Some(MemoryIntegrityBackend::File { ref anchor_path })
             if anchor_path == Path::new("/var/lib/sylvander-integrity/anchor.json")
     ));
+}
+
+#[test]
+fn channel_supervision_is_bounded_and_ordered() {
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    config.channels[0].supervision.max_restart_attempts = 21;
+    config.channels[0].supervision.initial_backoff_ms = 60_001;
+    config.channels[0].supervision.max_backoff_ms = 1;
+    let errors = config.validate().unwrap_err().errors.join("\n");
+    assert!(errors.contains("max_restart_attempts"));
+    assert!(errors.contains("initial_backoff_ms"));
+    assert!(errors.contains("max_backoff_ms"));
 }
 
 #[test]

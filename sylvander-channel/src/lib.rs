@@ -478,6 +478,7 @@ pub struct ChannelContext {
     /// [`ChannelContext::mark_ready`] only after external input can arrive.
     #[doc(hidden)]
     pub readiness: Option<ChannelReadiness>,
+    session_defaults: SessionConfigOverrides,
 }
 
 impl ChannelContext {
@@ -488,6 +489,7 @@ impl ChannelContext {
             sessions,
             ui: None,
             readiness: None,
+            session_defaults: SessionConfigOverrides::default(),
         }
     }
 
@@ -503,6 +505,24 @@ impl ChannelContext {
 
     #[doc(hidden)]
     #[must_use]
+    pub fn with_runtime_services_and_defaults(
+        bus: Arc<dyn MessageBus>,
+        sessions: Arc<dyn SessionStore>,
+        ui: Arc<dyn UiService>,
+        readiness: Option<ChannelReadiness>,
+        session_defaults: SessionConfigOverrides,
+    ) -> Self {
+        Self {
+            bus,
+            sessions,
+            ui: Some(ui),
+            readiness,
+            session_defaults,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
     pub fn with_services(
         bus: Arc<dyn MessageBus>,
         sessions: Arc<dyn SessionStore>,
@@ -514,6 +534,7 @@ impl ChannelContext {
             sessions,
             ui,
             readiness,
+            session_defaults: SessionConfigOverrides::default(),
         }
     }
 
@@ -640,7 +661,7 @@ impl ChannelContext {
 pub async fn submit_external_chat(
     context: &ChannelContext,
     boundary: &BoundaryContext,
-    request: ExternalChatRequest,
+    mut request: ExternalChatRequest,
 ) -> Result<SubmittedChat, BoundaryError> {
     let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
         code: BoundaryErrorCode::InvalidScope,
@@ -650,7 +671,43 @@ pub async fn submit_external_chat(
         retry_after_ms: None,
     })?;
 
+    if request.existing_session.is_none() {
+        inherit_session_defaults(&mut request.overrides, &context.session_defaults);
+    }
     ui.submit_chat(boundary, request).await
+}
+
+fn inherit_session_defaults(
+    overrides: &mut SessionConfigOverrides,
+    defaults: &SessionConfigOverrides,
+) {
+    if overrides.model.is_none() {
+        overrides.model.clone_from(&defaults.model);
+    }
+    if overrides.reasoning_effort.is_none() {
+        overrides.reasoning_effort = defaults.reasoning_effort;
+    }
+    if overrides.permissions.is_none() {
+        overrides.permissions.clone_from(&defaults.permissions);
+    }
+    if overrides.prompt_profile.is_none() {
+        overrides
+            .prompt_profile
+            .clone_from(&defaults.prompt_profile);
+    }
+    if overrides.system_prompt.is_none() {
+        overrides.system_prompt.clone_from(&defaults.system_prompt);
+    }
+    if overrides.user_workspace.is_none() {
+        overrides
+            .user_workspace
+            .clone_from(&defaults.user_workspace);
+    }
+    if overrides.execution_target.is_none() {
+        overrides
+            .execution_target
+            .clone_from(&defaults.execution_target);
+    }
 }
 
 #[derive(Clone)]
@@ -972,6 +1029,38 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, BoundaryErrorCode::InvalidScope);
+    }
+
+    #[test]
+    fn channel_defaults_fill_only_missing_session_fields() {
+        let mut overrides = SessionConfigOverrides {
+            execution_target: Some("explicit-target".into()),
+            ..SessionConfigOverrides::default()
+        };
+        let defaults = SessionConfigOverrides {
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "channel-target".into(),
+                path: "/workspace/channel".into(),
+                read_only: true,
+                instruction_focus: Some("src".into()),
+            }),
+            execution_target: Some("channel-target".into()),
+            ..SessionConfigOverrides::default()
+        };
+
+        inherit_session_defaults(&mut overrides, &defaults);
+
+        assert_eq!(
+            overrides
+                .user_workspace
+                .as_ref()
+                .map(|workspace| workspace.path.as_path()),
+            Some(std::path::Path::new("/workspace/channel"))
+        );
+        assert_eq!(
+            overrides.execution_target.as_deref(),
+            Some("explicit-target")
+        );
     }
 
     #[tokio::test]
