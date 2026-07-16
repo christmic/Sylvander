@@ -62,6 +62,25 @@ Every definition has a deterministic SHA-256 digest. Re-registering the exact
 definition is idempotent; changing an existing revision, skipping a revision,
 or referencing an unknown component fails.
 
+## Improvement proposals
+
+An improvement proposal is an immutable, digest-addressed definition that
+must name:
+
+- the exact cohort digest and one or more digest-pinned evidence references;
+- a bounded hypothesis and expected benefit;
+- low, medium, or high risk plus the affected components;
+- a concrete rollback plan;
+- one or more registered dataset revisions and their matching baselines;
+- the creating principal digest and timestamp.
+
+Proposals begin as `draft` and advance with optimistic concurrency through
+`ready_for_review`, `approved` or `rejected`, `experimenting`, and finally
+`completed` or `rolled_back`. Every transition records the actor digest,
+timestamp, and optional bounded reason. Invalid jumps and stale state revisions
+fail. Approval authorizes only an isolated experiment; it does not itself
+merge or deploy code.
+
 ## Capture policy
 
 `server.evidence.content` selects one of three policies:
@@ -115,6 +134,7 @@ Rust query surface, and evidence-linked feedback API are implemented. Feedback
 attribution is derived at the authenticated Runtime boundary rather than
 accepted from the client, and references are bounded and digest-validated.
 Deterministic privacy-aware cohort analysis and the versioned evaluation
-registry are implemented. Proposal records, worktree experiments, signing,
-and deployment observation remain the P5 backlog and must be completed before
-claiming autonomous self-improvement.
+registry and governed improvement proposals are implemented. Worktree
+experiments, signed result bundles, merge approval, and deployment observation
+remain the P5 backlog and must be completed before claiming autonomous
+self-improvement.
