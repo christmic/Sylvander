@@ -88,6 +88,7 @@ mod tests {
             "submit_feedback",
             "agent_admin",
             "registry_admin",
+            "user_profile",
         ] {
             assert!(encoded.contains(operation), "schema omitted {operation}");
         }

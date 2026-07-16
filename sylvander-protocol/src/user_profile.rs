@@ -38,7 +38,7 @@ impl UserProfileCapabilities {
 }
 
 /// One operation against the boundary-derived owner profile.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UserProfileRequest {
     pub version: u16,
@@ -71,7 +71,7 @@ impl fmt::Debug for UserProfileRequest {
 }
 
 /// Versioned CRUD plus explicit privacy-right controls.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserProfileAction {
     Create {
@@ -291,7 +291,7 @@ impl fmt::Debug for UserProfileExport {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserProfileResponse {
     Created {

@@ -10,7 +10,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiClientMessage {
     Hello {
         protocol: UiProtocolHello,
@@ -72,6 +72,9 @@ pub enum UiClientMessage {
     RegistryAdmin {
         request: crate::RegistryAdminRequest,
     },
+    UserProfile {
+        request: crate::UserProfileRequest,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -129,7 +132,7 @@ pub enum UiClientMessage {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UiServerMessage {
     Welcome {
         protocol: crate::UiProtocolWelcome,
@@ -312,6 +315,9 @@ pub enum UiServerMessage {
     },
     RegistryAdmin {
         response: crate::RegistryAdminResponse,
+    },
+    UserProfile {
+        response: crate::UserProfileResponse,
     },
     RuntimeInfo {
         /// Legacy model-only identity retained for older clients.
@@ -575,6 +581,49 @@ mod tests {
         assert_eq!(server_json["type"], "registry_admin");
         assert_eq!(
             serde_json::from_value::<UiServerMessage>(server_json).unwrap(),
+            server
+        );
+    }
+
+    #[test]
+    fn user_profile_uses_one_strict_owner_free_transport_envelope() {
+        let client: UiClientMessage = serde_json::from_value(serde_json::json!({
+            "type": "user_profile",
+            "request": {
+                "version": 1,
+                "action": {"operation": "read"}
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            client,
+            UiClientMessage::UserProfile {
+                request: crate::UserProfileRequest {
+                    action: crate::UserProfileAction::Read {},
+                    ..
+                }
+            }
+        ));
+
+        for owner_field in ["user_id", "owner_user_id"] {
+            let mut value = serde_json::json!({
+                "type": "user_profile",
+                "request": {
+                    "version": 1,
+                    "action": {"operation": "read"}
+                }
+            });
+            value[owner_field] = serde_json::json!("attacker-selected");
+            assert!(serde_json::from_value::<UiClientMessage>(value).is_err());
+        }
+
+        let server = UiServerMessage::UserProfile {
+            response: crate::UserProfileResponse::NotFound { version: 1 },
+        };
+        let json = serde_json::to_value(&server).unwrap();
+        assert_eq!(json["type"], "user_profile");
+        assert_eq!(
+            serde_json::from_value::<UiServerMessage>(json).unwrap(),
             server
         );
     }
