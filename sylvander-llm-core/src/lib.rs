@@ -13,7 +13,7 @@ pub mod validation;
 
 pub use error::{ProviderError, ProviderErrorKind, ProviderErrorPhase};
 pub use model::{ModelCapabilities, ModelInfo, ModelRef};
-pub use provider::{ModelEventStream, ModelProvider, ProviderFuture};
+pub use provider::{ModelCatalogFuture, ModelEventStream, ModelProvider, ProviderFuture};
 pub use types::{
     CacheHint, ChatMessage, ChatRole, ContentBlock, DocumentContent, ImageContent, MediaSource,
     ModelRequest, ModelResponse, ModelStreamEvent, OpaqueProviderState, ReasoningConfig,

@@ -56,6 +56,7 @@ mod model_registry_tests;
 pub mod principal_binding;
 #[cfg(test)]
 mod principal_binding_tests;
+pub mod provider_catalog_sync;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]

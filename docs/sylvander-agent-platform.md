@@ -236,7 +236,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
 | A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
+| A06 | Model providers | implemented for current adapters | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. The neutral provider contract optionally enumerates a reliable remote catalog. Runtime reconciliation reports synchronized, drifted, unavailable, or operator-managed state and never mutates Registry metadata or active Agent snapshots. Current Anthropic-compatible adapters intentionally remain operator-managed because their deployment endpoints do not guarantee one authoritative catalog. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | implemented for local execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. Remote/container/sandbox adapter completion is tracked separately in P3.3/P3.4. |
@@ -398,9 +398,8 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   `sylvander-agent/src/run.rs`, protocol schema/redaction tests, real Unix and
   WebSocket response tests, provider-wire composition tests, and runtime
   restart acceptance in `registry_agent_composition_tests.rs`.
-- [ ] **P1.4 Durable memory:** durable Agent-owned memory lifecycle and
-  governance. This item remains open; the completed storage foundation is not
-  the full lifecycle.
+- [x] **P1.4 Durable memory:** durable Agent-owned memory lifecycle and
+  governance.
   - [x] Derive relationship ownership and provenance from trusted runtime
     context, not model input; isolate records by `(user_id, agent_id)` and keep
     missing and foreign records indistinguishable.
@@ -511,7 +510,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   ownership, and stable-user persistence. Unix and WebSocket expose the same
   owner-free request/response envelope, advertise the negotiated capability,
   and test that the sealed identity comes only from authenticated ingress.
-- [ ] **P1.6 Optional Provider catalog synchronization:** let adapters that
+- [x] **P1.6 Optional Provider catalog synchronization:** let adapters that
   expose a remote model catalog enumerate it, reconcile discovered metadata
   against the Registry SSOT, report drift and health, and never silently
   rewrite an active Agent snapshot. Providers without a reliable enumeration
