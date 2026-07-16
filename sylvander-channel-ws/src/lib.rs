@@ -42,12 +42,10 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
-};
+use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SystemMessage};
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
-    Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
+    Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
 };
 use sylvander_protocol::{
@@ -437,7 +435,7 @@ async fn handle_client_msg(
             workspace: _,
         } => {
             let existing_session = session_id.map(SessionId::new);
-            let sid = match authorize_external_chat(
+            let submitted = match submit_external_chat(
                 ctx,
                 &boundary,
                 ExternalChatRequest {
@@ -455,43 +453,14 @@ async fn handle_client_msg(
             )
             .await
             {
-                Ok(session_id) => session_id,
+                Ok(submitted) => submitted,
                 Err(error) => {
                     boundary_denied(tx, error);
                     return;
                 }
             };
-
-            // Subscribe to bus for this session
-            let Ok(mut rx) = ctx
-                .bus
-                .subscribe(SubscriptionFilter {
-                    session_ids: Some(vec![sid.clone()]),
-                    recipients: None,
-                    kinds: None,
-                })
-                .await
-            else {
-                return;
-            };
-
-            let Ok(Some(session)) = ctx.sessions.get(&sid).await else {
-                operation_error(tx, "chat", "authorized session is unavailable");
-                return;
-            };
-            let _ = ctx
-                .bus
-                .publish(BusMessage::system_join_session(
-                    agent_id.clone(),
-                    sid.clone(),
-                    session.metadata,
-                ))
-                .await;
-
-            // Send user message
-            let mut message = BusMessage::user_chat(sid.clone(), &principal.id.0, &text);
-            message.attachments = attachments;
-            let _ = ctx.bus.publish(message).await;
+            let sid = submitted.session_id;
+            let mut rx = submitted.events;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {

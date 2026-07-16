@@ -39,13 +39,13 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
-};
+#[cfg(test)]
+use sylvander_agent::bus::SubscriptionFilter;
+use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SystemMessage};
 use sylvander_agent::session_store::SessionMetadataPatch;
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
-    Channel, ChannelContext, ExternalChatRequest, authorize_external_chat,
+    Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
 };
 use sylvander_protocol::{
@@ -552,7 +552,18 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }),
                 ..SessionConfigOverrides::default()
             };
-            let sid = match authorize_external_chat(
+            if let Some(session_id) = &existing_session
+                && hub
+                    .lock()
+                    .await
+                    .replay
+                    .get(session_id)
+                    .is_some_and(|replay| replay.active)
+            {
+                operation_error(tx, "chat", "session already has an active turn");
+                return;
+            }
+            let submitted = match submit_external_chat(
                 ctx,
                 boundary,
                 ExternalChatRequest {
@@ -567,12 +578,13 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             )
             .await
             {
-                Ok(session_id) => session_id,
+                Ok(submitted) => submitted,
                 Err(error) => {
                     boundary_denied(tx, error);
                     return;
                 }
             };
+            let sid = submitted.session_id;
 
             let start_relay = {
                 let mut guard = hub.lock().await;
@@ -594,29 +606,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 guard.relays.insert(sid.clone())
             };
             let relay_rx = if start_relay {
-                Some(
-                    ctx.bus
-                        .subscribe(SubscriptionFilter {
-                            session_ids: Some(vec![sid.clone()]),
-                            recipients: None,
-                            kinds: None,
-                        })
-                        .await
-                        .expect("subscribe"),
-                )
+                Some(submitted.events)
             } else {
+                drop(submitted.events);
                 None
             };
-            // Send user message
-            let _ = ctx
-                .bus
-                .publish(BusMessage::user_chat_with_attachments(
-                    sid.clone(),
-                    principal_id,
-                    &text,
-                    attachments,
-                ))
-                .await;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {

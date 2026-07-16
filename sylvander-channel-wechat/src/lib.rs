@@ -15,10 +15,10 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
 };
@@ -278,7 +278,7 @@ async fn handle_callback(
         ("channel_instance_id".into(), state.instance_id.clone()),
         ("from_user_name".into(), msg.from_user_name.clone()),
     ]);
-    let session_id = match authorize_external_chat(
+    let submitted = match submit_external_chat(
         &state.ctx,
         &boundary,
         ExternalChatRequest {
@@ -293,34 +293,13 @@ async fn handle_callback(
     )
     .await
     {
-        Ok(session_id) => session_id,
+        Ok(submitted) => submitted,
         Err(error) => {
             warn!(code = ?error.code, request_id = %error.request_id, "wechat: message denied");
             return "success".into();
         }
     };
-    if let Ok(Some(session)) = state.sessions.get(&session_id).await {
-        let _ = state
-            .ctx
-            .bus
-            .publish(BusMessage::system_join_session(
-                state.agent_id.clone(),
-                session_id.clone(),
-                session.metadata,
-            ))
-            .await;
-    }
-
-    // Publish to bus
-    let _ = state
-        .ctx
-        .bus
-        .publish(BusMessage::user_chat(
-            session_id.clone(),
-            &principal_id,
-            &msg.content,
-        ))
-        .await;
+    drop(submitted.events);
 
     "success".into()
 }

@@ -42,10 +42,10 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{BusMessage, MessageKind, SubscriptionFilter};
+use sylvander_agent::bus::{MessageKind, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::Client;
@@ -96,7 +96,7 @@ impl MessageHandler for ChannelMessageHandler {
             ("sender_staff_id".into(), msg.sender_staff_id.clone()),
             ("session_webhook".into(), msg.session_webhook.clone()),
         ]);
-        let session_id = match authorize_external_chat(
+        let submitted = match submit_external_chat(
             &self.ctx,
             &boundary,
             ExternalChatRequest {
@@ -114,31 +114,14 @@ impl MessageHandler for ChannelMessageHandler {
         )
         .await
         {
-            Ok(session_id) => session_id,
+            Ok(submitted) => submitted,
             Err(error) => {
                 warn!(code = ?error.code, request_id = %error.request_id, "dingtalk: message denied");
                 return;
             }
         };
-
-        if let Ok(Some(session)) = self.ctx.sessions.get(&session_id).await {
-            let _ = self
-                .ctx
-                .bus
-                .publish(BusMessage::system_join_session(
-                    self.agent_id.clone(),
-                    session_id.clone(),
-                    session.metadata,
-                ))
-                .await;
-        }
-
-        let bus_msg = BusMessage::user_chat(session_id.clone(), &principal_id, text);
-
-        if let Err(e) = self.ctx.bus.publish(bus_msg).await {
-            warn!(error = %e, "dingtalk: bus publish failed");
-            return;
-        }
+        let session_id = submitted.session_id;
+        drop(submitted.events);
 
         info!(%session_id, sender = %msg.sender_staff_id, text, "dingtalk: message");
     }

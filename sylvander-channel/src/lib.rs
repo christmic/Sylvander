@@ -34,8 +34,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use sylvander_agent::bus::MessageBus;
-use sylvander_agent::session_store::{SessionMetadataPatch, SessionStore};
+use sylvander_agent::bus::{BusMessage, MessageBus};
+use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
@@ -43,6 +43,27 @@ use sylvander_protocol::{
     RunFeedback, SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest,
     SessionCreateRequest, SessionId, UiClientMessage,
 };
+
+/// Complete normalized input for one authenticated external chat turn.
+pub struct ExternalChatRequest {
+    pub existing_session: Option<SessionId>,
+    pub agent_id: AgentId,
+    pub label: String,
+    pub overrides: SessionConfigOverrides,
+    pub text: String,
+    pub attachments: Vec<sylvander_protocol::MessageAttachment>,
+    pub external_meta: BTreeMap<String, String>,
+}
+
+/// Result of an authenticated chat submission.
+///
+/// The runtime subscribes before publishing the user message, so a transport
+/// cannot miss the first response event while installing its relay.
+#[derive(Debug)]
+pub struct SubmittedChat {
+    pub session_id: SessionId,
+    pub events: tokio::sync::mpsc::UnboundedReceiver<BusMessage>,
+}
 
 /// Transport-neutral UI service boundary owned by the runtime.
 #[async_trait]
@@ -88,6 +109,22 @@ pub trait UiService: Send + Sync {
         boundary: &BoundaryContext,
         feedback: RunFeedback,
     ) -> Result<String, BoundaryError>;
+
+    /// Authenticate, resolve or create and attach the owned session, then
+    /// publish exactly one user chat message through the runtime boundary.
+    async fn submit_chat(
+        &self,
+        boundary: &BoundaryContext,
+        _request: ExternalChatRequest,
+    ) -> Result<SubmittedChat, BoundaryError> {
+        Err(BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "submit_chat".into(),
+            request_id: boundary.request_id.clone(),
+            message: "authenticated chat submission is unavailable".into(),
+            retry_after_ms: None,
+        })
+    }
 
     /// Apply one privileged Agent registry operation.
     ///
@@ -234,36 +271,16 @@ impl ChannelContext {
     }
 }
 
-/// Complete normalized input required to authorize one external chat.
-pub struct ExternalChatRequest {
-    pub existing_session: Option<SessionId>,
-    pub agent_id: AgentId,
-    pub label: String,
-    pub overrides: SessionConfigOverrides,
-    pub text: String,
-    pub attachments: Vec<sylvander_protocol::MessageAttachment>,
-    pub external_meta: BTreeMap<String, String>,
-}
-
-/// Resolve or create a platform-owned session through the runtime boundary.
+/// Submit one authenticated external chat through the runtime boundary.
 ///
 /// External adapters use this instead of writing a session and publishing a
 /// message directly. It applies Agent access policy on creation and session
 /// ownership, payload, and rate policy to every inbound chat message.
-pub async fn authorize_external_chat(
+pub async fn submit_external_chat(
     context: &ChannelContext,
     boundary: &BoundaryContext,
     request: ExternalChatRequest,
-) -> Result<SessionId, BoundaryError> {
-    let ExternalChatRequest {
-        existing_session,
-        agent_id,
-        label,
-        overrides,
-        text,
-        attachments,
-        external_meta,
-    } = request;
+) -> Result<SubmittedChat, BoundaryError> {
     let ui = context.ui.as_ref().ok_or_else(|| BoundaryError {
         code: BoundaryErrorCode::InvalidScope,
         operation: "external_chat".into(),
@@ -272,61 +289,7 @@ pub async fn authorize_external_chat(
         retry_after_ms: None,
     })?;
 
-    let session_id = if let Some(session_id) = existing_session {
-        session_id
-    } else {
-        let create_request = SessionCreateRequest {
-            agent_id,
-            label,
-            channel_id: Some(boundary.channel_instance_id.clone()),
-            overrides,
-        };
-        ui.authorize_message(
-            boundary,
-            &UiClientMessage::CreateSession {
-                request: create_request.clone(),
-            },
-        )
-        .await?;
-        let state = ui.create_session(boundary, create_request).await?;
-        context
-            .sessions
-            .patch_metadata(
-                &state.session_id,
-                SessionMetadataPatch {
-                    name: None,
-                    external_meta: external_meta
-                        .into_iter()
-                        .map(|(key, value)| (key, serde_json::Value::String(value)))
-                        .collect(),
-                },
-            )
-            .await
-            .map_err(|error| external_session_error(boundary, error.to_string()))?;
-        state.session_id
-    };
-
-    ui.authorize_message(
-        boundary,
-        &UiClientMessage::Chat {
-            text,
-            attachments,
-            session_id: Some(session_id.0.clone()),
-            workspace: None,
-        },
-    )
-    .await?;
-    Ok(session_id)
-}
-
-fn external_session_error(boundary: &BoundaryContext, message: impl Into<String>) -> BoundaryError {
-    BoundaryError {
-        code: BoundaryErrorCode::InvalidScope,
-        operation: "external_chat".into(),
-        request_id: boundary.request_id.clone(),
-        message: message.into(),
-        retry_after_ms: None,
-    }
+    ui.submit_chat(boundary, request).await
 }
 
 #[derive(Clone)]
@@ -520,7 +483,7 @@ mod tests {
             "update-1",
         );
 
-        let error = authorize_external_chat(
+        let error = submit_external_chat(
             &context,
             &boundary,
             ExternalChatRequest {

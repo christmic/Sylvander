@@ -21,9 +21,9 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use tokio::sync::Mutex;
 
-use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::SessionId;
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -174,7 +174,7 @@ async fn chat(
         "http",
         uuid::Uuid::new_v4().to_string(),
     );
-    let sid = authorize_external_chat(
+    let submitted = submit_external_chat(
         &state.ctx,
         &boundary,
         ExternalChatRequest {
@@ -192,48 +192,12 @@ async fn chat(
     )
     .await
     .map_err(boundary_status)?;
+    let sid = submitted.session_id;
+    let mut event_rx = submitted.events;
     if existing_session.is_none() {
         aliases.insert(req.session_id.clone(), sid.clone());
     }
     drop(aliases);
-
-    let mut event_rx = state
-        .ctx
-        .bus
-        .subscribe(SubscriptionFilter {
-            session_ids: Some(vec![sid.clone()]),
-            recipients: None,
-            kinds: None,
-        })
-        .await
-        .unwrap();
-
-    let session = state
-        .ctx
-        .sessions
-        .get(&sid)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let _ = state
-        .ctx
-        .bus
-        .publish(BusMessage::system_join_session(
-            state.agent_id.clone(),
-            sid.clone(),
-            session.metadata,
-        ))
-        .await;
-
-    let _ = state
-        .ctx
-        .bus
-        .publish(BusMessage::user_chat(
-            sid.clone(),
-            &principal.id.0,
-            &req.message,
-        ))
-        .await;
 
     let stream = async_stream::stream! {
         while let Some(msg) = event_rx.recv().await {
