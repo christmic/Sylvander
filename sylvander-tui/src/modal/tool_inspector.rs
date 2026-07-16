@@ -59,7 +59,7 @@ impl Modal for ToolInspector {
     fn active(&self) -> bool {
         true
     }
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Tool output"
     }
 
@@ -100,12 +100,12 @@ impl Modal for ToolInspector {
             .skip(start)
             .take(height)
             .map(|(index, line)| {
-                let matched = matches.contains(&index);
+                let is_match = matches.contains(&index);
                 Line::from(vec![
                     Span::styled(format!("{:>5}  ", index + 1), theme::text_muted()),
                     Span::styled(
                         line.clone(),
-                        if matched {
+                        if is_match {
                             theme::active()
                         } else {
                             theme::text()

@@ -110,7 +110,7 @@ pub enum AgentEvent {
     /// `Compressed`; consumers that only need telemetry can ignore it.
     HistoryCompacted {
         /// Exact history that the next provider request will receive.
-        /// AgentRun uses this to keep subsequent turns in sync.
+        /// `AgentRun` uses this to keep subsequent turns in sync.
         history: Vec<MessageParam>,
         layers: Vec<LayerReport>,
     },
@@ -122,6 +122,9 @@ pub enum AgentEvent {
         iteration: u32,
         /// Cumulative usage so far.
         usage: Usage,
+        /// Usage reported by this provider request only. Consumers use this
+        /// for context-window tracking and incremental durable accounting.
+        provider_usage: Usage,
     },
 
     /// The loop has terminated successfully (model emitted `end_turn`
@@ -139,7 +142,7 @@ pub enum AgentEvent {
         multi_select: bool,
     },
 
-    /// User answered an AskUser question (M18).
+    /// User answered an `AskUser` question (M18).
     UserAnswer {
         call_id: String,
         answer: Vec<String>,

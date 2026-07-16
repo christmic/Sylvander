@@ -63,7 +63,7 @@ impl CommandPalette {
     }
 
     /// Run the currently-selected command, pushing the appropriate
-    /// side-effect onto AppState's pending_actions.
+    /// side-effect onto `AppState`'s `pending_actions`.
     fn invoke(&mut self, state: &mut AppState) -> Consumed {
         let typed_name = self.filter.split_whitespace().next().unwrap_or("");
         let exact_typed = crate::command::resolve(typed_name).is_some()
@@ -100,7 +100,7 @@ impl Modal for CommandPalette {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Commands"
     }
 
@@ -115,7 +115,7 @@ impl Modal for CommandPalette {
         true
     }
 
-    fn render(&self, frame: &mut Frame, parent: Rect, _state: &AppState) {
+    fn render(&self, frame: &mut Frame, parent: Rect, state: &AppState) {
         frame.render_widget(Clear, parent);
         frame.render_widget(Block::default().style(theme::text_on_canvas()), parent);
         let results_area = Rect {
@@ -148,7 +148,7 @@ impl Modal for CommandPalette {
                 .iter()
                 .skip(start)
                 .take(command_rows)
-                .map(|entry| crate::command::match_name(entry, _state).chars().count())
+                .map(|entry| crate::command::match_name(entry, state).chars().count())
                 .max()
                 .unwrap_or(13)
                 .clamp(13, 18);
@@ -159,7 +159,7 @@ impl Modal for CommandPalette {
                 .skip(start)
                 .take(command_rows)
             {
-                let name = crate::command::match_name(command_match, _state);
+                let name = crate::command::match_name(command_match, state);
                 let is_cursor = row_i == self.cursor;
                 let prefix = if is_cursor { "› " } else { "  " };
                 let color = if is_cursor {
@@ -174,10 +174,10 @@ impl Modal for CommandPalette {
                     theme::text_muted()
                 };
                 let description = command_match.availability.reason().map_or_else(
-                    || crate::command::match_description(command_match, _state).to_string(),
+                    || crate::command::match_description(command_match, state).to_string(),
                     str::to_string,
                 );
-                let detail = crate::command::match_source(command_match, _state)
+                let detail = crate::command::match_source(command_match, state)
                     .filter(|_| command_match.availability.is_available())
                     .map_or(description.clone(), |source| {
                         format!("{description} · {source}")

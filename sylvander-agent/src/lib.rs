@@ -84,6 +84,8 @@ pub mod error;
 pub mod event;
 pub mod loop_;
 pub mod plan_gate;
+pub mod prompt;
+pub mod provider_compat;
 pub mod run;
 pub mod session;
 pub mod session_store;
@@ -115,7 +117,10 @@ pub mod prelude {
     pub use crate::loop_::{
         AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };
-    pub use crate::run::{AgentRun, AgentRunBuilder, AgentRunError};
+    pub use crate::run::{
+        AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
+        AuthenticatedSessionLease,
+    };
     pub use crate::session::{SessionContext, SessionMetadata};
     pub use crate::spec::{
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
@@ -124,9 +129,14 @@ pub mod prelude {
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
-        EditTool, InMemoryMemoryStore, MemoryEntry, MemoryReadTool, MemoryStore, MemoryStoreError,
-        MemoryWriteTool, PresentPlanTool, ReadTool, StartBackgroundTaskTool, UpdatePlanTool,
-        WriteTool,
+        EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryBackupArtifact,
+        MemoryBackupManifest, MemoryClock, MemoryEntry, MemoryEvidenceCheckpoint,
+        MemoryEvidenceCompactionReport, MemoryExecutionContext, MemoryExpiryPatch,
+        MemoryIntegrityConfig, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
+        MemoryPurgeReport, MemoryReadTool, MemoryRestoreError, MemoryScope, MemoryStore,
+        MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,
+        RelationshipMemoryRetentionPolicy, SqliteMemoryAdmin, SqliteMemoryMaintenance,
+        SqliteMemoryStore, StartBackgroundTaskTool, SystemMemoryClock, UpdatePlanTool, WriteTool,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;

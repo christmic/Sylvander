@@ -1,6 +1,7 @@
 //! Agent loop error type.
 
 use sylvander_llm_anthropic::api::error::AnthropicError;
+use sylvander_llm_core::ProviderError;
 use thiserror::Error;
 
 /// Errors returned by the agent loop.
@@ -27,6 +28,16 @@ pub enum AgentLoopError {
         /// Last error from the LLM SDK.
         #[source]
         source: AnthropicError,
+    },
+
+    /// Provider-neutral model invocation failure. New provider-backed paths
+    /// use this variant while the legacy Anthropic path remains compatible.
+    #[error("model provider error after {attempts} attempts: {source}")]
+    Provider {
+        /// Total provider requests made, including the initial request.
+        attempts: u32,
+        #[source]
+        source: ProviderError,
     },
 
     /// Tool execution failed in a non-recoverable way (panic caught,
@@ -61,6 +72,7 @@ impl AgentLoopError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Llm { source, .. } => source.is_retryable(),
+            Self::Provider { source, .. } => source.is_retryable(),
             Self::MaxIterationsReached(_)
             | Self::IncompatibleModel(_)
             | Self::Tool(_)
@@ -75,6 +87,7 @@ impl AgentLoopError {
     pub fn status(&self) -> Option<u16> {
         match self {
             Self::Llm { source, .. } => source.status(),
+            Self::Provider { source, .. } => source.status,
             _ => None,
         }
     }
@@ -84,6 +97,7 @@ impl AgentLoopError {
 mod tests {
     use super::*;
     use sylvander_llm_anthropic::api::error::AnthropicError;
+    use sylvander_llm_core::{ProviderErrorKind, ProviderErrorPhase};
 
     #[test]
     fn max_iterations_display() {
@@ -145,6 +159,34 @@ mod tests {
             source: inner,
         };
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn provider_retryability_and_status_are_typed() {
+        let mut source = ProviderError::new(
+            ProviderErrorKind::RateLimited,
+            ProviderErrorPhase::Open,
+            "model provider rate limit reached",
+        );
+        source.status = Some(429);
+        let err = AgentLoopError::Provider {
+            attempts: 2,
+            source,
+        };
+        assert!(err.is_retryable());
+        assert_eq!(err.status(), Some(429));
+        assert!(format!("{err}").contains("2 attempts"));
+
+        let err = AgentLoopError::Provider {
+            attempts: 1,
+            source: ProviderError::new(
+                ProviderErrorKind::Authentication,
+                ProviderErrorPhase::Open,
+                "model provider authentication failed",
+            ),
+        };
+        assert!(!err.is_retryable());
+        assert_eq!(err.status(), None);
     }
 
     #[test]

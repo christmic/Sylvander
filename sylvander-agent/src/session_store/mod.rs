@@ -1,4 +1,4 @@
-//! Session persistence — SQLite backend.
+//! Session persistence — `SQLite` backend.
 //!
 //! Two tables:
 //! - `sessions`         — session metadata (id, name, lifetime, agents, ...)
@@ -74,6 +74,15 @@ pub struct StoredSession {
     pub effective_config: Option<SessionEffectiveConfig>,
 }
 
+/// Atomic metadata-only changes that never rewrite session configuration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionMetadataPatch {
+    /// Replacement display name; `None` leaves the current name unchanged.
+    pub name: Option<String>,
+    /// Channel-owned values merged by key into the existing metadata.
+    pub external_meta: HashMap<String, JsonValue>,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionUsage {
     pub iterations: u32,
@@ -128,9 +137,9 @@ impl StoredSession {
 /// Role of a message in a session conversation.
 ///
 /// - `User`:      a human / external actor's message
-/// - `Assistant`: the agent's reply (may contain tool_use blocks)
-/// - `Tool`:      the result of a tool call (parent_msg_id points to the
-///                assistant message that issued the tool_use)
+/// - `Assistant`: the agent's reply (may contain `tool_use` blocks)
+/// - `Tool`: the result of a tool call (`parent_msg_id` points to the
+///   assistant message that issued the `tool_use`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -145,12 +154,12 @@ pub enum MessageRole {
 /// `Message` shape, so the stored history can be fed back into a new
 /// `AgentLoop::run` call after a restart without re-serialization.
 ///
-/// Storage layout (SQLite `session_messages`):
+/// Storage layout (`SQLite` `session_messages`):
 /// - `seq` is auto-assigned (next integer in session).
-/// - `id` is the SQLite rowid (auto-increment).
+/// - `id` is the `SQLite` rowid (auto-increment).
 ///
 /// Identity / trace / priority are denormalized as real columns
-/// (not stored as a JSON blob) so SQLite can use indexes for
+/// (not stored as a JSON blob) so `SQLite` can use indexes for
 /// per-user / per-trace lookups. They are written at `append_message`
 /// time from the caller's `SessionContext`; readers reconstruct a
 /// `SessionContext` if they need one. Adding a new `SessionContext`
@@ -255,6 +264,14 @@ pub trait SessionStore: Send + Sync {
     /// Save or update a session record (upsert).
     async fn save(&self, session: &StoredSession) -> Result<(), SessionStoreError>;
 
+    /// Merge mutable presentation/channel metadata without touching the
+    /// configuration revision, overrides, or resolved effective config.
+    async fn patch_metadata(
+        &self,
+        id: &SessionId,
+        patch: SessionMetadataPatch,
+    ) -> Result<(), SessionStoreError>;
+
     /// Replace sparse overrides and their resolved value when the caller's
     /// revision still matches. Returns the new monotonic revision.
     async fn update_config(
@@ -317,7 +334,7 @@ pub trait SessionStore: Send + Sync {
         filter: SessionFilter,
     ) -> Result<Vec<StoredSession>, SessionStoreError>;
 
-    /// Full-text search over session name + user_id via SQLite FTS5.
+    /// Full-text search over session name + `user_id` via `SQLite` FTS5.
     /// Returns matches ordered by relevance, capped at `limit`.
     ///
     /// `ctx` provides the caller's identity for scoping. Sessions
@@ -337,6 +354,7 @@ pub trait SessionStore: Send + Sync {
     ///
     /// `ctx` is what gets stored on the message — use it to
     /// attribute the message to the right identity.
+    #[allow(clippy::too_many_arguments)]
     async fn append_message(
         &self,
         ctx: &sylvander_protocol::SessionContext,
@@ -382,7 +400,7 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<(), SessionStoreError>;
 
     /// Count non-summarized messages visible to the calling identity.
-    /// Cheap O(1) on SQLite.
+    /// Cheap O(1) on `SQLite`.
     async fn count_active_messages(
         &self,
         ctx: &sylvander_protocol::SessionContext,

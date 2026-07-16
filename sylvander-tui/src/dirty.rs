@@ -1,4 +1,4 @@
-//! Dirty flag — mark when AppState has changes that need re-rendering.
+//! Dirty flag — mark when `AppState` has changes that need re-rendering.
 //!
 //! Single-threaded: wraps `Rc<Cell<bool>>`. Cheap to clone, copy, mark, take.
 

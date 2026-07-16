@@ -18,10 +18,13 @@ const LEGACY_KEYS: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "SYLVANDER_SESSION_DB",
+    "SYLVANDER_MEMORY_DB",
     "SYLVANDER_WORKSPACE_JOURNAL",
     "SYLVANDER_AGENT_WORKSPACE",
     "SYLVANDER_SOCKET",
+    "SYLVANDER_UNIX_UID",
     "HTTP_ADDR",
+    "SYLVANDER_HTTP_TOKEN",
     "SYLVANDER_APPROVAL",
     "SYLVANDER_APPROVAL_STORE",
     "DINGTALK_APP_KEY",
@@ -94,6 +97,9 @@ impl ServerConfig {
             .model(ModelConfig {
                 provider: "primary".into(),
                 model_name: model,
+                // Preserve the legacy same-provider catalog policy. A default-only
+                // allowlist would silently remove SYLVANDER_MODELS alternatives.
+                allowed_models: Vec::new(),
                 temperature: None,
                 max_tokens: Some(32_000),
             })
@@ -122,7 +128,7 @@ impl ServerConfig {
             },
             ChannelInstanceConfig {
                 id: "http-debug".into(),
-                enabled: true,
+                enabled: values.contains_key("SYLVANDER_HTTP_TOKEN"),
                 default_agent: "assistant".into(),
                 default_workspace: None,
                 transport: ChannelTransportConfig::Http {
@@ -130,6 +136,10 @@ impl ServerConfig {
                         .get("HTTP_ADDR")
                         .cloned()
                         .unwrap_or_else(|| "127.0.0.1:8080".into()),
+                    principal_id: "legacy-http".into(),
+                    bearer_token: SecretRef::Env {
+                        name: "SYLVANDER_HTTP_TOKEN".into(),
+                    },
                 },
             },
         ];
@@ -142,12 +152,16 @@ impl ServerConfig {
                 name: "sylvander".into(),
                 data_dir: None,
                 session_db: values.get("SYLVANDER_SESSION_DB").map(PathBuf::from),
+                memory_db: values.get("SYLVANDER_MEMORY_DB").map(PathBuf::from),
                 workspace_journal: values.get("SYLVANDER_WORKSPACE_JOURNAL").map(PathBuf::from),
+                memory_maintenance: super::MemoryMaintenanceSettings::default(),
                 approval: ApprovalSettings {
                     enabled: values.contains_key("SYLVANDER_APPROVAL"),
                     persistent_store: values.get("SYLVANDER_APPROVAL_STORE").map(PathBuf::from),
                 },
                 evidence: super::EvidenceSettings::default(),
+                boundary: super::BoundarySettings::default(),
+                identity: super::IdentitySettings::default(),
             },
             model_providers: vec![ModelProviderConfig {
                 id: "primary".into(),
@@ -175,12 +189,39 @@ impl ServerConfig {
                 prompt_profiles: Vec::new(),
                 default_prompt_profile: None,
                 allow_session_prompt: false,
+                access: legacy_agent_access(values)?,
             }],
             channels,
         };
         config.validate()?;
         Ok(config)
     }
+}
+
+fn legacy_agent_access(
+    values: &HashMap<String, String>,
+) -> Result<super::AgentAccessConfig, ConfigError> {
+    let allowed_principals = values
+        .get("SYLVANDER_UNIX_UID")
+        .map(|value| {
+            value.trim().parse::<u32>().map_or_else(
+                |_| {
+                    Err(ConfigError {
+                        errors: vec![
+                            "legacy SYLVANDER_UNIX_UID must be a non-negative numeric uid".into(),
+                        ],
+                    })
+                },
+                |uid| Ok(vec![format!("unix:terminal:uid:{uid}")]),
+            )
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(super::AgentAccessConfig {
+        allow_authenticated: false,
+        allowed_principals,
+        allowed_roles: Vec::new(),
+    })
 }
 
 fn comma_values(value: Option<&String>) -> Vec<String> {
@@ -298,6 +339,55 @@ mod tests {
         assert!(encoded.contains("ANTHROPIC_API_KEY"));
         assert!(!encoded.contains("must-not-be-stored"));
         assert_eq!(config.agents[0].spec.model.provider, "primary");
+        assert!(config.agents[0].spec.model.allowed_models.is_empty());
+        assert!(!config.agents[0].access.allow_authenticated);
+        assert!(config.agents[0].access.allowed_principals.is_empty());
+    }
+
+    #[test]
+    fn conversion_preserves_memory_database_path() {
+        let mut values = required_values();
+        values.insert(
+            "SYLVANDER_MEMORY_DB".into(),
+            "/srv/sylvander/memory.db".into(),
+        );
+
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+
+        assert_eq!(
+            config.server.memory_db,
+            Some(PathBuf::from("/srv/sylvander/memory.db"))
+        );
+    }
+
+    #[test]
+    fn legacy_environment_cannot_override_memory_maintenance_policy() {
+        let mut values = required_values();
+        values.insert("SYLVANDER_MEMORY_RETENTION_DAYS".into(), "9999".into());
+        values.insert("SYLVANDER_MEMORY_BATCH_SIZE".into(), "0".into());
+
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+
+        assert_eq!(
+            config.server.memory_maintenance,
+            super::super::MemoryMaintenanceSettings::default()
+        );
+    }
+
+    #[test]
+    fn local_unix_access_requires_an_explicit_numeric_uid() {
+        let mut values = required_values();
+        values.insert("SYLVANDER_UNIX_UID".into(), "501".into());
+        let config = ServerConfig::from_legacy_values(&values).unwrap();
+        assert!(!config.agents[0].access.allow_authenticated);
+        assert_eq!(
+            config.agents[0].access.allowed_principals,
+            ["unix:terminal:uid:501"]
+        );
+
+        values.insert("SYLVANDER_UNIX_UID".into(), "current-user".into());
+        let error = ServerConfig::from_legacy_values(&values).unwrap_err();
+        assert!(error.errors[0].contains("non-negative numeric uid"));
     }
 
     #[test]

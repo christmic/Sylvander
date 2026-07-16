@@ -14,6 +14,8 @@ Deployment configuration is documented in
 [`docs/server-configuration.md`](docs/server-configuration.md).
 Runtime evidence and the self-improvement safety boundary are documented in
 [`docs/runtime-evidence.md`](docs/runtime-evidence.md).
+Ingress authentication, authorization, limits, and denial audit are documented
+in [`docs/boundary-authorization.md`](docs/boundary-authorization.md).
 
 ```
 sylvander-server                  binary — boots the system

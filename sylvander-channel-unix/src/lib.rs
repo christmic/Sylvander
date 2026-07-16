@@ -13,7 +13,7 @@
 //! {"type":"ping"}
 //! ```
 //!
-//! ## Server → Client (pushed as StreamEvent)
+//! ## Server → Client (pushed as `StreamEvent`)
 //! ```json
 //! {"type":"text_delta","session_id":"...","delta":"..."}
 //! {"type":"tool_call","session_id":"...","tool_name":"..."}
@@ -33,18 +33,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use futures_util::StreamExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, mpsc};
+use tokio_util::codec::{FramedRead, LinesCodec};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
-};
+use sylvander_agent::bus::{MessageKind, StreamEvent};
+use sylvander_agent::session_store::SessionMetadataPatch;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
+    unavailable_agent_admin_response, unavailable_registry_admin_response,
+};
 use sylvander_protocol::{
-    UiClientMessage as ClientMsg, UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg,
-    UiSessionInfo as SessionInfo, UiToolInfo as ToolInfo,
+    SessionConfigOverrides, SessionWorkspaceBinding, UiClientMessage as ClientMsg,
+    UiHistoryMessage as HistoryMessage, UiServerMessage as ServerMsg, UiSessionInfo as SessionInfo,
+    UiToolInfo as ToolInfo,
 };
 
 // ===========================================================================
@@ -73,9 +78,10 @@ struct RelayHub {
 
 pub struct UnixChannel {
     socket_path: PathBuf,
+    instance_id: String,
     agent_id: AgentId,
     runtime: RuntimeInfo,
-    runtime_control: Option<sylvander_agent::run::AgentRun>,
+    max_request_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -94,6 +100,7 @@ impl UnixChannel {
     pub fn new(socket_path: impl Into<PathBuf>, agent_id: impl Into<AgentId>) -> Self {
         Self {
             socket_path: socket_path.into(),
+            instance_id: "unix".into(),
             agent_id: agent_id.into(),
             runtime: RuntimeInfo {
                 model: "unknown".into(),
@@ -105,8 +112,13 @@ impl UnixChannel {
                 max_attachment_bytes: 512 * 1024,
                 platform: sylvander_protocol::PlatformSnapshot::default(),
             },
-            runtime_control: None,
+            max_request_bytes: 1024 * 1024,
         }
+    }
+
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
+        self
     }
 
     pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
@@ -114,15 +126,16 @@ impl UnixChannel {
         self
     }
 
-    pub fn with_runtime_control(mut self, run: sylvander_agent::run::AgentRun) -> Self {
-        self.runtime_control = Some(run);
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
         self
     }
 }
 
 #[async_trait]
 impl Channel for UnixChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "unix"
     }
 
@@ -171,8 +184,39 @@ impl Channel for UnixChannel {
                 }
             };
 
+            let peer = match stream.peer_cred() {
+                Ok(peer) => peer,
+                Err(error) => {
+                    warn!(%error, "unix: could not authenticate peer credentials");
+                    if let Some(ui) = &ctx.ui {
+                        let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+                            &self.instance_id,
+                            "unix",
+                            uuid::Uuid::new_v4().to_string(),
+                        );
+                        let _ = ui
+                            .reject_authentication(
+                                &boundary,
+                                sylvander_protocol::AuthenticationFailure::new(
+                                    sylvander_protocol::AuthenticationMethod::UnixPeer,
+                                ),
+                            )
+                            .await;
+                    }
+                    continue;
+                }
+            };
+            let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+                format!("unix:{}:uid:{}", self.instance_id, peer.uid()),
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            );
+            info!(uid = peer.uid(), "unix: authenticated local socket owner");
+
             let (read, mut write) = stream.into_split();
-            let mut reader = BufReader::new(read).lines();
+            let mut reader = FramedRead::new(
+                read,
+                LinesCodec::new_with_max_length(self.max_request_bytes),
+            );
 
             let client_id = {
                 let mut id = next_id.lock().await;
@@ -187,12 +231,11 @@ impl Channel for UnixChannel {
             let writer_hub = hub.clone();
             client_tasks.spawn(async move {
                 while let Some(msg) = rx.recv().await {
-                    if let Ok(s) = serde_json::to_string(&msg) {
-                        if write.write_all(s.as_bytes()).await.is_err()
-                            || write.write_all(b"\n").await.is_err()
-                        {
-                            break;
-                        }
+                    if let Ok(s) = serde_json::to_string(&msg)
+                        && (write.write_all(s.as_bytes()).await.is_err()
+                            || write.write_all(b"\n").await.is_err())
+                    {
+                        break;
                     }
                 }
                 detach_client(&writer_hub, client_id).await;
@@ -202,12 +245,25 @@ impl Channel for UnixChannel {
             let ctx_clone = ctx.clone();
             let agent_id_clone = agent_id.clone();
             let runtime = self.runtime.clone();
-            let runtime_control = self.runtime_control.clone();
             let reader_hub = hub.clone();
             let client_id_clone = client_id;
+            let instance_id = self.instance_id.clone();
             client_tasks.spawn(async move {
-                let mut negotiated = false;
-                while let Ok(Some(line)) = reader.next_line().await {
+                let mut negotiated_version = None;
+                while let Some(result) = reader.next().await {
+                    let line = match result {
+                        Ok(line) => line,
+                        Err(error) => {
+                            warn!(%error, "unix: rejected oversized or invalid frame");
+                            let _ = tx.send(ServerMsg::ProtocolError {
+                                error: protocol_error(
+                                    "frame_too_large",
+                                    "request exceeds the configured frame limit",
+                                ),
+                            });
+                            break;
+                        }
+                    };
                     let msg: ClientMsg = match serde_json::from_str(&line) {
                         Ok(m) => m,
                         Err(e) => {
@@ -215,13 +271,13 @@ impl Channel for UnixChannel {
                             let _ = tx.send(ServerMsg::ProtocolError {
                                 error: protocol_error("malformed_message", &e.to_string()),
                             });
-                            if !negotiated {
+                            if negotiated_version.is_none() {
                                 break;
                             }
                             continue;
                         }
                     };
-                    if !negotiated {
+                    if negotiated_version.is_none() {
                         let ClientMsg::Hello { protocol } = msg else {
                             let _ = tx.send(ServerMsg::ProtocolError {
                                 error: protocol_error(
@@ -233,12 +289,12 @@ impl Channel for UnixChannel {
                         };
                         match sylvander_protocol::negotiate_ui_protocol(&protocol) {
                             Ok(version) => {
-                                negotiated = true;
+                                negotiated_version = Some(version);
                                 let _ = tx.send(ServerMsg::Welcome {
                                     protocol: sylvander_protocol::UiProtocolWelcome {
                                         server_name: "sylvander-server".into(),
                                         version,
-                                        capabilities: ui_protocol_capabilities(),
+                                        capabilities: ui_protocol_capabilities(version),
                                     },
                                 });
                             }
@@ -258,15 +314,25 @@ impl Channel for UnixChannel {
                         });
                         continue;
                     }
+                    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+                        principal.clone(),
+                        &instance_id,
+                        "unix",
+                        uuid::Uuid::new_v4().to_string(),
+                    );
                     handle_client_msg_for_client(
                         msg,
-                        &ctx_clone,
-                        &agent_id_clone,
-                        &tx,
-                        &runtime,
-                        runtime_control.as_ref(),
-                        &reader_hub,
-                        client_id,
+                        ClientHandler {
+                            boundary: &boundary,
+                            ctx: &ctx_clone,
+                            agent_id: &agent_id_clone,
+                            tx: &tx,
+                            runtime: &runtime,
+                            hub: &reader_hub,
+                            client_id,
+                            ui_protocol_version: negotiated_version
+                                .expect("successful handshake records a version"),
+                        },
                     )
                     .await;
                 }
@@ -279,21 +345,26 @@ impl Channel for UnixChannel {
     }
 }
 
-fn ui_protocol_capabilities() -> Vec<String> {
+fn ui_protocol_capabilities(version: u16) -> Vec<String> {
     [
-        "attachments",
-        "approval_scopes",
-        "compaction",
-        "diagnostics",
-        "model_selection",
-        "plans",
-        "session_replay",
-        "sessions",
-        "tasks",
-        "workspace_rollback",
+        ("agent_administration", 2),
+        ("attachments", 1),
+        ("approval_scopes", 1),
+        ("compaction", 1),
+        ("credential_registry_lifecycle", 3),
+        ("diagnostics", 1),
+        ("model_selection", 1),
+        ("plans", 1),
+        ("provider_model_registry_lifecycle", 3),
+        ("registry_administration", 2),
+        ("session_replay", 1),
+        ("sessions", 1),
+        ("tasks", 1),
+        ("workspace_rollback", 1),
     ]
     .into_iter()
-    .map(str::to_owned)
+    .filter(|(_, minimum)| version >= *minimum)
+    .map(|(capability, _)| capability.to_owned())
     .collect()
 }
 
@@ -369,23 +440,78 @@ async fn handle_client_msg(
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
-    runtime_control: Option<&sylvander_agent::run::AgentRun>,
 ) {
     let hub = Arc::new(Mutex::new(RelayHub::default()));
     hub.lock().await.clients.insert(0, tx.clone());
-    handle_client_msg_for_client(msg, ctx, agent_id, tx, runtime, runtime_control, &hub, 0).await;
+    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+        sylvander_protocol::AuthenticatedPrincipal::user(
+            "unix-client",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        ),
+        "unix",
+        "unix",
+        "test-request",
+    );
+    handle_client_msg_for_client(
+        msg,
+        ClientHandler {
+            boundary: &boundary,
+            ctx,
+            agent_id,
+            tx,
+            runtime,
+            hub: &hub,
+            client_id: 0,
+            ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+        },
+    )
+    .await;
 }
 
-async fn handle_client_msg_for_client(
-    msg: ClientMsg,
-    ctx: &ChannelContext,
-    agent_id: &AgentId,
-    tx: &mpsc::UnboundedSender<ServerMsg>,
-    runtime: &RuntimeInfo,
-    runtime_control: Option<&sylvander_agent::run::AgentRun>,
-    hub: &Arc<Mutex<RelayHub>>,
+struct ClientHandler<'a> {
+    boundary: &'a sylvander_protocol::BoundaryContext,
+    ctx: &'a ChannelContext,
+    agent_id: &'a AgentId,
+    tx: &'a mpsc::UnboundedSender<ServerMsg>,
+    runtime: &'a RuntimeInfo,
+    hub: &'a Arc<Mutex<RelayHub>>,
     client_id: u64,
-) {
+    ui_protocol_version: u16,
+}
+
+async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>) {
+    let ClientHandler {
+        boundary,
+        ctx,
+        agent_id,
+        tx,
+        runtime,
+        hub,
+        client_id,
+        ui_protocol_version,
+    } = handler;
+    if let ClientMsg::RegistryAdmin { request } = &msg
+        && request.minimum_ui_protocol_version() > ui_protocol_version
+    {
+        let _ = tx.send(ServerMsg::ProtocolError {
+            error: protocol_error(
+                "unsupported_message_version",
+                "message requires a newer UI protocol version",
+            ),
+        });
+        return;
+    }
+    if !matches!(&msg, ClientMsg::Chat { .. })
+        && let Some(ui) = &ctx.ui
+        && let Err(error) = ui.authorize_message(boundary, &msg).await
+    {
+        boundary_denied(tx, error);
+        return;
+    }
+    let principal_id = boundary
+        .principal
+        .as_ref()
+        .map_or("__unauthenticated__", |principal| principal.id.0.as_str());
     match msg {
         ClientMsg::Hello { .. } => {}
         ClientMsg::Chat {
@@ -394,10 +520,56 @@ async fn handle_client_msg_for_client(
             session_id,
             workspace,
         } => {
-            let sid = match session_id {
-                Some(s) => SessionId::new(s),
-                None => SessionId::new(uuid::Uuid::new_v4().to_string()),
+            let existing_session = session_id.map(SessionId::new);
+            let workspace = workspace.map(PathBuf::from);
+            let session_name = workspace
+                .as_ref()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Sylvander session")
+                .to_string();
+            let overrides = SessionConfigOverrides {
+                user_workspace: workspace.map(|path| SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path,
+                    read_only: false,
+                }),
+                ..SessionConfigOverrides::default()
             };
+            if let Some(session_id) = &existing_session
+                && hub
+                    .lock()
+                    .await
+                    .replay
+                    .get(session_id)
+                    .is_some_and(|replay| replay.active)
+            {
+                operation_error(tx, "chat", "session already has an active turn");
+                return;
+            }
+            let submitted = match submit_external_chat(
+                ctx,
+                boundary,
+                ExternalChatRequest {
+                    existing_session,
+                    agent_id: agent_id.clone(),
+                    label: session_name,
+                    overrides,
+                    text: text.clone(),
+                    attachments: attachments.clone(),
+                    external_meta: std::collections::BTreeMap::new(),
+                },
+            )
+            .await
+            {
+                Ok(submitted) => submitted,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let sid = submitted.session_id;
 
             let start_relay = {
                 let mut guard = hub.lock().await;
@@ -419,60 +591,11 @@ async fn handle_client_msg_for_client(
                 guard.relays.insert(sid.clone())
             };
             let relay_rx = if start_relay {
-                Some(
-                    ctx.bus
-                        .subscribe(SubscriptionFilter {
-                            session_ids: Some(vec![sid.clone()]),
-                            recipients: None,
-                            kinds: None,
-                        })
-                        .await
-                        .expect("subscribe"),
-                )
+                Some(submitted.events)
             } else {
+                drop(submitted.events);
                 None
             };
-            // Send JoinSession for the agent
-            let workspace = workspace
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/tmp"));
-            let session_name = workspace
-                .file_name()
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty())
-                .unwrap_or("Sylvander session")
-                .to_string();
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: sid.clone(),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::JoinSession {
-                        session_id: sid.clone(),
-                        metadata: sylvander_agent::session::SessionMetadata {
-                            workspace,
-                            name: session_name,
-                            user_id: "unix-client".into(),
-                        },
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
-
-            // Send user message
-            let _ = ctx
-                .bus
-                .publish(BusMessage::user_chat_with_attachments(
-                    sid.clone(),
-                    "unix-client",
-                    &text,
-                    attachments,
-                ))
-                .await;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
@@ -691,7 +814,7 @@ async fn handle_client_msg_for_client(
                                     session_id: s.0.clone(),
                                     text,
                                 }),
-                                _ => None,
+                                StreamEvent::UserAnswer { .. } => None,
                             };
                             if let Some(m) = out {
                                 let terminal = matches!(
@@ -717,115 +840,107 @@ async fn handle_client_msg_for_client(
             scope,
             reason,
         } => {
-            // Forward approval to bus for any waiting agent
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool {
+            if let Err(error) = ctx
+                .submit_control(
+                    boundary,
+                    ClientMsg::Approve {
+                        session_id,
                         call_id,
                         approved,
                         scope,
                         reason,
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::Answer {
             session_id,
             call_id,
             answer,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+            if let Err(error) = ctx
+                .submit_control(
+                    boundary,
+                    ClientMsg::Answer {
+                        session_id,
+                        call_id,
+                        answer,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::Interrupt { session_id } => {
-            let session_id = SessionId::new(session_id);
-            let _ = ctx
-                .bus
-                .publish(BusMessage::system_interrupt_turn(
-                    agent_id.clone(),
-                    session_id,
-                ))
-                .await;
+            if let Err(error) = ctx
+                .submit_control(boundary, ClientMsg::Interrupt { session_id })
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::ResolvePlan {
             session_id,
             plan_id,
             decision,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ResolvePlan { plan_id, decision }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+            if let Err(error) = ctx
+                .submit_control(
+                    boundary,
+                    ClientMsg::ResolvePlan {
+                        session_id,
+                        plan_id,
+                        decision,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::CancelTask {
             session_id,
             task_id,
         } => {
-            let session_id = SessionId::new(session_id);
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: session_id.clone(),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::CancelTask {
+            if let Err(error) = ctx
+                .submit_control(
+                    boundary,
+                    ClientMsg::CancelTask {
                         session_id,
                         task_id,
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::DiscoverAgents => {
             if let Some(ui) = &ctx.ui {
-                let _ = tx.send(ServerMsg::AgentsDiscovered {
-                    agents: ui.discover_agents().await,
-                });
+                match ui.discover_agents(boundary).await {
+                    Ok(agents) => {
+                        let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
+                    }
+                    Err(error) => boundary_denied(tx, error),
+                }
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
             }
         }
         ClientMsg::CreateSession { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.create_session(request).await {
+                match ui.create_session(boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
                             config: Some(config),
                         });
                     }
-                    Err(error) => operation_error(tx, "create_session", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "create_session", "UI service is unavailable");
@@ -833,11 +948,14 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::GetSessionConfig { session_id } => {
             if let Some(ui) = &ctx.ui {
-                match ui.session_config(&SessionId::new(session_id)).await {
+                match ui
+                    .session_config(boundary, &SessionId::new(session_id))
+                    .await
+                {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "get_session_config", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
@@ -845,11 +963,11 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::UpdateSessionConfig { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(request).await {
+                match ui.update_session_config(boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "update_session_config", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "update_session_config", "UI service is unavailable");
@@ -857,19 +975,35 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::SubmitFeedback { feedback } => {
             if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(feedback).await {
+                match ui.submit_feedback(boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
-                    Err(error) => operation_error(tx, "submit_feedback", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
         }
+        ClientMsg::AgentAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.agent_admin(boundary, request).await
+            } else {
+                unavailable_agent_admin_response()
+            };
+            let _ = tx.send(ServerMsg::AgentAdmin { response });
+        }
+        ClientMsg::RegistryAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.registry_admin(boundary, request).await
+            } else {
+                unavailable_registry_admin_response()
+            };
+            let _ = tx.send(ServerMsg::RegistryAdmin { response });
+        }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
-                "unix-client",
+                principal_id,
                 agent_id.clone(),
                 "__session_list__",
             );
@@ -905,13 +1039,13 @@ async fn handle_client_msg_for_client(
         }
         request @ (ClientMsg::LoadSession { .. } | ClientMsg::ReattachSession { .. }) => {
             let recovery = matches!(&request, ClientMsg::ReattachSession { .. });
-            let session_id = match request {
-                ClientMsg::LoadSession { session_id }
-                | ClientMsg::ReattachSession { session_id } => session_id,
-                _ => unreachable!(),
+            let (ClientMsg::LoadSession { session_id } | ClientMsg::ReattachSession { session_id }) =
+                request
+            else {
+                unreachable!()
             };
             let session_id = SessionId::new(session_id);
-            let caller = unix_session_context(agent_id, session_id.clone());
+            let caller = unix_session_context(principal_id, agent_id, session_id.clone());
             match ctx.sessions.get(&session_id).await {
                 Ok(Some(session)) => match ctx
                     .sessions
@@ -985,23 +1119,25 @@ async fn handle_client_msg_for_client(
         }
         ClientMsg::RenameSession { session_id, label } => {
             let session_id = SessionId::new(session_id);
-            match ctx.sessions.get(&session_id).await {
-                Ok(Some(mut session)) => {
-                    session.name = label.clone();
-                    session.metadata.name = label.clone();
-                    match ctx.sessions.save(&session).await {
-                        Ok(()) => {
-                            let _ = tx.send(ServerMsg::SessionUpdated {
-                                session_id: session_id.0,
-                                label: Some(label),
-                                archived: false,
-                            });
-                        }
-                        Err(error) => warn!(%error, "unix: failed to rename session"),
-                    }
+            match ctx
+                .sessions
+                .patch_metadata(
+                    &session_id,
+                    SessionMetadataPatch {
+                        name: Some(label.clone()),
+                        external_meta: std::collections::HashMap::new(),
+                    },
+                )
+                .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::SessionUpdated {
+                        session_id: session_id.0,
+                        label: Some(label),
+                        archived: false,
+                    });
                 }
-                Ok(None) => warn!(%session_id, "unix: rename session not found"),
-                Err(error) => warn!(%error, "unix: failed to get session for rename"),
+                Err(error) => warn!(%error, "unix: failed to rename session"),
             }
         }
         ClientMsg::ArchiveSession { session_id } => {
@@ -1058,7 +1194,7 @@ async fn handle_client_msg_for_client(
                 return;
             }
             let source_id = SessionId::new(session_id);
-            let caller = unix_session_context(agent_id, source_id.clone());
+            let caller = unix_session_context(principal_id, agent_id, source_id.clone());
             match ctx.sessions.get(&source_id).await {
                 Ok(Some(source)) => {
                     let fork_id = SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -1112,7 +1248,7 @@ async fn handle_client_msg_for_client(
                         warn!(%error, "unix: failed to save forked session");
                         return;
                     }
-                    let fork_caller = unix_session_context(agent_id, fork_id.clone());
+                    let fork_caller = unix_session_context(principal_id, agent_id, fork_id.clone());
                     for message in &history {
                         if let Err(error) = ctx
                             .sessions
@@ -1173,57 +1309,47 @@ async fn handle_client_msg_for_client(
             }
         }
         ClientMsg::GetRuntimeInfo => {
-            let model_info = if let Some(control) = runtime_control {
-                control.runtime_model_info().await
-            } else {
-                sylvander_protocol::RuntimeModelInfo {
-                    current_model: runtime.model.clone(),
-                    reasoning_effort: runtime.reasoning_effort,
-                    models: runtime.models.clone(),
-                }
-            };
-            let permissions = if let Some(control) = runtime_control {
-                control.permission_profile().await
-            } else {
-                runtime.permissions.clone()
-            };
-            let capabilities = model_info
+            let capabilities = runtime
                 .models
                 .iter()
-                .find(|model| model.id == model_info.current_model)
+                .find(|model| model.id == runtime.model)
                 .map_or(runtime.capabilities, |model| model.capabilities);
-            let platform = runtime_control.map_or_else(
-                || runtime.platform.clone(),
-                sylvander_agent::run::AgentRun::platform_snapshot,
-            );
+            let model_selection = unique_model_selection(&runtime.models, &runtime.model);
             let _ = tx.send(ServerMsg::RuntimeInfo {
-                model: model_info.current_model,
-                reasoning_effort: model_info.reasoning_effort,
-                models: model_info.models,
-                permissions,
+                model: runtime.model.clone(),
+                model_selection,
+                reasoning_effort: runtime.reasoning_effort,
+                models: runtime.models.clone(),
+                permissions: runtime.permissions.clone(),
                 capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
-                platform,
+                platform: runtime.platform.clone(),
             });
         }
         ClientMsg::GetContext { session_id } => {
-            let Some(control) = runtime_control else {
+            let (Some(ui), Some(session_id)) = (&ctx.ui, session_id.as_deref()) else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "context".into(),
-                    message: "runtime context reporting is unavailable".into(),
+                    message: "context requires an authenticated session".into(),
                 });
                 return;
             };
-            let session_id = session_id.as_deref().map(SessionId::new);
-            let report = control.context_report(session_id.as_ref()).await;
-            let _ = tx.send(ServerMsg::ContextReport { report });
+            match ui
+                .context_report(boundary, &SessionId::new(session_id))
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::ContextReport { report });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
         }
         ClientMsg::Compact { session_id } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "compact".into(),
-                    message: "runtime compaction control is unavailable".into(),
+                    message: "UI service is unavailable".into(),
                 });
                 return;
             };
@@ -1231,8 +1357,8 @@ async fn handle_client_msg_for_client(
                 session_id: session_id.clone(),
                 automatic: false,
             });
-            match control
-                .compact_session(&SessionId::new(session_id.clone()))
+            match ui
+                .compact_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
                 Ok(report) => {
@@ -1242,34 +1368,34 @@ async fn handle_client_msg_for_client(
                     let _ = tx.send(ServerMsg::CompactionFailed {
                         session_id,
                         automatic: false,
-                        reason,
+                        reason: reason.message,
                     });
                 }
             }
         }
         ClientMsg::PreviewWorkspaceRollback { session_id } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
-                    reason: "runtime workspace rollback is unavailable".into(),
+                    reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match control
-                .preview_workspace_rollback(&SessionId::new(session_id.clone()))
+            match ui
+                .preview_workspace_rollback(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
                 Ok(preview) => {
                     let _ = tx.send(ServerMsg::WorkspaceRollbackPreview {
                         session_id,
-                        preview: sylvander_protocol::WorkspaceRollbackPreview {
-                            turn_id: preview.turn_id,
-                            files: preview.files,
-                        },
+                        preview,
                     });
                 }
                 Err(reason) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: reason.message,
+                    });
                 }
             }
         }
@@ -1277,101 +1403,128 @@ async fn handle_client_msg_for_client(
             session_id,
             expected_turn_id,
         } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
-                    reason: "runtime workspace rollback is unavailable".into(),
+                    reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match control
-                .rollback_workspace_latest(&SessionId::new(session_id.clone()), &expected_turn_id)
+            match ui
+                .rollback_workspace(
+                    boundary,
+                    &SessionId::new(session_id.clone()),
+                    &expected_turn_id,
+                )
                 .await
             {
                 Ok(report) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted {
-                        session_id,
-                        report: sylvander_protocol::WorkspaceRollbackReport {
-                            turn_id: report.turn_id,
-                            restored: report.restored,
-                        },
-                    });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted { session_id, report });
                 }
                 Err(reason) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: reason.message,
+                    });
                 }
             }
         }
         ClientMsg::SelectModel {
+            session_id,
             model,
             reasoning_effort,
         } => {
-            let Some(control) = runtime_control else {
+            let Some(session_id) = session_id else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "select_model".into(),
-                    message: "runtime model control is unavailable".into(),
+                    message: "select_model requires a session_id".into(),
                 });
                 return;
             };
-            match control.select_model(&model, reasoning_effort).await {
-                Ok(model_info) => {
-                    let capabilities = model_info
-                        .models
-                        .iter()
-                        .find(|entry| entry.id == model_info.current_model)
-                        .map_or(0, |entry| entry.capabilities);
-                    let _ = tx.send(ServerMsg::RuntimeInfo {
-                        model: model_info.current_model,
-                        reasoning_effort: model_info.reasoning_effort,
-                        models: model_info.models,
-                        permissions: control.permission_profile().await,
-                        capabilities,
-                        approval_enabled: runtime.approval_enabled,
-                        max_attachment_bytes: runtime.max_attachment_bytes,
-                        platform: control.platform_snapshot(),
-                    });
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_model", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
                 }
-                Err(message) => {
-                    let _ = tx.send(ServerMsg::OperationError {
-                        operation: "select_model".into(),
-                        message,
-                    });
+            };
+            let mut overrides = state.overrides;
+            let agents = match ui.discover_agents(boundary).await {
+                Ok(agents) => agents,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
                 }
+            };
+            let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
+            let selection = match model.resolve(&catalog) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    operation_error(tx, "select_model", error.to_string());
+                    return;
+                }
+            };
+            overrides.model = Some(selection);
+            overrides.model_id = None;
+            overrides.reasoning_effort = Some(reasoning_effort);
+            match ui
+                .update_session_config(
+                    boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Err(error) => boundary_denied(tx, error),
             }
         }
-        ClientMsg::SelectPermissions { profile } => {
-            let Some(control) = runtime_control else {
+        ClientMsg::SelectPermissions {
+            session_id,
+            profile,
+        } => {
+            let Some(session_id) = session_id else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "select_permissions".into(),
-                    message: "runtime permission control is unavailable".into(),
+                    message: "select_permissions requires a session_id".into(),
                 });
                 return;
             };
-            match control.select_permissions(profile).await {
-                Ok(permissions) => {
-                    let model_info = control.runtime_model_info().await;
-                    let capabilities = model_info
-                        .models
-                        .iter()
-                        .find(|entry| entry.id == model_info.current_model)
-                        .map_or(0, |entry| entry.capabilities);
-                    let _ = tx.send(ServerMsg::RuntimeInfo {
-                        model: model_info.current_model,
-                        reasoning_effort: model_info.reasoning_effort,
-                        models: model_info.models,
-                        permissions,
-                        capabilities,
-                        approval_enabled: runtime.approval_enabled,
-                        max_attachment_bytes: runtime.max_attachment_bytes,
-                        platform: control.platform_snapshot(),
-                    });
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_permissions", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
                 }
-                Err(message) => {
-                    let _ = tx.send(ServerMsg::OperationError {
-                        operation: "select_permissions".into(),
-                        message,
-                    });
-                }
+            };
+            let mut overrides = state.overrides;
+            overrides.permissions = Some(profile);
+            match ui
+                .update_session_config(
+                    boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => send_session_runtime_info(tx, runtime, &state.effective),
+                Err(error) => boundary_denied(tx, error),
             }
         }
         ClientMsg::Ping => {
@@ -1380,11 +1533,67 @@ async fn handle_client_msg_for_client(
     }
 }
 
+fn unique_model_selection(
+    models: &[sylvander_protocol::ModelDescriptor],
+    model_id: &str,
+) -> Option<sylvander_protocol::ModelSelection> {
+    let mut matches = models.iter().filter(|model| model.id == model_id);
+    let model = matches.next()?;
+    matches
+        .next()
+        .is_none()
+        .then(|| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+}
+
+fn send_session_runtime_info(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    runtime: &RuntimeInfo,
+    effective: &sylvander_protocol::SessionEffectiveConfig,
+) {
+    let capabilities = runtime
+        .models
+        .iter()
+        .find(|entry| entry.id == effective.model_id && entry.provider == effective.provider_id)
+        .map_or(0, |entry| entry.capabilities);
+    let _ = tx.send(ServerMsg::RuntimeInfo {
+        model: effective.model_id.clone(),
+        model_selection: Some(effective.model_selection()),
+        reasoning_effort: effective.reasoning_effort,
+        models: runtime.models.clone(),
+        permissions: effective.permissions.clone(),
+        capabilities,
+        approval_enabled: runtime.approval_enabled,
+        max_attachment_bytes: runtime.max_attachment_bytes,
+        platform: runtime.platform.clone(),
+    });
+}
+
+fn visible_model_catalog(
+    agents: &[sylvander_protocol::AgentDescriptor],
+    agent_id: &AgentId,
+) -> Vec<sylvander_protocol::ModelSelection> {
+    let Some(agent) = agents.iter().find(|agent| agent.id == *agent_id) else {
+        return Vec::new();
+    };
+    agent
+        .models
+        .iter()
+        .map(|model| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+        .collect()
+}
+
 fn unix_session_context(
+    principal_id: &str,
     agent_id: &AgentId,
     session_id: SessionId,
 ) -> sylvander_protocol::SessionContext {
-    sylvander_protocol::SessionContext::new("unix-client", agent_id.clone(), session_id)
+    sylvander_protocol::SessionContext::new(principal_id, agent_id.clone(), session_id)
 }
 
 fn session_info(session: sylvander_agent::session_store::StoredSession) -> SessionInfo {
@@ -1412,6 +1621,13 @@ fn operation_error(
     });
 }
 
+fn boundary_denied(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    error: sylvander_protocol::BoundaryError,
+) {
+    let _ = tx.send(ServerMsg::BoundaryDenied { error });
+}
+
 fn history_text(value: &serde_json::Value) -> Option<String> {
     let content = value.get("content")?;
     if let Some(text) = content.as_str() {
@@ -1434,46 +1650,303 @@ fn history_text(value: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use sylvander_agent::bus::{
+        BusMessage, InProcessMessageBus, MessageBus, SubscriptionFilter, SystemMessage,
+    };
     use sylvander_agent::session_store::{
         MessageRole, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    struct EmptyUiService;
+    #[derive(Default)]
+    struct EmptyUiService {
+        registry_authorizations: AtomicUsize,
+        registry_dispatches: AtomicUsize,
+        allow_registry: bool,
+        session_config: Option<sylvander_protocol::SessionConfigState>,
+        chat_bus: Option<Arc<dyn MessageBus>>,
+        compaction: Option<sylvander_protocol::CompactionReport>,
+        rollback_preview: Option<sylvander_protocol::WorkspaceRollbackPreview>,
+        rollback_report: Option<sylvander_protocol::WorkspaceRollbackReport>,
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_is_rejected_before_deserialization() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let mut reader = FramedRead::new(server, LinesCodec::new_with_max_length(4));
+        client.write_all(b"12345\n").await.unwrap();
+
+        assert!(reader.next().await.unwrap().is_err());
+    }
 
     #[async_trait]
     impl sylvander_channel::UiService for EmptyUiService {
-        async fn discover_agents(&self) -> Vec<sylvander_protocol::AgentDescriptor> {
-            Vec::new()
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. }) {
+                self.registry_authorizations.fetch_add(1, Ordering::Relaxed);
+            }
+            if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && !self.allow_registry
+                && !boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin"))
+            {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "registry_admin",
+                ));
+            }
+            Ok(())
+        }
+
+        async fn submit_chat(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_channel::ExternalChatRequest,
+        ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+            let bus = self.chat_bus.as_ref().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat")
+            })?;
+            let principal = boundary.principal.as_ref().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::unauthenticated(boundary, "submit_chat")
+            })?;
+            let session_id = request
+                .existing_session
+                .unwrap_or_else(|| SessionId::new(uuid::Uuid::new_v4().to_string()));
+            let events = bus
+                .subscribe(SubscriptionFilter {
+                    session_ids: Some(vec![session_id.clone()]),
+                    recipients: None,
+                    kinds: None,
+                })
+                .await
+                .map_err(|_| {
+                    sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat")
+                })?;
+            bus.publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: sylvander_agent::bus::Sender::User(principal.id.0.clone()),
+                recipient: sylvander_agent::bus::Recipient::Agent(request.agent_id),
+                kind: MessageKind::Chat,
+                payload: request.text,
+                attachments: request.attachments,
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat"))?;
+            Ok(sylvander_channel::SubmittedChat { session_id, events })
+        }
+
+        async fn submit_control(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            let bus = self.chat_bus.as_ref().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control")
+            })?;
+            let (session_id, system) = match message {
+                ClientMsg::Approve {
+                    session_id,
+                    call_id,
+                    approved,
+                    scope,
+                    reason,
+                } => (
+                    SessionId::new(session_id),
+                    SystemMessage::ApproveTool {
+                        call_id,
+                        approved,
+                        scope,
+                        reason,
+                    },
+                ),
+                ClientMsg::ResolvePlan {
+                    session_id,
+                    plan_id,
+                    decision,
+                } => (
+                    SessionId::new(session_id),
+                    SystemMessage::ResolvePlan { plan_id, decision },
+                ),
+                ClientMsg::CancelTask {
+                    session_id,
+                    task_id,
+                } => {
+                    let session_id = SessionId::new(session_id);
+                    (
+                        session_id.clone(),
+                        SystemMessage::CancelTask {
+                            session_id,
+                            task_id,
+                        },
+                    )
+                }
+                _ => {
+                    return Err(sylvander_protocol::BoundaryError::forbidden(
+                        boundary,
+                        "submit_control",
+                    ));
+                }
+            };
+            bus.publish(BusMessage {
+                session_id,
+                sender: sylvander_agent::bus::Sender::System,
+                recipient: sylvander_agent::bus::Recipient::Agent(AgentId::new("agent-1")),
+                kind: MessageKind::System(system),
+                payload: String::new(),
+                attachments: Vec::new(),
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control"))
+        }
+
+        async fn discover_agents(
+            &self,
+            _boundary: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            Ok(Vec::new())
         }
 
         async fn create_session(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _request: sylvander_protocol::SessionCreateRequest,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("unknown Agent".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ))
         }
 
         async fn session_config(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _session_id: &SessionId,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("missing session".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            self.session_config.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "get_session_config")
+            })
         }
 
         async fn update_session_config(
             &self,
+            boundary: &sylvander_protocol::BoundaryContext,
             _request: sylvander_protocol::SessionConfigUpdateRequest,
-        ) -> Result<sylvander_protocol::SessionConfigState, String> {
-            Err("missing session".into())
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "update_session_config",
+            ))
         }
 
         async fn submit_feedback(
             &self,
+            _boundary: &sylvander_protocol::BoundaryContext,
             _feedback: sylvander_protocol::RunFeedback,
-        ) -> Result<String, String> {
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
             Ok("feedback-1".into())
+        }
+
+        async fn compact_session(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+        ) -> Result<sylvander_protocol::CompactionReport, sylvander_protocol::BoundaryError>
+        {
+            self.compaction.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "compact_session")
+            })
+        }
+
+        async fn preview_workspace_rollback(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+        ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, sylvander_protocol::BoundaryError>
+        {
+            self.rollback_preview.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "preview_workspace_rollback")
+            })
+        }
+
+        async fn rollback_workspace(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+            _expected_turn_id: &str,
+        ) -> Result<sylvander_protocol::WorkspaceRollbackReport, sylvander_protocol::BoundaryError>
+        {
+            self.rollback_report.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "rollback_workspace")
+            })
+        }
+
+        async fn registry_admin(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::RegistryAdminRequest,
+        ) -> sylvander_protocol::RegistryAdminResponse {
+            self.registry_dispatches.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                self.allow_registry
+                    || boundary
+                        .principal
+                        .as_ref()
+                        .is_some_and(|principal| principal.has_role("admin")),
+                "non-administrator reached registry dispatch"
+            );
+            let result = match request {
+                sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                    provider_id,
+                    revision,
+                } => sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                    revision: sylvander_protocol::ProviderRevisionView {
+                        definition: sylvander_protocol::RedactedProviderDefinition {
+                            provider_id,
+                            revision,
+                            kind: "mock".into(),
+                            base_url_sha256: "base-digest".into(),
+                            credential_binding_id_sha256: "binding-digest".into(),
+                        },
+                        digest_sha256: "definition-digest".into(),
+                        created_at_unix_secs: 7,
+                        active: true,
+                    },
+                },
+                sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding { .. } => {
+                    sylvander_protocol::RegistryAdminResult::CredentialBindingCreated {
+                        generation: sylvander_protocol::CredentialGenerationView {
+                            binding_id_sha256: "binding-id-digest".into(),
+                            generation: 1,
+                            reference_kind:
+                                sylvander_protocol::CredentialReferenceKind::Environment,
+                            reference_configured: true,
+                            reference_digest_sha256: "reference-digest".into(),
+                            created_at_unix_secs: 7,
+                            active: true,
+                        },
+                    }
+                }
+                _ => unreachable!(),
+            };
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(result),
+            }
         }
     }
 
@@ -1493,6 +1966,7 @@ mod tests {
                 id: "test-model".into(),
                 provider: "test".into(),
                 capabilities: 0b101,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -1502,6 +1976,64 @@ mod tests {
             approval_enabled: true,
             max_attachment_bytes: 1024,
             platform: sylvander_protocol::PlatformSnapshot::default(),
+        }
+    }
+
+    fn private_session_config(
+        session_id: &str,
+        prompt: &str,
+        digest: &str,
+    ) -> sylvander_protocol::SessionConfigState {
+        use sylvander_protocol::{
+            PromptLayerDigest, PromptLayerKind, PromptManifest, SessionConfigProvenance,
+            SessionConfigSource, SessionConfigSourceKind, SessionEffectiveConfig,
+        };
+        let source = SessionConfigSource {
+            kind: SessionConfigSourceKind::SessionOverride,
+            reference: Some("session".into()),
+        };
+        sylvander_protocol::SessionConfigState {
+            session_id: SessionId::new(session_id),
+            revision: 2,
+            overrides: sylvander_protocol::SessionConfigOverrides {
+                system_prompt: Some(prompt.into()),
+                ..sylvander_protocol::SessionConfigOverrides::default()
+            },
+            effective: SessionEffectiveConfig {
+                agent_id: AgentId::new("agent-1"),
+                agent_revision: 1,
+                provider_id: "test".into(),
+                provider_revision: Some(1),
+                model_id: "test-model".into(),
+                model_revision: Some(1),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                permissions: sylvander_protocol::PermissionProfile::default(),
+                prompt_profile: None,
+                system_prompt_sha256: digest.into(),
+                prompt_manifest: Some(PromptManifest {
+                    layers: vec![PromptLayerDigest {
+                        kind: PromptLayerKind::SessionInput,
+                        reference: Some("session".into()),
+                        sha256: digest.into(),
+                        byte_count: prompt.len() as u64,
+                    }],
+                    aggregate_sha256: "aggregate-digest".into(),
+                    total_bytes: prompt.len() as u64,
+                }),
+                agent_workspace: None,
+                user_workspace: None,
+                execution_target: "local".into(),
+                provenance: SessionConfigProvenance {
+                    model: source.clone(),
+                    reasoning_effort: source.clone(),
+                    permissions: source.clone(),
+                    prompt_profile: source.clone(),
+                    system_prompt: source.clone(),
+                    agent_workspace: source.clone(),
+                    user_workspace: source.clone(),
+                    execution_target: source,
+                },
+            },
         }
     }
 
@@ -1520,16 +2052,24 @@ mod tests {
         reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
         message: serde_json::Value,
     ) -> serde_json::Value {
+        let line = send_and_read_wire(write, reader, message).await;
+        serde_json::from_str(&line).expect("json response")
+    }
+
+    async fn send_and_read_wire(
+        write: &mut tokio::net::unix::OwnedWriteHalf,
+        reader: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+        message: serde_json::Value,
+    ) -> String {
         write
             .write_all(format!("{message}\n").as_bytes())
             .await
             .expect("write");
-        let line = tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line())
+        tokio::time::timeout(std::time::Duration::from_secs(1), reader.next_line())
             .await
             .expect("response timeout")
             .expect("read")
-            .expect("response");
-        serde_json::from_str(&line).expect("json response")
+            .expect("response")
     }
 
     async fn negotiate(
@@ -1557,12 +2097,12 @@ mod tests {
     #[tokio::test]
     async fn runtime_info_reports_server_truth() {
         let bus = Arc::new(InProcessMessageBus::new());
-        let context = ChannelContext {
+        let context = ChannelContext::with_services(
             bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
-        };
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::GetRuntimeInfo,
@@ -1570,7 +2110,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -1579,6 +2118,7 @@ mod tests {
             response,
             ServerMsg::RuntimeInfo {
                 model,
+                model_selection: Some(selection),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models,
                 permissions: sylvander_protocol::PermissionProfile {
@@ -1590,18 +2130,21 @@ mod tests {
                 approval_enabled: true,
                 max_attachment_bytes: 1024,
                 ..
-            } if model == "test-model" && models.len() == 1
+            } if model == "test-model"
+                && selection.provider_id == "test"
+                && selection.model_id == "test-model"
+                && models.len() == 1
         ));
     }
 
     #[tokio::test]
     async fn agent_discovery_is_served_through_the_ui_service_boundary() {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(EmptyUiService)),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(EmptyUiService::default())),
+            None,
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         handle_client_msg(
@@ -1610,7 +2153,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -1633,7 +2175,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
         assert!(matches!(
@@ -1643,64 +2184,423 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_selection_is_acknowledged_from_agent_runtime_truth() {
-        use sylvander_llm_anthropic::api::client::AnthropicClient;
-        use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+    async fn agent_admin_without_ui_service_returns_content_free_error() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
+        handle_client_msg(
+            ClientMsg::AgentAdmin {
+                request: sylvander_protocol::AgentAdminRequest::InspectRevision {
+                    agent_id: AgentId::new("private-agent"),
+                    revision: 42,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("Agent admin response");
+        let json = serde_json::to_string(&response).expect("serialize response");
+        assert!(matches!(
+            response,
+            ServerMsg::AgentAdmin {
+                response: sylvander_protocol::AgentAdminResponse::Error {
+                    error: sylvander_protocol::AgentAdminError {
+                        code: sylvander_protocol::AgentAdminErrorCode::Unauthorized,
+                        agent_id: None,
+                        revision: None,
+                        ..
+                    }
+                }
+            }
+        ));
+        assert!(!json.contains("private-agent"));
+        assert!(!json.contains("42"));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_without_ui_service_returns_content_free_error() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::RegistryAdmin {
+                request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                    provider_id: "private-provider".into(),
+                    revision: 42,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &runtime_info(),
+        )
+        .await;
+
+        let response = rx.recv().await.expect("registry admin response");
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(matches!(
+            response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Error {
+                    error: sylvander_protocol::RegistryAdminError {
+                        code: sylvander_protocol::RegistryAdminErrorCode::Unauthorized,
+                        provider_id: None,
+                        revision: None,
+                        ..
+                    }
+                }
+            }
+        ));
+        assert!(!json.contains("private-provider"));
+        assert!(!json.contains("42"));
+    }
+
+    fn inspect_registry_request() -> ClientMsg {
+        serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "inspect_provider_revision",
+                "provider_id": "provider-a",
+                "revision": 9
+            }
+        }))
+        .expect("decode registry request")
+    }
+
+    async fn dispatch_client_message_as(
+        principal: sylvander_protocol::AuthenticatedPrincipal,
+        request: ClientMsg,
+    ) -> ServerMsg {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(EmptyUiService::default())),
+            None,
+        );
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            principal,
+            "unix-test",
+            "unix",
+            "request-1",
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg_for_client(
+            request,
+            ClientHandler {
+                boundary: &boundary,
+                ctx: &context,
+                agent_id: &AgentId::new("agent-1"),
+                tx: &tx,
+                runtime: &runtime_info(),
+                hub: &Arc::new(Mutex::new(RelayHub::default())),
+                client_id: 1,
+                ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+            },
+        )
+        .await;
+        rx.recv().await.expect("registry transport response")
+    }
+
+    #[tokio::test]
+    async fn registry_admin_round_trip_preserves_success_response() {
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        principal.roles.push("admin".into());
+        let response = dispatch_client_message_as(principal, inspect_registry_request()).await;
+        let wire = serde_json::to_string(&response).expect("encode registry response");
+        let decoded: ServerMsg = serde_json::from_str(&wire).expect("decode registry response");
+
+        assert!(matches!(
+            decoded,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected { revision }
+                    if revision.definition.provider_id == "provider-a"
+                        && revision.definition.revision == 9
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_non_administrator_is_rejected_before_dispatch() {
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "reader",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        assert!(matches!(
+            dispatch_client_message_as(principal, inspect_registry_request()).await,
+            ServerMsg::BoundaryDenied { error }
+                if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+                    && error.operation == "registry_admin"
+        ));
+    }
+
+    #[test]
+    fn server_advertises_administration_capabilities() {
+        let v1 = ui_protocol_capabilities(1);
+        let v2 = ui_protocol_capabilities(2);
+        let v3 = ui_protocol_capabilities(3);
+        assert!(!v1.iter().any(|item| item.contains("administration")));
+        assert!(
+            !v1.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(v2.iter().any(|item| item == "agent_administration"));
+        assert!(v2.iter().any(|item| item == "registry_administration"));
+        for capabilities in [&v1, &v2] {
+            assert!(
+                !capabilities
+                    .iter()
+                    .any(|item| item == "provider_model_registry_lifecycle")
+            );
+        }
+        assert!(
+            !v2.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            v3.iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            v3.iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn negotiated_version_gates_registry_mutations_before_dispatch() {
+        let path = socket_path();
+        let service = Arc::new(EmptyUiService {
+            allow_registry: true,
+            ..EmptyUiService::default()
+        });
+        let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
+        let task = tokio::spawn(channel.run(ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(service.clone()),
+            None,
+        )));
+        let mutation = serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": "credential/private-binding",
+                "reference": {"source": "environment", "name": "PRIVATE_API_KEY"}
+            }
+        });
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let first = send_and_read(&mut write, &mut lines, mutation.clone()).await;
+        assert_eq!(first["error"]["code"], "handshake_required");
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 0);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 0);
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let hello_v2 = serde_json::json!({
+            "type": "hello",
+            "protocol": {
+                "client_name": "v2-client", "min_version": 2, "max_version": 2,
+                "capabilities": []
+            }
+        });
+        let welcome = send_and_read(&mut write, &mut lines, hello_v2.clone()).await;
+        assert_eq!(welcome["protocol"]["version"], 2);
+        assert!(
+            welcome["protocol"]["capabilities"]
+                .as_array()
+                .is_some_and(|values| values
+                    .iter()
+                    .any(|value| value == "registry_administration"))
+        );
+        assert!(
+            !welcome["protocol"]["capabilities"]
+                .as_array()
+                .is_some_and(|values| values
+                    .iter()
+                    .any(|value| value == "credential_registry_lifecycle"))
+        );
+        let duplicate = send_and_read(&mut write, &mut lines, hello_v2).await;
+        assert_eq!(duplicate["error"]["code"], "duplicate_handshake");
+        let rejected = send_and_read(&mut write, &mut lines, mutation.clone()).await;
+        assert_eq!(rejected["error"]["code"], "unsupported_message_version");
+        let rejected_wire = rejected.to_string();
+        assert!(!rejected_wire.contains("credential/private-binding"));
+        assert!(!rejected_wire.contains("PRIVATE_API_KEY"));
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 0);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 0);
+
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let welcome = send_and_read(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type": "hello",
+                "protocol": {
+                    "client_name": "v3-client", "min_version": 3, "max_version": 3,
+                    "capabilities": []
+                }
+            }),
+        )
+        .await;
+        assert_eq!(welcome["protocol"]["version"], 3);
+        let accepted = send_and_read(&mut write, &mut lines, mutation).await;
+        assert_eq!(accepted["type"], "registry_admin");
+        assert_eq!(accepted["response"]["status"], "success");
+        assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 1);
+        assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 1);
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn session_prompt_is_redacted_on_the_unix_wire() {
+        const SENTINEL: &str = "UNIX_PRIVATE_SESSION_PROMPT_SENTINEL";
+        const DIGEST: &str = "unix-public-prompt-digest";
+        let path = socket_path();
+        let service = Arc::new(EmptyUiService {
+            session_config: Some(private_session_config("session-secret", SENTINEL, DIGEST)),
+            ..EmptyUiService::default()
+        });
+        let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
+        let task = tokio::spawn(channel.run(ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(service),
+            None,
+        )));
+        let stream = connect(&path).await;
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        negotiate(&mut write, &mut lines).await;
+
+        let wire = send_and_read_wire(
+            &mut write,
+            &mut lines,
+            serde_json::json!({
+                "type": "get_session_config",
+                "session_id": "session-secret"
+            }),
+        )
+        .await;
+        let response: serde_json::Value = serde_json::from_str(&wire).expect("session config");
+
+        assert!(!wire.contains(SENTINEL));
+        assert!(
+            response["state"]["overrides"]
+                .get("system_prompt")
+                .is_none()
+        );
+        assert_eq!(
+            response["state"]["effective"]["system_prompt_sha256"],
+            DIGEST
+        );
+        assert_eq!(
+            response["state"]["effective"]["prompt_manifest"]["layers"][0]["sha256"],
+            DIGEST
+        );
+
+        task.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn credential_create_round_trip_returns_only_redacted_view() {
+        let binding_id = "credential/private-binding";
+        let locator = "PRIVATE_PROVIDER_API_KEY";
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": binding_id,
+                "reference": {
+                    "source": "environment",
+                    "name": locator
+                }
+            }
+        }))
+        .expect("decode credential create request");
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::UnixPeer,
+        );
+        principal.roles.push("admin".into());
+
+        let response = dispatch_client_message_as(principal, request).await;
+        let wire = serde_json::to_string(&response).expect("encode credential response");
+        assert!(!wire.contains(binding_id));
+        assert!(!wire.contains(locator));
+        assert!(matches!(
+            response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::CredentialBindingCreated { generation }
+                    if generation.generation == 1
+                        && generation.reference_configured
+                        && generation.binding_id_sha256 == "binding-id-digest"
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn model_selection_without_session_fails_closed() {
         let bus = Arc::new(InProcessMessageBus::new());
-        let spec = sylvander_agent::spec::AgentSpec::builder()
-            .id("agent-1")
-            .name("Agent")
-            .model_name("test-model")
-            .build()
-            .expect("spec");
-        let client = AnthropicClient::builder()
-            .api_key("test")
-            .build()
-            .expect("client");
-        let thinking = ModelInfo::builder()
-            .id("thinking-model")
-            .context_window(200_000)
-            .max_output_tokens(32_000)
-            .capability(ModelCapabilities::EXTENDED_THINKING)
-            .build()
-            .expect("model");
-        let run = sylvander_agent::run::AgentRun::builder(spec, client)
-            .bus(bus.clone())
-            .available_models(vec![thinking])
-            .build()
-            .expect("run");
-        let context = ChannelContext {
+        let context = ChannelContext::with_services(
             bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
-        };
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(EmptyUiService::default())),
+            None,
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::SelectModel {
-                model: "thinking-model".into(),
+                session_id: None,
+                model: sylvander_protocol::ModelSelectionInput::Legacy("thinking-model".into()),
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
             },
             &context,
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
 
         assert!(matches!(
             rx.recv().await,
-            Some(ServerMsg::RuntimeInfo {
-                model,
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-                ..
-            }) if model == "thinking-model"
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_model" && message.contains("session_id")
         ));
 
         handle_client_msg(
             ClientMsg::SelectPermissions {
+                session_id: None,
                 profile: sylvander_protocol::PermissionProfile {
                     file_access: sylvander_protocol::FileAccess::ReadOnly,
                     network_access: sylvander_protocol::NetworkAccess::Denied,
@@ -1711,19 +2611,12 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
             rx.recv().await,
-            Some(ServerMsg::RuntimeInfo {
-                permissions: sylvander_protocol::PermissionProfile {
-                    file_access: sylvander_protocol::FileAccess::ReadOnly,
-                    approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
-                    ..
-                },
-                ..
-            })
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_permissions" && message.contains("session_id")
         ));
 
         handle_client_msg(
@@ -1734,7 +2627,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
@@ -1750,55 +2642,31 @@ mod tests {
                 automatic: false,
                 reason,
                 ..
-            }) if reason.contains("unknown session")
+            }) if reason == "the principal is not allowed to access this resource"
         ));
     }
 
     #[tokio::test]
     async fn workspace_rollback_preview_and_confirmation_round_trip() {
-        use sylvander_llm_anthropic::api::client::AnthropicClient;
-        let workspace = tempfile::TempDir::new().unwrap();
-        let journal_dir = tempfile::TempDir::new().unwrap();
-        let file = workspace.path().join("file.txt");
-        std::fs::write(&file, "before").unwrap();
         let bus = Arc::new(InProcessMessageBus::new());
-        let spec = sylvander_agent::spec::AgentSpec::builder()
-            .id("agent-1")
-            .name("Agent")
-            .model_name("test-model")
-            .build()
-            .unwrap();
-        let client = AnthropicClient::builder().api_key("test").build().unwrap();
-        let run = sylvander_agent::run::AgentRun::builder(spec, client)
-            .bus(bus.clone())
-            .workspace_journal(journal_dir.path())
-            .build()
-            .unwrap();
-        let session_id = run
-            .join_session(sylvander_agent::session::SessionMetadata {
-                workspace: workspace.path().into(),
-                name: "test".into(),
-                user_id: "unix-client".into(),
-            })
-            .await;
-        let journal = sylvander_agent::workspace_journal::WorkspaceJournal::new(journal_dir.path());
-        let mutation = journal
-            .prepare(
-                &session_id.0,
-                "turn-1",
-                workspace.path(),
-                "file.txt",
-                b"after",
-            )
-            .unwrap();
-        std::fs::write(&file, "after").unwrap();
-        journal.commit(&mutation).unwrap();
-        let context = ChannelContext {
-            bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-            ui: None,
-            readiness: None,
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let ui = EmptyUiService {
+            rollback_preview: Some(sylvander_protocol::WorkspaceRollbackPreview {
+                turn_id: "turn-1".into(),
+                files: vec!["file.txt".into()],
+            }),
+            rollback_report: Some(sylvander_protocol::WorkspaceRollbackReport {
+                turn_id: "turn-1".into(),
+                restored: vec!["file.txt".into()],
+            }),
+            ..EmptyUiService::default()
         };
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(Arc::new(ui)),
+            None,
+        );
         let (tx, mut rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::PreviewWorkspaceRollback {
@@ -1808,7 +2676,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         let turn_id = match rx.recv().await.unwrap() {
@@ -1824,14 +2691,12 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
             rx.recv().await,
             Some(ServerMsg::WorkspaceRollbackCompleted { .. })
         ));
-        assert_eq!(std::fs::read_to_string(file).unwrap(), "before");
     }
 
     #[tokio::test]
@@ -1841,10 +2706,19 @@ mod tests {
         let store: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
         let session_id = SessionId::new("session-1");
+        let credential_probe = tempfile::NamedTempFile::new().expect("credential probe");
+        let principal_id = format!(
+            "unix:unix:uid:{}",
+            credential_probe
+                .as_file()
+                .metadata()
+                .expect("credential metadata")
+                .uid()
+        );
         let metadata = sylvander_agent::session::SessionMetadata {
             workspace: "/workspace/project".into(),
             name: "Original".into(),
-            user_id: "unix-client".into(),
+            user_id: principal_id.clone(),
         };
         store
             .save(&StoredSession::new(
@@ -1856,7 +2730,7 @@ mod tests {
             ))
             .await
             .expect("save");
-        let caller = unix_session_context(&agent_id, session_id.clone());
+        let caller = unix_session_context(&principal_id, &agent_id, session_id.clone());
         store
             .append_message(
                 &caller,
@@ -1893,12 +2767,12 @@ mod tests {
             .expect("usage");
 
         let channel = Arc::new(UnixChannel::new(&path, agent_id));
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: store.clone(),
-            ui: None,
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            store.clone(),
+            Some(Arc::new(EmptyUiService::default())),
+            None,
+        );
         let task = tokio::spawn(channel.run(context));
         let stream = connect(&path).await;
         let (read, mut write) = stream.into_split();
@@ -2067,12 +2941,16 @@ mod tests {
             .await
             .expect("save");
         let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
-        let task = tokio::spawn(channel.run(ChannelContext {
-            bus: bus.clone(),
-            sessions: store,
-            ui: None,
-            readiness: None,
-        }));
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
+        };
+        let task = tokio::spawn(channel.run(ChannelContext::with_services(
+            bus.clone(),
+            store,
+            Some(Arc::new(ui)),
+            None,
+        )));
 
         let stream = connect(&path).await;
         let (read, mut write) = stream.into_split();
@@ -2152,12 +3030,16 @@ mod tests {
         let store: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
         let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
-        let task = tokio::spawn(channel.run(ChannelContext {
-            bus: bus.clone(),
-            sessions: store,
-            ui: None,
-            readiness: None,
-        }));
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
+        };
+        let task = tokio::spawn(channel.run(ChannelContext::with_services(
+            bus.clone(),
+            store,
+            Some(Arc::new(ui)),
+            None,
+        )));
 
         let stream_a = connect(&path).await;
         assert_eq!(
@@ -2254,12 +3136,16 @@ mod tests {
             .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
             .await
             .expect("subscribe");
-        let context = ChannelContext {
-            bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
         };
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(ui)),
+            None,
+        );
         let (tx, _rx) = mpsc::unbounded_channel();
 
         handle_client_msg(
@@ -2274,7 +3160,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2297,12 +3182,16 @@ mod tests {
             .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
             .await
             .expect("subscribe");
-        let context = ChannelContext {
-            bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
         };
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(ui)),
+            None,
+        );
         let (tx, _rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::Approve {
@@ -2316,7 +3205,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2341,12 +3229,16 @@ mod tests {
             .subscribe(SubscriptionFilter::for_agent(agent_id.clone()))
             .await
             .expect("subscribe");
-        let context = ChannelContext {
-            bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
         };
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(ui)),
+            None,
+        );
         let (tx, _rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::CancelTask {
@@ -2357,7 +3249,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2377,12 +3268,16 @@ mod tests {
             .await
             .expect("subscribe");
         let agent_id = AgentId::new("agent-1");
-        let context = ChannelContext {
-            bus,
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
+        let ui = EmptyUiService {
+            chat_bus: Some(bus.clone()),
+            ..EmptyUiService::default()
         };
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(ui)),
+            None,
+        );
         let (tx, _rx) = mpsc::unbounded_channel();
         handle_client_msg(
             ClientMsg::Chat {
@@ -2404,7 +3299,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 

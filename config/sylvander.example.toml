@@ -6,7 +6,56 @@ name = "sylvander"
 # Defaults to $XDG_DATA_HOME/sylvander or ~/.local/share/sylvander.
 # data_dir = "/var/lib/sylvander"
 # session_db = "/var/lib/sylvander/sessions.db"
+# memory_db = "/var/lib/sylvander/memory.db"
 # workspace_journal = "/var/lib/sylvander/workspace-journal"
+
+[server.memory_maintenance]
+interval_seconds = 3600
+batch_size = 500
+max_batches_per_run = 20
+
+[server.memory_maintenance.integrity]
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+# File anchors must be outside server.data_dir on storage the memory database
+# writer cannot modify. Pre-create the parent with restricted permissions.
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+
+# Whole-host replay resistance instead uses a remote monotonic CAS service:
+# [server.memory_maintenance.integrity.backend]
+# kind = "http"
+# endpoint = "https://memory-anchor.example.test/v1/cas"
+# timeout_millis = 5000
+# read_retries = 3
+#
+# [server.memory_maintenance.integrity.backend.bearer_token]
+# source = "env"
+# name = "SYLVANDER_MEMORY_ANCHOR_TOKEN"
+#
+# Optional private PKI and mTLS material are also secret references:
+# [server.memory_maintenance.integrity.backend.ca_certificate]
+# source = "file"
+# path = "/run/secrets/memory-anchor-ca.pem"
+#
+# [server.memory_maintenance.integrity.backend.client_identity]
+# source = "file"
+# path = "/run/secrets/memory-anchor-client.pem"
+
+[server.memory_maintenance.retention]
+revision = 1
+default_ttl_days = 365
+max_ttl_days = 1825
+expired_grace_days = 7
+superseded_retention_days = 30
+
+[server.memory_maintenance.backup]
+interval_seconds = 86400
+retained_copies = 7
 
 [server.approval]
 enabled = true
@@ -18,6 +67,10 @@ enabled = true
 retention_days = 30
 # metadata_only avoids persisting raw prompts, tool payloads, and responses.
 content = "metadata_only"
+
+[server.boundary]
+max_request_bytes = 1048576
+requests_per_minute = 240
 
 [[model_providers]]
 id = "primary"
@@ -46,6 +99,9 @@ revision = 1
 default_prompt_profile = "claude"
 allow_session_prompt = false
 
+[agents.access]
+allow_authenticated = true
+
 [agents.spec]
 id = "sylvander"
 name = "Sylvander"
@@ -70,8 +126,7 @@ read_only = false
 
 [[agents.prompt_profiles]]
 id = "claude"
-providers = ["primary"]
-models = ["claude-sonnet"]
+qualified_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
 system_prompt = "You are Sylvander, a careful and capable coding Agent."
 
 [[channels]]
@@ -91,6 +146,11 @@ default_agent = "sylvander"
 [channels.transport]
 kind = "http"
 bind = "127.0.0.1:8080"
+principal_id = "local-http-client"
+
+[channels.transport.bearer_token]
+source = "env"
+name = "SYLVANDER_HTTP_TOKEN"
 
 # Each bot is a separate channel instance. Duplicate this block with a unique
 # id, bind address, and secret references to configure another Telegram bot.

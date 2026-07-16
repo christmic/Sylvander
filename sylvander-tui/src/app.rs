@@ -91,7 +91,7 @@ pub struct AppState {
     pub chat_scroll_limit: usize,
     /// Events received while the viewport is detached from live output.
     pub unread_events: usize,
-    /// Quit signal — set by handle_key on Ctrl+C / Esc.
+    /// Quit signal — set by `handle_key` on Ctrl+C / Esc.
     pub should_quit: bool,
 
     // ---- pending outbound actions (drained by main loop each tick) ----
@@ -182,18 +182,18 @@ impl AppState {
     /// Persist composer history to disk, if a path is configured. Best-effort:
     /// errors are surfaced via `AppState.status` but do not propagate.
     pub fn save_history(&mut self) {
-        if let Some(path) = self.history_path.clone() {
-            if let Err(e) = self.composer.save_history_to(&path) {
-                self.status = format!("history save failed: {e}");
-            }
+        if let Some(path) = self.history_path.clone()
+            && let Err(e) = self.composer.save_history_to(&path)
+        {
+            self.status = format!("history save failed: {e}");
         }
     }
 
     pub fn save_draft(&mut self) {
-        if let Some(path) = self.draft_path.clone() {
-            if let Err(error) = self.composer.save_draft_to(&path) {
-                self.status = format!("draft save failed: {error}");
-            }
+        if let Some(path) = self.draft_path.clone()
+            && let Err(error) = self.composer.save_draft_to(&path)
+        {
+            self.status = format!("draft save failed: {error}");
         }
     }
 
@@ -442,9 +442,10 @@ impl AppState {
                     .iter()
                     .find(|entry| entry.id == self.metadata.model)
                     .and_then(model_migration_label);
-                if (first_runtime_info || changed) && migration.is_some() {
-                    let migration = migration.expect("checked above");
-                    self.status = migration.clone();
+                if (first_runtime_info || changed)
+                    && let Some(migration) = migration
+                {
+                    self.status.clone_from(&migration);
                     self.messages.push(ChatMessage::Info(migration));
                 } else if changed {
                     self.status = format!(
@@ -500,9 +501,7 @@ impl AppState {
             DomainEvent::CompactionCompleted { report } => {
                 let summary = report
                     .summary
-                    .as_deref()
-                    .map(compact_runtime_reason)
-                    .unwrap_or_else(|| "structural cleanup only".into());
+                    .as_deref().map_or_else(|| "structural cleanup only".into(), compact_runtime_reason);
                 self.messages.push(ChatMessage::Info(format!(
                     "context · {}compacted · {} messages removed · {} blocks condensed · ~{} tokens freed\nsummary · {}",
                     if report.automatic { "auto-" } else { "" },
@@ -546,7 +545,13 @@ impl AppState {
             DomainEvent::SessionCreated { session_id } => {
                 // First time we see this id — push a local session entry.
                 // De-dup by id so reconnects don't create dup rows.
-                if !self.sessions.iter().any(|e| e.id == session_id) {
+                if self.sessions.iter().any(|e| e.id == session_id) {
+                    // Mark existing as working + refresh its seen-time.
+                    if let Some(e) = self.sessions.iter_mut().find(|e| e.id == session_id) {
+                        e.status = SessionStatus::Working;
+                        e.last_seen_secs = 0;
+                    }
+                } else {
                     let label = short_session_label(&session_id);
                     self.sessions.insert(
                         0,
@@ -559,20 +564,13 @@ impl AppState {
                         },
                     );
                     self.sessions.truncate(MAX_SESSION_CACHE);
-                } else {
-                    // Mark existing as working + refresh its seen-time.
-                    if let Some(e) = self.sessions.iter_mut().find(|e| e.id == session_id) {
-                        e.status = SessionStatus::Working;
-                        e.last_seen_secs = 0;
-                    }
                 }
                 self.session_id = Some(session_id);
-                if self.interrupt_requested {
-                    if let Some(session_id) = self.session_id.clone() {
+                if self.interrupt_requested
+                    && let Some(session_id) = self.session_id.clone() {
                         self.pending_actions
                             .push(Action::InterruptTurn { session_id });
                     }
-                }
             }
             DomainEvent::SessionsLoaded { sessions } => {
                 for session in sessions {
@@ -688,7 +686,7 @@ impl AppState {
                         .iter_mut()
                         .find(|session| session.id == session_id)
                     {
-                        session.label = label.clone();
+                        session.label.clone_from(&label);
                     }
                     self.status = format!("Renamed session to {label}");
                 } else {
@@ -1264,14 +1262,12 @@ impl AppState {
             && key
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::CONTROL);
-        if is_undo_archive {
-            if let Some(session) = self.last_archived_session.take() {
-                let session_id = session.id.clone();
-                self.sessions.insert(0, session);
-                self.status = "Restoring archived session…".into();
-                self.dirty.mark();
-                return Some(Action::RestoreSession { session_id });
-            }
+        if is_undo_archive && let Some(session) = self.last_archived_session.take() {
+            let session_id = session.id.clone();
+            self.sessions.insert(0, session);
+            self.status = "Restoring archived session…".into();
+            self.dirty.mark();
+            return Some(Action::RestoreSession { session_id });
         }
         let is_ctrl_c = key.code == crossterm::event::KeyCode::Char('c')
             && key
@@ -1296,19 +1292,20 @@ impl AppState {
             && key
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::CONTROL);
-        if (is_ctrl_c || is_ctrl_x) && !self.turn_active {
-            if let Some(text) = self.composer.selected_text() {
-                if is_ctrl_x {
-                    self.composer.delete_selection();
-                }
-                self.status = if is_ctrl_x {
-                    "Cut selection".into()
-                } else {
-                    "Copying selection…".into()
-                };
-                self.dirty.mark();
-                return Some(Action::CopyText { text });
+        if (is_ctrl_c || is_ctrl_x)
+            && !self.turn_active
+            && let Some(text) = self.composer.selected_text()
+        {
+            if is_ctrl_x {
+                self.composer.delete_selection();
             }
+            self.status = if is_ctrl_x {
+                "Cut selection".into()
+            } else {
+                "Copying selection…".into()
+            };
+            self.dirty.mark();
+            return Some(Action::CopyText { text });
         }
         if is_ctrl_c && self.composer.is_empty() {
             self.should_quit = true;
@@ -1426,15 +1423,15 @@ impl AppState {
             self.dirty.mark();
             return None;
         }
-        if is_submit {
-            if let Err(error) = self.composer.validate_attachments(
+        if is_submit
+            && let Err(error) = self.composer.validate_attachments(
                 self.metadata.max_attachment_bytes,
                 self.metadata.supports_vision(),
-            ) {
-                self.status = error;
-                self.dirty.mark();
-                return None;
-            }
+            )
+        {
+            self.status = error;
+            self.dirty.mark();
+            return None;
         }
         if let Some(text) = self.composer.handle_key(key) {
             let attachments = self.composer.take_submitted_attachments();
@@ -1547,9 +1544,8 @@ fn normalize_message(message: &mut ChatMessage) {
 }
 
 fn normalize_json(value: &mut serde_json::Value) {
-    let oversized = serde_json::to_vec(value)
-        .map(|encoded| encoded.len() > MAX_TOOL_PAYLOAD_BYTES)
-        .unwrap_or(true);
+    let oversized =
+        serde_json::to_vec(value).map_or(true, |encoded| encoded.len() > MAX_TOOL_PAYLOAD_BYTES);
     if oversized {
         *value = serde_json::json!({
             "_sylvander": "tool input omitted from local view because it exceeded 64 KiB"
@@ -1677,6 +1673,7 @@ fn timeout_recovery_label(recovery: sylvander_protocol::TimeoutRecovery) -> &'st
 // ===========================================================================
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::event::DomainEvent;
@@ -1746,6 +1743,7 @@ mod tests {
                 id: "claude-test".into(),
                 provider: "test".into(),
                 capabilities: 0b10001,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -1849,6 +1847,7 @@ mod tests {
                 id: "old-model".into(),
                 provider: "test".into(),
                 capabilities: 0,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
                 lifecycle: sylvander_protocol::ModelLifecycle::Deprecated {
                     replacement: Some("new-model".into()),
@@ -1999,7 +1998,7 @@ mod tests {
             },
         });
         assert_eq!(
-            state.modals.top().map(|modal| modal.title()),
+            state.modals.top().map(crate::modal::Modal::title),
             Some("Rollback files")
         );
         state.apply(DomainEvent::WorkspaceRollbackCompleted {
@@ -2726,7 +2725,7 @@ mod tests {
         let mut s = AppState::new();
         s.handle_key(&KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE));
         assert_eq!(
-            s.modals.top().map(|modal| modal.title()),
+            s.modals.top().map(crate::modal::Modal::title),
             Some("Mention file")
         );
         assert!(s.composer.is_empty());
@@ -2739,13 +2738,12 @@ fn short_session_label(id: &str) -> String {
     first8
 }
 
-/// Monotonic seconds since UNIX epoch. Used for ToolStep started_at
+/// Monotonic seconds since UNIX epoch. Used for `ToolStep` `started_at`
 /// timestamps; the renderer derives elapsed time at draw time.
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Derive a human-readable step name from the leading tool verb +

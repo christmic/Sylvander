@@ -29,6 +29,7 @@ use std::pin::Pin;
 use serde_json::Value as JsonValue;
 
 use crate::compress::CompressContext;
+use crate::compress::error::{CompactionError, CompactionFailureCode};
 
 /// What one compression layer did in a single pass.
 ///
@@ -56,6 +57,9 @@ pub struct LayerReport {
     /// Non-fatal error: layer produced no work but recorded why.
     /// The pipeline logs and continues.
     pub failure: Option<String>,
+    /// Stable internal classification. Wire consumers continue receiving the
+    /// bounded compatibility reason above.
+    pub failure_code: Option<CompactionFailureCode>,
 }
 
 impl LayerReport {
@@ -74,6 +78,17 @@ impl LayerReport {
         Self {
             name: name.to_string(),
             failure: Some(reason.into()),
+            failure_code: Some(CompactionFailureCode::Other),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn failed_with(name: &str, error: CompactionError) -> Self {
+        Self {
+            name: name.to_string(),
+            failure: Some(error.compatibility_reason().into()),
+            failure_code: Some(error.code),
             ..Self::default()
         }
     }
@@ -101,6 +116,15 @@ pub fn total_freed(layers: &[LayerReport]) -> u32 {
 #[must_use]
 pub fn first_failure(layers: &[LayerReport]) -> Option<&str> {
     layers.iter().find_map(|l| l.failure.as_deref())
+}
+
+#[must_use]
+pub fn first_failure_error(layers: &[LayerReport]) -> Option<CompactionError> {
+    layers.iter().find_map(|layer| {
+        layer.failure.as_ref().map(|_| {
+            CompactionError::new(layer.failure_code.unwrap_or(CompactionFailureCode::Other))
+        })
+    })
 }
 
 /// One layer in a [`CompressionPipeline`](super::pipeline::CompressionPipeline).
@@ -187,6 +211,7 @@ mod tests {
                 freed_tokens: 100,
                 details: None,
                 failure: None,
+                failure_code: None,
             },
             LayerReport {
                 name: "b".into(),
@@ -195,6 +220,7 @@ mod tests {
                 freed_tokens: 50,
                 details: None,
                 failure: None,
+                failure_code: None,
             },
             LayerReport {
                 name: "c".into(),
@@ -203,11 +229,16 @@ mod tests {
                 freed_tokens: 0,
                 details: None,
                 failure: Some("boom".into()),
+                failure_code: Some(CompactionFailureCode::Other),
             },
         ];
         assert_eq!(total_removed(&layers), 2);
         assert_eq!(total_condensed(&layers), 4);
         assert_eq!(total_freed(&layers), 150);
         assert_eq!(first_failure(&layers), Some("boom"));
+        assert_eq!(
+            first_failure_error(&layers).unwrap().code,
+            CompactionFailureCode::Other
+        );
     }
 }

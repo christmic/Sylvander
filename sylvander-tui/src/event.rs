@@ -16,7 +16,7 @@ use crate::model::{HistoryEntry, SessionSummary};
 // Inbound: DomainEvent
 // ===========================================================================
 
-/// A neutral, protocol-agnostic event. Anything that affects AppState
+/// A neutral, protocol-agnostic event. Anything that affects `AppState`
 /// must be expressed as one of these.
 #[derive(Debug, Clone)]
 pub enum DomainEvent {
@@ -345,7 +345,7 @@ pub enum Action {
         scope: sylvander_protocol::ApprovalScope,
         reason: Option<String>,
     },
-    /// Answer an AskUser question.
+    /// Answer an `AskUser` question.
     SendAnswer {
         session_id: String,
         call_id: String,
@@ -380,10 +380,12 @@ pub enum Action {
         expected_turn_id: String,
     },
     SelectModel {
+        session_id: String,
         model: String,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     },
     SelectPermissions {
+        session_id: String,
         profile: sylvander_protocol::PermissionProfile,
     },
     LoadSession {
@@ -445,6 +447,7 @@ pub enum DoctorDestination {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

@@ -1,4 +1,4 @@
-//! Agent runtime — the bridge between AgentLoop and the outside world.
+//! Agent runtime — the bridge between `AgentLoop` and the outside world.
 //!
 //! [`AgentRun`] is a running agent instance. It is a cheap `Clone` handle
 //! to shared state ([`AgentRunInner`]).
@@ -32,6 +32,7 @@ use tracing::{Instrument as _, info, warn};
 
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
 use crate::ask_user_gate::AskUserGate;
@@ -43,6 +44,7 @@ use crate::compress::layer::CompressionLayer;
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
+use crate::prompt::PromptResolver;
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -53,7 +55,9 @@ use crate::task_gate::TaskGate;
 use crate::tool::{Tool, ToolRegistry};
 use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
-use crate::tools::memory::{MemoryEntry, MemoryStore, MemoryStoreError};
+use crate::tools::memory::{
+    MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
+};
 
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
@@ -72,7 +76,7 @@ pub(crate) struct AgentRunInner {
     /// keep their cloned `AgentLoop` and are never mutated underneath.
     runtime_models: RwLock<RuntimeModels>,
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
-    prompt_profiles: HashMap<String, String>,
+    prompt_resolver: Option<Arc<PromptResolver>>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
@@ -81,22 +85,27 @@ pub(crate) struct AgentRunInner {
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
+    /// Sessions whose identity was admitted through this run's private issuer.
+    authenticated_sessions: RwLock<HashSet<SessionId>>,
+    session_authority: Arc<SessionAuthorityMarker>,
     /// Optional durable source of truth shared with channels/runtime.
     session_store: Option<Arc<dyn SessionStore>>,
     /// Long-term memory store.
     memory: Option<Arc<dyn MemoryStore>>,
+    /// Truth about how the active memory backend was selected.
+    memory_source: MemorySource,
     /// Whether bus-based approval is enabled (opt-in, off by default).
     approval_enabled: bool,
     /// Static approval rules (auto-approve/auto-reject).
     approval_rules: Vec<crate::approval::ApprovalRule>,
-    /// Pending approval requests (shared with BusApprovalGate).
+    /// Pending approval requests (shared with `BusApprovalGate`).
     pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     /// Agent-owned approval memory. Session grants are isolated by session;
     /// persistent grants exist only when the operator configured a store.
     approval_memory: Arc<Mutex<ApprovalMemory>>,
-    /// Pending AskUser answers (shared with BusAskUserGate).
+    /// Pending `AskUser` answers (shared with `BusAskUserGate`).
     pending_answers: Arc<Mutex<HashMap<(SessionId, String), PendingAnswer>>>,
-    /// Pending typed plan decisions (shared with BusPlanGate).
+    /// Pending typed plan decisions (shared with `BusPlanGate`).
     pending_plans: Arc<Mutex<HashMap<(SessionId, String), PendingPlan>>>,
     /// Independently cancellable read-only background runs.
     background_tasks: Arc<Mutex<HashMap<String, ActiveBackgroundTask>>>,
@@ -105,9 +114,12 @@ pub(crate) struct AgentRunInner {
     /// One cancellation sender per session that currently owns its execution
     /// lock. Queued turns do not replace the active sender.
     active_turns: Mutex<HashMap<SessionId, ActiveTurn>>,
-    /// Tool invocation context (session identity + budget + surface).
-    /// Used by system-driven ops like `remember` to attribute writes.
-    tool_context: ToolContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MemorySource {
+    None,
+    RuntimeInjected,
 }
 
 struct PendingApproval {
@@ -254,28 +266,55 @@ struct ActiveTurn {
     interrupt: oneshot::Sender<()>,
 }
 
+#[derive(Clone)]
+struct RuntimeModel {
+    selection: sylvander_protocol::ModelSelection,
+    shadow: ModelInfo,
+    exact: Option<ProviderModelInfo>,
+    lifecycle: sylvander_protocol::ModelLifecycle,
+    pricing: Option<sylvander_protocol::ModelPricing>,
+}
+
 struct RuntimeModels {
-    available: HashMap<String, ModelInfo>,
-    lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    pricing: HashMap<String, sylvander_protocol::ModelPricing>,
-    current_model: String,
+    available: HashMap<sylvander_protocol::ModelSelection, RuntimeModel>,
+    current: sylvander_protocol::ModelSelection,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ContextUsage {
-    used_tokens: u32,
-    cache_read_tokens: u32,
-    cache_write_tokens: u32,
+    used: u32,
+    cache_read: u32,
+    cache_write: u32,
 }
 
 impl RuntimeModels {
+    fn resolve_legacy_id(
+        &self,
+        model_id: &str,
+    ) -> Result<sylvander_protocol::ModelSelection, String> {
+        let matches = self
+            .available
+            .keys()
+            .filter(|selection| selection.model_id == model_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Err(format!("model `{model_id}` is not available")),
+            [selection] => Ok(selection.clone()),
+            _ => Err(format!(
+                "model `{model_id}` is ambiguous; select it with a provider id"
+            )),
+        }
+    }
+
     fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
         let mut models = self
             .available
             .values()
             .map(|model| {
                 let reasoning_efforts = if model
+                    .shadow
                     .capabilities
                     .contains(ModelCapabilities::EXTENDED_THINKING)
                 {
@@ -289,22 +328,57 @@ impl RuntimeModels {
                     vec![sylvander_protocol::ReasoningEffort::Off]
                 };
                 sylvander_protocol::ModelDescriptor {
-                    id: model.id.clone(),
-                    provider: "anthropic-compatible".into(),
-                    capabilities: model.capabilities.bits(),
+                    id: model.selection.model_id.clone(),
+                    provider: model.selection.provider_id.clone(),
+                    capabilities: model.shadow.capabilities.bits(),
+                    capability_names: public_capability_names(model.shadow.capabilities),
                     reasoning_efforts,
-                    lifecycle: self.lifecycles.get(&model.id).cloned().unwrap_or_default(),
-                    pricing: self.pricing.get(&model.id).copied(),
+                    lifecycle: model.lifecycle.clone(),
+                    pricing: model.pricing,
                 }
             })
             .collect::<Vec<_>>();
-        models.sort_by(|left, right| left.id.cmp(&right.id));
+        models.sort_by(|left, right| (&left.provider, &left.id).cmp(&(&right.provider, &right.id)));
         sylvander_protocol::RuntimeModelInfo {
-            current_model: self.current_model.clone(),
+            current_model: self.current.model_id.clone(),
             reasoning_effort: self.reasoning_effort,
             models,
         }
     }
+}
+
+fn public_capability_names(
+    capabilities: ModelCapabilities,
+) -> Vec<sylvander_protocol::ModelCapability> {
+    [
+        (
+            ModelCapabilities::EXTENDED_THINKING,
+            sylvander_protocol::ModelCapability::ExtendedThinking,
+        ),
+        (
+            ModelCapabilities::PROMPT_CACHING,
+            sylvander_protocol::ModelCapability::PromptCaching,
+        ),
+        (
+            ModelCapabilities::STRUCTURED_OUTPUT,
+            sylvander_protocol::ModelCapability::StructuredOutput,
+        ),
+        (
+            ModelCapabilities::TOOL_USE,
+            sylvander_protocol::ModelCapability::ToolUse,
+        ),
+        (
+            ModelCapabilities::VISION,
+            sylvander_protocol::ModelCapability::Vision,
+        ),
+        (
+            ModelCapabilities::DOCUMENT_INPUT,
+            sylvander_protocol::ModelCapability::DocumentInput,
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(flag, name)| capabilities.contains(flag).then_some(name))
+    .collect()
 }
 
 fn usage_cost_nano_usd(
@@ -335,6 +409,71 @@ pub struct AgentRun {
     pub(crate) inner: Arc<AgentRunInner>,
 }
 
+#[derive(Debug)]
+struct SessionAuthorityMarker;
+
+/// Runtime-owned issuer for authenticated sessions on exactly one [`AgentRun`].
+///
+/// The matching marker is never exposed by `AgentRun`; obtaining a raw run or
+/// publishing `JoinSession` on the bus cannot mint this authority.
+#[derive(Clone)]
+pub struct AgentSessionIssuer {
+    authority: Arc<SessionAuthorityMarker>,
+}
+
+/// A single-use, run-bound admission capability.
+pub struct AuthenticatedSessionLease {
+    authority: Arc<SessionAuthorityMarker>,
+    session_id: SessionId,
+    metadata: SessionMetadata,
+}
+
+/// Proof that a session was admitted by the issuer belonging to this run.
+#[derive(Debug)]
+pub struct AuthenticatedSession {
+    authority: Arc<SessionAuthorityMarker>,
+    session_id: SessionId,
+}
+
+impl AuthenticatedSession {
+    #[must_use]
+    pub fn id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+impl AgentSessionIssuer {
+    /// Issue a capability after rejecting unsafe identity metadata. Identity
+    /// authorization comes from possession of this issuer, not these strings.
+    pub fn issue(
+        &self,
+        session_id: SessionId,
+        metadata: SessionMetadata,
+    ) -> Result<AuthenticatedSessionLease, AgentRunError> {
+        validate_identity_component("session id", &session_id.0, 128)?;
+        validate_identity_component("user id", &metadata.user_id, 256)?;
+        if metadata.name.len() > 200 || metadata.name.chars().any(char::is_control) {
+            return Err(AgentRunError::Authentication("invalid session name".into()));
+        }
+        Ok(AuthenticatedSessionLease {
+            authority: self.authority.clone(),
+            session_id,
+            metadata,
+        })
+    }
+}
+
+fn validate_identity_component(
+    label: &str,
+    value: &str,
+    max_bytes: usize,
+) -> Result<(), AgentRunError> {
+    if value.is_empty() || value.len() > max_bytes || value.chars().any(char::is_control) {
+        return Err(AgentRunError::Authentication(format!("invalid {label}")));
+    }
+    Ok(())
+}
+
 impl AgentRun {
     /// Start building an [`AgentRun`].
     #[must_use]
@@ -342,18 +481,31 @@ impl AgentRun {
         AgentRunBuilder::new(spec, client)
     }
 
+    /// Build a run around a provider-neutral backend. Alternate qualified
+    /// models remain fail-closed until the runtime catalog is provider-aware.
+    #[must_use]
+    pub fn provider_builder(
+        spec: AgentSpec,
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> AgentRunBuilder {
+        AgentRunBuilder::new_single_provider(spec, provider, model)
+    }
+
+    /// Build a run around an immutable provider-qualified router.
+    #[must_use]
+    pub fn qualified_router_builder(
+        spec: AgentSpec,
+        router: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> AgentRunBuilder {
+        AgentRunBuilder::new_qualified_router(spec, router, model)
+    }
+
     /// Unique agent identifier.
     #[must_use]
     pub fn id(&self) -> &AgentId {
         &self.inner.id
-    }
-
-    /// Return the current tool invocation context (session identity,
-    /// budget, surface). Used by system-driven operations like
-    /// `remember` to attribute memory writes to the right identity.
-    #[must_use]
-    pub fn tool_context(&self) -> &ToolContext {
-        &self.inner.tool_context
     }
 
     pub async fn runtime_model_info(&self) -> sylvander_protocol::RuntimeModelInfo {
@@ -368,21 +520,44 @@ impl AgentRun {
         model_id: &str,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
+        let selection = self
+            .inner
+            .runtime_models
+            .read()
+            .await
+            .resolve_legacy_id(model_id)?;
+        self.select_qualified_model(selection, reasoning_effort)
+            .await
+    }
+
+    /// Select one exact provider-qualified model for subsequently started turns.
+    pub async fn select_qualified_model(
+        &self,
+        selection: sylvander_protocol::ModelSelection,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
         let mut runtime = self.inner.runtime_models.write().await;
-        let model = runtime
-            .available
-            .get(model_id)
-            .ok_or_else(|| format!("model `{model_id}` is not available"))?;
+        let model = runtime.available.get(&selection).cloned().ok_or_else(|| {
+            format!(
+                "model `{}/{}` is not available",
+                selection.provider_id, selection.model_id
+            )
+        })?;
+        self.inner
+            .prepare_loop_snapshot(&model, reasoning_effort)
+            .map_err(|error| error.to_string())?;
         if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
             && !model
+                .shadow
                 .capabilities
                 .contains(ModelCapabilities::EXTENDED_THINKING)
         {
             return Err(format!(
-                "model `{model_id}` does not support reasoning effort"
+                "model `{}` does not support reasoning effort",
+                selection.model_id
             ));
         }
-        runtime.current_model = model_id.to_string();
+        runtime.current = selection;
         runtime.reasoning_effort = reasoning_effort;
         Ok(runtime.public_info())
     }
@@ -426,49 +601,35 @@ impl AgentRun {
             })
             .collect::<Vec<_>>();
 
-        if self.inner.spec.memory_stores.is_empty() {
-            if self.inner.memory.is_some() {
-                features.push(PlatformFeature {
-                    kind: PlatformFeatureKind::Memory,
-                    name: "runtime memory".into(),
-                    status: PlatformFeatureStatus::Active,
-                    summary: "long-term memory is available".into(),
-                    source: Some("runtime injection".into()),
-                    trust: Some(PlatformTrust::BuiltIn),
-                    auth: PlatformAuthStatus::NotRequired,
-                    capabilities: vec!["search".into(), "system_write".into()],
-                    reloadable: false,
-                });
-            }
-        } else {
-            features.extend(self.inner.spec.memory_stores.iter().enumerate().map(
-                |(index, store)| {
-                    let active = index == 0 && self.inner.memory.is_some();
-                    PlatformFeature {
-                        kind: PlatformFeatureKind::Memory,
-                        name: store.store_type.clone(),
-                        status: if active {
-                            PlatformFeatureStatus::Active
-                        } else {
-                            PlatformFeatureStatus::Unavailable
-                        },
-                        summary: if active {
-                            "long-term memory is available".into()
-                        } else {
-                            "memory store could not be activated".into()
-                        },
-                        source: Some("agent configuration".into()),
-                        trust: Some(PlatformTrust::BuiltIn),
-                        auth: PlatformAuthStatus::NotRequired,
-                        capabilities: if active {
-                            vec!["search".into(), "system_write".into()]
-                        } else {
-                            Vec::new()
-                        },
-                        reloadable: false,
-                    }
+        if self.inner.memory_source == MemorySource::RuntimeInjected {
+            features.push(PlatformFeature {
+                kind: PlatformFeatureKind::Memory,
+                name: "runtime memory".into(),
+                status: PlatformFeatureStatus::Active,
+                summary: "long-term memory is available".into(),
+                source: Some("runtime injection".into()),
+                trust: Some(PlatformTrust::BuiltIn),
+                auth: PlatformAuthStatus::NotRequired,
+                capabilities: vec!["search".into(), "system_write".into()],
+                reloadable: false,
+            });
+        }
+        for store in &self.inner.spec.memory_stores {
+            features.push(PlatformFeature {
+                kind: PlatformFeatureKind::Memory,
+                name: store.store_type.clone(),
+                status: PlatformFeatureStatus::Configured,
+                summary: if self.inner.memory_source == MemorySource::RuntimeInjected {
+                    "declared; runtime memory is active".into()
+                } else {
+                    "declared; not activated by runtime".into()
                 },
-            ));
+                source: Some("agent configuration".into()),
+                trust: Some(PlatformTrust::BuiltIn),
+                auth: PlatformAuthStatus::NotRequired,
+                capabilities: Vec::new(),
+                reloadable: false,
+            });
         }
 
         let commands = self
@@ -500,7 +661,7 @@ impl AgentRun {
         let models = self.inner.runtime_models.read().await;
         let model = models
             .available
-            .get(&models.current_model)
+            .get(&models.current)
             .expect("current model belongs to runtime catalog");
         let usage = match session_id {
             Some(session_id) => self
@@ -547,12 +708,12 @@ impl AgentRun {
             });
         }
         sylvander_protocol::ContextReport {
-            model: model.id.clone(),
-            context_window: model.context_window,
-            used_tokens: usage.used_tokens,
-            remaining_tokens: model.context_window.saturating_sub(usage.used_tokens),
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_write_tokens,
+            model: model.shadow.id.clone(),
+            context_window: model.shadow.context_window,
+            used_tokens: usage.used,
+            remaining_tokens: model.shadow.context_window.saturating_sub(usage.used),
+            cache_read_tokens: usage.cache_read,
+            cache_write_tokens: usage.cache_write,
             sources,
         }
     }
@@ -564,6 +725,16 @@ impl AgentRun {
         &self,
         session_id: &SessionId,
     ) -> Result<sylvander_protocol::CompactionReport, String> {
+        self.compact_session_typed(session_id)
+            .await
+            .map_err(|error| error.compatibility_reason().into())
+    }
+
+    async fn compact_session_typed(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CompactionReport, crate::compress::error::CompactionError> {
+        use crate::compress::error::{CompactionError, CompactionFailureCode};
         if self
             .inner
             .active_turns
@@ -571,7 +742,7 @@ impl AgentRun {
             .await
             .contains_key(session_id)
         {
-            return Err("interrupt active work before compacting".into());
+            return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
         let lock = self.get_session_lock(session_id).await;
         let _guard = lock.lock().await;
@@ -582,7 +753,7 @@ impl AgentRun {
             .await
             .contains_key(session_id)
         {
-            return Err("interrupt active work before compacting".into());
+            return Err(CompactionError::new(CompactionFailureCode::Busy));
         }
         let mut history = self
             .inner
@@ -590,43 +761,47 @@ impl AgentRun {
             .read()
             .await
             .get(session_id)
-            .ok_or_else(|| format!("unknown session: {session_id}"))?
+            .ok_or_else(|| CompactionError::new(CompactionFailureCode::SessionUnavailable))?
             .history_snapshot();
         if history.len() <= 4 {
-            return Err("not enough conversation history to compact".into());
+            return Err(CompactionError::new(
+                CompactionFailureCode::InsufficientHistory,
+            ));
         }
         let runtime = self.inner.runtime_models.read().await;
         let model = runtime
             .available
-            .get(&runtime.current_model)
+            .get(&runtime.current)
             .cloned()
-            .expect("current model belongs to runtime catalog");
+            .ok_or_else(|| CompactionError::new(CompactionFailureCode::Other))?;
         drop(runtime);
         let usage = sylvander_llm_anthropic::api::types::Usage {
-            input_tokens: model.context_window,
+            input_tokens: model.shadow.context_window,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
         };
-        let summarizer =
-            crate::compress::AgentLoopAutoCompactLlm::new(self.inner.loop_config.client.clone());
+        let summarizer = self.inner.loop_config.auto_compact_llm();
         let mut context = crate::compress::CompressContext {
             messages: &mut history,
             last_usage: &usage,
-            model_info: &model,
+            model_info: &model.shadow,
             auto_compact_llm: Some(&summarizer),
         };
         let report = crate::compress::layers::auto_compact::AutoCompactLayer::new()
             .with_trigger_ratio(0.0)
             .apply(&mut context)
             .await;
-        if let Some(reason) = report.failure.clone() {
-            return Err(reason);
+        if let Some(error) =
+            crate::compress::layer::first_failure_error(std::slice::from_ref(&report))
+        {
+            return Err(error);
         }
         let layers = vec![report];
         self.inner
             .apply_compacted_history(session_id, &history, &layers)
-            .await?;
+            .await
+            .map_err(|_| CompactionError::new(CompactionFailureCode::Persistence))?;
         Ok(public_compaction_report(false, &layers))
     }
 
@@ -695,8 +870,8 @@ impl AgentRun {
 
     // -- session management --
 
-    /// Join a session, creating a new [`SessionContext`].
-    pub async fn join_session(&self, meta: SessionMetadata) -> SessionId {
+    #[cfg(test)]
+    async fn join_session(&self, meta: SessionMetadata) -> SessionId {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let ctx = SessionContext::new(session_id.clone(), meta);
         self.inner
@@ -704,12 +879,60 @@ impl AgentRun {
             .write()
             .await
             .insert(session_id.clone(), ctx);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .insert(session_id.clone());
         session_id
+    }
+
+    #[cfg(test)]
+    fn authenticated_session_for_test(&self, session_id: SessionId) -> AuthenticatedSession {
+        AuthenticatedSession {
+            authority: self.inner.session_authority.clone(),
+            session_id,
+        }
+    }
+
+    /// Admit a session using a capability issued for this exact run.
+    pub async fn attach_authenticated_session(
+        &self,
+        lease: AuthenticatedSessionLease,
+    ) -> Result<AuthenticatedSession, AgentRunError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &lease.authority) {
+            return Err(AgentRunError::Authentication(
+                "session capability belongs to another agent run".into(),
+            ));
+        }
+        let ctx = self
+            .inner
+            .restore_session_context(&lease.session_id, &lease.metadata)
+            .await;
+        self.inner
+            .sessions
+            .write()
+            .await
+            .insert(lease.session_id.clone(), ctx);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .insert(lease.session_id.clone());
+        Ok(AuthenticatedSession {
+            authority: lease.authority,
+            session_id: lease.session_id,
+        })
     }
 
     /// Leave a session.
     pub async fn leave_session(&self, session_id: &SessionId) {
         self.inner.sessions.write().await.remove(session_id);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .remove(session_id);
         self.inner.context_usage.write().await.remove(session_id);
         self.inner
             .approval_memory
@@ -743,7 +966,7 @@ impl AgentRun {
     ///
     /// Chat messages are spawned as separate tasks so `run()` can
     /// concurrently process approval responses (M12).
-    pub async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
+    pub(crate) async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
         // Publish initial status
         let _ = self
             .inner
@@ -778,6 +1001,15 @@ impl AgentRun {
                         session_id,
                         metadata,
                     } => {
+                        if self
+                            .inner
+                            .authenticated_sessions
+                            .read()
+                            .await
+                            .contains(session_id)
+                        {
+                            continue;
+                        }
                         let ctx = self
                             .inner
                             .restore_session_context(session_id, metadata)
@@ -791,6 +1023,11 @@ impl AgentRun {
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         self.inner.sessions.write().await.remove(session_id);
+                        self.inner
+                            .authenticated_sessions
+                            .write()
+                            .await
+                            .remove(session_id);
                         self.inner.context_usage.write().await.remove(session_id);
                         self.inner
                             .approval_memory
@@ -828,13 +1065,7 @@ impl AgentRun {
                             .remove(&(msg.session_id.clone(), call_id.clone()));
                         if let Some(request) = request {
                             let decision = if *approved {
-                                if !request.allowed_scopes.contains(scope) {
-                                    crate::approval::ApprovalDecision::Rejected {
-                                        reason: format!(
-                                            "approval scope `{scope:?}` is not permitted"
-                                        ),
-                                    }
-                                } else {
+                                if request.allowed_scopes.contains(scope) {
                                     match self
                                         .inner
                                         .approval_memory
@@ -847,6 +1078,12 @@ impl AgentRun {
                                         Err(reason) => {
                                             crate::approval::ApprovalDecision::Rejected { reason }
                                         }
+                                    }
+                                } else {
+                                    crate::approval::ApprovalDecision::Rejected {
+                                        reason: format!(
+                                            "approval scope `{scope:?}` is not permitted"
+                                        ),
                                     }
                                 }
                             } else {
@@ -887,10 +1124,9 @@ impl AgentRun {
                         if tasks
                             .get(task_id)
                             .is_some_and(|task| &task.session_id == session_id)
+                            && let Some(task) = tasks.remove(task_id)
                         {
-                            if let Some(task) = tasks.remove(task_id) {
-                                let _ = task.cancel.send(());
-                            }
+                            let _ = task.cancel.send(());
                         }
                     }
                 },
@@ -972,27 +1208,86 @@ impl AgentRun {
         }
     }
 
-    /// System-driven memory write (NOT a tool).
+    async fn memory_context_for_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<MemoryExecutionContext, MemoryStoreError> {
+        if !self
+            .inner
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(session_id)
+        {
+            return Err(MemoryStoreError::AccessDenied);
+        }
+        let sessions = self.inner.sessions.read().await;
+        let session = sessions
+            .get(session_id)
+            .ok_or(MemoryStoreError::AccessDenied)?;
+        let caller = sylvander_protocol::SessionContext::new(
+            session.metadata.user_id.clone(),
+            self.inner.id.clone(),
+            session_id.clone(),
+        );
+        Ok(MemoryExecutionContext::application_worker(&caller))
+    }
+
+    /// System-driven memory write (NOT a tool). Ownership is derived from a
+    /// session already attached to this Agent application.
     pub async fn remember(
         &self,
+        session: &AuthenticatedSession,
         content: impl Into<String>,
         tags: &[&str],
+    ) -> Result<MemoryEntry, MemoryStoreError> {
+        let append = tags.iter().fold(MemoryAppend::new(content), |append, tag| {
+            append.with_tag(*tag)
+        });
+        self.remember_entry(session, append).await
+    }
+
+    /// Persist a structured application-derived memory for an attached
+    /// session. Caller-controlled identity is deliberately absent.
+    pub async fn remember_entry(
+        &self,
+        session: &AuthenticatedSession,
+        append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let store = self
             .inner
             .memory
             .as_ref()
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
-        let entry = MemoryEntry::new(
-            uuid::Uuid::new_v4().to_string(),
-            content,
-            self.tool_context().session.as_ref().clone(),
-        );
-        let entry = tags.iter().fold(entry, |e, tag| e.with_tag(*tag, "true"));
-        store
-            .store(&self.tool_context().session, entry.clone())
-            .await?;
-        Ok(entry)
+        let session_id = self.authorized_session_id(session)?;
+        let context = self.memory_context_for_session(session_id).await?;
+        store.append_relationship(&context, append).await
+    }
+
+    /// System-driven memory lookup derived from an attached session.
+    pub async fn recall(
+        &self,
+        session: &AuthenticatedSession,
+        query: &str,
+        filter: MemoryFilter,
+    ) -> Result<Vec<MemoryEntry>, MemoryStoreError> {
+        let store = self
+            .inner
+            .memory
+            .as_ref()
+            .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
+        let session_id = self.authorized_session_id(session)?;
+        let context = self.memory_context_for_session(session_id).await?;
+        store.search_relationship(&context, query, filter).await
+    }
+
+    fn authorized_session_id<'a>(
+        &self,
+        session: &'a AuthenticatedSession,
+    ) -> Result<&'a SessionId, MemoryStoreError> {
+        Arc::ptr_eq(&self.inner.session_authority, &session.authority)
+            .then_some(&session.session_id)
+            .ok_or(MemoryStoreError::AccessDenied)
     }
 }
 
@@ -1083,23 +1378,23 @@ impl ApprovalGate for BusApprovalGate {
 
         // Wait for all decisions (120s timeout each)
         for (index, call_id, rx) in receivers {
-            let decision = match tokio::time::timeout(std::time::Duration::from_secs(120), rx).await
+            let decision = if let Ok(Ok(decision)) =
+                tokio::time::timeout(std::time::Duration::from_mins(2), rx).await
             {
-                Ok(Ok(decision)) => decision,
-                _ => {
-                    publish_interaction_timeout(
-                        &self.bus,
-                        &self.session_id,
-                        &self.agent_id,
-                        sylvander_protocol::InteractionTimeoutKind::Approval,
-                        &call_id,
-                        120,
-                        sylvander_protocol::TimeoutRecovery::RetryRequest,
-                    )
-                    .await;
-                    ApprovalDecision::Rejected {
-                        reason: "approval timeout".into(),
-                    }
+                decision
+            } else {
+                publish_interaction_timeout(
+                    &self.bus,
+                    &self.session_id,
+                    &self.agent_id,
+                    sylvander_protocol::InteractionTimeoutKind::Approval,
+                    &call_id,
+                    120,
+                    sylvander_protocol::TimeoutRecovery::RetryRequest,
+                )
+                .await;
+                ApprovalDecision::Rejected {
+                    reason: "approval timeout".into(),
                 }
             };
             decisions[index] = Some(decision);
@@ -1152,8 +1447,10 @@ fn normalize_rejection_reason(reason: Option<&str>) -> String {
     reason
         .map(str::trim)
         .filter(|reason| !reason.is_empty())
-        .map(|reason| reason.chars().take(500).collect())
-        .unwrap_or_else(|| "rejected by user".into())
+        .map_or_else(
+            || "rejected by user".into(),
+            |reason| reason.chars().take(500).collect(),
+        )
 }
 
 fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
@@ -1243,21 +1540,22 @@ impl AskUserGate for BusAskUserGate {
             .await;
 
         // Wait up to 5 minutes for user reply
-        let answer = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
-            Ok(Ok(answer)) => answer,
-            _ => {
-                publish_interaction_timeout(
-                    &self.bus,
-                    &self.session_id,
-                    &self.agent_id,
-                    sylvander_protocol::InteractionTimeoutKind::Question,
-                    call_id,
-                    300,
-                    sylvander_protocol::TimeoutRecovery::RetryRequest,
-                )
-                .await;
-                Vec::new()
-            }
+        let answer = if let Ok(Ok(answer)) =
+            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+        {
+            answer
+        } else {
+            publish_interaction_timeout(
+                &self.bus,
+                &self.session_id,
+                &self.agent_id,
+                sylvander_protocol::InteractionTimeoutKind::Question,
+                call_id,
+                300,
+                sylvander_protocol::TimeoutRecovery::RetryRequest,
+            )
+            .await;
+            Vec::new()
         };
         self.pending_answers
             .lock()
@@ -1302,22 +1600,23 @@ impl PlanGate for BusPlanGate {
             ))
             .await;
 
-        let decision = match tokio::time::timeout(std::time::Duration::from_secs(300), rx).await {
-            Ok(Ok(decision)) => decision,
-            _ => {
-                publish_interaction_timeout(
-                    &self.bus,
-                    &self.session_id,
-                    &self.agent_id,
-                    sylvander_protocol::InteractionTimeoutKind::Plan,
-                    plan_id,
-                    300,
-                    sylvander_protocol::TimeoutRecovery::RetryRequest,
-                )
-                .await;
-                crate::bus::PlanDecision::Rejected {
-                    reason: "plan review timed out".into(),
-                }
+        let decision = if let Ok(Ok(decision)) =
+            tokio::time::timeout(std::time::Duration::from_mins(5), rx).await
+        {
+            decision
+        } else {
+            publish_interaction_timeout(
+                &self.bus,
+                &self.session_id,
+                &self.agent_id,
+                sylvander_protocol::InteractionTimeoutKind::Plan,
+                plan_id,
+                300,
+                sylvander_protocol::TimeoutRecovery::RetryRequest,
+            )
+            .await;
+            crate::bus::PlanDecision::Rejected {
+                reason: "plan review timed out".into(),
             }
         };
         self.pending_plans
@@ -1395,7 +1694,7 @@ impl TaskGate for BusTaskGate {
                 prompt,
             )];
             let mut stream = Box::pin(loop_::run_stream(&loop_config, history));
-            let deadline = tokio::time::sleep(std::time::Duration::from_secs(600));
+            let deadline = tokio::time::sleep(std::time::Duration::from_mins(10));
             tokio::pin!(deadline);
             loop {
                 let event = tokio::select! {
@@ -1411,7 +1710,7 @@ impl TaskGate for BusTaskGate {
                         )).await;
                         break;
                     }
-                    _ = &mut deadline => {
+                    () = &mut deadline => {
                         publish_interaction_timeout(
                             &bus,
                             &session_id,
@@ -1485,6 +1784,36 @@ impl TaskGate for BusTaskGate {
 // ---------------------------------------------------------------------------
 
 impl AgentRunInner {
+    fn inner_prompt_resolver(&self) -> Result<&PromptResolver, AgentRunError> {
+        self.prompt_resolver
+            .as_deref()
+            .ok_or_else(prompt_integrity_error)
+    }
+
+    fn prepare_loop_snapshot(
+        &self,
+        model: &RuntimeModel,
+        reasoning_effort: sylvander_protocol::ReasoningEffort,
+    ) -> Result<AgentLoop, AgentRunError> {
+        if reasoning_effort != sylvander_protocol::ReasoningEffort::Off
+            && !model
+                .shadow
+                .capabilities
+                .contains(ModelCapabilities::EXTENDED_THINKING)
+        {
+            return Err(AgentRunError::Configuration(format!(
+                "model `{}` does not support reasoning effort",
+                model.selection.model_id
+            )));
+        }
+        let mut snapshot = self.loop_config.clone();
+        snapshot
+            .apply_runtime_model(&model.selection, &model.shadow, model.exact.as_ref())
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+        snapshot.reasoning_effort = reasoning_effort;
+        Ok(snapshot)
+    }
+
     async fn apply_compacted_history(
         &self,
         session_id: &SessionId,
@@ -1618,15 +1947,38 @@ impl AgentRunInner {
             .system_prompt
             .as_deref()
             .unwrap_or_default();
+        let resolved_prompt = self
+            .prompt_resolver
+            .as_ref()
+            .and_then(|resolver| resolver.resolve(&runtime.current, None, None).ok());
+        let (prompt_profile, system_prompt_sha256, prompt_manifest) = resolved_prompt.map_or_else(
+            || {
+                (
+                    None,
+                    format!("{:x}", Sha256::digest(prompt.as_bytes())),
+                    None,
+                )
+            },
+            |resolved| {
+                (
+                    resolved.profile_id,
+                    resolved.system_prompt_sha256,
+                    Some(resolved.manifest),
+                )
+            },
+        );
         sylvander_protocol::SessionEffectiveConfig {
             agent_id: self.id.clone(),
             agent_revision: 0,
-            provider_id: self.spec.model.provider.clone(),
-            model_id: runtime.current_model.clone(),
+            provider_id: runtime.current.provider_id.clone(),
+            provider_revision: None,
+            model_id: runtime.current.model_id.clone(),
+            model_revision: None,
             reasoning_effort: runtime.reasoning_effort,
             permissions: self.runtime_permissions.read().await.clone(),
-            prompt_profile: None,
-            system_prompt_sha256: format!("{:x}", Sha256::digest(prompt.as_bytes())),
+            prompt_profile,
+            system_prompt_sha256,
+            prompt_manifest,
             agent_workspace: None,
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),
@@ -1736,14 +2088,14 @@ impl AgentRunInner {
             "agent_turn",
             agent_id = %self.id,
             session_id = %msg.session_id,
-            turn_id = %correlation.turn_id,
-            request_id = %correlation.request_id,
-            trace_id = %correlation.trace_id,
+            turn_id = %correlation.turn,
+            request_id = %correlation.request,
+            trace_id = %correlation.trace,
         );
         async {
             info!("turn started");
             let result = self
-                .handle_message_with_interrupt(msg, interrupted, &correlation.turn_id)
+                .handle_message_with_interrupt(msg, interrupted, &correlation.turn)
                 .await;
             info!(succeeded = result.is_ok(), "turn finished");
             result
@@ -1762,7 +2114,7 @@ impl AgentRunInner {
         F: std::future::Future,
     {
         let session_id = msg.session_id.clone();
-        let user_message = self.message_to_param(&msg);
+        let user_message = Self::message_to_param(&msg);
         let stored_session = if let Some(store) = &self.session_store {
             store
                 .get(&session_id)
@@ -1771,6 +2123,13 @@ impl AgentRunInner {
         } else {
             None
         };
+        if let (Some(stored), Sender::User(sender)) = (&stored_session, &msg.sender)
+            && sender != &stored.metadata.user_id
+        {
+            return Err(AgentRunError::Configuration(
+                "session identity verification failed".into(),
+            ));
+        }
         let effective_config = stored_session
             .as_ref()
             .map(|session| {
@@ -1789,19 +2148,22 @@ impl AgentRunInner {
                 effective.agent_id, self.id
             )));
         }
-        let (selected_model, selected_effort, selected_pricing) = {
+        let (selected_model, selected_effort) = {
             let runtime = self.runtime_models.read().await;
-            let model_id = effective_config
-                .as_ref()
-                .map_or(runtime.current_model.as_str(), |config| {
-                    config.model_id.as_str()
-                });
+            let selection = effective_config.as_ref().map_or_else(
+                || runtime.current.clone(),
+                |config| sylvander_protocol::ModelSelection {
+                    provider_id: config.provider_id.clone(),
+                    model_id: config.model_id.clone(),
+                },
+            );
             let model = runtime
                 .available
-                .get(model_id)
+                .get(&selection)
                 .ok_or_else(|| {
                     AgentRunError::Configuration(format!(
-                        "session {session_id} selects unavailable model `{model_id}`"
+                        "session {session_id} selects unavailable model `{}/{}`",
+                        selection.provider_id, selection.model_id
                     ))
                 })?
                 .clone();
@@ -1810,9 +2172,27 @@ impl AgentRunInner {
                 effective_config
                     .as_ref()
                     .map_or(runtime.reasoning_effort, |config| config.reasoning_effort),
-                runtime.pricing.get(model_id).copied(),
             )
         };
+        let mut loop_config = self.prepare_loop_snapshot(&selected_model, selected_effort)?;
+        let selected_pricing = selected_model.pricing;
+
+        if let (Some(stored), Some(effective)) = (&stored_session, &effective_config) {
+            let prompt_policy = self.inner_prompt_resolver()?;
+            let resolved_prompt = prompt_policy
+                .resolve(
+                    &selected_model.selection,
+                    stored.config_overrides.prompt_profile.as_deref(),
+                    stored.config_overrides.system_prompt.as_deref(),
+                )
+                .map_err(|_| prompt_integrity_error())?;
+            if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
+                || effective.prompt_manifest.as_ref() != Some(&resolved_prompt.manifest)
+            {
+                return Err(prompt_integrity_error());
+            }
+            loop_config.system_prompt = Some(resolved_prompt.system_prompt);
+        }
 
         // 1. Persist the immutable turn boundary before provider or tool work.
         let session_metadata = {
@@ -1850,7 +2230,7 @@ impl AgentRunInner {
                         config_revision: stored.config_revision,
                         effective_config: effective.clone(),
                         user_content,
-                        model_id: selected_model.id.clone(),
+                        model_id: selected_model.shadow.id.clone(),
                     },
                 )
                 .await
@@ -1867,55 +2247,38 @@ impl AgentRunInner {
 
         // 2. Build per-session approval gate and tool surface from one
         // permission snapshot. Changes made mid-turn apply to the next turn.
-        let mut loop_config =
-            if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
-                let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
-                    bus: self.bus.clone(),
-                    agent_id: self.id.clone(),
-                    session_id: session_id.clone(),
-                    pending_approvals: self.pending_approvals.clone(),
-                    approval_memory: self.approval_memory.clone(),
-                });
-                let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
-                    bus_gate
-                } else {
-                    Arc::new(crate::approval::RuleBasedApprovalGate::new(
-                        self.approval_rules.clone(),
-                        bus_gate,
-                    ))
-                };
-                let mut cfg = self.loop_config.clone();
-                cfg.model = selected_model.clone();
-                cfg.reasoning_effort = selected_effort;
-                cfg.approval_gate = Some(gate);
-                cfg
-            } else {
-                let mut cfg = self.loop_config.clone();
-                cfg.model = selected_model.clone();
-                cfg.reasoning_effort = selected_effort;
-                cfg
-            };
-        if let Some(stored) = &stored_session {
-            let resolved_prompt = stored.config_overrides.system_prompt.clone().or_else(|| {
-                effective_config
-                    .as_ref()
-                    .and_then(|config| config.prompt_profile.as_ref())
-                    .and_then(|profile| self.prompt_profiles.get(profile))
-                    .cloned()
+        if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
+            let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
+                bus: self.bus.clone(),
+                agent_id: self.id.clone(),
+                session_id: session_id.clone(),
+                pending_approvals: self.pending_approvals.clone(),
+                approval_memory: self.approval_memory.clone(),
             });
-            if let Some(prompt) = resolved_prompt {
-                loop_config.system_prompt = (!prompt.is_empty()).then_some(prompt);
-            }
+            let gate: Arc<dyn ApprovalGate> = if self.approval_rules.is_empty() {
+                bus_gate
+            } else {
+                Arc::new(crate::approval::RuleBasedApprovalGate::new(
+                    self.approval_rules.clone(),
+                    bus_gate,
+                ))
+            };
+            loop_config.approval_gate = Some(gate);
         }
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
+        let memory_authorized = self
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(&session_id);
         let tool_context = tool_context_for_permissions(
             &session_metadata,
             &self.id,
             &session_id,
             &permissions,
-            self.memory.is_some(),
+            self.memory.is_some() && memory_authorized,
             self.workspace_journal.clone(),
             Some(turn_id),
         );
@@ -1932,12 +2295,13 @@ impl AgentRunInner {
             session_id: session_id.clone(),
             pending_plans: self.pending_plans.clone(),
         }));
-        let mut background_loop = self.loop_config.clone();
-        background_loop.model = selected_model.clone();
-        background_loop.reasoning_effort = selected_effort;
+        let mut background_loop = loop_config.clone();
         background_loop.tool_context = tool_context;
         background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
-        background_loop.tool_definitions = background_loop.tools.definitions();
+        background_loop.tool_definitions = crate::loop_::tool_definitions_for_model(
+            &background_loop.tools,
+            &background_loop.model,
+        );
         background_loop.approval_gate = None;
         background_loop.ask_user_gate = None;
         background_loop.plan_gate = None;
@@ -2094,26 +2458,30 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::IterationEnd { iteration, usage } => {
+                crate::event::AgentEvent::IterationEnd {
+                    iteration,
+                    usage,
+                    provider_usage,
+                } => {
                     self.context_usage.write().await.insert(
                         session_id.clone(),
                         ContextUsage {
-                            used_tokens: usage.total_input_tokens(),
-                            cache_read_tokens: usage.cache_read_input_tokens.unwrap_or(0),
-                            cache_write_tokens: usage.cache_creation_input_tokens.unwrap_or(0),
+                            used: provider_usage.total_input_tokens(),
+                            cache_read: provider_usage.cache_read_input_tokens.unwrap_or(0),
+                            cache_write: provider_usage.cache_creation_input_tokens.unwrap_or(0),
                         },
                     );
                     let mut input_tokens = u64::from(usage.input_tokens);
                     let mut output_tokens = u64::from(usage.output_tokens);
-                    let iteration_cost =
-                        selected_pricing.and_then(|pricing| usage_cost_nano_usd(pricing, &usage));
+                    let iteration_cost = selected_pricing
+                        .and_then(|pricing| usage_cost_nano_usd(pricing, &provider_usage));
                     let mut cost_nano_usd = iteration_cost;
                     if let Some(store) = &self.session_store {
                         match store
                             .record_usage(
                                 &session_id,
-                                usage.input_tokens,
-                                usage.output_tokens,
+                                provider_usage.input_tokens,
+                                provider_usage.output_tokens,
                                 iteration_cost,
                             )
                             .await
@@ -2146,26 +2514,36 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::Compressed { .. } => {}
+                // `BusAskUserGate` publishes the request when it installs the
+                // pending answer. Forwarding the loop event too would stack
+                // two identical TUI modals for one question.
+                crate::event::AgentEvent::Compressed { .. }
+                | crate::event::AgentEvent::AskUser { .. }
+                | crate::event::AgentEvent::PlanProposed { .. }
+                | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::HistoryCompacted { layers, history } => {
                     let persisted = self
                         .apply_compacted_history(&session_id, &history, &layers)
                         .await;
-                    if let Some(reason) = crate::compress::layer::first_failure(&layers) {
+                    if let Some(error) = crate::compress::layer::first_failure_error(&layers) {
                         self.publish_stream(
                             &session_id,
                             crate::bus::StreamEvent::CompactionFailed {
                                 automatic: true,
-                                reason: reason.into(),
+                                reason: error.compatibility_reason().into(),
                             },
                         )
                         .await;
-                    } else if let Err(reason) = persisted {
+                    } else if persisted.is_err() {
                         self.publish_stream(
                             &session_id,
                             crate::bus::StreamEvent::CompactionFailed {
                                 automatic: true,
-                                reason,
+                                reason: crate::compress::error::CompactionError::new(
+                                    crate::compress::error::CompactionFailureCode::Persistence,
+                                )
+                                .compatibility_reason()
+                                .into(),
                             },
                         )
                         .await;
@@ -2179,10 +2557,6 @@ impl AgentRunInner {
                         .await;
                     }
                 }
-                // `BusAskUserGate` publishes the request when it installs the
-                // pending answer. Forwarding the loop event too would stack
-                // two identical TUI modals for one question.
-                crate::event::AgentEvent::AskUser { .. } => {}
                 crate::event::AgentEvent::UserAnswer { call_id, answer } => {
                     self.publish_stream(
                         &session_id,
@@ -2190,8 +2564,6 @@ impl AgentRunInner {
                     )
                     .await;
                 }
-                crate::event::AgentEvent::PlanProposed { .. }
-                | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::Done(msg) => {
                     final_message = Some(msg);
                 }
@@ -2206,13 +2578,10 @@ impl AgentRunInner {
         if let Some(msg) = final_message {
             let text = msg.text();
             if let Some(store) = &self.session_store {
-                let user_id = self
-                    .sessions
-                    .read()
-                    .await
-                    .get(&session_id)
-                    .map(|context| context.metadata.user_id.clone())
-                    .unwrap_or_else(|| "unix-client".into());
+                let user_id = self.sessions.read().await.get(&session_id).map_or_else(
+                    || "unix-client".into(),
+                    |context| context.metadata.user_id.clone(),
+                );
                 let caller = sylvander_protocol::SessionContext::new(
                     user_id,
                     self.id.clone(),
@@ -2221,8 +2590,8 @@ impl AgentRunInner {
                 let message = sylvander_llm_anthropic::api::types::MessageParam::assistant_blocks(
                     msg.content.clone(),
                 );
-                if let Ok(content) = serde_json::to_value(message) {
-                    if let Err(error) = store
+                if let Ok(content) = serde_json::to_value(message)
+                    && let Err(error) = store
                         .append_message(
                             &caller,
                             &session_id,
@@ -2233,9 +2602,8 @@ impl AgentRunInner {
                             None,
                         )
                         .await
-                    {
-                        warn!(%session_id, %error, "failed to persist assistant message");
-                    }
+                {
+                    warn!(%session_id, %error, "failed to persist assistant message");
                 }
             }
             let mut sessions = self.sessions.write().await;
@@ -2273,10 +2641,7 @@ impl AgentRunInner {
             .await;
     }
 
-    fn message_to_param(
-        &self,
-        msg: &BusMessage,
-    ) -> sylvander_llm_anthropic::api::types::MessageParam {
+    fn message_to_param(msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
         use sylvander_llm_anthropic::api::types::{ImageBlock, UserContentBlock};
         if msg.attachments.is_empty() {
             return sylvander_llm_anthropic::api::types::MessageParam::user(&msg.payload);
@@ -2315,18 +2680,18 @@ impl AgentRunInner {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TurnCorrelation {
-    turn_id: String,
-    request_id: String,
-    trace_id: String,
+    turn: String,
+    request: String,
+    trace: String,
 }
 
 impl TurnCorrelation {
     fn new(message: &BusMessage, turn_id: uuid::Uuid) -> Self {
         let turn_id = turn_id.to_string();
         Self {
-            request_id: message.id.0.to_string(),
-            trace_id: turn_id.clone(),
-            turn_id,
+            request: message.id.0.to_string(),
+            trace: turn_id.clone(),
+            turn: turn_id,
         }
     }
 }
@@ -2336,7 +2701,7 @@ fn tool_context_for_permissions(
     agent_id: &AgentId,
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
-    memory_enabled: bool,
+    trusted_memory: bool,
     workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
     turn_id: Option<&str>,
 ) -> ToolContext {
@@ -2348,7 +2713,12 @@ fn tool_context_for_permissions(
     if let Some(turn_id) = turn_id {
         session = session.with_trace_id(turn_id);
     }
-    let mut context = ToolContext::new(session).with_fs_root(metadata.workspace.clone());
+    let mut context = if trusted_memory {
+        ToolContext::application(session)
+    } else {
+        ToolContext::new(session)
+    }
+    .with_fs_root(metadata.workspace.clone());
     if let Some(journal) = workspace_journal {
         context = context.with_workspace_journal(journal);
     }
@@ -2367,7 +2737,7 @@ fn tool_context_for_permissions(
         context = context.with_capability(Cap::Network);
         context.surface.network = NetworkPolicy::All;
     }
-    if memory_enabled {
+    if trusted_memory {
         context = context
             .with_capability(Cap::MemoryRead)
             .with_capability(Cap::MemoryWrite);
@@ -2382,7 +2752,7 @@ fn tool_context_for_permissions(
 /// Builder for [`AgentRun`].
 pub struct AgentRunBuilder {
     spec: AgentSpec,
-    client: AnthropicClient,
+    backend: AgentRunModelBackend,
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
@@ -2390,20 +2760,63 @@ pub struct AgentRunBuilder {
     session_store: Option<Arc<dyn SessionStore>>,
     model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
     available_models: Vec<ModelInfo>,
-    model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
-    prompt_profiles: HashMap<String, String>,
+    available_provider_models: Vec<ProviderModelInfo>,
+    legacy_model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
+    legacy_model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
+    qualified_model_lifecycles:
+        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
+    qualified_model_pricing:
+        HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
+    prompt_resolver: Option<Arc<PromptResolver>>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
 }
 
+enum AgentRunModelBackend {
+    Legacy(AnthropicClient),
+    SingleProvider {
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    },
+    QualifiedRouter {
+        router: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    },
+}
+
 impl AgentRunBuilder {
     fn new(spec: AgentSpec, client: AnthropicClient) -> Self {
+        Self::with_backend(spec, AgentRunModelBackend::Legacy(client))
+    }
+
+    fn new_single_provider(
+        spec: AgentSpec,
+        provider: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> Self {
+        Self::with_backend(
+            spec,
+            AgentRunModelBackend::SingleProvider { provider, model },
+        )
+    }
+
+    fn new_qualified_router(
+        spec: AgentSpec,
+        router: Arc<dyn ModelProvider>,
+        model: ProviderModelInfo,
+    ) -> Self {
+        Self::with_backend(
+            spec,
+            AgentRunModelBackend::QualifiedRouter { router, model },
+        )
+    }
+
+    fn with_backend(spec: AgentSpec, backend: AgentRunModelBackend) -> Self {
         Self {
             spec,
-            client,
+            backend,
             bus: None,
             tool_overrides: None,
             compression_overrides: None,
@@ -2411,9 +2824,12 @@ impl AgentRunBuilder {
             session_store: None,
             model_capabilities: None,
             available_models: Vec::new(),
-            model_lifecycles: HashMap::new(),
-            model_pricing: HashMap::new(),
-            prompt_profiles: HashMap::new(),
+            available_provider_models: Vec::new(),
+            legacy_model_lifecycles: HashMap::new(),
+            legacy_model_pricing: HashMap::new(),
+            qualified_model_lifecycles: HashMap::new(),
+            qualified_model_pricing: HashMap::new(),
+            prompt_resolver: None,
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -2462,13 +2878,31 @@ impl AgentRunBuilder {
         self
     }
 
+    /// Register exact provider-qualified models. The configured provider
+    /// adapter can route only entries belonging to its own provider.
+    #[must_use]
+    pub fn available_provider_models(mut self, models: Vec<ProviderModelInfo>) -> Self {
+        self.available_provider_models = models;
+        self
+    }
+
     /// Attach operator-supplied lifecycle truth to advertised models.
     #[must_use]
     pub fn model_lifecycles(
         mut self,
         lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
     ) -> Self {
-        self.model_lifecycles = lifecycles;
+        self.legacy_model_lifecycles = lifecycles;
+        self
+    }
+
+    /// Attach lifecycle truth to exact provider-qualified models.
+    #[must_use]
+    pub fn qualified_model_lifecycles(
+        mut self,
+        lifecycles: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
+    ) -> Self {
+        self.qualified_model_lifecycles = lifecycles;
         self
     }
 
@@ -2478,14 +2912,24 @@ impl AgentRunBuilder {
         mut self,
         pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     ) -> Self {
-        self.model_pricing = pricing;
+        self.legacy_model_pricing = pricing;
         self
     }
 
-    /// Attach validated prompt profiles for per-session resolution.
+    /// Attach pricing snapshots to exact provider-qualified models.
     #[must_use]
-    pub fn prompt_profiles(mut self, profiles: HashMap<String, String>) -> Self {
-        self.prompt_profiles = profiles;
+    pub fn qualified_model_pricing(
+        mut self,
+        pricing: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
+    ) -> Self {
+        self.qualified_model_pricing = pricing;
+        self
+    }
+
+    /// Attach the same immutable prompt resolver used by session composition.
+    #[must_use]
+    pub fn prompt_resolver(mut self, resolver: Arc<PromptResolver>) -> Self {
+        self.prompt_resolver = Some(resolver);
         self
     }
 
@@ -2528,40 +2972,128 @@ impl AgentRunBuilder {
         self
     }
 
-    /// Build the [`AgentRun`].
+    /// Build the [`AgentRun`] without exposing its session issuer.
     pub fn build(self) -> Result<AgentRun, AgentRunError> {
+        self.build_with_session_issuer().map(|(run, _)| run)
+    }
+
+    /// Build a run and return the runtime-owned issuer for authenticated
+    /// session admission. Keep the issuer at the trusted service boundary.
+    pub fn build_with_session_issuer(
+        self,
+    ) -> Result<(AgentRun, AgentSessionIssuer), AgentRunError> {
         let id = self.spec.id.clone();
         let bus = self
             .bus
             .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
 
         let approval_memory = ApprovalMemory::load(self.approval_store_path.clone())?;
-        let memory = if self.memory.is_some() {
-            self.memory
-        } else {
-            self.spec
-                .memory_stores
-                .first()
-                .and_then(|cfg| cfg.build().ok())
+        let (memory, memory_source) = match self.memory {
+            Some(store) => (Some(store), MemorySource::RuntimeInjected),
+            None => (None, MemorySource::None),
         };
 
-        let mut model_info = self.spec.to_model_info();
+        let provider_backend = !matches!(&self.backend, AgentRunModelBackend::Legacy(_));
+        let qualified_router =
+            matches!(&self.backend, AgentRunModelBackend::QualifiedRouter { .. });
+        let (mut model_info, primary_selection, primary_exact) = match &self.backend {
+            AgentRunModelBackend::Legacy(_) => {
+                let shadow = self.spec.to_model_info();
+                let selection = sylvander_protocol::ModelSelection {
+                    provider_id: self.spec.model.provider.clone(),
+                    model_id: shadow.id.clone(),
+                };
+                (shadow, selection, None)
+            }
+            AgentRunModelBackend::SingleProvider { model, .. }
+            | AgentRunModelBackend::QualifiedRouter { model, .. } => {
+                if model.reference.provider != self.spec.model.provider
+                    || model.reference.model != self.spec.model.model_name
+                {
+                    return Err(AgentRunError::Build(
+                        "provider model does not match the Agent specification".into(),
+                    ));
+                }
+                (
+                    crate::provider_compat::model_metadata_from_core(model),
+                    sylvander_protocol::ModelSelection {
+                        provider_id: model.reference.provider.clone(),
+                        model_id: model.reference.model.clone(),
+                    },
+                    Some(model.clone()),
+                )
+            }
+        };
         if let Some(caps) = self.model_capabilities {
+            if provider_backend {
+                return Err(AgentRunError::Build(
+                    "legacy capability overrides are unavailable for provider models".into(),
+                ));
+            }
             model_info.capabilities = caps;
         }
-        let mut available_models = self
-            .available_models
+        if provider_backend && !self.available_models.is_empty() {
+            return Err(AgentRunError::Build(
+                "provider catalogs require exact provider model metadata".into(),
+            ));
+        }
+        if qualified_router
+            && (!self.legacy_model_lifecycles.is_empty() || !self.legacy_model_pricing.is_empty())
+        {
+            return Err(AgentRunError::Build(
+                "qualified routers require provider-qualified model metadata".into(),
+            ));
+        }
+        let mut catalog = Vec::new();
+        if provider_backend {
+            catalog.extend(self.available_provider_models.iter().map(|exact| {
+                (
+                    sylvander_protocol::ModelSelection {
+                        provider_id: exact.reference.provider.clone(),
+                        model_id: exact.reference.model.clone(),
+                    },
+                    crate::provider_compat::model_metadata_from_core(exact),
+                    Some(exact.clone()),
+                )
+            }));
+        } else {
+            catalog.extend(self.available_models.iter().cloned().map(|shadow| {
+                (
+                    sylvander_protocol::ModelSelection {
+                        provider_id: primary_selection.provider_id.clone(),
+                        model_id: shadow.id.clone(),
+                    },
+                    shadow,
+                    None,
+                )
+            }));
+        }
+        catalog.push((primary_selection.clone(), model_info.clone(), primary_exact));
+        let available_models = catalog
             .into_iter()
-            .map(|model| (model.id.clone(), model))
-            .collect::<HashMap<_, _>>();
-        available_models
-            .entry(model_info.id.clone())
-            .or_insert_with(|| model_info.clone());
+            .map(|(selection, shadow, exact)| {
+                let model = RuntimeModel {
+                    lifecycle: self
+                        .qualified_model_lifecycles
+                        .get(&selection)
+                        .or_else(|| self.legacy_model_lifecycles.get(&selection.model_id))
+                        .cloned()
+                        .unwrap_or_default(),
+                    pricing: self
+                        .qualified_model_pricing
+                        .get(&selection)
+                        .or_else(|| self.legacy_model_pricing.get(&selection.model_id))
+                        .copied(),
+                    selection: selection.clone(),
+                    shadow,
+                    exact,
+                };
+                (selection, model)
+            })
+            .collect();
         let runtime_models = RuntimeModels {
             available: available_models,
-            lifecycles: self.model_lifecycles,
-            pricing: self.model_pricing,
-            current_model: model_info.id.clone(),
+            current: primary_selection,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         };
         let runtime_permissions = sylvander_protocol::PermissionProfile {
@@ -2574,11 +3106,19 @@ impl AgentRunBuilder {
             },
         };
 
-        let mut loop_builder = AgentLoop::builder()
-            .client(self.client)
-            .model(model_info)
-            .max_iterations(self.spec.behavior.max_iterations)
-            .max_retries(self.spec.behavior.max_retries);
+        let mut loop_builder = match self.backend {
+            AgentRunModelBackend::Legacy(client) => {
+                AgentLoop::builder().client(client).model(model_info)
+            }
+            AgentRunModelBackend::SingleProvider { provider, model } => AgentLoop::builder()
+                .provider(provider)
+                .provider_model(model),
+            AgentRunModelBackend::QualifiedRouter { router, model } => AgentLoop::builder()
+                .qualified_router(router)
+                .provider_model(model),
+        }
+        .max_iterations(self.spec.behavior.max_iterations)
+        .max_retries(self.spec.behavior.max_retries);
 
         if !self.spec.persona.system_prompt.is_empty() {
             loop_builder = loop_builder.system_prompt(&self.spec.persona.system_prompt);
@@ -2594,27 +3134,30 @@ impl AgentRunBuilder {
             .build()
             .map_err(|e| AgentRunError::Build(format!("loop build failed: {e}")))?;
 
-        // Clone the session for the run-level tool context before
-        // moving `loop_config` into `AgentRunInner`.
-        let run_tool_context = ToolContext::new(loop_config.tool_context.session.as_ref().clone());
-
         let workspace_journal = self
             .workspace_journal_path
             .map(|path| Arc::new(crate::workspace_journal::WorkspaceJournal::new(path)));
-        Ok(AgentRun {
+        let session_authority = Arc::new(SessionAuthorityMarker);
+        let issuer = AgentSessionIssuer {
+            authority: session_authority.clone(),
+        };
+        let run = AgentRun {
             inner: Arc::new(AgentRunInner {
                 id,
                 spec: self.spec,
                 loop_config,
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
-                prompt_profiles: self.prompt_profiles,
+                prompt_resolver: self.prompt_resolver,
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 bus,
                 sessions: RwLock::new(HashMap::new()),
+                authenticated_sessions: RwLock::new(HashSet::new()),
+                session_authority,
                 session_store: self.session_store,
                 memory,
+                memory_source,
                 approval_enabled: self.approval_enabled,
                 approval_rules: self.approval_rules,
                 pending_approvals: Arc::new(Mutex::new(HashMap::new())),
@@ -2624,9 +3167,9 @@ impl AgentRunBuilder {
                 background_tasks: Arc::new(Mutex::new(HashMap::new())),
                 session_locks: Mutex::new(HashMap::new()),
                 active_turns: Mutex::new(HashMap::new()),
-                tool_context: run_tool_context,
             }),
-        })
+        };
+        Ok((run, issuer))
     }
 }
 
@@ -2634,10 +3177,16 @@ impl AgentRunBuilder {
 // AgentRunError
 // ---------------------------------------------------------------------------
 
+fn prompt_integrity_error() -> AgentRunError {
+    AgentRunError::Configuration("prompt integrity verification failed".into())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentRunError {
     #[error("unknown session: {0}")]
     UnknownSession(SessionId),
+    #[error("session authentication error: {0}")]
+    Authentication(String),
     #[error("loop error: {0}")]
     Loop(#[from] AgentLoopError),
     #[error("build error: {0}")]
@@ -2707,6 +3256,418 @@ mod tests {
         (spec, client)
     }
 
+    #[derive(Default)]
+    struct RecordingProvider {
+        requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
+    }
+
+    impl sylvander_llm_core::ModelProvider for RecordingProvider {
+        fn complete_stream(
+            &self,
+            request: sylvander_llm_core::ModelRequest,
+        ) -> sylvander_llm_core::ProviderFuture<'_> {
+            self.requests.lock().unwrap().push(request.clone());
+            Box::pin(async move {
+                let response = sylvander_llm_core::ModelResponse {
+                    id: request.request_id,
+                    model: request.model,
+                    content: vec![sylvander_llm_core::ContentBlock::Text { text: "ok".into() }],
+                    stop_reason: sylvander_llm_core::StopReason::EndTurn,
+                    usage: sylvander_llm_core::TokenUsage::default(),
+                };
+                Ok(Box::pin(futures_util::stream::iter([Ok(
+                    sylvander_llm_core::ModelStreamEvent::Completed(response),
+                )])) as sylvander_llm_core::ModelEventStream)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_writes() {
+        #[derive(Clone, Copy)]
+        enum Tamper {
+            SenderIdentity,
+            SystemHash,
+            LayerHash,
+            MissingManifest,
+        }
+
+        for tamper in [
+            Tamper::SenderIdentity,
+            Tamper::SystemHash,
+            Tamper::LayerHash,
+            Tamper::MissingManifest,
+        ] {
+            let directory = tempfile::TempDir::new().expect("temporary directory");
+            let database = directory.path().join("sessions.db");
+            let store: Arc<dyn SessionStore> = Arc::new(
+                crate::session_store::SqliteSessionStore::open(&database)
+                    .await
+                    .expect("store"),
+            );
+            let (spec, _) = test_spec_and_client();
+            let selection = sylvander_protocol::ModelSelection {
+                provider_id: spec.model.provider.clone(),
+                model_id: spec.model.model_name.clone(),
+            };
+            let resolver = Arc::new(
+                crate::prompt::PromptResolver::new(
+                    "agent:test-agent@1".into(),
+                    spec.persona.system_prompt.clone(),
+                    Vec::new(),
+                    None,
+                    true,
+                )
+                .expect("prompt resolver"),
+            );
+            let prompt_snapshot = resolver
+                .resolve(&selection, None, Some("private prompt sentinel"))
+                .expect("resolved prompt");
+            let provider = Arc::new(RecordingProvider::default());
+            let model = ProviderModelInfo {
+                reference: sylvander_llm_core::ModelRef::new(
+                    selection.provider_id.clone(),
+                    selection.model_id.clone(),
+                ),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+            };
+            let run = AgentRun::provider_builder(spec, provider.clone(), model)
+                .bus(Arc::new(InProcessMessageBus::new()))
+                .session_store(store.clone())
+                .prompt_resolver(resolver)
+                .build()
+                .expect("run");
+            let metadata = test_metadata();
+            let session_id = run.join_session(metadata.clone()).await;
+            let mut stored = StoredSession::new(
+                session_id.clone(),
+                metadata.name.clone(),
+                SessionLifetime::Persistent,
+                metadata.clone(),
+                vec![run.id().clone()],
+            );
+            stored.config_overrides.system_prompt = Some("private prompt sentinel".into());
+            let mut effective = run.inner.legacy_session_config(&metadata).await;
+            effective.agent_revision = 1;
+            effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
+            effective.prompt_manifest = Some(prompt_snapshot.manifest);
+            match tamper {
+                Tamper::SenderIdentity => {}
+                Tamper::SystemHash => effective.system_prompt_sha256 = "tampered".into(),
+                Tamper::LayerHash => {
+                    effective.prompt_manifest.as_mut().expect("manifest").layers[0].sha256 =
+                        "tampered".into();
+                }
+                Tamper::MissingManifest => effective.prompt_manifest = None,
+            }
+            stored.effective_config = Some(effective);
+            store.save(&stored).await.expect("save tampered session");
+
+            let error = run
+                .handle_message(BusMessage::user_chat(
+                    session_id.clone(),
+                    if matches!(tamper, Tamper::SenderIdentity) {
+                        "different-user"
+                    } else {
+                        "user-1"
+                    },
+                    "must not execute",
+                ))
+                .await
+                .expect_err("invalid session inputs must fail closed");
+            let rendered = error.to_string();
+            assert_eq!(
+                rendered,
+                if matches!(tamper, Tamper::SenderIdentity) {
+                    "session configuration error: session identity verification failed"
+                } else {
+                    "session configuration error: prompt integrity verification failed"
+                }
+            );
+            assert!(!rendered.contains("private prompt sentinel"));
+            assert!(provider.requests.lock().unwrap().is_empty());
+
+            let connection = rusqlite::Connection::open(&database).expect("inspect database");
+            for table in ["session_turn_configs", "session_messages"] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .expect("row count");
+                assert_eq!(count, 0, "{table} must remain untouched");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
+        let mut spec = AgentSpec::builder()
+            .id("provider-agent")
+            .name("Provider")
+            .model_name("shared")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let provider = Arc::new(RecordingProvider::default());
+        let provider_model = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "shared"),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let alternate = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "model-b"),
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let foreign = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("remote", "shared"),
+            context_window: 300_000,
+            max_output_tokens: 16_384,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let run = AgentRun::provider_builder(spec, provider.clone(), provider_model)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .available_provider_models(vec![alternate, foreign])
+            .build()
+            .unwrap();
+
+        let before = run.runtime_model_info().await;
+        assert_eq!(before.models.len(), 3);
+        assert!(
+            run.select_model("shared", sylvander_protocol::ReasoningEffort::Off)
+                .await
+                .is_err()
+        );
+        assert!(
+            run.select_qualified_model(
+                sylvander_protocol::ModelSelection {
+                    provider_id: "remote".into(),
+                    model_id: "shared".into(),
+                },
+                sylvander_protocol::ReasoningEffort::Off,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            run.runtime_model_info().await.current_model,
+            before.current_model
+        );
+        run.select_model("model-b", sylvander_protocol::ReasoningEffort::Off)
+            .await
+            .unwrap();
+        let selected = {
+            let runtime = run.inner.runtime_models.read().await;
+            runtime.available.get(&runtime.current).unwrap().clone()
+        };
+        let snapshot = run
+            .inner
+            .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
+
+        crate::loop_::run(
+            &snapshot,
+            vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+                "hello",
+            )],
+        )
+        .await
+        .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].model,
+            sylvander_llm_core::ModelRef::new("local", "model-b")
+        );
+    }
+
+    #[tokio::test]
+    async fn qualified_router_crosses_providers_without_metadata_collisions() {
+        let mut spec = AgentSpec::builder()
+            .id("router-agent")
+            .name("Router")
+            .model_name("shared")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let router = Arc::new(RecordingProvider::default());
+        let local = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "shared"),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let remote = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("remote", "shared"),
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            capabilities: sylvander_llm_core::ModelCapabilities::TOOL_USE
+                | sylvander_llm_core::ModelCapabilities::VISION,
+        };
+        let local_selection = sylvander_protocol::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "shared".into(),
+        };
+        let remote_selection = sylvander_protocol::ModelSelection {
+            provider_id: "remote".into(),
+            model_id: "shared".into(),
+        };
+        let remote_pricing = sylvander_protocol::ModelPricing {
+            input_usd_micros_per_million: 11,
+            output_usd_micros_per_million: 22,
+            cache_write_usd_micros_per_million: None,
+            cache_read_usd_micros_per_million: None,
+        };
+        let run = AgentRun::qualified_router_builder(spec, router.clone(), local)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .available_provider_models(vec![remote])
+            .qualified_model_lifecycles(HashMap::from([
+                (local_selection, sylvander_protocol::ModelLifecycle::Active),
+                (
+                    remote_selection.clone(),
+                    sylvander_protocol::ModelLifecycle::Deprecated { replacement: None },
+                ),
+            ]))
+            .qualified_model_pricing(HashMap::from([(remote_selection.clone(), remote_pricing)]))
+            .build()
+            .unwrap();
+
+        let advertised = run.runtime_model_info().await;
+        let local = advertised
+            .models
+            .iter()
+            .find(|model| model.provider == "local" && model.id == "shared")
+            .unwrap();
+        let remote = advertised
+            .models
+            .iter()
+            .find(|model| model.provider == "remote" && model.id == "shared")
+            .unwrap();
+        assert_eq!(local.lifecycle, sylvander_protocol::ModelLifecycle::Active);
+        assert_eq!(local.pricing, None);
+        assert!(matches!(
+            remote.lifecycle,
+            sylvander_protocol::ModelLifecycle::Deprecated { .. }
+        ));
+        assert_eq!(remote.pricing, Some(remote_pricing));
+        assert_eq!(
+            remote.capability_names,
+            [
+                sylvander_protocol::ModelCapability::ToolUse,
+                sylvander_protocol::ModelCapability::Vision,
+            ]
+        );
+
+        run.select_qualified_model(remote_selection, sylvander_protocol::ReasoningEffort::Off)
+            .await
+            .unwrap();
+        let selected = {
+            let runtime = run.inner.runtime_models.read().await;
+            runtime.available.get(&runtime.current).unwrap().clone()
+        };
+        let snapshot = run
+            .inner
+            .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
+            .unwrap();
+        crate::loop_::run(
+            &snapshot,
+            vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+                "hello",
+            )],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            router.requests.lock().unwrap()[0].model,
+            sylvander_llm_core::ModelRef::new("remote", "shared")
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_manual_compaction_uses_backend_factory() {
+        let mut spec = AgentSpec::builder()
+            .id("provider-agent")
+            .name("Provider")
+            .model_name("model-a")
+            .build()
+            .unwrap();
+        spec.model.provider = "local".into();
+        let provider = Arc::new(RecordingProvider::default());
+        let run = AgentRun::provider_builder(
+            spec,
+            provider.clone(),
+            ProviderModelInfo {
+                reference: sylvander_llm_core::ModelRef::new("local", "model-a"),
+                context_window: 100_000,
+                max_output_tokens: 4096,
+                capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+            },
+        )
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .build()
+        .unwrap();
+        let session_id = run.join_session(test_metadata()).await;
+        {
+            let mut sessions = run.inner.sessions.write().await;
+            let session = sessions.get_mut(&session_id).unwrap();
+            for index in 0..6 {
+                session.append_user_message(
+                    sylvander_llm_anthropic::api::types::MessageParam::user(format!(
+                        "message {index}"
+                    )),
+                );
+            }
+        }
+
+        let report = run.compact_session(&session_id).await.unwrap();
+        assert_eq!(report.removed_messages, 2);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(run.get_session(&session_id).await.unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_failures_are_typed_before_string_facade() {
+        use crate::compress::error::CompactionFailureCode;
+
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build()
+            .unwrap();
+        let missing = SessionId::new("missing");
+        assert_eq!(
+            run.compact_session_typed(&missing).await.unwrap_err().code,
+            CompactionFailureCode::SessionUnavailable
+        );
+        let session_id = run.join_session(test_metadata()).await;
+        assert_eq!(
+            run.compact_session_typed(&session_id)
+                .await
+                .unwrap_err()
+                .code,
+            CompactionFailureCode::InsufficientHistory
+        );
+        let (interrupt, _receiver) = oneshot::channel();
+        run.inner.active_turns.lock().await.insert(
+            session_id.clone(),
+            ActiveTurn {
+                id: uuid::Uuid::new_v4(),
+                interrupt,
+            },
+        );
+        assert_eq!(
+            run.compact_session_typed(&session_id)
+                .await
+                .unwrap_err()
+                .code,
+            CompactionFailureCode::Busy
+        );
+    }
+
     #[test]
     fn turn_correlation_keeps_request_and_trace_boundaries_explicit() {
         let message = BusMessage::user_chat(SessionId::new("session"), "user", "hello");
@@ -2715,9 +3676,9 @@ mod tests {
 
         let correlation = TurnCorrelation::new(&message, turn_id);
 
-        assert_eq!(correlation.request_id, request_id);
-        assert_eq!(correlation.turn_id, turn_id.to_string());
-        assert_eq!(correlation.trace_id, correlation.turn_id);
+        assert_eq!(correlation.request, request_id);
+        assert_eq!(correlation.turn, turn_id.to_string());
+        assert_eq!(correlation.trace, correlation.turn);
     }
 
     #[test]
@@ -2771,10 +3732,114 @@ mod tests {
             snapshot.features[1].kind,
             sylvander_protocol::PlatformFeatureKind::Memory
         );
+        assert_eq!(snapshot.features[1].name, "runtime memory");
+        assert_eq!(
+            snapshot.features[1].status,
+            sylvander_protocol::PlatformFeatureStatus::Active
+        );
+        assert_eq!(
+            snapshot.features[1].source.as_deref(),
+            Some("runtime injection")
+        );
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("super-secret"));
         assert!(!json.contains("also-secret"));
         assert!(!json.contains("/opt/bin"));
+    }
+
+    #[test]
+    fn platform_snapshot_reports_runtime_override_without_activating_declarations() {
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("test-model")
+            .memory_store(crate::spec::MemoryStoreConfig {
+                store_type: "sqlite".into(),
+                path: PathBuf::from("/private/sentinel-memory.db"),
+            })
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .unwrap();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()))
+            .build()
+            .unwrap();
+
+        let snapshot = run.platform_snapshot();
+        let memory = snapshot
+            .features
+            .iter()
+            .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+            .collect::<Vec<_>>();
+        assert_eq!(memory.len(), 2);
+        assert_eq!(
+            memory
+                .iter()
+                .filter(|feature| {
+                    feature.status == sylvander_protocol::PlatformFeatureStatus::Active
+                })
+                .count(),
+            1
+        );
+        assert_eq!(memory[0].name, "runtime memory");
+        assert_eq!(memory[1].name, "sqlite");
+        assert_eq!(
+            memory[1].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+        assert_eq!(memory[1].source.as_deref(), Some("agent configuration"));
+        assert!(memory[1].capabilities.is_empty());
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("sentinel-memory")
+        );
+    }
+
+    #[test]
+    fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
+        let spec = AgentSpec::builder()
+            .id("test-agent")
+            .name("Test")
+            .model_name("test-model")
+            .memory_store(crate::spec::MemoryStoreConfig {
+                store_type: "unsupported-future-store".into(),
+                path: PathBuf::from("/private/never-open-this-store"),
+            })
+            .build()
+            .unwrap();
+        let client = AnthropicClient::builder()
+            .api_key("test-key")
+            .build()
+            .unwrap();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build()
+            .unwrap();
+
+        assert!(run.inner.memory.is_none());
+        let snapshot = run.platform_snapshot();
+        let memory = snapshot
+            .features
+            .iter()
+            .filter(|feature| feature.kind == sylvander_protocol::PlatformFeatureKind::Memory)
+            .collect::<Vec<_>>();
+        assert_eq!(memory.len(), 1);
+        assert_eq!(
+            memory[0].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+        assert_eq!(memory[0].summary, "declared; not activated by runtime");
+        assert!(memory[0].capabilities.is_empty());
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("never-open-this-store")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -3044,9 +4109,9 @@ mod tests {
         run.inner.context_usage.write().await.insert(
             session_id.clone(),
             ContextUsage {
-                used_tokens: 1_250,
-                cache_read_tokens: 900,
-                cache_write_tokens: 120,
+                used: 1_250,
+                cache_read: 900,
+                cache_write: 120,
             },
         );
 
@@ -3318,6 +4383,16 @@ mod tests {
     async fn legacy_join_persists_an_auditable_effective_configuration() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
+        let resolver = Arc::new(
+            crate::prompt::PromptResolver::new(
+                "agent:test-agent@1".into(),
+                spec.persona.system_prompt.clone(),
+                Vec::new(),
+                None,
+                false,
+            )
+            .expect("resolver"),
+        );
         let store: Arc<dyn SessionStore> = Arc::new(
             crate::session_store::SqliteSessionStore::open_in_memory()
                 .await
@@ -3328,6 +4403,7 @@ mod tests {
         let run = AgentRun::builder(spec, client)
             .bus(bus)
             .session_store(store.clone())
+            .prompt_resolver(resolver)
             .build()
             .expect("build");
 
@@ -3340,6 +4416,7 @@ mod tests {
             .effective_config
             .expect("legacy session must snapshot runtime defaults");
         assert_eq!(effective.agent_id, run.id().clone());
+        assert!(effective.prompt_manifest.is_some());
         assert_eq!(effective.user_workspace.unwrap().path, metadata.workspace);
         assert_eq!(
             effective.provenance.model.kind,
@@ -3452,27 +4529,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_capability_is_bound_to_one_run() {
+        let (spec_a, client_a) = test_spec_and_client();
+        let (run_a, issuer_a) = AgentRun::builder(spec_a, client_a)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build A");
+        let (spec_b, client_b) = test_spec_and_client();
+        let (run_b, _) = AgentRun::builder(spec_b, client_b)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build B");
+        let session_id = SessionId::new("session-a");
+        let lease = issuer_a
+            .issue(session_id, test_metadata())
+            .expect("issue lease");
+
+        let error = run_b
+            .attach_authenticated_session(lease)
+            .await
+            .expect_err("foreign run must reject lease");
+        assert!(matches!(error, AgentRunError::Authentication(_)));
+        assert!(run_a.list_sessions().await.is_empty());
+        assert!(run_b.list_sessions().await.is_empty());
+    }
+
+    #[test]
+    fn session_issuer_rejects_control_characters_before_admission() {
+        let (spec, client) = test_spec_and_client();
+        let (_, issuer) = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .build_with_session_issuer()
+            .expect("build");
+        let error = issuer
+            .issue(
+                SessionId::new("sentinel-session"),
+                SessionMetadata {
+                    user_id: "victim\nforged".into(),
+                    ..test_metadata()
+                },
+            )
+            .err()
+            .expect("unsafe identity must fail");
+        assert!(matches!(error, AgentRunError::Authentication(_)));
+    }
+
+    #[tokio::test]
+    async fn raw_session_presence_has_no_trusted_memory_identity() {
+        let (spec, client) = test_spec_and_client();
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()))
+            .build()
+            .expect("build");
+        let session_id = SessionId::new("raw-bus-session");
+        run.inner.sessions.write().await.insert(
+            session_id.clone(),
+            SessionContext::new(session_id.clone(), test_metadata()),
+        );
+
+        assert!(matches!(
+            run.memory_context_for_session(&session_id).await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+    }
+
+    #[tokio::test]
     async fn remember_is_system_driven() {
         let bus = Arc::new(InProcessMessageBus::new());
         let (spec, client) = test_spec_and_client();
         let store = Arc::new(InMemoryMemoryStore::new());
         let run = AgentRun::builder(spec, client)
             .bus(bus)
-            .memory(store.clone())
+            .memory(store)
             .build()
             .expect("build");
-        run.remember("User prefers dark mode", &["preference"])
+        let session_id = run.join_session(test_metadata()).await;
+        let session = run.authenticated_session_for_test(session_id);
+        run.remember(&session, "User prefers dark mode", &["preference"])
             .await
             .expect("remember");
-        let results = store
-            .search(
-                &run.tool_context().session,
+        let results = run
+            .recall(
+                &session,
                 "dark mode",
                 crate::tools::memory::MemoryFilter::default(),
             )
             .await
             .expect("search");
         assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn remember_derives_identity_from_attached_session() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let (spec, client) = test_spec_and_client();
+        let store = Arc::new(InMemoryMemoryStore::new());
+        let run = AgentRun::builder(spec, client)
+            .bus(bus)
+            .memory(store)
+            .build()
+            .expect("build");
+        let session_id = run
+            .join_session(SessionMetadata {
+                user_id: "actual-user".into(),
+                ..test_metadata()
+            })
+            .await;
+        let session = run.authenticated_session_for_test(session_id);
+        let entry = run.remember(&session, "caller-owned", &[]).await.unwrap();
+
+        assert_eq!(
+            entry.owner,
+            crate::tools::memory::MemoryOwner::Relationship {
+                user_id: sylvander_protocol::types::UserId::new("actual-user"),
+                agent_id: run.id().clone(),
+            }
+        );
+        assert_eq!(
+            run.recall(
+                &session,
+                "caller-owned",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -3483,7 +4667,9 @@ mod tests {
             .bus(bus)
             .build()
             .expect("build");
-        let err = run.remember("something", &[]).await.unwrap_err();
+        let session_id = run.join_session(test_metadata()).await;
+        let session = run.authenticated_session_for_test(session_id);
+        let err = run.remember(&session, "something", &[]).await.unwrap_err();
         assert!(err.to_string().contains("no memory store"));
     }
 
@@ -3500,12 +4686,6 @@ mod tests {
 
     #[test]
     fn typed_attachments_become_provider_content_blocks() {
-        let bus = Arc::new(InProcessMessageBus::new());
-        let (spec, client) = test_spec_and_client();
-        let run = AgentRun::builder(spec, client)
-            .bus(bus)
-            .build()
-            .expect("build");
         let message = BusMessage::user_chat_with_attachments(
             SessionId::new("s1"),
             "u1",
@@ -3521,7 +4701,7 @@ mod tests {
                 byte_count: 12,
             }],
         );
-        let value = serde_json::to_value(run.inner.message_to_param(&message)).expect("json");
+        let value = serde_json::to_value(AgentRunInner::message_to_param(&message)).expect("json");
         let content = value["content"].as_array().expect("content blocks");
         assert_eq!(content.len(), 2);
         assert!(content[1]["text"].as_str().unwrap().contains("src/main.rs"));

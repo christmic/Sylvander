@@ -14,10 +14,10 @@ pub fn spawn(mouse_scroll_lines: usize) -> mpsc::Receiver<UserIntent> {
     let (tx, rx) = mpsc::channel(INPUT_EVENT_CAPACITY);
     std::thread::spawn(move || {
         while let Ok(event) = crossterm::event::read() {
-            if let Some(intent) = translate(event, mouse_scroll_lines) {
-                if !enqueue(&tx, intent) {
-                    break;
-                }
+            if let Some(intent) = translate(event, mouse_scroll_lines)
+                && !enqueue(&tx, intent)
+            {
+                break;
             }
         }
     });

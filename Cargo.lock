@@ -2297,6 +2297,7 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http",
@@ -2884,11 +2885,13 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-util",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "sylvander-llm-anthropic",
+ "sylvander-llm-core",
  "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",
@@ -2904,6 +2907,7 @@ name = "sylvander-channel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde_json",
  "sylvander-agent",
  "sylvander-protocol",
  "tokio",
@@ -2920,6 +2924,7 @@ dependencies = [
  "serde_json",
  "sylvander-agent",
  "sylvander-channel",
+ "sylvander-protocol",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
@@ -2938,6 +2943,7 @@ dependencies = [
  "serde_json",
  "sylvander-agent",
  "sylvander-channel",
+ "sylvander-protocol",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -2955,6 +2961,7 @@ dependencies = [
  "serde_json",
  "sylvander-agent",
  "sylvander-channel",
+ "sylvander-protocol",
  "tokio",
  "tracing",
  "uuid",
@@ -2975,6 +2982,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -2997,6 +3005,7 @@ dependencies = [
  "sha1 0.11.0",
  "sylvander-agent",
  "sylvander-channel",
+ "sylvander-protocol",
  "tokio",
  "tracing",
  "uuid",
@@ -3031,10 +3040,22 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sylvander-llm-core",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "sylvander-llm-core"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -3062,13 +3083,16 @@ dependencies = [
  "sylvander-agent",
  "sylvander-channel",
  "sylvander-llm-anthropic",
+ "sylvander-llm-core",
  "sylvander-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
+ "url",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -3095,6 +3119,7 @@ dependencies = [
 name = "sylvander-tui"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64",
  "crossterm",
  "insta",

@@ -42,7 +42,7 @@ impl Modal for WorkspaceRollbackModal {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Rollback files"
     }
 
@@ -98,23 +98,13 @@ impl Modal for WorkspaceRollbackModal {
 
     fn handle_key(&mut self, key: &KeyEvent, state: &mut AppState) -> Consumed {
         match key.code {
-            KeyCode::Up => {
+            KeyCode::Up | KeyCode::Char('1') => {
                 self.choice_index = 0;
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }
-            KeyCode::Down => {
+            KeyCode::Down | KeyCode::Char('2') => {
                 self.choice_index = 1;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Char('2') => {
-                self.choice_index = 1;
-                state.dirty.mark();
-                Consumed::Yes { dismiss: false }
-            }
-            KeyCode::Char('1') => {
-                self.choice_index = 0;
                 state.dirty.mark();
                 Consumed::Yes { dismiss: false }
             }

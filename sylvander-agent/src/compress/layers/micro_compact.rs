@@ -152,6 +152,7 @@ impl CompressionLayer for MicroCompactLayer {
                 freed_tokens,
                 details: None,
                 failure: None,
+                failure_code: None,
             }
         };
         Box::pin(async move { report })

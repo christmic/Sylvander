@@ -384,7 +384,9 @@ mod tests {
         assert_eq!(ctx.request.priority, Priority::High);
         assert_eq!(ctx.attributes.get_str("experiment"), Some("control"));
         assert_eq!(
-            ctx.attributes.get("attempt").and_then(|v| v.as_i64()),
+            ctx.attributes
+                .get("attempt")
+                .and_then(AttributeValue::as_i64),
             Some(3)
         );
     }

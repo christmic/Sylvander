@@ -1,9 +1,9 @@
-//! AskUser Decision Dock — model asks the user a clarifying question.
+//! `AskUser` Decision Dock — model asks the user a clarifying question.
 //!
 //! Three content modes (UX §12.1):
-//! - **Single select**: options != empty, multi_select=false.
+//! - **Single select**: options != empty, `multi_select=false`.
 //!   Arrow keys choose, number keys jump, Enter confirms, Esc cancels.
-//! - **Multi select**: options != empty, multi_select=true.
+//! - **Multi select**: options != empty, `multi_select=true`.
 //!   Space toggles the current option (or number jumps), Enter confirms.
 //! - **Free text**: options empty. Composer behavior is reused; user types
 //!   freely and submits with Enter.
@@ -135,7 +135,7 @@ impl Modal for AskUserModal {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Agent asks"
     }
 
@@ -292,10 +292,10 @@ impl Modal for AskUserModal {
             KeyCode::Char(' ') if self.multi_select && !self.editing_other => {
                 if self.on_other_row() {
                     self.editing_other = true;
-                } else if let Selection::Multi(ref mut mask) = self.selection {
-                    if self.cursor < mask.len() {
-                        mask[self.cursor] = !mask[self.cursor];
-                    }
+                } else if let Selection::Multi(ref mut mask) = self.selection
+                    && self.cursor < mask.len()
+                {
+                    mask[self.cursor] = !mask[self.cursor];
                 }
                 self.validation_error = None;
                 state.dirty.mark();
@@ -326,16 +326,13 @@ impl Modal for AskUserModal {
                     if idx < self.options.len() {
                         self.cursor = idx;
                         match &mut self.selection {
-                            Selection::None => {
+                            Selection::None | Selection::Single(_) => {
                                 self.selection = Selection::Single(idx);
                             }
                             Selection::Multi(mask) => {
                                 if idx < mask.len() {
                                     mask[idx] = !mask[idx];
                                 }
-                            }
-                            Selection::Single(_) => {
-                                self.selection = Selection::Single(idx);
                             }
                         }
                         state.dirty.mark();

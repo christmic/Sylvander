@@ -77,32 +77,107 @@ async fn thinking_without_extended_thinking_capability_errors() {
 }
 
 #[tokio::test]
-async fn llm_4xx_error_propagates_without_retry() {
-    let server = MockServer::start().await;
+async fn llm_400_and_401_propagate_after_one_request() {
+    for status in [400, 401] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                "type": "invalid_request_error",
+                "message": "request rejected"
+            })))
+            .mount(&server)
+            .await;
 
+        let loop_ = AgentLoop::builder()
+            .client(mock_client(&server))
+            .model(model_with(ModelCapabilities::default()))
+            .max_retries(3)
+            .build()
+            .expect("build");
+        let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
+        assert!(matches!(
+            result,
+            Err(AgentLoopError::Llm { retries: 0, .. })
+        ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn invalid_buffered_response_does_not_trigger_a_second_request() {
+    let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "type": "invalid_request_error",
-            "message": "bad input"
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .set_body_json(json!({ "error": "not a message" })),
+        )
         .mount(&server)
         .await;
 
-    let model = model_with(ModelCapabilities::default());
     let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
-        .model(model)
+        .model(model_with(ModelCapabilities::default()))
         .max_retries(3)
         .build()
         .expect("build");
-
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
-    // 4xx → not retryable → propagates with retries: 0
-    match result {
-        Err(AgentLoopError::Llm { retries, .. }) => assert_eq!(retries, 0),
-        other => panic!("expected Llm error, got {other:?}"),
-    }
+
+    assert!(matches!(
+        result,
+        Err(AgentLoopError::Llm { retries: 0, .. })
+    ));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn truncated_stream_reports_once_without_replaying_visible_delta() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_cut\",",
+        "\"type\":\"message\",\"role\":\"assistant\",\"content\":[],",
+        "\"model\":\"test-model\",\"stop_reason\":null,",
+        "\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,",
+        "\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,",
+        "\"delta\":{\"type\":\"text_delta\",\"text\":\"visible once\"}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\""
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(model_with(ModelCapabilities::default()))
+        .max_retries(3)
+        .build()
+        .expect("build");
+    let observed = Arc::new(Mutex::new((Vec::new(), 0usize)));
+    let events = observed.clone();
+    let result = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("hi")],
+        move |event| match event {
+            AgentEvent::TextChunk(text) => events.lock().unwrap().0.push(text),
+            AgentEvent::ModelRetry { .. } => events.lock().unwrap().1 += 1,
+            _ => {}
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(AgentLoopError::Llm { .. })));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(observed.lock().unwrap().0.as_slice(), &["visible once"]);
+    assert_eq!(observed.lock().unwrap().1, 0);
 }
 
 #[tokio::test]
@@ -127,14 +202,26 @@ async fn llm_5xx_retries_then_propagates_after_max() {
         .build()
         .expect("build");
 
-    let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
-    // max_retries=2 → max_attempts=3 → all 3 fail
+    let retries = Arc::new(Mutex::new(Vec::new()));
+    let observed = retries.clone();
+    let result = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("hi")],
+        move |event| {
+            if let AgentEvent::ModelRetry { attempt, .. } = event {
+                observed.lock().unwrap().push(attempt);
+            }
+        },
+    )
+    .await;
     match result {
         Err(AgentLoopError::Llm { retries, .. }) => {
             assert_eq!(retries, 2);
         }
         other => panic!("expected Llm error, got {other:?}"),
     }
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(retries.lock().unwrap().as_slice(), &[1, 2]);
 }
 
 #[tokio::test]
@@ -234,14 +321,26 @@ async fn llm_429_retries_and_succeeds() {
     let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
         .model(model)
-        .max_retries(3)
+        .max_retries(2)
         .build()
         .expect("build");
 
-    let run = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")])
-        .await
-        .expect("run");
+    let retries = Arc::new(Mutex::new(Vec::new()));
+    let observed = retries.clone();
+    let run = sylvander_agent::prelude::run_with_events(
+        &loop_,
+        vec![MessageParam::user("hi")],
+        move |event| {
+            if let AgentEvent::ModelRetry { attempt, .. } = event {
+                observed.lock().unwrap().push(attempt);
+            }
+        },
+    )
+    .await
+    .expect("run");
     assert_eq!(run.final_message.id, "msg_429_ok");
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(retries.lock().unwrap().as_slice(), &[1, 2]);
 }
 
 #[tokio::test]

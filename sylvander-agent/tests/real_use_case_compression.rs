@@ -415,7 +415,7 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
     ];
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run");
@@ -553,7 +553,7 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         .expect("build");
 
     let _run = run_with_events(&loop_, initial, move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run");
@@ -649,7 +649,7 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
         .expect("build");
 
     let _run = run_with_events(&loop_, vec![MessageParam::user("read x")], move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run");
@@ -777,7 +777,7 @@ async fn real_use_case_l4_summarizes_at_high_usage() {
         .expect("build");
 
     let _run = run_with_events(&loop_, vec![MessageParam::user("hi")], move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run");

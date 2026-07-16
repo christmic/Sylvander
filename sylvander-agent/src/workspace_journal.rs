@@ -136,7 +136,7 @@ impl WorkspaceJournal {
             .as_ref()
             .map(|bytes| {
                 let path = blobs.join(format!("{id}.before"));
-                write_file_atomic(&path, bytes).map(|_| path)
+                write_file_atomic(&path, bytes).map(|()| path)
             })
             .transpose()?;
         let after_blob = blobs.join(format!("{id}.after"));

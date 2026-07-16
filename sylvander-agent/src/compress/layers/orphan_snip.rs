@@ -91,6 +91,7 @@ impl CompressionLayer for OrphanSnipLayer {
                 freed_tokens: (removed as u32) * 100, // rough heuristic
                 details: None,
                 failure: None,
+                failure_code: None,
             }
         };
         Box::pin(async move { report })

@@ -66,6 +66,12 @@ pub enum UiClientMessage {
     SubmitFeedback {
         feedback: crate::RunFeedback,
     },
+    AgentAdmin {
+        request: crate::AgentAdminRequest,
+    },
+    RegistryAdmin {
+        request: crate::RegistryAdminRequest,
+    },
     ListSessions,
     LoadSession {
         session_id: String,
@@ -109,10 +115,14 @@ pub enum UiClientMessage {
         expected_turn_id: String,
     },
     SelectModel {
-        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        model: crate::ModelSelectionInput,
         reasoning_effort: ReasoningEffort,
     },
     SelectPermissions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         profile: PermissionProfile,
     },
     Ping,
@@ -297,8 +307,18 @@ pub enum UiServerMessage {
     FeedbackRecorded {
         feedback_id: String,
     },
+    AgentAdmin {
+        response: crate::AgentAdminResponse,
+    },
+    RegistryAdmin {
+        response: crate::RegistryAdminResponse,
+    },
     RuntimeInfo {
+        /// Legacy model-only identity retained for older clients.
         model: String,
+        /// Provider-qualified identity used by current clients.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_selection: Option<crate::ModelSelection>,
         #[serde(default)]
         reasoning_effort: ReasoningEffort,
         #[serde(default)]
@@ -343,6 +363,9 @@ pub enum UiServerMessage {
         operation: String,
         message: String,
     },
+    BoundaryDenied {
+        error: crate::BoundaryError,
+    },
     Pong,
 }
 
@@ -373,7 +396,8 @@ fn default_approval_scopes() -> Vec<ApprovalScope> {
 
 #[cfg(test)]
 mod tests {
-    use super::UiClientMessage;
+    use super::{UiClientMessage, UiServerMessage};
+    use crate::{PermissionProfile, ReasoningEffort};
 
     #[test]
     fn legacy_chat_defaults_remain_compatible() {
@@ -388,5 +412,170 @@ mod tests {
                 ..
             } if attachments.is_empty()
         ));
+    }
+
+    #[test]
+    fn model_selection_accepts_legacy_and_qualified_wire_shapes() {
+        let legacy: UiClientMessage =
+            serde_json::from_str(r#"{"type":"select_model","model":"m","reasoning_effort":"off"}"#)
+                .unwrap();
+        assert!(matches!(
+            legacy,
+            UiClientMessage::SelectModel {
+                session_id: None,
+                model: crate::ModelSelectionInput::Legacy(model),
+                ..
+            } if model == "m"
+        ));
+
+        let qualified = UiClientMessage::SelectModel {
+            session_id: Some("session-1".into()),
+            model: crate::ModelSelectionInput::Qualified(crate::ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "gpt-5".into(),
+            }),
+            reasoning_effort: ReasoningEffort::High,
+        };
+        let value = serde_json::to_value(&qualified).unwrap();
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["model"]["provider_id"], "openai");
+        assert_eq!(value["model"]["model_id"], "gpt-5");
+        assert_eq!(
+            serde_json::from_value::<UiClientMessage>(value).unwrap(),
+            qualified
+        );
+    }
+
+    #[test]
+    fn runtime_info_adds_qualified_identity_without_breaking_legacy_payloads() {
+        let legacy: UiServerMessage = serde_json::from_value(serde_json::json!({
+            "type": "runtime_info",
+            "model": "shared",
+            "capabilities": 0,
+            "approval_enabled": false,
+            "max_attachment_bytes": 1024
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            UiServerMessage::RuntimeInfo {
+                model_selection: None,
+                ..
+            }
+        ));
+
+        let qualified = UiServerMessage::RuntimeInfo {
+            model: "shared".into(),
+            model_selection: Some(crate::ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "shared".into(),
+            }),
+            reasoning_effort: ReasoningEffort::Off,
+            models: Vec::new(),
+            permissions: PermissionProfile::default(),
+            capabilities: 0,
+            approval_enabled: false,
+            max_attachment_bytes: 1024,
+            platform: crate::PlatformSnapshot::default(),
+        };
+        let value = serde_json::to_value(qualified).unwrap();
+        assert_eq!(value["model"], "shared");
+        assert_eq!(value["model_selection"]["provider_id"], "openai");
+        assert_eq!(value["model_selection"]["model_id"], "shared");
+    }
+
+    #[test]
+    fn model_selection_schema_exposes_legacy_and_qualified_inputs() {
+        let schema = serde_json::to_string(&crate::schema::ui_protocol_schema()).unwrap();
+        assert!(schema.contains("ModelSelectionInput"));
+        assert!(schema.contains("ModelSelection"));
+        assert!(schema.contains("model_selection"));
+    }
+
+    #[test]
+    fn selection_permissions_wire_keeps_session_identity() {
+        let value = serde_json::to_value(UiClientMessage::SelectPermissions {
+            session_id: Some("session-1".into()),
+            profile: crate::PermissionProfile::default(),
+        })
+        .unwrap();
+        assert_eq!(value["session_id"], "session-1");
+    }
+
+    #[test]
+    fn agent_administration_uses_one_transport_envelope() {
+        let client: UiClientMessage = serde_json::from_value(serde_json::json!({
+            "type": "agent_admin",
+            "request": {
+                "operation": "activate_revision",
+                "agent_id": "oraculo",
+                "revision": 5,
+                "expected_active_revision": 4
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            client,
+            UiClientMessage::AgentAdmin {
+                request: crate::AgentAdminRequest::ActivateRevision {
+                    revision: 5,
+                    expected_active_revision: 4,
+                    ..
+                }
+            }
+        ));
+
+        let server = UiServerMessage::AgentAdmin {
+            response: crate::AgentAdminResponse::Error {
+                error: crate::AgentAdminError {
+                    code: crate::AgentAdminErrorCode::RevisionConflict,
+                    message: "active revision changed".into(),
+                    agent_id: Some(crate::AgentId::new("oraculo")),
+                    revision: Some(5),
+                    expected_active_revision: Some(4),
+                    actual_active_revision: Some(6),
+                },
+            },
+        };
+        let json = serde_json::to_value(server).unwrap();
+        assert_eq!(json["type"], "agent_admin");
+        assert_eq!(json["response"]["error"]["code"], "revision_conflict");
+    }
+
+    #[test]
+    fn registry_administration_uses_one_transport_envelope() {
+        let client = UiClientMessage::RegistryAdmin {
+            request: crate::RegistryAdminRequest::InspectProviderRevision {
+                provider_id: "alpha".into(),
+                revision: 2,
+            },
+        };
+        let client_json = serde_json::to_value(&client).unwrap();
+        assert_eq!(client_json["type"], "registry_admin");
+        assert_eq!(
+            serde_json::from_value::<UiClientMessage>(client_json).unwrap(),
+            client
+        );
+
+        let server = UiServerMessage::RegistryAdmin {
+            response: crate::RegistryAdminResponse::Error {
+                error: crate::RegistryAdminError {
+                    code: crate::RegistryAdminErrorCode::StorageUnavailable,
+                    message: "registry unavailable".into(),
+                    provider_id: None,
+                    model_id: None,
+                    binding_id_sha256: None,
+                    revision: None,
+                    generation: None,
+                    details: None,
+                },
+            },
+        };
+        let server_json = serde_json::to_value(&server).unwrap();
+        assert_eq!(server_json["type"], "registry_admin");
+        assert_eq!(
+            serde_json::from_value::<UiServerMessage>(server_json).unwrap(),
+            server
+        );
     }
 }
