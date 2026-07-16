@@ -94,6 +94,16 @@ pub struct RuntimeInfo {
     pub approval_enabled: bool,
     pub max_attachment_bytes: usize,
     pub platform: sylvander_protocol::PlatformSnapshot,
+    pub platform_provider:
+        Option<Arc<dyn Fn() -> sylvander_protocol::PlatformSnapshot + Send + Sync>>,
+}
+
+impl RuntimeInfo {
+    fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
+        self.platform_provider
+            .as_ref()
+            .map_or_else(|| self.platform.clone(), |provider| provider())
+    }
 }
 
 impl UnixChannel {
@@ -111,6 +121,7 @@ impl UnixChannel {
                 approval_enabled: false,
                 max_attachment_bytes: 512 * 1024,
                 platform: sylvander_protocol::PlatformSnapshot::default(),
+                platform_provider: None,
             },
             max_request_bytes: 1024 * 1024,
         }
@@ -1338,7 +1349,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
-                platform: runtime.platform.clone(),
+                platform: runtime.platform_snapshot(),
             });
         }
         ClientMsg::GetContext { session_id } => {
@@ -1656,7 +1667,7 @@ fn send_session_runtime_info(
         capabilities,
         approval_enabled: runtime.approval_enabled,
         max_attachment_bytes: runtime.max_attachment_bytes,
-        platform: runtime.platform.clone(),
+        platform: runtime.platform_snapshot(),
     });
 }
 
@@ -2065,6 +2076,7 @@ mod tests {
             approval_enabled: true,
             max_attachment_bytes: 1024,
             platform: sylvander_protocol::PlatformSnapshot::default(),
+            platform_provider: None,
         }
     }
 
@@ -2224,6 +2236,55 @@ mod tests {
                 && selection.model_id == "test-model"
                 && models.len() == 1
         ));
+    }
+
+    #[tokio::test]
+    async fn runtime_info_reads_fresh_platform_truth_for_each_request() {
+        let bus = Arc::new(InProcessMessageBus::new());
+        let context = ChannelContext::with_services(
+            bus,
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut runtime = runtime_info();
+        runtime.platform_provider = Some(Arc::new(move || {
+            let generation = observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            sylvander_protocol::PlatformSnapshot {
+                features: vec![sylvander_protocol::PlatformFeature {
+                    kind: sylvander_protocol::PlatformFeatureKind::Mcp,
+                    name: "search".into(),
+                    status: sylvander_protocol::PlatformFeatureStatus::Active,
+                    summary: format!("generation {generation}"),
+                    source: None,
+                    trust: None,
+                    auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+                    capabilities: vec!["tools".into()],
+                    reloadable: true,
+                }],
+                commands: Vec::new(),
+            }
+        }));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        for expected in ["generation 1", "generation 2"] {
+            handle_client_msg(
+                ClientMsg::GetRuntimeInfo,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &runtime,
+            )
+            .await;
+            let ServerMsg::RuntimeInfo { platform, .. } =
+                rx.recv().await.expect("runtime response")
+            else {
+                panic!("expected runtime info");
+            };
+            assert_eq!(platform.features[0].summary, expected);
+        }
     }
 
     #[tokio::test]

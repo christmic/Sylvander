@@ -112,7 +112,10 @@ completed backend feature.
 
 ### Extensibility
 
-- [ ] MCP server/tool/resource health and authentication are inspectable.
+- [x] MCP server/tool health, authentication state, tool count, process
+      generation, and reconnect count are inspectable through fresh server
+      truth.
+- [ ] MCP resource discovery and resource-specific health are inspectable.
 - [ ] Skills show source, trust, activation, and reload state.
 - [ ] Hooks show execution, output, failure, and blocking decisions.
 - [ ] Extensions can contribute tools, renderers, and slash commands safely.

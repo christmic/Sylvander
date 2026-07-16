@@ -114,6 +114,7 @@ fn build_channels(
                             pricing: None,
                         })
                         .collect();
+                    let platform_agent = agent.clone();
                     Arc::new(
                         sylvander_channel_unix::UnixChannel::new(path, agent_id)
                             .with_instance_id(&channel.id)
@@ -135,6 +136,9 @@ fn build_channels(
                                 approval_enabled: agent.approval_enabled,
                                 max_attachment_bytes: 512 * 1024,
                                 platform: agent.platform.clone(),
+                                platform_provider: Some(Arc::new(move || {
+                                    platform_agent.platform_snapshot()
+                                })),
                             }),
                     )
                 }
