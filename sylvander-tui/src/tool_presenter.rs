@@ -114,6 +114,46 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
     }
 }
 
+pub fn compact_target_with_presentation(
+    tool_name: &str,
+    input: &Value,
+    presentations: &[sylvander_protocol::ToolPresentationDescriptor],
+) -> String {
+    let Some(presentation) = presentations
+        .iter()
+        .find(|presentation| presentation.tool_name == tool_name)
+    else {
+        return compact_target(tool_name, input);
+    };
+    let label = one_line(&crate::markdown::sanitize_terminal_text(
+        &presentation.label,
+    ));
+    if label.is_empty() {
+        return compact_target(tool_name, input);
+    }
+    let fields: &[&str] = match presentation.kind {
+        sylvander_protocol::ToolPresentationKind::Command => &["command", "cmd"],
+        sylvander_protocol::ToolPresentationKind::File => &["path", "file"],
+        sylvander_protocol::ToolPresentationKind::Search => &["query", "pattern"],
+        sylvander_protocol::ToolPresentationKind::Resource => &["uri", "url"],
+        sylvander_protocol::ToolPresentationKind::Generic => &[],
+    };
+    let target = presentation
+        .target_field
+        .as_deref()
+        .and_then(|field| input.get(field))
+        .or_else(|| fields.iter().find_map(|field| input.get(*field)))
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| value.as_i64().map(|value| value.to_string()))
+        })
+        .map(|value| one_line(&crate::markdown::sanitize_terminal_text(&value)))
+        .filter(|value| !value.is_empty());
+    target.map_or(label.clone(), |target| format!("{label} {target}"))
+}
+
 pub fn compact_output_summary(
     tool_name: &str,
     output: Option<&str>,
@@ -1157,5 +1197,29 @@ mod tests {
         );
         assert!(rows.iter().any(|row| row.text == "mime  text/markdown"));
         assert!(rows.iter().any(|row| row.text.contains("Safe content")));
+    }
+
+    #[test]
+    fn declarative_presentations_customize_labels_without_code_callbacks() {
+        let presentations = vec![sylvander_protocol::ToolPresentationDescriptor {
+            tool_name: "acme_deploy".into(),
+            label: "Deploy".into(),
+            kind: sylvander_protocol::ToolPresentationKind::Generic,
+            target_field: Some("environment".into()),
+            source: "agent configuration".into(),
+            trust: sylvander_protocol::PlatformTrust::Workspace,
+        }];
+        assert_eq!(
+            compact_target_with_presentation(
+                "acme_deploy",
+                &serde_json::json!({"environment":"staging"}),
+                &presentations,
+            ),
+            "Deploy staging"
+        );
+        assert_eq!(
+            compact_target_with_presentation("unknown", &serde_json::json!({}), &presentations),
+            "unknown"
+        );
     }
 }

@@ -654,6 +654,35 @@ impl AgentRun {
                 reloadable: false,
             });
         }
+        if !self.inner.spec.ui_commands.is_empty() || !self.inner.spec.tool_presentations.is_empty()
+        {
+            let mut capabilities = Vec::new();
+            if !self.inner.spec.tools.is_empty() {
+                capabilities.push("tools".into());
+            }
+            if !self.inner.spec.ui_commands.is_empty() {
+                capabilities.push("slash_commands".into());
+            }
+            if !self.inner.spec.tool_presentations.is_empty() {
+                capabilities.push("tool_presentations".into());
+            }
+            features.push(PlatformFeature {
+                kind: PlatformFeatureKind::Extension,
+                name: "agent configuration".into(),
+                status: PlatformFeatureStatus::Active,
+                summary: format!(
+                    "{} tools · {} commands · {} presentations",
+                    self.inner.spec.tools.len(),
+                    self.inner.spec.ui_commands.len(),
+                    self.inner.spec.tool_presentations.len()
+                ),
+                source: Some("agent definition".into()),
+                trust: Some(PlatformTrust::Workspace),
+                auth: PlatformAuthStatus::NotRequired,
+                capabilities,
+                reloadable: false,
+            });
+        }
 
         let commands = self
             .inner
@@ -674,7 +703,28 @@ impl AgentRun {
             })
             .collect();
 
-        sylvander_protocol::PlatformSnapshot { features, commands }
+        let tool_presentations = self
+            .inner
+            .spec
+            .tool_presentations
+            .iter()
+            .map(
+                |presentation| sylvander_protocol::ToolPresentationDescriptor {
+                    tool_name: presentation.tool_name.clone(),
+                    label: presentation.label.clone(),
+                    kind: presentation.kind,
+                    target_field: presentation.target_field.clone(),
+                    source: "agent configuration".into(),
+                    trust: PlatformTrust::Workspace,
+                },
+            )
+            .collect();
+
+        sylvander_protocol::PlatformSnapshot {
+            features,
+            commands,
+            tool_presentations,
+        }
     }
 
     pub async fn context_report(
@@ -4271,6 +4321,12 @@ mod tests {
                 hint: "workspace".into(),
                 prompt: "Review {{args}} for security issues.".into(),
             })
+            .tool_presentations(vec![crate::spec::ToolPresentationConfig {
+                tool_name: "search".into(),
+                label: "Search".into(),
+                kind: sylvander_protocol::ToolPresentationKind::Search,
+                target_field: Some("query".into()),
+            }])
             .build()
             .unwrap();
         let client = AnthropicClient::builder()
@@ -4284,8 +4340,9 @@ mod tests {
             .unwrap();
 
         let snapshot = run.platform_snapshot();
-        assert_eq!(snapshot.features.len(), 2);
+        assert_eq!(snapshot.features.len(), 3);
         assert_eq!(snapshot.commands.len(), 1);
+        assert_eq!(snapshot.tool_presentations.len(), 1);
         assert_eq!(snapshot.commands[0].source, "agent configuration");
         assert_eq!(
             snapshot.commands[0].trust,
@@ -4307,6 +4364,10 @@ mod tests {
         assert_eq!(
             snapshot.features[1].source.as_deref(),
             Some("runtime injection")
+        );
+        assert_eq!(
+            snapshot.features[2].kind,
+            sylvander_protocol::PlatformFeatureKind::Extension
         );
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(!json.contains("super-secret"));

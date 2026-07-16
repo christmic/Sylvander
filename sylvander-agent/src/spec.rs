@@ -137,6 +137,15 @@ pub struct UiCommandConfig {
     pub prompt: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolPresentationConfig {
+    pub tool_name: String,
+    pub label: String,
+    pub kind: sylvander_protocol::ToolPresentationKind,
+    #[serde(default)]
+    pub target_field: Option<String>,
+}
+
 impl MemoryStoreConfig {
     /// Resolve this config into an actual [`MemoryStore`] implementation.
     ///
@@ -228,6 +237,9 @@ pub struct AgentSpec {
     /// Before-tool hooks executed through the selected workspace executor.
     #[serde(default)]
     pub hooks: Vec<crate::tool::ToolHookConfig>,
+    /// Declarative TUI presentation hints for extension-provided tools.
+    #[serde(default)]
+    pub tool_presentations: Vec<ToolPresentationConfig>,
     /// Behavior tuning.
     #[serde(default)]
     pub behavior: BehaviorConfig,
@@ -285,6 +297,7 @@ pub struct AgentSpecBuilder {
     memory_stores: Vec<MemoryStoreConfig>,
     ui_commands: Vec<UiCommandConfig>,
     hooks: Vec<crate::tool::ToolHookConfig>,
+    tool_presentations: Vec<ToolPresentationConfig>,
     behavior: BehaviorConfig,
 }
 
@@ -388,6 +401,12 @@ impl AgentSpecBuilder {
         self
     }
 
+    #[must_use]
+    pub fn tool_presentations(mut self, presentations: Vec<ToolPresentationConfig>) -> Self {
+        self.tool_presentations = presentations;
+        self
+    }
+
     /// Register an MCP server definition (does not auto-add to tools).
     #[must_use]
     pub fn mcp_server_def(mut self, config: McpServerConfig) -> Self {
@@ -455,6 +474,7 @@ impl AgentSpecBuilder {
             memory_stores: self.memory_stores,
             ui_commands: self.ui_commands,
             hooks: self.hooks,
+            tool_presentations: self.tool_presentations,
             behavior: self.behavior,
         })
     }
