@@ -151,6 +151,15 @@ pub struct MemoryPurgeReport {
     pub superseded_count: u32,
 }
 
+/// Result of one maintenance-authorized supersession-chain erasure.
+///
+/// This report contains counts only. Record content never crosses the
+/// maintenance boundary or enters the audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryChainForgetReport {
+    pub deleted_count: u32,
+}
+
 impl MemoryPurgeReport {
     #[must_use]
     pub const fn total_count(self) -> u32 {
@@ -288,6 +297,107 @@ impl SqliteMemoryMaintenance {
         retained_copies: u32,
     ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
         backup::create_backup_and_rotate(&self.store, data_dir.as_ref(), retained_copies)
+    }
+
+    /// Atomically erases an active relationship memory and every superseded
+    /// ancestor that leads to it.
+    ///
+    /// This operation deliberately lives on the store-issued maintenance
+    /// capability rather than [`MemoryStore`], so a model-facing tool cannot
+    /// mint management authority. Ordinary single-record deletion remains
+    /// restricted while an inbound supersession link exists.
+    pub fn forget_supersession_chain(
+        &self,
+        owner: &MemoryOwner,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<MemoryChainForgetReport, MemoryStoreError> {
+        let MemoryOwner::Relationship { user_id, agent_id } = owner else {
+            return Err(MemoryStoreError::InvalidInput);
+        };
+        validate_memory_id(id)?;
+        validate_revision(expected_revision)?;
+        let expected_revision =
+            i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?;
+        let wall_now = self.store.clock.now_secs();
+        self.store.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| forget_error())?;
+            let now = resolve_effective_now(
+                &transaction,
+                self.store.retention_policy.revision(),
+                wall_now,
+            )
+            .map_err(|_| forget_error())?
+            .now;
+            let current: Option<(String, i64)> = transaction
+                .query_row(
+                    "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?4)",
+                    params![user_id.0, agent_id.0, id, now],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|_| forget_error())?;
+            let Some((current_key, current_revision)) = current else {
+                return Err(memory_not_visible());
+            };
+            if current_revision != expected_revision {
+                return Err(MemoryStoreError::Conflict);
+            }
+
+            let chain = {
+                let mut statement = transaction
+                    .prepare(
+                        "WITH RECURSIVE chain(record_key, revision) AS (SELECT record_key, revision FROM relationship_memories WHERE record_key = ?1 UNION SELECT ancestor.record_key, ancestor.revision FROM relationship_memories ancestor JOIN chain descendant ON ancestor.superseded_by_record_key = descendant.record_key WHERE ancestor.owner_user = ?2 AND ancestor.owner_agent = ?3) SELECT record_key, revision FROM chain ORDER BY record_key",
+                    )
+                    .map_err(|_| forget_error())?;
+                statement
+                    .query_map(params![current_key, user_id.0, agent_id.0], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })
+                    .map_err(|_| forget_error())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| forget_error())?
+            };
+            let deleted_count =
+                u32::try_from(chain.len()).map_err(|_| MemoryStoreError::InvalidInput)?;
+            if deleted_count == 0 {
+                return Err(forget_error());
+            }
+
+            // A cross-owner or otherwise out-of-closure dependent would be
+            // left dangling. Treat externally damaged graph state as a
+            // conflict and leave every row untouched.
+            let has_external_dependent = transaction
+                .query_row(
+                    "WITH RECURSIVE chain(record_key) AS (SELECT record_key FROM relationship_memories WHERE record_key = ?1 UNION SELECT ancestor.record_key FROM relationship_memories ancestor JOIN chain descendant ON ancestor.superseded_by_record_key = descendant.record_key WHERE ancestor.owner_user = ?2 AND ancestor.owner_agent = ?3) SELECT EXISTS(SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key IN (SELECT record_key FROM chain) AND dependent.record_key NOT IN (SELECT record_key FROM chain))",
+                    params![current_key, user_id.0, agent_id.0],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|_| forget_error())?;
+            if has_external_dependent {
+                return Err(MemoryStoreError::Conflict);
+            }
+
+            for (record_key, revision) in &chain {
+                append_chain_forget_audit(&transaction, record_key, *revision, now)?;
+            }
+            for (record_key, revision) in &chain {
+                if transaction
+                    .execute(
+                        "DELETE FROM relationship_memories WHERE record_key = ?1 AND revision = ?2",
+                        params![record_key, revision],
+                    )
+                    .map_err(|_| forget_error())?
+                    != 1
+                {
+                    return Err(MemoryStoreError::Conflict);
+                }
+            }
+            transaction.commit().map_err(|_| forget_error())?;
+            Ok(MemoryChainForgetReport { deleted_count })
+        })
     }
 
     fn purge_at(&self, wall_now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
@@ -874,6 +984,21 @@ fn append_maintenance_audit(
     Ok(())
 }
 
+fn append_chain_forget_audit(
+    transaction: &rusqlite::Transaction<'_>,
+    record_key: &str,
+    revision: i64,
+    now: i64,
+) -> Result<(), MemoryStoreError> {
+    transaction
+        .execute(
+            "INSERT INTO relationship_memory_audit (event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask) VALUES (?1, ?2, 'forget_chain', ?3, ?4, NULL, 'system_service', NULL, NULL, NULL, NULL, 0)",
+            params![uuid::Uuid::new_v4().to_string(), now, record_key, revision],
+        )
+        .map_err(|_| forget_error())?;
+    Ok(())
+}
+
 fn insert_retention_ledgers(
     transaction: &rusqlite::Transaction<'_>,
     policy: &RelationshipMemoryRetentionPolicy,
@@ -1114,6 +1239,10 @@ fn retention_error() -> MemoryStoreError {
     MemoryStoreError::Store("memory retention operation failed".into())
 }
 
+fn forget_error() -> MemoryStoreError {
+    MemoryStoreError::Store("memory chain forget failed".into())
+}
+
 #[cfg(test)]
 #[path = "memory_sqlite_tests.rs"]
 mod tests;
@@ -1133,3 +1262,7 @@ mod retention_tests;
 #[cfg(test)]
 #[path = "memory_sqlite_clock_tests.rs"]
 mod clock_tests;
+
+#[cfg(test)]
+#[path = "memory_sqlite_chain_forget_tests.rs"]
+mod chain_forget_tests;
