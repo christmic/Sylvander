@@ -23,7 +23,6 @@ pub const IDENTITY_BINDING_PROTOCOL_VERSION: u16 = 1;
 /// Capability that both peers must advertise before identity operations.
 pub const IDENTITY_BINDING_CAPABILITY: &str = "identity_binding_v1";
 
-const MAX_USER_ID_BYTES: usize = 512;
 const MAX_CHALLENGE_ID_BYTES: usize = 512;
 const MIN_SECRET_BYTES: usize = 16;
 const MAX_SECRET_BYTES: usize = 512;
@@ -79,9 +78,7 @@ impl IdentityBindingRequest {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IdentityBindingAction {
-    Begin {
-        target_user_id: UserId,
-    },
+    Begin {},
     Confirm {
         challenge_id: IdentityLinkChallengeId,
         proof: IdentityLinkSecretProof,
@@ -95,11 +92,6 @@ pub enum IdentityBindingAction {
 impl IdentityBindingAction {
     fn validate(&self) -> Result<(), IdentityBindingValidationError> {
         match self {
-            Self::Begin { target_user_id } => validate_text(
-                &target_user_id.0,
-                MAX_USER_ID_BYTES,
-                IdentityBindingValidationError::InvalidUserId,
-            ),
             Self::Confirm {
                 challenge_id,
                 proof,
@@ -107,14 +99,14 @@ impl IdentityBindingAction {
                 challenge_id.validate()?;
                 proof.validate()
             }
-            Self::Resolve {} | Self::Unlink { .. } => Ok(()),
+            Self::Begin {} | Self::Resolve {} | Self::Unlink { .. } => Ok(()),
         }
     }
 
     #[must_use]
     pub const fn operation(&self) -> IdentityBindingOperation {
         match self {
-            Self::Begin { .. } => IdentityBindingOperation::Begin,
+            Self::Begin {} => IdentityBindingOperation::Begin,
             Self::Confirm { .. } => IdentityBindingOperation::Confirm,
             Self::Resolve {} => IdentityBindingOperation::Resolve,
             Self::Unlink { .. } => IdentityBindingOperation::Unlink,
@@ -368,7 +360,6 @@ pub enum IdentityBindingErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityBindingValidationError {
     UnsupportedVersion,
-    InvalidUserId,
     InvalidChallengeId,
     InvalidSecret,
 }
@@ -377,7 +368,6 @@ impl fmt::Display for IdentityBindingValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
             Self::UnsupportedVersion => "unsupported identity binding protocol version",
-            Self::InvalidUserId => "invalid target user identity",
             Self::InvalidChallengeId => "invalid identity link challenge",
             Self::InvalidSecret => "invalid identity link secret",
         };

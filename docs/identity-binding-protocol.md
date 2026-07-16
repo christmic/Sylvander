@@ -40,18 +40,23 @@ No compatibility or implicit fallback path exists.
 
 ## Operations
 
-All actions apply to the ingress-derived principal:
+Confirmation, resolution, and unlink apply to the ingress-derived external
+principal. Begin is different: only an already authenticated stable user may
+request a code, and Runtime derives that user from its trusted boundary. The
+user then carries the code to the external Channel that should become linked.
 
 | Operation | Caller-controlled fields | Success response |
 |---|---|---|
-| `begin` | bounded `target_user_id` | `challenge_issued` |
+| `begin` | none; target user is Runtime-derived | `challenge_issued` |
 | `confirm` | bounded challenge ID and secret proof | `resolved` |
 | `resolve` | none | `resolved` or `not_linked` |
 | `unlink` | expected binding revision | `unlinked` |
 
 Requests deny unknown fields and validate exact version, whitespace, control
 characters, and size limits. They contain no `transport`,
-`channel_instance_id`, or external-principal field.
+`channel_instance_id`, external-principal, or target-user field. This two-sided
+proof prevents an external account from selecting and taking over an arbitrary
+known `UserId`.
 
 ## Secret contract
 

@@ -52,7 +52,7 @@ async fn link(
     user: UserId,
 ) -> crate::principal_binding::PrincipalBinding {
     let challenge = store
-        .begin_link(principal.clone(), user, Duration::from_mins(1))
+        .begin_link(user, Duration::from_mins(1))
         .await
         .unwrap();
     store
@@ -78,7 +78,7 @@ async fn binding_survives_restart_without_persisting_raw_external_id_or_secret()
         let user = register(&store, "user-alice").await;
         let key = principal("telegram", "bot-primary", external);
         let challenge = store
-            .begin_link(key.clone(), user.clone(), Duration::from_mins(1))
+            .begin_link(user.clone(), Duration::from_mins(1))
             .await
             .unwrap();
         secret = challenge.secret.expose().to_owned();
@@ -179,9 +179,17 @@ async fn linked_principal_cannot_be_silently_rebound_or_unlinked_by_another_user
     let key = principal("dingtalk", "corp-a", "staff-1");
     link(&store, key.clone(), alice.clone()).await;
 
+    let takeover = store
+        .begin_link(bob.clone(), Duration::from_mins(1))
+        .await
+        .unwrap();
     assert!(matches!(
         store
-            .begin_link(key.clone(), bob.clone(), Duration::from_mins(1))
+            .confirm_link(
+                key.clone(),
+                &takeover.challenge_id,
+                takeover.secret.expose()
+            )
             .await,
         Err(PrincipalBindingError::AlreadyLinked)
     ));
@@ -232,7 +240,7 @@ async fn concurrent_confirmation_consumes_a_challenge_once() {
     let user = register(&store, "alice").await;
     let key = principal("telegram", "bot-a", "external-a");
     let challenge = store
-        .begin_link(key.clone(), user, Duration::from_mins(1))
+        .begin_link(user, Duration::from_mins(1))
         .await
         .unwrap();
     let id = challenge.challenge_id;
@@ -258,7 +266,7 @@ async fn concurrent_confirmation_consumes_a_challenge_once() {
 }
 
 #[tokio::test]
-async fn challenge_is_scoped_expires_and_has_a_bounded_guess_budget() {
+async fn challenge_expires_and_has_a_bounded_guess_budget() {
     let clock = Arc::new(TestClock::new(100));
     let store = PrincipalBindingStore::open_in_memory(clock.clone(), digest_key())
         .await
@@ -266,19 +274,9 @@ async fn challenge_is_scoped_expires_and_has_a_bounded_guess_budget() {
     let user = register(&store, "alice").await;
     let key = principal("telegram", "bot-a", "external-a");
     let challenge = store
-        .begin_link(key.clone(), user.clone(), Duration::from_secs(30))
+        .begin_link(user.clone(), Duration::from_secs(30))
         .await
         .unwrap();
-    assert!(matches!(
-        store
-            .confirm_link(
-                principal("telegram", "bot-b", "external-a"),
-                &challenge.challenge_id,
-                challenge.secret.expose()
-            )
-            .await,
-        Err(PrincipalBindingError::ChallengePrincipalMismatch)
-    ));
     clock.set(131);
     assert!(matches!(
         store
@@ -293,7 +291,7 @@ async fn challenge_is_scoped_expires_and_has_a_bounded_guess_budget() {
 
     clock.set(200);
     let challenge = store
-        .begin_link(key.clone(), user, Duration::from_mins(1))
+        .begin_link(user, Duration::from_mins(1))
         .await
         .unwrap();
     for _ in 0..4 {
@@ -326,21 +324,17 @@ async fn latest_challenge_invalidates_older_secret_and_unknown_users_fail_closed
     let key = principal("telegram", "bot-a", "external-a");
     assert!(matches!(
         store
-            .begin_link(
-                key.clone(),
-                UserId::new("missing"),
-                Duration::from_mins(1)
-            )
+            .begin_link(UserId::new("missing"), Duration::from_mins(1))
             .await,
         Err(PrincipalBindingError::UnknownUser(user)) if user == "missing"
     ));
     let user = register(&store, "alice").await;
     let old = store
-        .begin_link(key.clone(), user.clone(), Duration::from_mins(1))
+        .begin_link(user.clone(), Duration::from_mins(1))
         .await
         .unwrap();
     let current = store
-        .begin_link(key.clone(), user, Duration::from_mins(1))
+        .begin_link(user, Duration::from_mins(1))
         .await
         .unwrap();
     assert!(matches!(
