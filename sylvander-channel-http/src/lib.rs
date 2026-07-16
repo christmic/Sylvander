@@ -7,7 +7,9 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,6 +40,26 @@ pub struct HttpChannel {
     principal_id: Option<String>,
     bearer_token: Option<String>,
     max_request_bytes: usize,
+    operational_health: Option<OperationalHealthProvider>,
+}
+
+pub type OperationalHealthFuture =
+    Pin<Box<dyn Future<Output = Result<OperationalHealth, String>> + Send>>;
+pub type OperationalHealthProvider =
+    Arc<dyn Fn() -> OperationalHealthFuture + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OperationalHealth {
+    pub ready: bool,
+    pub agents: usize,
+    pub persistent_sessions: usize,
+    pub ephemeral_sessions: usize,
+    pub ready_channels: usize,
+    pub total_channels: usize,
+    pub bus_subscribers: usize,
+    pub bus_capacity: usize,
+    pub published_messages: u64,
+    pub backpressure_rejections: u64,
 }
 
 impl HttpChannel {
@@ -49,6 +71,7 @@ impl HttpChannel {
             principal_id: None,
             bearer_token: None,
             max_request_bytes: 1024 * 1024,
+            operational_health: None,
         }
     }
 
@@ -69,6 +92,12 @@ impl HttpChannel {
         self.bearer_token = Some(bearer_token.into());
         self
     }
+
+    #[must_use]
+    pub fn with_operational_health(mut self, provider: OperationalHealthProvider) -> Self {
+        self.operational_health = Some(provider);
+        self
+    }
 }
 
 #[async_trait]
@@ -86,6 +115,7 @@ impl Channel for HttpChannel {
             instance_id: self.instance_id.clone(),
             principal_id: self.principal_id.clone(),
             bearer_token: self.bearer_token.clone(),
+            operational_health: self.operational_health.clone(),
         });
 
         let chat_routes =
@@ -96,10 +126,9 @@ impl Channel for HttpChannel {
                     require_http_authentication,
                 ));
         let app = Router::new()
-            .route(
-                "/health",
-                get(|| async { Json(serde_json::json!({"status":"ok"})) }),
-            )
+            .route("/health", get(health))
+            .route("/ready", get(readiness))
+            .route("/metrics", get(metrics))
             .merge(chat_routes)
             .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
@@ -163,6 +192,83 @@ struct AppState {
     instance_id: String,
     principal_id: Option<String>,
     bearer_token: Option<String>,
+    operational_health: Option<OperationalHealthProvider>,
+}
+
+async fn health(State(state): State<Arc<AppState>>) -> Response {
+    operational_health(&state, false).await
+}
+
+async fn readiness(State(state): State<Arc<AppState>>) -> Response {
+    operational_health(&state, true).await
+}
+
+async fn operational_health(state: &AppState, readiness_only: bool) -> Response {
+    let Some(provider) = &state.operational_health else {
+        return Json(serde_json::json!({"status":"ok","ready":true})).into_response();
+    };
+    match provider().await {
+        Ok(snapshot) => {
+            let status = if snapshot.ready {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            if readiness_only {
+                return (status, Json(serde_json::json!({"ready": snapshot.ready})))
+                    .into_response();
+            }
+            (
+                status,
+                Json(serde_json::json!({"status": if snapshot.ready {"ok"} else {"degraded"}, "runtime": snapshot})),
+            )
+                .into_response()
+        }
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"status":"unavailable","ready":false})),
+        )
+            .into_response(),
+    }
+}
+
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    let Some(provider) = &state.operational_health else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(snapshot) = provider().await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let ready = u8::from(snapshot.ready);
+    let body = format!(
+        "sylvander_ready {ready}\n\
+         sylvander_agents {}\n\
+         sylvander_sessions{{lifetime=\"persistent\"}} {}\n\
+         sylvander_sessions{{lifetime=\"ephemeral\"}} {}\n\
+         sylvander_channels{{status=\"ready\"}} {}\n\
+         sylvander_channels_total {}\n\
+         sylvander_bus_subscribers {}\n\
+         sylvander_bus_subscription_capacity {}\n\
+         sylvander_bus_published_messages_total {}\n\
+         sylvander_bus_backpressure_rejections_total {}\n",
+        snapshot.agents,
+        snapshot.persistent_sessions,
+        snapshot.ephemeral_sessions,
+        snapshot.ready_channels,
+        snapshot.total_channels,
+        snapshot.bus_subscribers,
+        snapshot.bus_capacity,
+        snapshot.published_messages,
+        snapshot.backpressure_rejections
+    );
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
+        .into_response()
 }
 
 async fn chat(
@@ -404,6 +510,7 @@ mod tests {
             instance_id: "http-private".into(),
             principal_id: Some("caller".into()),
             bearer_token: Some("secret".into()),
+            operational_health: None,
         });
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -440,10 +547,52 @@ mod tests {
             instance_id: "http-private".into(),
             principal_id: Some("caller".into()),
             bearer_token: Some("secret".into()),
+            operational_health: None,
         };
         assert_eq!(
             reject_http_authentication(&state).await,
             StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn operational_health_controls_readiness_and_metrics() {
+        let state = AppState {
+            ctx: Arc::new(ChannelContext::with_services(
+                Arc::new(InProcessMessageBus::new()),
+                Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                None,
+                None,
+            )),
+            agent_id: sylvander_agent::spec::AgentId::new("agent"),
+            sessions: Mutex::new(std::collections::HashMap::new()),
+            instance_id: "http".into(),
+            principal_id: None,
+            bearer_token: None,
+            operational_health: Some(Arc::new(|| {
+                Box::pin(async {
+                    Ok(OperationalHealth {
+                        ready: false,
+                        agents: 2,
+                        persistent_sessions: 3,
+                        ephemeral_sessions: 1,
+                        ready_channels: 1,
+                        total_channels: 2,
+                        bus_subscribers: 4,
+                        bus_capacity: 256,
+                        published_messages: 8,
+                        backpressure_rejections: 1,
+                    })
+                })
+            })),
+        };
+        assert_eq!(
+            operational_health(&state, true).await.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            metrics(State(Arc::new(state))).await.status(),
+            StatusCode::OK
         );
     }
 }

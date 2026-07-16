@@ -13,7 +13,7 @@ use sylvander_channel::Channel;
 use sylvander_runtime::config::{
     ChannelTransportConfig, SecretResolver, ServerConfig, SystemSecretResolver,
 };
-use sylvander_runtime::{ChannelRegistration, ChannelRestartPolicy, Runtime};
+use sylvander_runtime::{ChannelRegistration, ChannelRestartPolicy, ChannelStatus, Runtime};
 use tracing::info;
 
 #[tokio::main]
@@ -25,7 +25,7 @@ async fn main() -> Result<(), ServerError> {
         .init();
 
     let config = load_config()?;
-    let runtime = Runtime::boot_config(config.clone()).await?;
+    let runtime = Arc::new(Runtime::boot_config(config.clone()).await?);
     let channels = build_channels(&config, &runtime)?;
     let channel_count = channels.len();
     runtime.start_channels(channels).await?;
@@ -73,7 +73,7 @@ fn load_config() -> Result<ServerConfig, ServerError> {
 
 fn build_channels(
     config: &ServerConfig,
-    runtime: &Runtime,
+    runtime: &Arc<Runtime>,
 ) -> Result<Vec<ChannelRegistration>, ServerError> {
     let secrets = SystemSecretResolver;
     config
@@ -146,15 +146,45 @@ fn build_channels(
                     bind,
                     principal_id,
                     bearer_token,
-                } => Arc::new(
-                    sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
+                } => {
+                    let health_runtime = Arc::clone(runtime);
+                    Arc::new(
+                        sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
                         .with_request_limit(config.server.boundary.max_request_bytes)
                         .with_bearer_auth(
                             &channel.id,
                             principal_id,
                             resolve_text(&secrets, bearer_token, &channel.id)?,
-                        ),
-                ),
+                        )
+                        .with_operational_health(Arc::new(move || {
+                            let runtime = Arc::clone(&health_runtime);
+                            Box::pin(async move {
+                                let snapshot = runtime
+                                    .operational_snapshot()
+                                    .await
+                                    .map_err(|error| error.to_string())?;
+                                Ok(sylvander_channel_http::OperationalHealth {
+                                    ready: snapshot.ready,
+                                    agents: snapshot.agent_count,
+                                    persistent_sessions: snapshot.persistent_session_count,
+                                    ephemeral_sessions: snapshot.ephemeral_session_count,
+                                    ready_channels: snapshot
+                                        .channels
+                                        .iter()
+                                        .filter(|channel| channel.status == ChannelStatus::Ready)
+                                        .count(),
+                                    total_channels: snapshot.channels.len(),
+                                    bus_subscribers: snapshot.bus.subscriber_count,
+                                    bus_capacity: snapshot.bus.subscription_capacity,
+                                    published_messages: snapshot.bus.published_messages,
+                                    backpressure_rejections: snapshot
+                                        .bus
+                                        .backpressure_rejections,
+                                })
+                            })
+                        })),
+                    )
+                }
                 ChannelTransportConfig::Websocket {
                     bind,
                     principal_id,
