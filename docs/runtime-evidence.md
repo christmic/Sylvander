@@ -43,6 +43,25 @@ mixed-privacy feedback, excluded run-level feedback, and limit truncation
 visible. The analyzer never reads prompt, response, correction, tool payload,
 or other raw content.
 
+## Evaluation registry
+
+The evidence database also owns an immutable evaluation registry:
+
+- scoring adapters have sequential revisions and a digest of the exact
+  executable/configuration that produces their named metric;
+- dataset revisions contain digest-pinned references, require both fixture and
+  held-out cases, reference registered scorer revisions, and are stored in
+  canonical case-ID order;
+- baselines bind one exact dataset revision to named metric values, sample
+  counts, score direction, and an allowed regression in basis points;
+- candidate comparisons require the complete metric set and exact sample
+  counts. Missing, extra, duplicate, or invented metrics fail instead of
+  producing a partial pass.
+
+Every definition has a deterministic SHA-256 digest. Re-registering the exact
+definition is idempotent; changing an existing revision, skipping a revision,
+or referencing an unknown component fails.
+
 ## Capture policy
 
 `server.evidence.content` selects one of three policies:
@@ -95,7 +114,7 @@ The durable store, bus recorder, crash recovery, content policies, retention,
 Rust query surface, and evidence-linked feedback API are implemented. Feedback
 attribution is derived at the authenticated Runtime boundary rather than
 accepted from the client, and references are bounded and digest-validated.
-Deterministic privacy-aware cohort analysis is also implemented. Evaluation
-datasets, proposal records, worktree experiments, signing, and deployment
-observation remain the P5 backlog and must be completed before claiming
-autonomous self-improvement.
+Deterministic privacy-aware cohort analysis and the versioned evaluation
+registry are implemented. Proposal records, worktree experiments, signing,
+and deployment observation remain the P5 backlog and must be completed before
+claiming autonomous self-improvement.
