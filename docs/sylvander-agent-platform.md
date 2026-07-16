@@ -238,7 +238,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit/List/Search/Command use one location-neutral executor contract. Local and OpenSSH adapters enforce workspace-relative paths, bounded structured queries, and read-only bindings; unavailable targets fail explicitly instead of falling back to host paths. Container/sandbox adapters remain. |
-| A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout, and structured read-only Git status/diff/log works through local and SSH targets. Local Git worktree inspection/accept/discard is operational; streaming output, cancellation, and remote worktree review remain. |
+| A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout and streaming head/tail capture, and structured read-only Git status/diff/log works through local and SSH targets. The local executor isolates each shell in a process group and regression tests prove timeout or interrupt cannot leave background descendants running. Local Git worktree inspection/accept/discard is operational; remote process-tree cancellation and remote worktree review remain. |
 | A11 | Worktree isolation | partial | Writable local Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Lease garbage collection and remote worktrees remain. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
 | A13 | Skills | partial | Agent-home and task-workspace Skills are discovered through local or remote executors, injected with deterministic precedence, and reported after successful activation with source, trust, and per-turn reload truth. Package metadata, explicit activation controls, resources, health, and distribution remain. |
@@ -550,9 +550,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   and TUI. Live command progress now crosses the existing tool-delta protocol
   through a bounded Agent queue. The collapsed TUI shows only the latest useful
   line; expanded details remain bounded and favor the error-bearing tail.
-  Dropping an executor operation is the explicit cancellation boundary: local
-  commands and SSH transport processes use kill-on-drop, so a user interrupt
-  does not leave the owned process running detached.
+  Dropping an executor operation is the explicit cancellation boundary. Local
+  commands run in an isolated process group and synchronously terminate that
+  group on timeout, interrupt, or future cancellation; tests use a background
+  descendant that attempts a delayed filesystem side effect and prove it
+  cannot survive. SSH transport processes use kill-on-drop, while remote
+  process-tree cancellation remains explicitly deferred with P3.3.
   The first container adapter now runs every operation in a disposable,
   network-disabled container with a bounded bind mount, read-only inspection,
   live bounded command output, and daemon-side forced cleanup on cancellation.
