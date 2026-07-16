@@ -10,6 +10,7 @@ use super::proposal_types::{
 use super::{EvidenceError, EvidenceStore, as_i64};
 
 mod read;
+mod transition;
 
 impl EvidenceStore {
     /// Persist one immutable evidence-linked proposal in the draft state.
