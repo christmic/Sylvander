@@ -160,7 +160,7 @@ impl AgentService {
                 reasoning_effort,
             } => ClientMsg::SelectModel {
                 session_id: Some(session_id),
-                model: model.into(),
+                model: sylvander_protocol::ModelSelectionInput::Qualified(model),
                 reasoning_effort,
             },
             Action::SelectPermissions {

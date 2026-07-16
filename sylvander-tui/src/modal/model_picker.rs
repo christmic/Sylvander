@@ -229,7 +229,10 @@ impl Modal for ModelPicker {
                     .pending_actions
                     .push(crate::event::Action::SelectModel {
                         session_id,
-                        model: model.id.clone(),
+                        model: sylvander_protocol::ModelSelection {
+                            provider_id: model.provider.clone(),
+                            model_id: model.id.clone(),
+                        },
                         reasoning_effort: effort,
                     });
                 state.status = "Selecting model…".into();
@@ -315,7 +318,44 @@ mod tests {
                 session_id,
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Low,
-            }] if session_id == "session-1" && model == "thinking"
+            }] if session_id == "session-1"
+                && model.provider_id == "test"
+                && model.model_id == "thinking"
+        ));
+    }
+
+    #[test]
+    fn keyboard_keeps_provider_when_model_ids_are_shared() {
+        let mut state = state();
+        state.session_id = Some("session-1".into());
+        state.metadata.models = vec![
+            sylvander_protocol::ModelDescriptor {
+                id: "shared".into(),
+                provider: "alpha".into(),
+                capabilities: 0,
+                capability_names: Vec::new(),
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
+            },
+            sylvander_protocol::ModelDescriptor {
+                id: "shared".into(),
+                provider: "beta".into(),
+                capabilities: 0,
+                capability_names: Vec::new(),
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
+            },
+        ];
+        let mut picker = ModelPicker::new(&state);
+        picker.handle_key(&KeyEvent::from(KeyCode::Down), &mut state);
+        picker.handle_key(&KeyEvent::from(KeyCode::Enter), &mut state);
+
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::SelectModel { model, .. }]
+                if model.provider_id == "beta" && model.model_id == "shared"
         ));
     }
 }

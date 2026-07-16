@@ -711,12 +711,19 @@ mod tests {
     fn model_selection_uses_typed_reasoning_effort_on_wire() {
         let value = serde_json::to_value(ClientMsg::SelectModel {
             session_id: Some("session-1".into()),
-            model: "thinking".into(),
+            model: sylvander_protocol::ModelSelectionInput::Qualified(
+                sylvander_protocol::ModelSelection {
+                    provider_id: "provider-a".into(),
+                    model_id: "thinking".into(),
+                },
+            ),
             reasoning_effort: sylvander_protocol::ReasoningEffort::High,
         })
         .unwrap();
         assert_eq!(value["type"], "select_model");
         assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["model"]["provider_id"], "provider-a");
+        assert_eq!(value["model"]["model_id"], "thinking");
         assert_eq!(value["reasoning_effort"], "high");
     }
 
