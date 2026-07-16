@@ -1,5 +1,6 @@
 //! SQLite-backed relationship memory with versioned, fail-closed migrations.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -17,6 +18,7 @@ use super::memory::{
 };
 
 mod backup;
+mod checkpoint;
 mod integrity;
 mod integrity_anchor;
 #[cfg(test)]
@@ -24,6 +26,7 @@ mod integrity_anchor_tests;
 pub use backup::{
     MemoryBackupArtifact, MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin,
 };
+pub use checkpoint::{MemoryEvidenceCheckpoint, MemoryEvidenceCompactionReport};
 pub use integrity::MemoryIntegrityConfig;
 pub use integrity_anchor::{
     FileMemoryIntegrityAnchor, HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig,
@@ -31,7 +34,7 @@ pub use integrity_anchor::{
 };
 
 const COMPONENT: &str = "relationship_memory";
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const MAX_IDENTIFIER_ATTEMPTS: usize = 8;
 const MAX_UNCONFIRMED_CLOCK_FORWARD_SECS: i64 = 31 * 24 * 60 * 60;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
@@ -88,7 +91,8 @@ BEFORE UPDATE ON relationship_memory_audit BEGIN
   SELECT RAISE(ABORT, 'memory audit is append-only');
 END;
 CREATE TRIGGER IF NOT EXISTS relationship_memory_audit_no_delete
-BEFORE DELETE ON relationship_memory_audit BEGIN
+BEFORE DELETE ON relationship_memory_audit
+WHEN sylvander_memory_checkpoint_compaction() = 0 BEGIN
   SELECT RAISE(ABORT, 'memory audit is append-only');
 END;
 CREATE TABLE IF NOT EXISTS relationship_memory_retention_state (
@@ -118,7 +122,7 @@ CREATE TABLE IF NOT EXISTS relationship_memory_retention_runs (
 );
 CREATE TABLE IF NOT EXISTS relationship_memory_retention_batches (
   batch_id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL REFERENCES relationship_memory_retention_runs(run_id),
+  run_id TEXT NOT NULL UNIQUE REFERENCES relationship_memory_retention_runs(run_id),
   occurred_at INTEGER NOT NULL,
   attempted_limit INTEGER NOT NULL CHECK (attempted_limit > 0),
   expired_count INTEGER NOT NULL CHECK (expired_count >= 0),
@@ -136,6 +140,50 @@ CREATE TABLE IF NOT EXISTS relationship_memory_retention_policy_stage (
   superseded_retention_days INTEGER NOT NULL CHECK (superseded_retention_days >= 0),
   batch_limit INTEGER NOT NULL CHECK (batch_limit > 0)
 );
+CREATE TABLE IF NOT EXISTS relationship_memory_checkpoint_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  generation INTEGER NOT NULL CHECK (generation >= 1),
+  checkpoint_epoch INTEGER NOT NULL CHECK (checkpoint_epoch >= 1),
+  checkpoint_root TEXT NOT NULL CHECK (length(checkpoint_root) = 64),
+  checkpoint_sha256 TEXT NOT NULL CHECK (length(checkpoint_sha256) = 64),
+  audit_compacted_count INTEGER NOT NULL CHECK (audit_compacted_count >= 0),
+  audit_summary_root TEXT NOT NULL CHECK (length(audit_summary_root) = 64),
+  retention_compacted_count INTEGER NOT NULL CHECK (retention_compacted_count >= 0),
+  retention_summary_root TEXT NOT NULL CHECK (length(retention_summary_root) = 64),
+  updated_at INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS relationship_memory_checkpoint_no_insert
+BEFORE INSERT ON relationship_memory_checkpoint_state
+WHEN sylvander_memory_checkpoint_compaction() = 0 BEGIN
+  SELECT RAISE(ABORT, 'memory checkpoint state is maintenance-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_checkpoint_no_update
+BEFORE UPDATE ON relationship_memory_checkpoint_state
+WHEN sylvander_memory_checkpoint_compaction() = 0 BEGIN
+  SELECT RAISE(ABORT, 'memory checkpoint state is maintenance-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_checkpoint_no_delete
+BEFORE DELETE ON relationship_memory_checkpoint_state BEGIN
+  SELECT RAISE(ABORT, 'memory checkpoint state is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_retention_runs_no_update
+BEFORE UPDATE ON relationship_memory_retention_runs BEGIN
+  SELECT RAISE(ABORT, 'memory retention ledger is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_retention_batches_no_update
+BEFORE UPDATE ON relationship_memory_retention_batches BEGIN
+  SELECT RAISE(ABORT, 'memory retention ledger is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_retention_runs_no_delete
+BEFORE DELETE ON relationship_memory_retention_runs
+WHEN sylvander_memory_checkpoint_compaction() = 0 BEGIN
+  SELECT RAISE(ABORT, 'memory retention ledger is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS relationship_memory_retention_batches_no_delete
+BEFORE DELETE ON relationship_memory_retention_batches
+WHEN sylvander_memory_checkpoint_compaction() = 0 BEGIN
+  SELECT RAISE(ABORT, 'memory retention ledger is append-only');
+END;
 ";
 const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, replacement.id, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted, m.retention_policy_revision, m.record_key, m.owner_user, m.owner_agent, m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, m.superseded_by_record_key, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted, m.retention_policy_revision, m.integrity_epoch, m.integrity_mac FROM relationship_memories m LEFT JOIN relationship_memories replacement ON replacement.record_key = m.superseded_by_record_key";
 
@@ -231,6 +279,7 @@ impl SqliteMemoryStore {
         let path = path.as_ref();
         let existed = path.exists();
         let mut connection = Connection::open(path).map_err(store_error)?;
+        register_checkpoint_compaction_guard(&connection)?;
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
@@ -289,6 +338,7 @@ impl SqliteMemoryStore {
         retention_policy: RelationshipMemoryRetentionPolicy,
         clock: Arc<dyn MemoryClock>,
     ) -> Result<Self, MemoryStoreError> {
+        register_checkpoint_compaction_guard(&connection)?;
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
@@ -1028,7 +1078,7 @@ fn verify_schema(connection: &Connection) -> Result<(), MemoryStoreError> {
 fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemoryStoreError> {
     let mut statement = connection
         .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit', 'relationship_memory_retention_state', 'relationship_memory_retention_runs', 'relationship_memory_retention_batches', 'relationship_memory_retention_policy_stage')) ORDER BY type, name, tbl_name",
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit', 'relationship_memory_retention_state', 'relationship_memory_retention_runs', 'relationship_memory_retention_batches', 'relationship_memory_retention_policy_stage', 'relationship_memory_checkpoint_state')) ORDER BY type, name, tbl_name",
         )
         .map_err(|_| schema_error())?;
     statement
@@ -1043,6 +1093,41 @@ fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemorySt
         .map_err(|_| schema_error())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| schema_error())
+}
+
+thread_local! {
+    static CHECKPOINT_COMPACTION_ALLOWED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn register_checkpoint_compaction_guard(connection: &Connection) -> Result<(), MemoryStoreError> {
+    connection
+        .create_scalar_function(
+            "sylvander_memory_checkpoint_compaction",
+            0,
+            rusqlite::functions::FunctionFlags::SQLITE_UTF8
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            |_| Ok(CHECKPOINT_COMPACTION_ALLOWED.with(Cell::get)),
+        )
+        .map_err(|_| schema_error())
+}
+
+struct CheckpointCompactionGuard;
+
+impl CheckpointCompactionGuard {
+    fn enter() -> Result<Self, MemoryStoreError> {
+        let was_allowed = CHECKPOINT_COMPACTION_ALLOWED.replace(true);
+        if was_allowed {
+            CHECKPOINT_COMPACTION_ALLOWED.set(true);
+            return Err(checkpoint_error());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for CheckpointCompactionGuard {
+    fn drop(&mut self) {
+        CHECKPOINT_COMPACTION_ALLOWED.set(false);
+    }
 }
 
 fn normalize_sql(sql: &str) -> String {
@@ -1663,6 +1748,10 @@ fn retention_error() -> MemoryStoreError {
 
 fn forget_error() -> MemoryStoreError {
     MemoryStoreError::Store("memory chain forget failed".into())
+}
+
+fn checkpoint_error() -> MemoryStoreError {
+    MemoryStoreError::Store("memory checkpoint compaction failed".into())
 }
 
 #[cfg(test)]

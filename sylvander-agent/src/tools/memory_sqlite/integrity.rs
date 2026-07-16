@@ -20,6 +20,7 @@ const TABLE_QUERIES: &[&str] = &[
     "SELECT singleton,stage_id,base_policy_revision,staged_at,policy_revision,default_ttl_days,max_ttl_days,expiry_grace_days,superseded_retention_days,batch_limit FROM relationship_memory_retention_policy_stage ORDER BY singleton",
     "SELECT run_id,started_at,completed_at,policy_revision,clock_watermark,expired_count,superseded_count FROM relationship_memory_retention_runs ORDER BY run_id",
     "SELECT batch_id,run_id,occurred_at,attempted_limit,expired_count,superseded_count FROM relationship_memory_retention_batches ORDER BY batch_id",
+    "SELECT singleton,generation,checkpoint_epoch,checkpoint_root,checkpoint_sha256,audit_compacted_count,audit_summary_root,retention_compacted_count,retention_summary_root,updated_at FROM relationship_memory_checkpoint_state ORDER BY singleton",
 ];
 
 pub struct MemoryIntegrityConfig {
