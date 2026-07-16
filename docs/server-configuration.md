@@ -158,12 +158,17 @@ superseded rows. The maintenance budget is hourly batches of 500, with at most
 20 batches per run, and no more than 1000 rows in one batch. Every value is
 finite and range-checked; unknown fields and configurations where
 `default_ttl_days` exceeds `max_ttl_days` fail startup.
-There is no unbounded or legacy-environment fallback. Runtime enforcement,
-scheduled backup, and restore are separate implementation batches and are not
-claimed by this configuration contract alone. Backup cadence is finite: one
-day by default with seven retained copies, bounded to 1–7 days and 2–30 copies.
+There is no unbounded or legacy-environment fallback. Runtime executes
+retention and scheduled backup rotation in one maintenance lifecycle. Backup
+cadence is finite: one day by default with seven retained copies, bounded to
+1–7 days and 2–30 copies. A new backup is published and exactly verified before
+older copies are removed. Only schema-, integrity-, and manifest-verified
+database/manifest pairs count toward rotation; temporary, orphaned, corrupt,
+or unknown artifacts are ignored. Failures use content-safe diagnostics and
+retry on the next scheduled interval without replacing the last valid copy.
 The backup directory is derived beneath `data_dir`; configuration cannot route
-memory snapshots to an arbitrary filesystem path.
+memory snapshots to an arbitrary filesystem path. Restore remains an explicit
+offline operator action: Runtime never restores or falls back automatically.
 Retention policy revision starts at 1 and is persisted with every row. Any
 policy change must increase it; changing policy values under the same revision
 fails startup instead of silently reinterpreting existing memory.
