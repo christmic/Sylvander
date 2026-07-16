@@ -85,6 +85,14 @@ pub struct ConfiguredAgentDescriptor {
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub platform: sylvander_protocol::PlatformSnapshot,
+    platform_provider: AgentRun,
+}
+
+impl ConfiguredAgentDescriptor {
+    #[must_use]
+    pub fn platform_snapshot(&self) -> sylvander_protocol::PlatformSnapshot {
+        self.platform_provider.platform_snapshot()
+    }
 }
 
 impl ConfiguredAgent {
@@ -98,6 +106,7 @@ impl ConfiguredAgent {
             models: self.models.clone(),
             approval_enabled: self.approval_enabled,
             platform: self.run.platform_snapshot(),
+            platform_provider: self.run.clone(),
         }
     }
 }

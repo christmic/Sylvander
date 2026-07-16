@@ -676,6 +676,7 @@ async fn start_runtime(
             approval_enabled,
             max_attachment_bytes: 512 * 1024,
             platform: sylvander_protocol::PlatformSnapshot::default(),
+            platform_provider: None,
         }),
     );
     let ui: Arc<dyn UiService> = Arc::new(HarnessUiService {
