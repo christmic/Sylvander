@@ -1,14 +1,35 @@
 use super::*;
-use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore};
+use crate::tools::memory::{
+    MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore,
+    RelationshipMemoryRetentionPolicy,
+};
 use sylvander_protocol::SessionContext;
 
 fn worker() -> MemoryExecutionContext {
     MemoryExecutionContext::application_worker(&SessionContext::new("alice", "agent-a", "session"))
 }
 
+const INTEGRITY_KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
+
+fn integrity(path: impl AsRef<Path>) -> MemoryIntegrityConfig {
+    MemoryIntegrityConfig::new(path.as_ref().to_path_buf(), INTEGRITY_KEY).unwrap()
+}
+
+fn protected_store(database: &Path, anchor: &Path) -> SqliteMemoryStore {
+    SqliteMemoryStore::open_with_integrity(
+        database,
+        RelationshipMemoryRetentionPolicy::default(),
+        integrity(anchor),
+    )
+    .unwrap()
+}
+
 async fn backup_fixture() -> (tempfile::TempDir, MemoryBackupArtifact) {
     let directory = tempfile::tempdir().unwrap();
-    let store = SqliteMemoryStore::open(directory.path().join("source.db")).unwrap();
+    let store = protected_store(
+        &directory.path().join("source.db"),
+        &directory.path().join("source.anchor"),
+    );
     store
         .append_relationship(&worker(), MemoryAppend::new("backup-only value"))
         .await
@@ -62,10 +83,15 @@ async fn online_backup_and_explicit_offline_restore_round_trip() {
 
     let live = directory.path().join("live.db");
     create_live(&live).await;
-    SqliteMemoryAdmin::restore_offline(&live, &artifact.database_path, &artifact.manifest_path)
-        .unwrap();
+    SqliteMemoryAdmin::restore_offline(
+        &live,
+        &artifact.database_path,
+        &artifact.manifest_path,
+        integrity(directory.path().join("source.anchor")),
+    )
+    .unwrap();
     assert_no_restore_temps(directory.path());
-    let restored = SqliteMemoryStore::open(&live).unwrap();
+    let restored = protected_store(&live, &directory.path().join("source.anchor"));
     assert_eq!(
         restored
             .search_relationship(&worker(), "backup-only", MemoryFilter::default())
@@ -84,6 +110,40 @@ async fn online_backup_and_explicit_offline_restore_round_trip() {
 }
 
 #[tokio::test]
+async fn older_backup_epoch_is_rejected_and_preserves_current_database() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("source.db");
+    let anchor = directory.path().join("source.anchor");
+    let store = protected_store(&database, &anchor);
+    store
+        .append_relationship(&worker(), MemoryAppend::new("before backup"))
+        .await
+        .unwrap();
+    let artifact = store
+        .maintenance()
+        .backup_to_data_dir(directory.path())
+        .unwrap();
+    store
+        .append_relationship(&worker(), MemoryAppend::new("after backup"))
+        .await
+        .unwrap();
+    drop(store);
+    let current = std::fs::read(&database).unwrap();
+
+    assert_eq!(
+        SqliteMemoryAdmin::restore_offline(
+            &database,
+            &artifact.database_path,
+            &artifact.manifest_path,
+            integrity(&anchor),
+        ),
+        Err(MemoryRestoreError::Rejected)
+    );
+    assert_eq!(std::fs::read(&database).unwrap(), current);
+    protected_store(&database, &anchor);
+}
+
+#[tokio::test]
 async fn post_replace_failure_rolls_back_original_and_cleans_private_files() {
     let (directory, artifact) = backup_fixture().await;
     let live = directory.path().join("live.db");
@@ -92,6 +152,7 @@ async fn post_replace_failure_rolls_back_original_and_cleans_private_files() {
         &live,
         &artifact.database_path,
         &artifact.manifest_path,
+        integrity(directory.path().join("source.anchor")),
         true,
     )
     .unwrap_err();
@@ -113,7 +174,12 @@ async fn corrupt_old_interrupted_and_fk_invalid_artifacts_preserve_live_database
     bytes[last] ^= 0x5a;
     std::fs::write(&corrupt, bytes).unwrap();
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &corrupt, &artifact.manifest_path),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &corrupt,
+            &artifact.manifest_path,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
     assert_eq!(std::fs::read(&live).unwrap(), original);
@@ -123,7 +189,12 @@ async fn corrupt_old_interrupted_and_fk_invalid_artifacts_preserve_live_database
     manifest.sha256 = "00".repeat(32);
     std::fs::write(&bad_manifest, serde_json::to_vec(&manifest).unwrap()).unwrap();
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &artifact.database_path, &bad_manifest),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &artifact.database_path,
+            &bad_manifest,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
     assert_eq!(std::fs::read(&live).unwrap(), original);
@@ -140,14 +211,24 @@ async fn corrupt_old_interrupted_and_fk_invalid_artifacts_preserve_live_database
     drop(connection);
     let old_manifest = refreshed_manifest(directory.path(), "old", &old, &artifact.manifest);
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &old, &old_manifest),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &old,
+            &old_manifest,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
     assert_eq!(std::fs::read(&live).unwrap(), original);
 
     let missing_manifest = directory.path().join("interrupted.manifest.tmp");
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &artifact.database_path, &missing_manifest),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &artifact.database_path,
+            &missing_manifest,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
 
@@ -164,7 +245,12 @@ async fn corrupt_old_interrupted_and_fk_invalid_artifacts_preserve_live_database
     drop(connection);
     let fk_manifest = refreshed_manifest(directory.path(), "fk", &invalid_fk, &artifact.manifest);
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &invalid_fk, &fk_manifest),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &invalid_fk,
+            &fk_manifest,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
     assert_eq!(std::fs::read(&live).unwrap(), original);
@@ -173,7 +259,12 @@ async fn corrupt_old_interrupted_and_fk_invalid_artifacts_preserve_live_database
     sidecar.push("-wal");
     std::fs::write(&sidecar, b"interrupted").unwrap();
     assert_eq!(
-        SqliteMemoryAdmin::restore_offline(&live, &artifact.database_path, &artifact.manifest_path),
+        SqliteMemoryAdmin::restore_offline(
+            &live,
+            &artifact.database_path,
+            &artifact.manifest_path,
+            integrity(directory.path().join("source.anchor")),
+        ),
         Err(MemoryRestoreError::Rejected)
     );
     assert_eq!(std::fs::read(&live).unwrap(), original);
@@ -202,7 +293,7 @@ fn rotation_survives_restart_and_keeps_only_newest_verified_pairs() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("source.db");
     for expected in 1..=2 {
-        let store = SqliteMemoryStore::open(&database).unwrap();
+        let store = protected_store(&database, &directory.path().join("source.anchor"));
         store
             .maintenance()
             .backup_and_rotate(directory.path(), 2)
@@ -211,7 +302,7 @@ fn rotation_survives_restart_and_keeps_only_newest_verified_pairs() {
         assert_eq!(verified_pair_count(directory.path()), expected);
     }
     for _ in 0..3 {
-        let store = SqliteMemoryStore::open(&database).unwrap();
+        let store = protected_store(&database, &directory.path().join("source.anchor"));
         store
             .maintenance()
             .backup_and_rotate(directory.path(), 2)
@@ -224,7 +315,10 @@ fn rotation_survives_restart_and_keeps_only_newest_verified_pairs() {
 #[test]
 fn rotation_ignores_temporary_orphan_and_invalid_pairs() {
     let directory = tempfile::tempdir().unwrap();
-    let store = SqliteMemoryStore::open(directory.path().join("source.db")).unwrap();
+    let store = protected_store(
+        &directory.path().join("source.db"),
+        &directory.path().join("source.anchor"),
+    );
     let first = store
         .maintenance()
         .backup_and_rotate(directory.path(), 2)
@@ -268,7 +362,10 @@ fn rotation_ignores_temporary_orphan_and_invalid_pairs() {
 #[test]
 fn failed_new_backup_preserves_every_existing_verified_pair() {
     let directory = tempfile::tempdir().unwrap();
-    let store = SqliteMemoryStore::open(directory.path().join("source.db")).unwrap();
+    let store = protected_store(
+        &directory.path().join("source.db"),
+        &directory.path().join("source.anchor"),
+    );
     for _ in 0..2 {
         store
             .maintenance()
