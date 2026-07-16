@@ -28,6 +28,13 @@ pub struct WorkspaceDiff {
     pub patch: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewedMerge {
+    pub previous_commit: String,
+    pub candidate_commit: String,
+    pub merge_commit: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorktreeReconciliation {
     pub retained: usize,
@@ -227,24 +234,71 @@ impl GitWorktreeManager {
     /// Commit the reviewed worktree contents and merge them into the source
     /// checkout. The lease remains active so the coding session can continue.
     pub fn accept(&self, lease: &WorkspaceLease) -> Result<(), String> {
+        self.accept_reviewed(lease).map(|_| ())
+    }
+
+    /// Merge reviewed work with an explicit merge commit so a later observed
+    /// regression can be reverted without rewriting source history.
+    pub fn accept_reviewed(&self, lease: &WorkspaceLease) -> Result<Option<ReviewedMerge>, String> {
         git_ok(&lease.worktree_root, &["add", "-A"])?;
         let staged = git_output(&lease.worktree_root, &["diff", "--cached", "--quiet"])?;
-        if !staged.status.success() {
-            git_ok(
-                &lease.worktree_root,
-                &[
-                    "-c",
-                    "user.name=Sylvander",
-                    "-c",
-                    "user.email=sylvander@localhost",
-                    "commit",
-                    "-m",
-                    &format!("chore: accept session {}", lease.session_id),
-                ],
-            )?;
-            git_ok(&lease.source_root, &["merge", "--no-edit", &lease.branch])?;
+        if staged.status.success() {
+            return Ok(None);
         }
-        Ok(())
+        let previous_commit = git_text(&lease.source_root, &["rev-parse", "HEAD"])?;
+        git_ok(
+            &lease.worktree_root,
+            &[
+                "-c",
+                "user.name=Sylvander",
+                "-c",
+                "user.email=sylvander@localhost",
+                "commit",
+                "-m",
+                &format!("chore: accept session {}", lease.session_id),
+            ],
+        )?;
+        let candidate_commit = git_text(&lease.worktree_root, &["rev-parse", "HEAD"])?;
+        git_ok(
+            &lease.source_root,
+            &["merge", "--no-ff", "--no-edit", &lease.branch],
+        )?;
+        let merge_commit = git_text(&lease.source_root, &["rev-parse", "HEAD"])?;
+        Ok(Some(ReviewedMerge {
+            previous_commit,
+            candidate_commit,
+            merge_commit,
+        }))
+    }
+
+    /// Revert only the still-current reviewed merge. If source has advanced,
+    /// stop for a human instead of reverting unrelated later work.
+    pub fn rollback_reviewed(
+        &self,
+        lease: &WorkspaceLease,
+        merge_commit: &str,
+    ) -> Result<String, String> {
+        if merge_commit.len() != 40
+            || !merge_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || git_text(&lease.source_root, &["rev-parse", "HEAD"])? != merge_commit
+        {
+            return Err("reviewed merge is not the current source commit".into());
+        }
+        git_ok(
+            &lease.source_root,
+            &[
+                "-c",
+                "user.name=Sylvander",
+                "-c",
+                "user.email=sylvander@localhost",
+                "revert",
+                "-m",
+                "1",
+                "--no-edit",
+                merge_commit,
+            ],
+        )?;
+        git_text(&lease.source_root, &["rev-parse", "HEAD"])
     }
 
     pub fn discard(&self, lease: &WorkspaceLease) -> Result<(), String> {
@@ -456,6 +510,36 @@ mod tests {
             "before\n"
         );
         assert!(manager.open("session-2").is_err());
+    }
+
+    #[test]
+    fn reviewed_merge_can_be_reverted_only_before_source_advances() {
+        let repo = repo();
+        let state = tempfile::tempdir().unwrap();
+        let manager = GitWorktreeManager::new(state.path());
+        let lease = manager.create("experiment-1", repo.path()).unwrap();
+        fs::write(lease.effective_workspace.join("tracked.txt"), "candidate\n").unwrap();
+        let reviewed = manager.accept_reviewed(&lease).unwrap().unwrap();
+        assert_ne!(reviewed.previous_commit, reviewed.merge_commit);
+        assert_ne!(reviewed.candidate_commit, reviewed.merge_commit);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+            "candidate\n"
+        );
+        let rollback_commit = manager
+            .rollback_reviewed(&lease, &reviewed.merge_commit)
+            .unwrap();
+        assert_ne!(rollback_commit, reviewed.merge_commit);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+            "before\n"
+        );
+        assert!(
+            manager
+                .rollback_reviewed(&lease, &reviewed.merge_commit)
+                .is_err()
+        );
+        manager.discard(&lease).unwrap();
     }
 
     #[test]
