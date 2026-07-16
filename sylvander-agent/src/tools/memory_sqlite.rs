@@ -22,7 +22,8 @@ pub use backup::{
 };
 
 const COMPONENT: &str = "relationship_memory";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
+const MAX_UNCONFIRMED_CLOCK_FORWARD_SECS: i64 = 31 * 24 * 60 * 60;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
 const SCHEMA: &str = r"
 CREATE TABLE IF NOT EXISTS relationship_memories (
@@ -81,12 +82,18 @@ END;
 CREATE TABLE IF NOT EXISTS relationship_memory_retention_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   clock_watermark INTEGER NOT NULL,
+  quarantined_forward_time INTEGER,
+  quarantined_observed_at INTEGER,
+  last_confirmed_forward_time INTEGER,
   policy_revision INTEGER NOT NULL CHECK (policy_revision >= 1),
   default_ttl_days INTEGER NOT NULL CHECK (default_ttl_days > 0),
   max_ttl_days INTEGER NOT NULL CHECK (max_ttl_days >= default_ttl_days),
   expiry_grace_days INTEGER NOT NULL CHECK (expiry_grace_days >= 0),
   superseded_retention_days INTEGER NOT NULL CHECK (superseded_retention_days >= 0),
-  batch_limit INTEGER NOT NULL CHECK (batch_limit > 0)
+  batch_limit INTEGER NOT NULL CHECK (batch_limit > 0),
+  CHECK ((quarantined_forward_time IS NULL AND quarantined_observed_at IS NULL)
+      OR (quarantined_forward_time > clock_watermark AND quarantined_observed_at IS NOT NULL)),
+  CHECK (last_confirmed_forward_time IS NULL OR last_confirmed_forward_time <= clock_watermark)
 );
 CREATE TABLE IF NOT EXISTS relationship_memory_retention_runs (
   run_id TEXT PRIMARY KEY,
@@ -113,6 +120,22 @@ const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_js
 pub struct SqliteMemoryStore {
     connection: Arc<Mutex<Connection>>,
     retention_policy: RelationshipMemoryRetentionPolicy,
+    clock: Arc<dyn MemoryClock>,
+}
+
+/// Store-controlled wall clock. Runtime uses [`SystemMemoryClock`]; tests can
+/// inject a deterministic clock to exercise rollback and forward-jump safety.
+pub trait MemoryClock: Send + Sync {
+    fn now_secs(&self) -> i64;
+}
+
+#[derive(Debug, Default)]
+pub struct SystemMemoryClock;
+
+impl MemoryClock for SystemMemoryClock {
+    fn now_secs(&self) -> i64 {
+        crate::session::now_secs()
+    }
 }
 
 /// Store-internal maintenance capability. It is intentionally absent from
@@ -150,7 +173,15 @@ impl SqliteMemoryStore {
         path: impl AsRef<Path>,
         policy: RelationshipMemoryRetentionPolicy,
     ) -> Result<Self, MemoryStoreError> {
-        Self::from_connection(Connection::open(path).map_err(store_error)?, policy)
+        Self::open_with_retention_policy_and_clock(path, policy, Arc::new(SystemMemoryClock))
+    }
+
+    pub fn open_with_retention_policy_and_clock(
+        path: impl AsRef<Path>,
+        policy: RelationshipMemoryRetentionPolicy,
+        clock: Arc<dyn MemoryClock>,
+    ) -> Result<Self, MemoryStoreError> {
+        Self::from_connection(Connection::open(path).map_err(store_error)?, policy, clock)
     }
 
     pub fn open_in_memory() -> Result<Self, MemoryStoreError> {
@@ -160,21 +191,34 @@ impl SqliteMemoryStore {
     pub fn open_in_memory_with_retention_policy(
         policy: RelationshipMemoryRetentionPolicy,
     ) -> Result<Self, MemoryStoreError> {
-        Self::from_connection(Connection::open_in_memory().map_err(store_error)?, policy)
+        Self::open_in_memory_with_retention_policy_and_clock(policy, Arc::new(SystemMemoryClock))
+    }
+
+    pub fn open_in_memory_with_retention_policy_and_clock(
+        policy: RelationshipMemoryRetentionPolicy,
+        clock: Arc<dyn MemoryClock>,
+    ) -> Result<Self, MemoryStoreError> {
+        Self::from_connection(
+            Connection::open_in_memory().map_err(store_error)?,
+            policy,
+            clock,
+        )
     }
 
     fn from_connection(
         mut connection: Connection,
         retention_policy: RelationshipMemoryRetentionPolicy,
+        clock: Arc<dyn MemoryClock>,
     ) -> Result<Self, MemoryStoreError> {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
         migrate(&mut connection)?;
-        activate_policy(&mut connection, &retention_policy)?;
+        activate_policy(&mut connection, &retention_policy, clock.now_secs())?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             retention_policy,
+            clock,
         })
     }
 
@@ -199,7 +243,33 @@ impl SqliteMemoryStore {
 
 impl SqliteMemoryMaintenance {
     pub fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
-        self.purge_at(crate::session::now_secs())
+        self.purge_at(self.store.clock.now_secs())
+    }
+
+    /// Confirms the quarantined wall-clock value after an operator has
+    /// verified that the forward jump is real. Model-facing tools cannot
+    /// obtain this maintenance capability.
+    pub fn confirm_quarantined_clock(&self) -> Result<i64, MemoryStoreError> {
+        self.store.with_connection(|connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| retention_error())?;
+            let candidate: i64 = transaction
+                .query_row(
+                    "SELECT quarantined_forward_time FROM relationship_memory_retention_state WHERE singleton = 1 AND quarantined_forward_time IS NOT NULL",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| retention_error())?;
+            transaction
+                .execute(
+                    "UPDATE relationship_memory_retention_state SET clock_watermark = ?1, quarantined_forward_time = NULL, quarantined_observed_at = NULL, last_confirmed_forward_time = ?1 WHERE singleton = 1",
+                    [candidate],
+                )
+                .map_err(|_| retention_error())?;
+            transaction.commit().map_err(|_| retention_error())?;
+            Ok(candidate)
+        })
     }
 
     pub fn backup_to_data_dir(
@@ -209,19 +279,25 @@ impl SqliteMemoryMaintenance {
         backup::create_backup(&self.store, data_dir.as_ref())
     }
 
-    fn purge_at(&self, now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
+    fn purge_at(&self, wall_now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
         let policy = &self.store.retention_policy;
-        let grace = i64::from(policy.expiry_grace_days()) * 24 * 60 * 60;
-        let superseded_age = i64::from(policy.superseded_retention_days()) * 24 * 60 * 60;
-        let expired_cutoff = now.checked_sub(grace).ok_or_else(retention_error)?;
-        let superseded_cutoff = now
-            .checked_sub(superseded_age)
-            .ok_or_else(retention_error)?;
         self.store.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|_| retention_error())?;
-            advance_retention_clock(&transaction, policy.revision(), now)?;
+            let clock = resolve_effective_now(&transaction, policy.revision(), wall_now)?;
+            if clock.quarantined {
+                transaction.commit().map_err(|_| retention_error())?;
+                return Err(retention_error());
+            }
+            let now = clock.now;
+            let grace = i64::from(policy.expiry_grace_days()) * 24 * 60 * 60;
+            let superseded_age =
+                i64::from(policy.superseded_retention_days()) * 24 * 60 * 60;
+            let expired_cutoff = now.checked_sub(grace).ok_or_else(retention_error)?;
+            let superseded_cutoff = now
+                .checked_sub(superseded_age)
+                .ok_or_else(retention_error)?;
             let candidates = {
                 let mut statement = transaction.prepare(
                     "SELECT m.record_key, m.revision, CASE WHEN m.superseded_by_record_key IS NOT NULL THEN 1 ELSE 0 END FROM relationship_memories m WHERE ((m.superseded_by_record_key IS NOT NULL AND m.updated_at <= ?1) OR (m.superseded_by_record_key IS NULL AND m.expires_at IS NOT NULL AND m.expires_at <= ?2)) AND NOT EXISTS (SELECT 1 FROM relationship_memories dependent WHERE dependent.superseded_by_record_key = m.record_key) ORDER BY COALESCE(m.expires_at, m.updated_at), m.record_key LIMIT ?3",
@@ -267,22 +343,26 @@ impl MemoryStore for SqliteMemoryStore {
         let owner = ctx.relationship_owner()?;
         let append = self.retention_policy.apply_append(append)?;
         validate_append(&append)?;
-        let now = crate::session::now_secs();
-        let entry = MemoryEntry::materialize(
-            uuid::Uuid::new_v4().to_string(),
-            owner,
-            append,
-            ctx.provenance(),
-            self.retention_policy.revision(),
-            now,
-        )?;
+        let wall_now = self.clock.now_secs();
+        let id = uuid::Uuid::new_v4().to_string();
+        let provenance = ctx.provenance();
         let record_key = uuid::Uuid::new_v4().to_string();
-        self.with_connection(|connection| {
+        self.with_connection(move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
-                .map_err(|_| store_failure())?;
+            let now =
+                resolve_effective_now(&transaction, self.retention_policy.revision(), wall_now)
+                    .map_err(|_| store_failure())?
+                    .now;
+            let entry = MemoryEntry::materialize(
+                id,
+                owner,
+                append,
+                provenance,
+                self.retention_policy.revision(),
+                now,
+            )?;
             insert_entry(&transaction, &record_key, &entry)?;
             append_audit(
                 &transaction,
@@ -294,9 +374,9 @@ impl MemoryStore for SqliteMemoryStore {
                 now,
                 0x3f,
             )?;
-            transaction.commit().map_err(store_error)
-        })?;
-        Ok(entry)
+            transaction.commit().map_err(store_error)?;
+            Ok(entry)
+        })
     }
 
     async fn search_relationship(
@@ -317,9 +397,19 @@ impl MemoryStore for SqliteMemoryStore {
             unreachable!("relationship constructor returned another scope")
         };
         let query = query.to_lowercase();
-        let now = crate::session::now_secs();
+        let wall_now = self.clock.now_secs();
         self.with_connection(|connection| {
-            let mut statement = connection
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(search_error)?;
+            let now = resolve_effective_now(
+                &transaction,
+                self.retention_policy.revision(),
+                wall_now,
+            )
+            .map_err(|_| search_error(rusqlite::Error::InvalidQuery))?
+            .now;
+            let mut statement = transaction
                 .prepare(&format!("{ENTRY_SELECT} WHERE m.owner_user = ?1 AND m.owner_agent = ?2 AND m.superseded_by_record_key IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?3) ORDER BY m.importance DESC, m.created_at DESC, m.id ASC"))
                 .map_err(search_error)?;
             let rows = statement
@@ -341,6 +431,8 @@ impl MemoryStore for SqliteMemoryStore {
                     break;
                 }
             }
+            drop(statement);
+            transaction.commit().map_err(search_error)?;
             Ok(results)
         })
     }
@@ -360,13 +452,18 @@ impl MemoryStore for SqliteMemoryStore {
         self.retention_policy.validate_patch(&patch)?;
         let updates_expiry = patch.expiry.is_some();
         validate_revision(expected_revision)?;
-        let now = crate::session::now_secs();
+        let wall_now = self.clock.now_secs();
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|_| mutation_error())?;
-            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
-                .map_err(|_| mutation_error())?;
+            let now = resolve_effective_now(
+                &transaction,
+                self.retention_policy.revision(),
+                wall_now,
+            )
+            .map_err(|_| mutation_error())?
+            .now;
             let (record_key, revision) = select_active_record(
                 &transaction,
                 &user_id,
@@ -420,19 +517,21 @@ impl MemoryStore for SqliteMemoryStore {
             MemoryOwner::Relationship { user_id, agent_id } => (user_id.clone(), agent_id.clone()),
             _ => unreachable!("relationship constructor returned another scope"),
         };
-        let now = crate::session::now_secs();
-        let replacement = MemoryEntry::materialize(
-            uuid::Uuid::new_v4().to_string(),
-            owner,
-            replacement,
-            ctx.provenance(),
-            self.retention_policy.revision(),
-            now,
-        )?;
+        let wall_now = self.clock.now_secs();
+        let replacement_id = uuid::Uuid::new_v4().to_string();
+        let provenance = ctx.provenance();
         let replacement_key = uuid::Uuid::new_v4().to_string();
-        self.with_connection(|connection| {
+        self.with_connection(move |connection| {
             let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| mutation_error())?;
-            advance_retention_clock(&transaction, self.retention_policy.revision(), now).map_err(|_| mutation_error())?;
+            let now = resolve_effective_now(&transaction, self.retention_policy.revision(), wall_now).map_err(|_| mutation_error())?.now;
+            let replacement = MemoryEntry::materialize(
+                replacement_id,
+                owner,
+                replacement,
+                provenance,
+                self.retention_policy.revision(),
+                now,
+            )?;
             let (record_key, revision) = select_active_record(&transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
             if revision != expected_revision {
                 return Err(MemoryStoreError::Conflict);
@@ -466,13 +565,18 @@ impl MemoryStore for SqliteMemoryStore {
         validate_revision(expected_revision)?;
         let expected_revision =
             i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?;
-        let now = crate::session::now_secs();
+        let wall_now = self.clock.now_secs();
         self.with_connection(|connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(delete_error)?;
-            advance_retention_clock(&transaction, self.retention_policy.revision(), now)
-                .map_err(|_| MemoryStoreError::Delete("memory delete failed".into()))?;
+            let now = resolve_effective_now(
+                &transaction,
+                self.retention_policy.revision(),
+                wall_now,
+            )
+            .map_err(|_| MemoryStoreError::Delete("memory delete failed".into()))?
+            .now;
             let visible: Option<(String, i64)> = transaction
                 .query_row(
                     "SELECT record_key, revision FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3 AND superseded_by_record_key IS NULL AND (expires_at IS NULL OR expires_at > ?4)",
@@ -519,16 +623,28 @@ impl MemoryStore for SqliteMemoryStore {
             unreachable!("relationship constructor returned another scope")
         };
         validate_memory_id(id)?;
-        let now = crate::session::now_secs();
+        let wall_now = self.clock.now_secs();
         self.with_connection(|connection| {
-            connection
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_error)?;
+            let now = resolve_effective_now(
+                &transaction,
+                self.retention_policy.revision(),
+                wall_now,
+            )
+            .map_err(|_| store_failure())?
+            .now;
+            let entry = transaction
                 .query_row(
                     &format!("{ENTRY_SELECT} WHERE m.owner_user = ?1 AND m.owner_agent = ?2 AND m.id = ?3 AND m.superseded_by_record_key IS NULL AND (m.expires_at IS NULL OR m.expires_at > ?4)"),
                     params![user_id.0, agent_id.0, id, now],
                     |row| decode_row(row, &user_id, &agent_id),
                 )
                 .optional()
-                .map_err(store_error)
+                .map_err(store_error)?;
+            transaction.commit().map_err(store_error)?;
+            Ok(entry)
         })
     }
 }
@@ -628,8 +744,8 @@ fn normalize_sql(sql: &str) -> String {
 fn activate_policy(
     connection: &mut Connection,
     policy: &RelationshipMemoryRetentionPolicy,
+    wall_now: i64,
 ) -> Result<(), MemoryStoreError> {
-    let now = crate::session::now_secs();
     let policy_revision_sql = i64::try_from(policy.revision()).map_err(|_| retention_error())?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -642,7 +758,7 @@ fn activate_policy(
         )
         .optional()
         .map_err(|_| retention_error())?;
-    if let Some((revision, default, max, grace, superseded, batch, watermark)) = existing {
+    if let Some((revision, default, max, grace, superseded, batch, _watermark)) = existing {
         let same = (default, max, grace, superseded, batch)
             == (
                 policy.default_ttl_days(),
@@ -651,47 +767,86 @@ fn activate_policy(
                 policy.superseded_retention_days(),
                 policy.batch_limit(),
             );
-        if revision > policy.revision()
-            || (revision == policy.revision() && !same)
-            || now < watermark
-        {
+        if revision > policy.revision() || (revision == policy.revision() && !same) {
             return Err(retention_error());
         }
         transaction.execute(
-            "UPDATE relationship_memory_retention_state SET clock_watermark = ?1, policy_revision = ?2, default_ttl_days = ?3, max_ttl_days = ?4, expiry_grace_days = ?5, superseded_retention_days = ?6, batch_limit = ?7 WHERE singleton = 1",
-            params![now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
+            "UPDATE relationship_memory_retention_state SET policy_revision = ?1, default_ttl_days = ?2, max_ttl_days = ?3, expiry_grace_days = ?4, superseded_retention_days = ?5, batch_limit = ?6 WHERE singleton = 1",
+            params![policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
         ).map_err(|_| retention_error())?;
+        resolve_effective_now(&transaction, policy.revision(), wall_now)?;
     } else {
         transaction.execute(
-            "INSERT INTO relationship_memory_retention_state (singleton, clock_watermark, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
+            "INSERT INTO relationship_memory_retention_state (singleton, clock_watermark, quarantined_forward_time, quarantined_observed_at, last_confirmed_forward_time, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, NULL, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![wall_now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
         ).map_err(|_| retention_error())?;
     }
     transaction.commit().map_err(|_| retention_error())
 }
 
-fn advance_retention_clock(
+#[derive(Debug, Clone, Copy)]
+struct EffectiveClock {
+    now: i64,
+    quarantined: bool,
+}
+
+fn resolve_effective_now(
     transaction: &rusqlite::Transaction<'_>,
     policy_revision: u64,
-    now: i64,
-) -> Result<(), MemoryStoreError> {
-    let watermark: i64 = transaction
+    wall_now: i64,
+) -> Result<EffectiveClock, MemoryStoreError> {
+    let (watermark, quarantined): (i64, Option<i64>) = transaction
         .query_row(
-            "SELECT clock_watermark FROM relationship_memory_retention_state WHERE singleton = 1 AND policy_revision = ?1",
+            "SELECT clock_watermark, quarantined_forward_time FROM relationship_memory_retention_state WHERE singleton = 1 AND policy_revision = ?1",
             [i64::try_from(policy_revision).map_err(|_| retention_error())?],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|_| retention_error())?;
-    if now < watermark {
-        return Err(retention_error());
+    if wall_now <= watermark {
+        return Ok(EffectiveClock {
+            now: watermark,
+            quarantined: quarantined.is_some(),
+        });
+    }
+    if let Some(candidate) = quarantined {
+        if wall_now > candidate {
+            transaction
+                .execute(
+                    "UPDATE relationship_memory_retention_state SET quarantined_forward_time = ?1, quarantined_observed_at = ?1 WHERE singleton = 1",
+                    [wall_now],
+                )
+                .map_err(|_| retention_error())?;
+        }
+        return Ok(EffectiveClock {
+            now: watermark,
+            quarantined: true,
+        });
+    }
+    let forward = wall_now
+        .checked_sub(watermark)
+        .ok_or_else(retention_error)?;
+    if forward > MAX_UNCONFIRMED_CLOCK_FORWARD_SECS {
+        transaction
+            .execute(
+                "UPDATE relationship_memory_retention_state SET quarantined_forward_time = ?1, quarantined_observed_at = ?1 WHERE singleton = 1",
+                [wall_now],
+            )
+            .map_err(|_| retention_error())?;
+        return Ok(EffectiveClock {
+            now: watermark,
+            quarantined: true,
+        });
     }
     transaction
         .execute(
             "UPDATE relationship_memory_retention_state SET clock_watermark = ?1 WHERE singleton = 1",
-            [now],
+            [wall_now],
         )
         .map_err(|_| retention_error())?;
-    Ok(())
+    Ok(EffectiveClock {
+        now: wall_now,
+        quarantined: false,
+    })
 }
 
 fn append_maintenance_audit(
@@ -963,3 +1118,7 @@ mod hardening_tests;
 #[cfg(test)]
 #[path = "memory_sqlite_retention_tests.rs"]
 mod retention_tests;
+
+#[cfg(test)]
+#[path = "memory_sqlite_clock_tests.rs"]
+mod clock_tests;

@@ -24,8 +24,8 @@ pub use memory::{
 };
 pub use memory_read::MemoryReadTool;
 pub use memory_sqlite::{
-    MemoryBackupArtifact, MemoryBackupManifest, MemoryPurgeReport, MemoryRestoreError,
-    SqliteMemoryAdmin, SqliteMemoryMaintenance, SqliteMemoryStore,
+    MemoryBackupArtifact, MemoryBackupManifest, MemoryClock, MemoryPurgeReport, MemoryRestoreError,
+    SqliteMemoryAdmin, SqliteMemoryMaintenance, SqliteMemoryStore, SystemMemoryClock,
 };
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;
