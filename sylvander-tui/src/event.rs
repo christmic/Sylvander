@@ -63,6 +63,16 @@ pub enum DomainEvent {
     WorkspaceRollbackFailed {
         reason: String,
     },
+    CodingSessionDiffLoaded {
+        status: String,
+        patch: String,
+    },
+    CodingSessionAccepted,
+    CodingSessionDiscarded,
+    CodingSessionOperationFailed {
+        operation: String,
+        reason: String,
+    },
     WorkspaceDiffLoaded {
         scope: WorkspaceDiffScope,
         diff: String,
@@ -286,6 +296,10 @@ impl DomainEvent {
             | Self::WorkspaceRollbackPreviewed { .. }
             | Self::WorkspaceRollbackCompleted { .. }
             | Self::WorkspaceRollbackFailed { .. }
+            | Self::CodingSessionDiffLoaded { .. }
+            | Self::CodingSessionAccepted
+            | Self::CodingSessionDiscarded
+            | Self::CodingSessionOperationFailed { .. }
             | Self::SessionCreated { .. }
             | Self::SessionsLoaded { .. }
             | Self::SessionHistoryLoaded { .. }
@@ -378,6 +392,15 @@ pub enum Action {
     ConfirmWorkspaceRollback {
         session_id: String,
         expected_turn_id: String,
+    },
+    InspectCodingSession {
+        session_id: String,
+    },
+    AcceptCodingSession {
+        session_id: String,
+    },
+    DiscardCodingSession {
+        session_id: String,
     },
     SelectModel {
         session_id: String,

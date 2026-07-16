@@ -1443,6 +1443,81 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             }
         }
+        ClientMsg::InspectCodingSession { session_id } => {
+            let Some(ui) = &ctx.ui else {
+                let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                    session_id,
+                    operation: "inspect".into(),
+                    reason: "UI service is unavailable".into(),
+                });
+                return;
+            };
+            match ui
+                .inspect_coding_session(boundary, &SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(diff) => {
+                    let _ = tx.send(ServerMsg::CodingSessionDiff { session_id, diff });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                        session_id,
+                        operation: "inspect".into(),
+                        reason: error.message,
+                    });
+                }
+            }
+        }
+        ClientMsg::AcceptCodingSession { session_id } => {
+            let Some(ui) = &ctx.ui else {
+                let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                    session_id,
+                    operation: "accept".into(),
+                    reason: "UI service is unavailable".into(),
+                });
+                return;
+            };
+            match ui
+                .accept_coding_session(boundary, &SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::CodingSessionAccepted { session_id });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                        session_id,
+                        operation: "accept".into(),
+                        reason: error.message,
+                    });
+                }
+            }
+        }
+        ClientMsg::DiscardCodingSession { session_id } => {
+            let Some(ui) = &ctx.ui else {
+                let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                    session_id,
+                    operation: "discard".into(),
+                    reason: "UI service is unavailable".into(),
+                });
+                return;
+            };
+            match ui
+                .discard_coding_session(boundary, &SessionId::new(session_id.clone()))
+                .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(ServerMsg::CodingSessionDiscarded { session_id });
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::CodingSessionOperationFailed {
+                        session_id,
+                        operation: "discard".into(),
+                        reason: error.message,
+                    });
+                }
+            }
+        }
         ClientMsg::SelectModel {
             session_id,
             model,

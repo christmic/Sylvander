@@ -117,6 +117,15 @@ pub enum UiClientMessage {
         session_id: String,
         expected_turn_id: String,
     },
+    InspectCodingSession {
+        session_id: String,
+    },
+    AcceptCodingSession {
+        session_id: String,
+    },
+    DiscardCodingSession {
+        session_id: String,
+    },
     SelectModel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -365,6 +374,21 @@ pub enum UiServerMessage {
         session_id: String,
         reason: String,
     },
+    CodingSessionDiff {
+        session_id: String,
+        diff: CodingSessionDiff,
+    },
+    CodingSessionAccepted {
+        session_id: String,
+    },
+    CodingSessionDiscarded {
+        session_id: String,
+    },
+    CodingSessionOperationFailed {
+        session_id: String,
+        operation: String,
+        reason: String,
+    },
     OperationError {
         operation: String,
         message: String,
@@ -394,6 +418,14 @@ pub struct UiSessionInfo {
 pub struct UiHistoryMessage {
     pub role: String,
     pub text: String,
+}
+
+/// Reviewable state of one server-managed coding worktree.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodingSessionDiff {
+    pub status: String,
+    pub patch: String,
 }
 
 fn default_approval_scopes() -> Vec<ApprovalScope> {
