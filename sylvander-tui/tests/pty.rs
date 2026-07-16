@@ -9,7 +9,7 @@
 use std::io::{BufRead, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -22,6 +22,13 @@ fn unique_socket_path() -> PathBuf {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos())
     ))
+}
+
+fn pty_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn spawn_server(
@@ -60,8 +67,16 @@ fn spawn_server(
                     .send(message.clone())
                     .expect("report client message");
                 let responses: &[&str] = match message["type"].as_str() {
+                    Some("discover_agents") => &[
+                        r#"{"type":"agents_discovered","agents":[{"id":"pty-agent","revision":1,"name":"PTY Agent","provider_id":"test","default_model_id":"test-model","models":[],"default_prompt_profile":null,"agent_workspace":null}]}"#,
+                    ],
+                    Some("get_runtime_info") => &[
+                        r#"{"type":"runtime_info","model":"test-model","reasoning_effort":"medium","models":[],"permissions":{"file_access":"workspace_write","network_access":"denied","approval_policy":"ask"},"capabilities":0,"approval_enabled":true,"max_attachment_bytes":1048576,"platform":{}}"#,
+                    ],
+                    Some("create_session") => {
+                        &[r#"{"type":"session_created","session_id":"pty-session"}"#]
+                    }
                     Some("chat") if message["text"] == "hello from PTY" => &[
-                        r#"{"type":"session_created","session_id":"pty-session"}"#,
                         r#"{"type":"text_delta","session_id":"pty-session","delta":"PTY response rendered"}"#,
                         r#"{"type":"done","session_id":"pty-session","text":"PTY response rendered"}"#,
                         r#"{"type":"approval_request","session_id":"pty-session","batch_id":"pty-approval","tools":[{"call_id":"pty-tool","tool_name":"bash","input":{"command":"rm -rf build"}}],"allowed_scopes":["once"]}"#,
@@ -100,6 +115,28 @@ fn spawn_server(
     (server, message_rx)
 }
 
+fn spawn_welcome_server(path: &Path) -> std::thread::JoinHandle<()> {
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path).expect("bind surface test socket");
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept surface connection");
+        let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone socket"));
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read protocol hello");
+        let hello: serde_json::Value = serde_json::from_str(&line).expect("parse protocol hello");
+        assert_eq!(hello["type"], "hello");
+        writeln!(
+            stream,
+            r#"{{"type":"welcome","protocol":{{"server_name":"surface-test","version":1,"capabilities":[]}}}}"#
+        )
+        .expect("send welcome");
+        stream.flush().expect("flush welcome");
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    })
+}
+
 fn wait_for_output(captured: &Mutex<Vec<u8>>, needle: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -116,19 +153,22 @@ fn recv_message(
     expected_type: &str,
 ) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(3);
+    let mut observed = Vec::new();
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let message = messages
-            .recv_timeout(remaining)
-            .unwrap_or_else(|error| panic!("missing client message {expected_type}: {error}"));
+        let message = messages.recv_timeout(remaining).unwrap_or_else(|error| {
+            panic!("missing client message {expected_type}: {error}; observed={observed:?}")
+        });
         if message["type"] == expected_type {
             return message;
         }
+        observed.push(message["type"].clone());
     }
 }
 
 #[test]
 fn binary_completes_chat_decisions_interrupt_and_resize() {
+    let _guard = pty_test_guard();
     let socket_path = unique_socket_path();
     let (server, messages) = spawn_server(&socket_path);
     let pair = native_pty_system()
@@ -184,6 +224,7 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
             String::from_utf8_lossy(&rendered)
         );
     }
+    std::thread::sleep(Duration::from_millis(200));
     writer.write_all(b"hello from PTY\r").expect("type chat");
     writer.flush().expect("flush chat input");
     let submitted = recv_message(&messages, "chat");
@@ -296,4 +337,104 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
 
     server.join().expect("join PTY server");
     let _ = std::fs::remove_file(socket_path);
+}
+
+#[test]
+fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
+    let _guard = pty_test_guard();
+    for (term, initial) in [
+        (
+            "screen-256color",
+            PtySize {
+                rows: 18,
+                cols: 40,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        ),
+        (
+            "xterm-ghostty",
+            PtySize {
+                rows: 24,
+                cols: 88,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        ),
+    ] {
+        let socket_path = unique_socket_path();
+        let server = spawn_welcome_server(&socket_path);
+        let pair = native_pty_system()
+            .openpty(initial)
+            .expect("open surface PTY");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sylvander-tui"));
+        command.arg(&socket_path);
+        command.env("TERM", term);
+        command.env("SYLVANDER_TUI_REDUCED_MOTION", "true");
+        command.env("SYLVANDER_HISTORY_PATH", "");
+        let mut child = pair
+            .slave
+            .spawn_command(command)
+            .expect("start surface TUI");
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().expect("clone PTY reader");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let reader_captured = captured.clone();
+        let output = std::thread::spawn(move || {
+            let mut buffer = [0; 4096];
+            loop {
+                let count = reader.read(&mut buffer).expect("read surface output");
+                if count == 0 {
+                    break;
+                }
+                reader_captured
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..count]);
+            }
+        });
+        let mut writer = pair.master.take_writer().expect("surface writer");
+        assert!(
+            wait_for_output(
+                &captured,
+                "What should we work through?",
+                Duration::from_secs(3)
+            ),
+            "{term} did not render the welcome transcript"
+        );
+        for size in [
+            PtySize {
+                rows: 24,
+                cols: 88,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            PtySize {
+                rows: 30,
+                cols: 132,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        ] {
+            pair.master.resize(size).expect("resize surface PTY");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        writer.write_all(b"\x1b").expect("exit surface TUI");
+        writer.flush().expect("flush surface exit");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while child.try_wait().expect("poll surface TUI").is_none() {
+            if Instant::now() >= deadline {
+                child.kill().expect("kill stuck surface TUI");
+                panic!("{term} TUI did not exit");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(writer);
+        output.join().expect("join surface reader");
+        let rendered = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
+        assert!(rendered.contains("Sylvander"));
+        assert!(rendered.contains("What should we work through?"));
+        server.join().expect("join surface server");
+        let _ = std::fs::remove_file(socket_path);
+    }
 }
