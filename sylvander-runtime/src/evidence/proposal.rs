@@ -258,3 +258,6 @@ pub(super) fn parse_status(value: &str) -> Result<ImprovementProposalStatus, Evi
         _ => Err(EvidenceError::InvalidProposalData),
     }
 }
+
+#[cfg(test)]
+mod tests;
