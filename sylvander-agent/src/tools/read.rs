@@ -22,6 +22,8 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink};
 use crate::tool_context::ToolContext;
 
+const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
+
 /// Read a file from disk. Paths are resolved relative to `workdir`.
 #[derive(Debug, Clone)]
 pub struct ReadTool {
@@ -81,8 +83,12 @@ impl Tool for ReadTool {
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
 
         let target = ctx.execution_target_for(&self.workdir);
-        let bytes = match ctx.executor.read_file(&target, path_str).await {
-            Ok(bytes) => bytes,
+        let read = match ctx
+            .executor
+            .read_file_bounded(&target, path_str, MAX_READ_FILE_BYTES)
+            .await
+        {
+            Ok(read) => read,
             Err(crate::workspace_executor::WorkspaceExecutorError::InvalidPath(_)) => {
                 return Err(ToolError::Other(format!(
                     "path `{path_str}` escapes workdir"
@@ -96,15 +102,13 @@ impl Tool for ReadTool {
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
 
-        const MAX_BYTES: usize = 1024 * 1024;
-        if bytes.len() > MAX_BYTES {
+        if read.truncated {
             return Ok(ToolOutput::err(format!(
                 "file too large ({} bytes > {} byte limit)",
-                bytes.len(),
-                MAX_BYTES
+                read.total_bytes, MAX_READ_FILE_BYTES
             )));
         }
-        let content = match String::from_utf8(bytes) {
+        let content = match String::from_utf8(read.bytes) {
             Ok(content) => content,
             Err(error) => return Ok(ToolOutput::err(format!("file is not UTF-8 text: {error}"))),
         };
@@ -236,6 +240,25 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("cannot resolve"));
+    }
+
+    #[tokio::test]
+    async fn read_rejects_oversized_file_without_returning_partial_content() {
+        let (_dir, workdir) = setup_workspace();
+        fs::write(
+            workdir.join("large.txt"),
+            vec![b'x'; MAX_READ_FILE_BYTES + 1],
+        )
+        .unwrap();
+
+        let out = ReadTool::new(&workdir)
+            .execute(&ctx(), json!({"file_path": "large.txt"}))
+            .await
+            .unwrap();
+
+        assert!(out.is_error);
+        assert!(out.content.contains("file too large"));
+        assert!(out.content.contains(&(MAX_READ_FILE_BYTES + 1).to_string()));
     }
 
     #[tokio::test]
