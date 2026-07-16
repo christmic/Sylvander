@@ -26,6 +26,7 @@ pub mod schema;
 pub mod session_context;
 pub mod types;
 pub mod ui;
+pub mod user_profile;
 
 pub use agent_admin::*;
 pub use boundary::*;
@@ -36,3 +37,4 @@ pub use registry_admin::*;
 pub use session_context::*;
 pub use types::*;
 pub use ui::*;
+pub use user_profile::*;
