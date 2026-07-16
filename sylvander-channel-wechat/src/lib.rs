@@ -101,16 +101,24 @@ impl Channel for WechatChannel {
             .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
-        let listener = tokio::net::TcpListener::bind(self.webhook_addr)
-            .await
-            .unwrap();
+        let listener = match tokio::net::TcpListener::bind(self.webhook_addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                warn!(%error, addr = %self.webhook_addr, "wechat channel bind failed");
+                outgoing.abort();
+                let _ = outgoing.await;
+                return;
+            }
+        };
         info!(addr = %self.webhook_addr, "wechat channel listening");
         state.ctx.mark_ready();
         let shutdown = state.ctx.clone();
-        axum::serve(listener, app)
+        if let Err(error) = axum::serve(listener, app)
             .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
             .await
-            .unwrap();
+        {
+            warn!(%error, "wechat channel server failed");
+        }
         outgoing.abort();
         let _ = outgoing.await;
     }
@@ -351,10 +359,16 @@ async fn find_by_user(
 // ===========================================================================
 
 async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
-    let mut rx = ctx
-        .subscribe(SubscriptionFilter::all())
+    let mut rx = match ctx
+        .subscribe(SubscriptionFilter::for_agent(ch.agent_id.clone()))
         .await
-        .expect("subscribe");
+    {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            warn!(%error, "wechat: outgoing subscribe failed");
+            return;
+        }
+    };
 
     while let Some(msg) = rx.recv().await {
         let MessageKind::Stream(ref ev) = msg.kind else {

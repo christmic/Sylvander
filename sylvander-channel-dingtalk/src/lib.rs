@@ -202,8 +202,13 @@ async fn find_by_conversation_id(
 // Outgoing: bus events → DingTalk webhook
 // ===========================================================================
 
-async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, instance_id: String) {
-    let mut rx = match ctx.subscribe(SubscriptionFilter::all()).await {
+async fn run_outgoing(
+    ctx: Arc<ChannelContext>,
+    client: Client,
+    instance_id: String,
+    agent_id: AgentId,
+) {
+    let mut rx = match ctx.subscribe(SubscriptionFilter::for_agent(agent_id)).await {
         Ok(rx) => rx,
         Err(e) => {
             warn!(error = %e, "dingtalk: outgoing subscribe failed");
@@ -320,8 +325,9 @@ impl Channel for DingTalkChannel {
         let out_ctx = ctx.clone();
         let out_client = self.client.clone();
         let out_instance_id = self.instance_id.clone();
+        let out_agent_id = self.agent_id.clone();
         let outgoing = tokio::spawn(async move {
-            run_outgoing(out_ctx, out_client, out_instance_id).await;
+            run_outgoing(out_ctx, out_client, out_instance_id, out_agent_id).await;
         });
 
         // Incoming loop (blocking — runs until WebSocket closes)
