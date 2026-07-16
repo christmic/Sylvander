@@ -186,3 +186,315 @@ fn digest_parts(parts: &[&[u8]]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+impl PrincipalBindingStore {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, PrincipalBindingError> {
+        let path = path.as_ref().to_path_buf();
+        Self::open_with(move || Connection::open(path), Arc::new(SystemClock)).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn open_in_memory(
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, PrincipalBindingError> {
+        Self::open_with(Connection::open_in_memory, clock).await
+    }
+
+    async fn open_with(
+        open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self, PrincipalBindingError> {
+        let connection = task::spawn_blocking(move || {
+            let mut connection = open().map_err(storage)?;
+            connection
+                .busy_timeout(Duration::from_secs(5))
+                .map_err(storage)?;
+            connection
+                .execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(storage)?;
+            initialize_schema(&mut connection)?;
+            Ok(connection)
+        })
+        .await
+        .map_err(|_| PrincipalBindingError::Task)??;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            clock,
+        })
+    }
+
+    async fn run<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, PrincipalBindingError> + Send + 'static,
+    ) -> Result<T, PrincipalBindingError> {
+        let connection = self.connection.clone();
+        task::spawn_blocking(move || {
+            let mut connection = connection.blocking_lock();
+            operation(&mut connection)
+        })
+        .await
+        .map_err(|_| PrincipalBindingError::Task)?
+    }
+
+    /// Register a stable user identity. User ids are never implicitly created
+    /// while linking a channel identity.
+    pub async fn register_user(&self, user_id: UserId) -> Result<(), PrincipalBindingError> {
+        validate_id("user id", &user_id.0)?;
+        if user_id == UserId::system() {
+            return Err(PrincipalBindingError::Invalid {
+                field: "user id",
+                reason: "the system sentinel cannot represent a human user".into(),
+            });
+        }
+        let created_at = self.clock.now();
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO users(user_id,created_at) VALUES (?1,?2)",
+                    params![user_id.0, created_at],
+                )
+                .map_err(|error| {
+                    if is_unique_constraint(&error) {
+                        PrincipalBindingError::UserAlreadyExists(user_id.0)
+                    } else {
+                        storage(error)
+                    }
+                })?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Issue a challenge for an unbound principal and an existing user.
+    /// A newer challenge for the same principal invalidates the older one.
+    pub async fn begin_link(
+        &self,
+        principal: ExternalPrincipal,
+        user_id: UserId,
+        ttl: Duration,
+    ) -> Result<IssuedLinkChallenge, PrincipalBindingError> {
+        validate_id("user id", &user_id.0)?;
+        if !(MIN_CHALLENGE_TTL..=MAX_CHALLENGE_TTL).contains(&ttl) {
+            return Err(PrincipalBindingError::Invalid {
+                field: "challenge ttl",
+                reason: format!(
+                    "must be between {} and {} seconds",
+                    MIN_CHALLENGE_TTL.as_secs(),
+                    MAX_CHALLENGE_TTL.as_secs()
+                ),
+            });
+        }
+        let now = self.clock.now();
+        let ttl_seconds =
+            i64::try_from(ttl.as_secs()).map_err(|_| PrincipalBindingError::Invalid {
+                field: "challenge ttl",
+                reason: "exceeds the supported range".into(),
+            })?;
+        let expires_at = now.saturating_add(ttl_seconds);
+        let challenge_id = Uuid::new_v4().to_string();
+        let secret = Uuid::new_v4().as_simple().to_string();
+        let secret_hash = challenge_digest(&challenge_id, &secret);
+        let external_digest = principal.digest();
+        let result_id = challenge_id.clone();
+        let transport = principal.transport;
+        let instance = principal.channel_instance_id;
+        let target_user = user_id.0;
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            require_user(&transaction, &target_user)?;
+            if load_binding(
+                &transaction,
+                &transport,
+                &instance,
+                &external_digest,
+            )?
+            .is_some()
+            {
+                return Err(PrincipalBindingError::AlreadyLinked);
+            }
+            transaction
+                .execute(
+                    "DELETE FROM link_challenges WHERE transport=?1 AND channel_instance_id=?2 AND external_principal_digest=?3",
+                    params![transport, instance, external_digest],
+                )
+                .map_err(storage)?;
+            transaction
+                .execute(
+                    "INSERT INTO link_challenges(challenge_id,transport,channel_instance_id,external_principal_digest,target_user_id,secret_hash,expires_at,attempts,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)",
+                    params![challenge_id, transport, instance, external_digest, target_user, secret_hash, expires_at, now],
+                )
+                .map_err(storage)?;
+            transaction.commit().map_err(storage)
+        })
+        .await?;
+        Ok(IssuedLinkChallenge {
+            challenge_id: result_id,
+            secret: LinkSecret(secret),
+            expires_at,
+        })
+    }
+
+    /// Atomically consume a challenge and create revision one of a binding.
+    pub async fn confirm_link(
+        &self,
+        principal: ExternalPrincipal,
+        challenge_id: &str,
+        secret: &str,
+    ) -> Result<PrincipalBinding, PrincipalBindingError> {
+        validate_id("challenge id", challenge_id)?;
+        validate_id("challenge secret", secret)?;
+        let now = self.clock.now();
+        let challenge_id = challenge_id.to_owned();
+        let supplied_hash = challenge_digest(&challenge_id, secret);
+        let external_digest = principal.digest();
+        let transport = principal.transport;
+        let instance = principal.channel_instance_id;
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let challenge = load_challenge(&transaction, &challenge_id)?
+                .ok_or(PrincipalBindingError::UnknownChallenge)?;
+            if challenge.transport != transport
+                || challenge.instance != instance
+                || challenge.external_digest != external_digest
+            {
+                return Err(PrincipalBindingError::ChallengePrincipalMismatch);
+            }
+            if challenge.expires_at <= now {
+                transaction
+                    .execute(
+                        "DELETE FROM link_challenges WHERE challenge_id=?1",
+                        [&challenge_id],
+                    )
+                    .map_err(storage)?;
+                transaction.commit().map_err(storage)?;
+                return Err(PrincipalBindingError::ChallengeExpired);
+            }
+            if !constant_time_eq(challenge.secret_hash.as_bytes(), supplied_hash.as_bytes()) {
+                let attempts = challenge.attempts + 1;
+                if attempts >= MAX_CONFIRM_ATTEMPTS {
+                    transaction
+                        .execute(
+                            "DELETE FROM link_challenges WHERE challenge_id=?1",
+                            [&challenge_id],
+                        )
+                        .map_err(storage)?;
+                    transaction.commit().map_err(storage)?;
+                    return Err(PrincipalBindingError::ChallengeLocked);
+                }
+                transaction
+                    .execute(
+                        "UPDATE link_challenges SET attempts=?2 WHERE challenge_id=?1 AND attempts=?3",
+                        params![challenge_id, attempts, challenge.attempts],
+                    )
+                    .map_err(storage)?;
+                transaction.commit().map_err(storage)?;
+                return Err(PrincipalBindingError::InvalidChallengeSecret);
+            }
+            require_user(&transaction, &challenge.target_user)?;
+            if load_binding(&transaction, &transport, &instance, &external_digest)?.is_some()
+            {
+                return Err(PrincipalBindingError::AlreadyLinked);
+            }
+            let previous_revision = load_binding_revision(
+                &transaction,
+                &transport,
+                &instance,
+                &external_digest,
+            )?
+            .unwrap_or(0);
+            let revision = previous_revision
+                .checked_add(1)
+                .ok_or(PrincipalBindingError::Storage)?;
+            let sql_revision = i64::try_from(revision).map_err(|_| PrincipalBindingError::Storage)?;
+            let sql_previous_revision =
+                i64::try_from(previous_revision).map_err(|_| PrincipalBindingError::Storage)?;
+            transaction
+                .execute(
+                    "INSERT INTO principal_bindings(transport,channel_instance_id,external_principal_digest,user_id,revision,linked_at,unlinked_at) VALUES (?1,?2,?3,?4,?5,?6,NULL) ON CONFLICT(transport,channel_instance_id,external_principal_digest) DO UPDATE SET user_id=excluded.user_id,revision=excluded.revision,linked_at=excluded.linked_at,unlinked_at=NULL WHERE principal_bindings.user_id IS NULL AND principal_bindings.revision=?7",
+                    params![transport, instance, external_digest, challenge.target_user, sql_revision, now, sql_previous_revision],
+                )
+                .map_err(storage)?;
+            transaction
+                .execute(
+                    "DELETE FROM link_challenges WHERE challenge_id=?1",
+                    [&challenge_id],
+                )
+                .map_err(storage)?;
+            let binding = load_binding(&transaction, &transport, &instance, &external_digest)?
+                .ok_or(PrincipalBindingError::Storage)?;
+            transaction.commit().map_err(storage)?;
+            Ok(binding)
+        })
+        .await
+    }
+
+    pub async fn resolve(
+        &self,
+        principal: ExternalPrincipal,
+    ) -> Result<Option<PrincipalBinding>, PrincipalBindingError> {
+        let external_digest = principal.digest();
+        let transport = principal.transport;
+        let instance = principal.channel_instance_id;
+        self.run(move |connection| {
+            load_binding(connection, &transport, &instance, &external_digest)
+        })
+        .await
+    }
+
+    /// Explicit owner-authorized CAS unlink. A principal cannot be rebound to
+    /// another user until its current owner removes the exact revision.
+    pub async fn unlink(
+        &self,
+        principal: ExternalPrincipal,
+        owner: &UserId,
+        expected_revision: u64,
+    ) -> Result<(), PrincipalBindingError> {
+        validate_id("user id", &owner.0)?;
+        let external_digest = principal.digest();
+        let transport = principal.transport;
+        let instance = principal.channel_instance_id;
+        let owner = owner.0.clone();
+        let now = self.clock.now();
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let existing = load_binding(&transaction, &transport, &instance, &external_digest)?
+                .ok_or(PrincipalBindingError::UnknownBinding)?;
+            if existing.user_id.0 != owner {
+                return Err(PrincipalBindingError::AlreadyLinked);
+            }
+            if existing.revision != expected_revision {
+                return Err(PrincipalBindingError::Conflict {
+                    expected: expected_revision,
+                    actual: existing.revision,
+                });
+            }
+            let tombstone_revision = expected_revision
+                .checked_add(1)
+                .ok_or(PrincipalBindingError::Storage)?;
+            let sql_expected_revision =
+                i64::try_from(expected_revision).map_err(|_| PrincipalBindingError::Storage)?;
+            let sql_tombstone_revision =
+                i64::try_from(tombstone_revision).map_err(|_| PrincipalBindingError::Storage)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE principal_bindings SET user_id=NULL,revision=?6,unlinked_at=?7 WHERE transport=?1 AND channel_instance_id=?2 AND external_principal_digest=?3 AND user_id=?4 AND revision=?5",
+                    params![transport, instance, external_digest, owner, sql_expected_revision, sql_tombstone_revision, now],
+                )
+                .map_err(storage)?;
+            if changed != 1 {
+                return Err(PrincipalBindingError::Conflict {
+                    expected: expected_revision,
+                    actual: existing.revision,
+                });
+            }
+            transaction.commit().map_err(storage)
+        })
+        .await
+    }
+}
+
