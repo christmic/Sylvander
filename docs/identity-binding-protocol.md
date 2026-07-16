@@ -1,8 +1,8 @@
 # Identity binding protocol
 
 This document defines the public and Channel-facing contract for linking an
-authenticated external principal to a stable Sylvander `UserId`. Persistence
-and Runtime policy are intentionally outside this module.
+authenticated external principal to a stable Sylvander `UserId`. The wire
+types remain protocol-owned; persistence and authorization are Runtime-owned.
 
 ## Trust boundary
 
@@ -26,6 +26,14 @@ they must never decode a client-supplied `BoundaryContext` as authority.
 The Runtime must independently authorize the supplied boundary before it
 consumes the identity tuple. A Channel receives neither a binding store nor a
 digest key.
+
+Production Runtime enables the capability only when `server.identity` has an
+external digest-key reference and at least one exact trusted issuer. Issuers
+bind `(transport, channel_instance_id, principal_id)` to one stable `UserId`.
+They are operator configuration, never request fields. The SQLite store keeps
+only the stable user, an HMAC-keyed external-principal digest, revisions, and
+bounded challenge state; raw external principal identifiers and link secrets
+are not persisted.
 
 ## Version and capability
 
@@ -56,7 +64,8 @@ Requests deny unknown fields and validate exact version, whitespace, control
 characters, and size limits. They contain no `transport`,
 `channel_instance_id`, external-principal, or target-user field. This two-sided
 proof prevents an external account from selecting and taking over an arbitrary
-known `UserId`.
+known `UserId`. Challenges are bearer secrets: clients must carry them only to
+the intended authenticated external channel before their bounded expiry.
 
 ## Secret contract
 
@@ -75,7 +84,7 @@ details.
 
 ## Rollback
 
-The commits are code-reversible. If the Runtime service is not installed, the
-empty capability set and default `UiService` response preserve denial. Removing
-only a transport integration cannot expose the identity store because the
-Channel contract never grants store access.
+The commits are code-reversible. If `server.identity.digest_key` is absent, the
+Runtime advertises an empty capability set and preserves default denial.
+Removing only a transport integration cannot expose the identity store because
+the Channel contract never grants store access.
