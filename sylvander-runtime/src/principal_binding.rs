@@ -498,3 +498,261 @@ impl PrincipalBindingStore {
     }
 }
 
+struct StoredChallenge {
+    transport: String,
+    instance: String,
+    external_digest: String,
+    target_user: String,
+    secret_hash: String,
+    expires_at: i64,
+    attempts: i64,
+}
+
+fn initialize_schema(connection: &mut Connection) -> Result<(), PrincipalBindingError> {
+    let version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(storage)?;
+    let object_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(storage)?;
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+        .map_err(storage)?;
+    match (version, object_count, application_id) {
+        (0, 0, 0) => connection.execute_batch(SCHEMA).map_err(storage)?,
+        (SCHEMA_VERSION, _, APPLICATION_ID) => validate_schema(connection)?,
+        _ => return Err(PrincipalBindingError::IncompatibleSchema),
+    }
+    connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(storage)
+        .and_then(|result| {
+            if result == "ok" {
+                Ok(())
+            } else {
+                Err(PrincipalBindingError::Storage)
+            }
+        })
+}
+
+fn validate_schema(connection: &Connection) -> Result<(), PrincipalBindingError> {
+    for (table, expected_columns) in [
+        ("users", &["user_id", "created_at"][..]),
+        (
+            "principal_bindings",
+            &[
+                "transport",
+                "channel_instance_id",
+                "external_principal_digest",
+                "user_id",
+                "revision",
+                "linked_at",
+                "unlinked_at",
+            ][..],
+        ),
+        (
+            "link_challenges",
+            &[
+                "challenge_id",
+                "transport",
+                "channel_instance_id",
+                "external_principal_digest",
+                "target_user_id",
+                "secret_hash",
+                "expires_at",
+                "attempts",
+                "created_at",
+            ][..],
+        ),
+    ] {
+        let exists = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1",
+                [table],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage)?
+            .is_some();
+        if !exists {
+            return Err(PrincipalBindingError::IncompatibleSchema);
+        }
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_xinfo('{table}')"))
+            .map_err(storage)?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        if columns != expected_columns {
+            return Err(PrincipalBindingError::IncompatibleSchema);
+        }
+    }
+    Ok(())
+}
+
+fn require_user(connection: &Connection, user_id: &str) -> Result<(), PrincipalBindingError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM users WHERE user_id=?1",
+            [user_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage)?
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(PrincipalBindingError::UnknownUser(user_id.to_owned()))
+    }
+}
+
+fn load_binding(
+    connection: &Connection,
+    transport: &str,
+    instance: &str,
+    external_digest: &str,
+) -> Result<Option<PrincipalBinding>, PrincipalBindingError> {
+    connection
+        .query_row(
+            "SELECT user_id,revision,linked_at FROM principal_bindings WHERE transport=?1 AND channel_instance_id=?2 AND external_principal_digest=?3 AND user_id IS NOT NULL",
+            params![transport, instance, external_digest],
+            |row| {
+                let revision = row.get::<_, i64>(1)?;
+                let revision = u64::try_from(revision).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?;
+                Ok(PrincipalBinding {
+                    transport: transport.to_owned(),
+                    channel_instance_id: instance.to_owned(),
+                    user_id: UserId::new(row.get::<_, String>(0)?),
+                    revision,
+                    linked_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage)
+}
+
+fn load_binding_revision(
+    connection: &Connection,
+    transport: &str,
+    instance: &str,
+    external_digest: &str,
+) -> Result<Option<u64>, PrincipalBindingError> {
+    connection
+        .query_row(
+            "SELECT revision FROM principal_bindings WHERE transport=?1 AND channel_instance_id=?2 AND external_principal_digest=?3",
+            params![transport, instance, external_digest],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .map(|revision| u64::try_from(revision).map_err(|_| PrincipalBindingError::Storage))
+        .transpose()
+}
+
+fn load_challenge(
+    connection: &Connection,
+    challenge_id: &str,
+) -> Result<Option<StoredChallenge>, PrincipalBindingError> {
+    connection
+        .query_row(
+            "SELECT transport,channel_instance_id,external_principal_digest,target_user_id,secret_hash,expires_at,attempts FROM link_challenges WHERE challenge_id=?1",
+            [challenge_id],
+            |row| {
+                Ok(StoredChallenge {
+                    transport: row.get(0)?,
+                    instance: row.get(1)?,
+                    external_digest: row.get(2)?,
+                    target_user: row.get(3)?,
+                    secret_hash: row.get(4)?,
+                    expires_at: row.get(5)?,
+                    attempts: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage)
+}
+
+fn challenge_digest(challenge_id: &str, secret: &str) -> String {
+    digest_parts(&[
+        b"sylvander.principal-link-challenge.v1",
+        challenge_id.as_bytes(),
+        secret.as_bytes(),
+    ])
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0_u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+fn is_unique_constraint(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(inner, _)
+            if inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                || inner.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+    )
+}
+
+fn storage(_: rusqlite::Error) -> PrincipalBindingError {
+    PrincipalBindingError::Storage
+}
+
+const SCHEMA: &str = r"
+BEGIN IMMEDIATE;
+PRAGMA application_id=1398362178;
+CREATE TABLE users (
+    user_id TEXT PRIMARY KEY NOT NULL
+        CHECK(length(user_id) BETWEEN 1 AND 512 AND user_id=trim(user_id)),
+    created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE principal_bindings (
+    transport TEXT NOT NULL CHECK(length(transport) BETWEEN 1 AND 512),
+    channel_instance_id TEXT NOT NULL CHECK(length(channel_instance_id) BETWEEN 1 AND 512),
+    external_principal_digest TEXT NOT NULL CHECK(length(external_principal_digest)=64),
+    user_id TEXT,
+    revision INTEGER NOT NULL CHECK(revision > 0),
+    linked_at INTEGER NOT NULL,
+    unlinked_at INTEGER,
+    PRIMARY KEY(transport,channel_instance_id,external_principal_digest),
+    CHECK((user_id IS NULL)=(unlinked_at IS NOT NULL)),
+    FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+CREATE INDEX principal_bindings_by_user ON principal_bindings(user_id);
+CREATE TABLE link_challenges (
+    challenge_id TEXT PRIMARY KEY NOT NULL,
+    transport TEXT NOT NULL CHECK(length(transport) BETWEEN 1 AND 512),
+    channel_instance_id TEXT NOT NULL CHECK(length(channel_instance_id) BETWEEN 1 AND 512),
+    external_principal_digest TEXT NOT NULL CHECK(length(external_principal_digest)=64),
+    target_user_id TEXT NOT NULL,
+    secret_hash TEXT NOT NULL CHECK(length(secret_hash)=64),
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 4),
+    created_at INTEGER NOT NULL,
+    UNIQUE(transport,channel_instance_id,external_principal_digest),
+    FOREIGN KEY(target_user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) STRICT;
+PRAGMA user_version=1;
+COMMIT;
+";

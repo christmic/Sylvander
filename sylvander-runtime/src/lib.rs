@@ -47,6 +47,9 @@ mod memory_maintenance;
 mod model_registry;
 #[cfg(test)]
 mod model_registry_tests;
+pub mod principal_binding;
+#[cfg(test)]
+mod principal_binding_tests;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]
