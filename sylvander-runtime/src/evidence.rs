@@ -14,11 +14,18 @@ use sylvander_protocol::{
 
 mod analysis;
 mod analysis_types;
+mod evaluation;
+mod evaluation_types;
 mod recorder;
 
 pub use analysis_types::{
     AnalysisPrivacyScope, AnalysisWarning, CohortAnalysis, CohortQuery, CohortTurn,
     FailureBreakdown, FailureClass,
+};
+pub use evaluation_types::{
+    EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
+    RegressionMetric, ScoreDirection, ScoringAdapterKind, ScoringAdapterRevision,
+    StoredEvaluationBaseline, StoredEvaluationDataset,
 };
 pub use recorder::EvidenceRecorder;
 
@@ -1041,6 +1048,12 @@ pub enum EvidenceError {
     InvalidAnalysisQuery,
     #[error("stored evidence cannot be analyzed safely")]
     InvalidAnalysisData,
+    #[error("evaluation registry definition is invalid")]
+    InvalidEvaluationDefinition,
+    #[error("evaluation registry revision is not the next immutable revision")]
+    EvaluationRevisionConflict,
+    #[error("stored evaluation registry data is invalid")]
+    InvalidEvaluationData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
@@ -1096,6 +1109,14 @@ CREATE TABLE IF NOT EXISTS evidence_feedback (
   CHECK (rating IN ('positive', 'negative')),
   CHECK (task_result IS NULL OR task_result IN ('succeeded', 'failed', 'partial', 'cancelled')),
   CHECK (privacy_class IN ('metadata_only', 'private', 'shareable'))
+);
+CREATE TABLE IF NOT EXISTS evidence_scoring_adapters (
+  id TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL,
+  metric TEXT NOT NULL, config_digest_sha256 TEXT NOT NULL,
+  definition_digest_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(id, revision),
+  CHECK (revision > 0),
+  CHECK (kind IN ('boolean_validation', 'numeric_metric'))
 );
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
