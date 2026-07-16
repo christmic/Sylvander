@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use sylvander_protocol::{BoundaryContext, BoundaryError, BoundaryErrorCode, UiClientMessage};
+use sylvander_protocol::{
+    BoundaryContext, BoundaryError, BoundaryErrorCode, IdentityBindingRequest, UiClientMessage,
+};
 
 use crate::config::BoundarySettings;
 
@@ -46,7 +48,25 @@ impl BoundaryGuard {
         message: &UiClientMessage,
         operation: &str,
     ) -> Result<(), BoundaryError> {
-        let bytes = serde_json::to_vec(message).map_err(|error| BoundaryError {
+        self.check_serializable(boundary, message, operation).await
+    }
+
+    pub(crate) async fn check_identity(
+        &self,
+        boundary: &BoundaryContext,
+        request: &IdentityBindingRequest,
+    ) -> Result<(), BoundaryError> {
+        self.check_serializable(boundary, request, "identity_binding")
+            .await
+    }
+
+    async fn check_serializable(
+        &self,
+        boundary: &BoundaryContext,
+        request: &impl serde::Serialize,
+        operation: &str,
+    ) -> Result<(), BoundaryError> {
+        let bytes = serde_json::to_vec(request).map_err(|error| BoundaryError {
             code: BoundaryErrorCode::InvalidScope,
             operation: operation.into(),
             request_id: boundary.request_id.clone(),
@@ -122,7 +142,10 @@ impl BoundaryGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod};
+    use sylvander_protocol::{
+        AuthenticatedPrincipal, AuthenticationMethod, IDENTITY_BINDING_PROTOCOL_VERSION,
+        IdentityBindingAction,
+    };
 
     fn boundary(request: &str) -> BoundaryContext {
         BoundaryContext::authenticated(
@@ -218,5 +241,27 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, BoundaryErrorCode::RateLimited);
         assert_eq!(error.operation, "authenticate_bearer_token");
+    }
+
+    #[tokio::test]
+    async fn identity_operations_share_the_authenticated_boundary_rate_limit() {
+        let guard = BoundaryGuard::new(BoundarySettings {
+            max_request_bytes: 1024,
+            requests_per_minute: 1,
+        });
+        let request = IdentityBindingRequest {
+            version: IDENTITY_BINDING_PROTOCOL_VERSION,
+            action: IdentityBindingAction::Resolve {},
+        };
+        guard
+            .check_identity(&boundary("identity-one"), &request)
+            .await
+            .unwrap();
+        let error = guard
+            .check_identity(&boundary("identity-two"), &request)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, BoundaryErrorCode::RateLimited);
+        assert_eq!(error.operation, "identity_binding");
     }
 }
