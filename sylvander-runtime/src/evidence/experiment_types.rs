@@ -19,6 +19,7 @@ pub enum SelfChangeExperimentStatus {
     Merged,
     Observing,
     Completed,
+    RollbackRequired,
     RolledBack,
     Failed,
 }

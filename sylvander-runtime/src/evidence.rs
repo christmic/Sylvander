@@ -16,6 +16,7 @@ mod analysis;
 mod analysis_types;
 mod evaluation;
 mod evaluation_types;
+mod experiment;
 mod experiment_signer;
 mod experiment_types;
 mod proposal;
@@ -1077,6 +1078,10 @@ pub enum EvidenceError {
     InvalidProposalData,
     #[error("self-change experiment evidence is invalid")]
     InvalidExperimentEvidence,
+    #[error("self-change experiment state revision or transition is invalid")]
+    ExperimentStateConflict,
+    #[error("stored self-change experiment data is invalid")]
+    InvalidExperimentData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
@@ -1213,6 +1218,36 @@ CREATE TABLE IF NOT EXISTS evidence_improvement_proposal_transitions (
   to_status TEXT NOT NULL, principal_digest TEXT NOT NULL,
   reason TEXT, occurred_at INTEGER NOT NULL,
   PRIMARY KEY(proposal_id, state_revision)
+);
+CREATE TABLE IF NOT EXISTS evidence_self_change_experiments (
+  id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL UNIQUE
+    REFERENCES evidence_improvement_proposals(id),
+  lease_id TEXT NOT NULL UNIQUE, branch TEXT NOT NULL, base_commit TEXT NOT NULL,
+  proposal_state_revision INTEGER NOT NULL,
+  started_by_principal_digest TEXT NOT NULL, created_at INTEGER NOT NULL,
+  status TEXT NOT NULL, state_revision INTEGER NOT NULL,
+  baseline_bundle_id TEXT, candidate_bundle_id TEXT, merge_commit TEXT,
+  rollback_commit TEXT, observation_bundle_id TEXT, merge_approved_by TEXT,
+  CHECK (status IN ('prepared', 'candidate_evaluated', 'merge_approved',
+                    'merged', 'observing', 'completed', 'rollback_required',
+                    'rolled_back', 'failed')),
+  CHECK (state_revision > 0)
+);
+CREATE TABLE IF NOT EXISTS evidence_experiment_bundles (
+  id TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL REFERENCES evidence_self_change_experiments(id),
+  phase TEXT NOT NULL, evidence_json TEXT NOT NULL,
+  digest_sha256 TEXT NOT NULL, signer_key_id TEXT NOT NULL,
+  signature_hex TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+  UNIQUE(experiment_id, phase),
+  CHECK (phase IN ('baseline', 'candidate', 'observation'))
+);
+CREATE TABLE IF NOT EXISTS evidence_experiment_transitions (
+  experiment_id TEXT NOT NULL REFERENCES evidence_self_change_experiments(id),
+  state_revision INTEGER NOT NULL, from_status TEXT NOT NULL,
+  to_status TEXT NOT NULL, principal_digest TEXT NOT NULL,
+  reason TEXT, occurred_at INTEGER NOT NULL,
+  PRIMARY KEY(experiment_id, state_revision)
 );
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,

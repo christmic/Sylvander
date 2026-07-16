@@ -2,7 +2,7 @@ use super::*;
 use crate::evidence::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
     ProposalTransition, RegressionMetric, ScoreDirection, ScoringAdapterKind,
-    ScoringAdapterRevision,
+    ScoringAdapterRevision, SelfChangeExperiment, SelfChangeExperimentStatus,
 };
 
 async fn evaluation_fixture(store: &EvidenceStore) {
@@ -171,4 +171,29 @@ async fn proposal_is_immutable_canonical_and_requires_real_evaluations() {
         .unwrap();
     assert_eq!(approved.status, ImprovementProposalStatus::Approved);
     assert_eq!(approved.state_revision, 3);
+
+    let experiment = store
+        .register_self_change_experiment(SelfChangeExperiment {
+            id: "experiment-1".into(),
+            proposal_id: "proposal-1".into(),
+            lease_id: "experiment-1".into(),
+            branch: "sylvander/experiment-1".into(),
+            base_commit: "1".repeat(40),
+            proposal_state_revision: 3,
+            started_by_principal_digest: "8".repeat(64),
+            created_at: 8,
+        })
+        .await
+        .unwrap();
+    assert_eq!(experiment.status, SelfChangeExperimentStatus::Prepared);
+    assert_eq!(experiment.state_revision, 1);
+    assert_eq!(
+        store
+            .improvement_proposal("proposal-1".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ImprovementProposalStatus::Experimenting
+    );
 }
