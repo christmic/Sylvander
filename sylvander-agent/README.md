@@ -165,6 +165,7 @@ let loop_ = AgentLoop::builder()
 Runtime contracts:
 
 - [Skill package format, activation, and health](docs/skills.md)
+- [MCP supervision, cancellation, and inspection](docs/mcp.md)
 
 ```
 src/
@@ -303,7 +304,7 @@ Wiremock is the integration test backbone — no real API calls in CI.
 - Concrete tools (Read/Bash/Edit/Glob/Grep) — M3
 - Parallel tool execution — M3
 - Permission system / approval gates — M3
-- MCP integration — M3
+- MCP stdio tool and resource integration
 - Sandbox / process isolation — M3
 - Sub-agents / Hooks / Skills — M4
 - Long-term memory — M4

@@ -100,6 +100,7 @@ struct McpInner {
     supports_resources: AtomicBool,
     health: AtomicU8,
     reconnect_count: AtomicU64,
+    cancellation_count: AtomicU64,
     shutdown: AtomicBool,
 }
 
@@ -107,6 +108,50 @@ struct McpInner {
 #[derive(Clone)]
 pub struct McpStdioClient {
     inner: Arc<McpInner>,
+}
+
+struct PendingRequest {
+    client: McpStdioClient,
+    id: u64,
+    armed: bool,
+}
+
+impl PendingRequest {
+    fn new(client: McpStdioClient, id: u64) -> Self {
+        Self {
+            client,
+            id,
+            armed: true,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.armed = false;
+    }
+
+    async fn cancel(&mut self, reason: &'static str) {
+        if self.armed {
+            self.armed = false;
+            self.client.send_cancellation(self.id, reason).await;
+        }
+    }
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let client = self.client.clone();
+        let id = self.id;
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                client
+                    .send_cancellation(id, "client request interrupted")
+                    .await;
+            });
+        }
+    }
 }
 
 impl std::fmt::Debug for McpStdioClient {
@@ -188,6 +233,7 @@ impl McpStdioClient {
                 supports_resources: AtomicBool::new(false),
                 health: AtomicU8::new(MCP_HEALTH_ACTIVE),
                 reconnect_count: AtomicU64::new(0),
+                cancellation_count: AtomicU64::new(0),
                 shutdown: AtomicBool::new(false),
             }),
         };
@@ -498,13 +544,32 @@ impl McpStdioClient {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let request = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         let duration = self.inner.request_timeout;
-        timeout(duration, self.request_inner(id, method, &request))
-            .await
-            .map_err(|_| McpError::Timeout {
+        let mut pending = PendingRequest::new(self.clone(), id);
+        if let Ok(result) = timeout(duration, self.request_inner(id, method, &request)).await {
+            pending.complete();
+            result
+        } else {
+            pending.cancel("client request timed out").await;
+            Err(McpError::Timeout {
                 server: self.inner.server_name.clone(),
                 method: method.into(),
                 duration,
-            })?
+            })
+        }
+    }
+
+    async fn send_cancellation(&self, request_id: u64, reason: &'static str) {
+        self.inner
+            .cancellation_count
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = timeout(
+            Duration::from_secs(1),
+            self.notify(
+                "notifications/cancelled",
+                json!({ "requestId": request_id, "reason": reason }),
+            ),
+        )
+        .await;
     }
 
     async fn request_inner(
@@ -605,12 +670,14 @@ impl DynamicToolSource for McpStdioClient {
         let resource_count = self.inner.resource_definitions.read().unwrap().len();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let reconnects = self.inner.reconnect_count.load(Ordering::Acquire);
+        let cancellations = self.inner.cancellation_count.load(Ordering::Acquire);
         Some(PlatformFeature {
             kind: PlatformFeatureKind::Mcp,
             name: self.inner.server_name.clone(),
             status,
             summary: format!(
-                "{tool_count} tools · {resource_count} resources · generation {generation} · {reconnects} reconnects"
+                "{tool_count} tools · {resource_count} resources · generation {generation} · \
+                 {reconnects} reconnects · {cancellations} cancellations"
             ),
             source: std::path::Path::new(&self.inner.config.command)
                 .file_name()
@@ -1102,6 +1169,9 @@ while True:
         pass
     elif method == "ping":
         send({"jsonrpc":"2.0", "id":message["id"], "result":{}})
+    elif method == "slow":
+        time.sleep(0.3)
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{}})
     elif method == "tools/list":
         send({"jsonrpc":"2.0", "method":"notifications/tools/list_changed"})
         tool_name = "echo"
@@ -1251,6 +1321,41 @@ while True:
             .expect_err("slow call must time out");
         assert!(matches!(error, ToolError::Timeout(duration) if duration == timeout));
         client.shutdown().await.expect("shutdown after timeout");
+    }
+
+    #[tokio::test]
+    async fn timeout_and_dropped_request_emit_protocol_cancellation() {
+        let temp = TempDir::new().expect("temp dir");
+        let config = fake_config(&temp);
+        let client = McpStdioClient::connect(&config, Duration::from_millis(100))
+            .await
+            .expect("connect");
+
+        let error = client
+            .request("slow", json!({}))
+            .await
+            .expect_err("slow request must time out");
+        assert!(matches!(error, McpError::Timeout { .. }));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let interrupted_client = client.clone();
+        let interrupted =
+            tokio::spawn(async move { interrupted_client.request("slow", json!({})).await });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        interrupted.abort();
+        assert!(interrupted.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
+        assert!(feature.summary.contains("2 cancellations"));
+        client.shutdown().await.expect("shutdown process");
+        let log = fs::read_to_string(temp.path().join("requests.log")).unwrap();
+        assert_eq!(
+            log.lines()
+                .filter(|method| *method == "notifications/cancelled")
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]
