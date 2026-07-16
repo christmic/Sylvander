@@ -1,6 +1,7 @@
 //! Workspace-scoped command execution for coding tasks.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -8,14 +9,15 @@ use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
-use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink};
 use crate::tool_context::{Cap, ToolContext};
+use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 // Tool results enter both the model context and the TUI transcript. Keep the
 // final structured payload compact; the executor retains a larger bounded
 // head/tail capture for diagnostics.
-const MAX_MODEL_BYTES_PER_STREAM: usize = 24 * 1024;
+const MAX_MODEL_BYTES_PER_STREAM: usize = 4 * 1024;
 
 /// Run a shell command inside the invocation's effective workspace.
 #[derive(Debug, Clone)]
@@ -53,6 +55,26 @@ impl Tool for CommandTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+        self.execute_inner(ctx, input, None).await
+    }
+
+    async fn execute_streaming(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+        progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_inner(ctx, input, Some(progress)).await
+    }
+}
+
+impl CommandTool {
+    async fn execute_inner(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+        progress: Option<ToolProgressSink>,
+    ) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Spawn) {
             return Ok(ToolOutput::err(
                 "command execution is not enabled for this workspace",
@@ -72,7 +94,18 @@ impl Tool for CommandTool {
         }
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let started = Instant::now();
-        let output = match ctx.executor.run_command(&target, command, timeout).await {
+        let progress_state = progress.map(CommandProgress::new);
+        let result = if let Some(state) = &progress_state {
+            ctx.executor
+                .run_command_streaming(&target, command, timeout, state.executor_sink())
+                .await
+        } else {
+            ctx.executor.run_command(&target, command, timeout).await
+        };
+        if let Some(state) = &progress_state {
+            state.flush();
+        }
+        let output = match result {
             Ok(output) => output,
             Err(crate::workspace_executor::WorkspaceExecutorError::Timeout(timeout)) => {
                 return Err(ToolError::Timeout(timeout));
@@ -102,6 +135,70 @@ impl Tool for CommandTool {
     }
 }
 
+struct CommandProgress {
+    sink: ToolProgressSink,
+    state: Arc<Mutex<CommandProgressState>>,
+}
+
+struct CommandProgressState {
+    pending: String,
+    last_emit: Instant,
+}
+
+impl CommandProgress {
+    fn new(sink: ToolProgressSink) -> Self {
+        Self {
+            sink,
+            state: Arc::new(Mutex::new(CommandProgressState {
+                pending: String::new(),
+                last_emit: Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
+            })),
+        }
+    }
+
+    fn executor_sink(&self) -> WorkspaceCommandProgressSink {
+        let state = self.state.clone();
+        let sink = self.sink.clone();
+        WorkspaceCommandProgressSink::new(move |stream, delta| {
+            let mut state = state.lock().unwrap();
+            if stream == WorkspaceCommandStream::Stderr {
+                state.pending.push_str("[stderr] ");
+            }
+            state.pending.push_str(&delta);
+            keep_recent_chars(&mut state.pending, 4_096);
+            if state.last_emit.elapsed() >= Duration::from_millis(150) {
+                let delta = std::mem::take(&mut state.pending);
+                state.last_emit = Instant::now();
+                drop(state);
+                sink.emit(delta);
+            }
+        })
+    }
+
+    fn flush(&self) {
+        let delta = {
+            let mut state = self.state.lock().unwrap();
+            std::mem::take(&mut state.pending)
+        };
+        if !delta.is_empty() {
+            self.sink.emit(delta);
+        }
+    }
+}
+
+fn keep_recent_chars(value: &mut String, max_chars: usize) {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return;
+    }
+    *value = format!(
+        "… earlier command output omitted …\n{}",
+        value.chars().skip(count - max_chars).collect::<String>()
+    );
+}
+
 fn model_text(bytes: &[u8]) -> (String, bool) {
     if bytes.len() <= MAX_MODEL_BYTES_PER_STREAM {
         return (String::from_utf8_lossy(bytes).into_owned(), false);
@@ -115,6 +212,8 @@ fn model_text(bytes: &[u8]) -> (String, bool) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use sylvander_protocol::{AgentId, SessionContext, SessionId, UserId};
 
     use super::*;
@@ -159,5 +258,31 @@ mod tests {
         assert_eq!(result["exit_code"], 7);
         assert_eq!(result["stderr"], "boom");
         assert_eq!(result["stderr_truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn streaming_keeps_recent_unicode_progress_without_returning_the_full_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let captured = deltas.clone();
+        let progress = ToolProgressSink::new(move |delta| captured.lock().unwrap().push(delta));
+
+        let output = CommandTool::new("/")
+            .execute_streaming(
+                &context(dir.path()),
+                json!({
+                    "command": "printf '开始\\n'; sleep 0.2; printf '完成\\n'; printf '警告\\n' >&2"
+                }),
+                progress,
+            )
+            .await
+            .unwrap();
+
+        assert!(!output.is_error);
+        let progress = deltas.lock().unwrap().join("");
+        assert!(progress.contains("开始"));
+        assert!(progress.contains("完成"));
+        assert!(progress.contains("[stderr] 警告"));
+        assert!(progress.len() < output.content.len());
     }
 }

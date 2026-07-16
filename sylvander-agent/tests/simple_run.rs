@@ -36,6 +36,8 @@ struct BarrierTool {
 
 struct ProgressTool;
 
+struct BurstProgressTool;
+
 #[async_trait::async_trait]
 impl Tool for ProgressTool {
     fn name(&self) -> &'static str {
@@ -119,6 +121,134 @@ async fn tool_output_deltas_arrive_before_final_result() {
         lifecycle,
         ["delta:first ", "delta:second", "end:first second"]
     );
+}
+
+#[async_trait::async_trait]
+impl Tool for BurstProgressTool {
+    fn name(&self) -> &'static str {
+        "burst_progress_probe"
+    }
+    fn description(&self) -> &'static str {
+        "emits more progress than the bounded queue can retain"
+    }
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::empty()
+    }
+    async fn execute(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::ok("complete"))
+    }
+    async fn execute_streaming(
+        &self,
+        _ctx: &ToolContext,
+        _input: serde_json::Value,
+        progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        for index in 0..1_000 {
+            progress.emit(format!("{index}\n"));
+        }
+        Ok(ToolOutput::ok("complete"))
+    }
+}
+
+async fn run_burst_progress(include_control_tool: bool) -> Vec<AgentEvent> {
+    let server = MockServer::start().await;
+    let mut content = Vec::new();
+    if include_control_tool {
+        content.push(json!({
+            "type":"tool_use",
+            "id":"plan",
+            "name":"present_plan",
+            "input":{"steps":["Run bounded progress probe"]}
+        }));
+    }
+    content.push(json!({
+        "type":"tool_use",
+        "id":"burst",
+        "name":"burst_progress_probe",
+        "input":{}
+    }));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_burst","type":"message","role":"assistant",
+            "content":content,
+            "model":"claude-sonnet-5-20260601","stop_reason":"tool_use",
+            "usage":{"input_tokens":10,"output_tokens":5}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"msg_done","type":"message","role":"assistant",
+            "content":[{"type":"text","text":"done"}],
+            "model":"claude-sonnet-5-20260601","stop_reason":"end_turn",
+            "usage":{"input_tokens":20,"output_tokens":3}
+        })))
+        .mount(&server)
+        .await;
+    let loop_ = AgentLoop::builder()
+        .client(mock_client(&server))
+        .model(test_model())
+        .tool(BurstProgressTool)
+        .build()
+        .expect("build");
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    run_with_events(&loop_, vec![MessageParam::user("burst")], move |event| {
+        captured.lock().unwrap().push(event);
+    })
+    .await
+    .expect("run");
+    Arc::try_unwrap(events).unwrap().into_inner().unwrap()
+}
+
+fn assert_burst_is_bounded(events: &[AgentEvent]) {
+    let deltas = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolCallOutputDelta { id, delta, .. } if id == "burst" => Some(delta),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(deltas.len() < 1_000);
+    assert_eq!(
+        deltas
+            .iter()
+            .filter(|delta| delta.contains("progress buffer was full"))
+            .count(),
+        1
+    );
+    let marker_index = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                AgentEvent::ToolCallOutputDelta { id, delta, .. }
+                    if id == "burst" && delta.contains("progress buffer was full")
+            )
+        })
+        .unwrap();
+    let end_index = events
+        .iter()
+        .position(|event| matches!(event, AgentEvent::ToolCallEnd { id, .. } if id == "burst"))
+        .unwrap();
+    assert!(marker_index < end_index);
+}
+
+#[tokio::test]
+async fn parallel_tool_progress_is_bounded_and_reports_one_omission() {
+    assert_burst_is_bounded(&run_burst_progress(false).await);
+}
+
+#[tokio::test]
+async fn serial_tool_progress_is_bounded_and_reports_one_omission() {
+    assert_burst_is_bounded(&run_burst_progress(true).await);
 }
 
 #[async_trait::async_trait]

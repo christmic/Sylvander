@@ -1050,7 +1050,10 @@ impl AppState {
                         (!call_id.is_empty() && child.call_id == call_id)
                             || (call_id.is_empty() && child.name == tool_name)
                     }) {
-                        child.output.get_or_insert_with(String::new).push_str(&delta);
+                        append_live_tool_output(
+                            child.output.get_or_insert_with(String::new),
+                            &delta,
+                        );
                         found = true;
                         break;
                     }
@@ -1064,7 +1067,7 @@ impl AppState {
                             name: tool_name,
                             status: ToolStatus::Pending,
                             input: serde_json::Value::Null,
-                            output: Some(delta),
+                            output: Some(bounded_live_tool_output(delta)),
                             is_error: None,
                         }],
                     });
@@ -1645,7 +1648,11 @@ fn normalize_message(message: &mut ChatMessage) {
                 truncate_utf8(&mut child.name, MAX_TOOL_PAYLOAD_BYTES);
                 normalize_json(&mut child.input);
                 if let Some(output) = &mut child.output {
-                    truncate_utf8(output, MAX_TOOL_PAYLOAD_BYTES);
+                    if child.status == ToolStatus::Pending {
+                        truncate_utf8_tail(output, MAX_TOOL_PAYLOAD_BYTES);
+                    } else {
+                        truncate_utf8(output, MAX_TOOL_PAYLOAD_BYTES);
+                    }
                 }
             }
         }
@@ -1696,6 +1703,33 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
     }
     value.truncate(keep);
     value.push_str(MARKER);
+}
+
+fn append_live_tool_output(output: &mut String, delta: &str) {
+    output.push_str(delta);
+    truncate_utf8_tail(output, MAX_TOOL_PAYLOAD_BYTES);
+}
+
+fn bounded_live_tool_output(mut output: String) -> String {
+    truncate_utf8_tail(&mut output, MAX_TOOL_PAYLOAD_BYTES);
+    output
+}
+
+fn truncate_utf8_tail(value: &mut String, max_bytes: usize) {
+    const MARKER: &str = "… earlier live output omitted …\n";
+    if value.len() <= max_bytes {
+        return;
+    }
+    let mut start = value
+        .len()
+        .saturating_sub(max_bytes.saturating_sub(MARKER.len()));
+    while start < value.len() && !value.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = value[start..].to_owned();
+    value.clear();
+    value.push_str(MARKER);
+    value.push_str(&tail);
 }
 
 fn message_bytes(message: &ChatMessage) -> usize {
@@ -2320,6 +2354,36 @@ mod tests {
         };
         assert_eq!(children[0].status, ToolStatus::Pending);
         assert_eq!(children[0].output.as_deref(), Some("first second"));
+    }
+
+    #[test]
+    fn pending_tool_output_keeps_a_utf8_safe_recent_tail() {
+        let mut state = AppState::new();
+        state.apply(DomainEvent::ToolStarted {
+            call_id: "call-1".into(),
+            tool_name: "Command".into(),
+            input: serde_json::json!({"command": "long-build"}),
+        });
+        state.apply(DomainEvent::ToolOutputDelta {
+            call_id: "call-1".into(),
+            tool_name: "Command".into(),
+            delta: format!("old-line\n{}", "蟹".repeat(MAX_TOOL_PAYLOAD_BYTES)),
+        });
+        state.apply(DomainEvent::ToolOutputDelta {
+            call_id: "call-1".into(),
+            tool_name: "Command".into(),
+            delta: "\nlatest-line".into(),
+        });
+
+        let ChatMessage::ToolStep { children, .. } = state.messages.last().unwrap() else {
+            panic!("expected tool step");
+        };
+        let output = children[0].output.as_deref().expect("live output");
+        assert!(output.len() <= MAX_TOOL_PAYLOAD_BYTES);
+        assert!(output.is_char_boundary(output.len()));
+        assert!(output.starts_with("… earlier live output omitted …\n"));
+        assert!(!output.contains("old-line"));
+        assert!(output.ends_with("latest-line"));
     }
 
     #[test]

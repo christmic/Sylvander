@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -58,6 +59,42 @@ pub struct WorkspaceCommandOutput {
 
 pub const MAX_COMMAND_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
 pub const COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCommandStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Clone)]
+pub struct WorkspaceCommandProgressSink {
+    emit_delta: Arc<dyn Fn(WorkspaceCommandStream, String) + Send + Sync>,
+}
+
+impl Debug for WorkspaceCommandProgressSink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkspaceCommandProgressSink")
+            .finish_non_exhaustive()
+    }
+}
+
+impl WorkspaceCommandProgressSink {
+    #[must_use]
+    pub fn new(
+        emit_delta: impl Fn(WorkspaceCommandStream, String) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            emit_delta: Arc::new(emit_delta),
+        }
+    }
+
+    pub fn emit(&self, stream: WorkspaceCommandStream, delta: String) {
+        if !delta.is_empty() {
+            (self.emit_delta)(stream, delta);
+        }
+    }
+}
 pub const MAX_QUERY_RESULTS: usize = 1_000;
 pub const MAX_QUERY_LINE_CHARS: usize = 4_096;
 pub const MAX_QUERY_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -173,6 +210,16 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError>;
 
+    async fn run_command_streaming(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        _progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        self.run_command(target, command, timeout).await
+    }
+
     /// Run a command selected by a trusted structured read-only operation.
     ///
     /// Implementations deliberately do not apply the target's `read_only`
@@ -242,7 +289,18 @@ impl WorkspaceExecutor for LocalExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        self.run_read_only_command(target, command, timeout).await
+        run_local_command(target, command, timeout, None).await
+    }
+
+    async fn run_command_streaming(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        ensure_writable(target)?;
+        run_local_command(target, command, timeout, Some(progress)).await
     }
 
     async fn run_read_only_command(
@@ -251,49 +309,7 @@ impl WorkspaceExecutor for LocalExecutor {
         command: &str,
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
-        let root = tokio::fs::canonicalize(&target.workspace_path).await?;
-        if !root.is_dir() {
-            return Err(WorkspaceExecutorError::InvalidPath(format!(
-                "workspace is not a directory: {}",
-                root.display()
-            )));
-        }
-        let mut process = shell_command(command);
-        process
-            .current_dir(root)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = process.spawn()?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::other("command stdout was not piped"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| std::io::Error::other("command stderr was not piped"))?;
-        let execution = async move {
-            let (stdout, stderr, status) = tokio::try_join!(
-                capture_command_output(stdout),
-                capture_command_output(stderr),
-                child.wait(),
-            )?;
-            Ok::<_, std::io::Error>((stdout, stderr, status))
-        };
-        let (stdout, stderr, status) = Box::pin(tokio::time::timeout(timeout, execution))
-            .await
-            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
-        Ok(WorkspaceCommandOutput {
-            success: status.success(),
-            status_code: status.code(),
-            stdout: stdout.bytes,
-            stderr: stderr.bytes,
-            stdout_truncated: stdout.truncated,
-            stderr_truncated: stderr.truncated,
-            stdout_total_bytes: stdout.total_bytes,
-            stderr_total_bytes: stderr.total_bytes,
-        })
+        run_local_command(target, command, timeout, None).await
     }
 
     async fn list(
@@ -609,6 +625,65 @@ fn shell_command(command: &str) -> tokio::process::Command {
     process
 }
 
+async fn run_local_command(
+    target: &WorkspaceTarget,
+    command: &str,
+    timeout: Duration,
+    progress: Option<WorkspaceCommandProgressSink>,
+) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+    let root = tokio::fs::canonicalize(&target.workspace_path).await?;
+    if !root.is_dir() {
+        return Err(WorkspaceExecutorError::InvalidPath(format!(
+            "workspace is not a directory: {}",
+            root.display()
+        )));
+    }
+    let mut process = shell_command(command);
+    process
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = process.spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("command stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("command stderr was not piped"))?;
+    let execution = async move {
+        let (stdout, stderr, status) = tokio::try_join!(
+            capture_command_output(
+                stdout,
+                progress
+                    .clone()
+                    .map(|sink| (WorkspaceCommandStream::Stdout, sink)),
+            ),
+            capture_command_output(
+                stderr,
+                progress.map(|sink| (WorkspaceCommandStream::Stderr, sink)),
+            ),
+            child.wait(),
+        )?;
+        Ok::<_, std::io::Error>((stdout, stderr, status))
+    };
+    let (stdout, stderr, status) = Box::pin(tokio::time::timeout(timeout, execution))
+        .await
+        .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
+    Ok(WorkspaceCommandOutput {
+        success: status.success(),
+        status_code: status.code(),
+        stdout: stdout.bytes,
+        stderr: stderr.bytes,
+        stdout_truncated: stdout.truncated,
+        stderr_truncated: stderr.truncated,
+        stdout_total_bytes: stdout.total_bytes,
+        stderr_total_bytes: stderr.total_bytes,
+    })
+}
+
 struct CapturedCommandOutput {
     bytes: Vec<u8>,
     total_bytes: u64,
@@ -617,6 +692,7 @@ struct CapturedCommandOutput {
 
 async fn capture_command_output(
     mut reader: impl AsyncRead + Unpin,
+    progress: Option<(WorkspaceCommandStream, WorkspaceCommandProgressSink)>,
 ) -> std::io::Result<CapturedCommandOutput> {
     let tail_capacity =
         MAX_COMMAND_OUTPUT_BYTES_PER_STREAM.saturating_sub(COMMAND_OUTPUT_HEAD_BYTES);
@@ -624,11 +700,15 @@ async fn capture_command_output(
     let mut tail = VecDeque::<u8>::with_capacity(tail_capacity);
     let mut total_bytes = 0_u64;
     let mut buffer = [0_u8; 8 * 1024];
+    let mut utf8_pending = Vec::new();
 
     loop {
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             break;
+        }
+        if let Some((stream, sink)) = &progress {
+            emit_utf8_progress(*stream, sink, &mut utf8_pending, &buffer[..read], false);
         }
         total_bytes = total_bytes.saturating_add(read as u64);
         let mut chunk = &buffer[..read];
@@ -646,6 +726,9 @@ async fn capture_command_output(
             }
         }
     }
+    if let Some((stream, sink)) = &progress {
+        emit_utf8_progress(*stream, sink, &mut utf8_pending, &[], true);
+    }
 
     let mut bytes = head;
     bytes.extend(tail);
@@ -654,6 +737,48 @@ async fn capture_command_output(
         total_bytes,
         bytes,
     })
+}
+
+fn emit_utf8_progress(
+    stream: WorkspaceCommandStream,
+    sink: &WorkspaceCommandProgressSink,
+    pending: &mut Vec<u8>,
+    bytes: &[u8],
+    eof: bool,
+) {
+    pending.extend_from_slice(bytes);
+    let mut offset = 0;
+    while offset < pending.len() {
+        if let Err(error) = std::str::from_utf8(&pending[offset..]) {
+            let valid_end = offset + error.valid_up_to();
+            if valid_end > offset {
+                sink.emit(
+                    stream,
+                    String::from_utf8_lossy(&pending[offset..valid_end]).into_owned(),
+                );
+            }
+            if let Some(invalid_len) = error.error_len() {
+                sink.emit(stream, "\u{fffd}".into());
+                offset = valid_end.saturating_add(invalid_len);
+            } else {
+                offset = valid_end;
+                break;
+            }
+        } else {
+            sink.emit(
+                stream,
+                String::from_utf8_lossy(&pending[offset..]).into_owned(),
+            );
+            offset = pending.len();
+        }
+    }
+    if offset > 0 {
+        pending.drain(..offset);
+    }
+    if eof && !pending.is_empty() {
+        sink.emit(stream, String::from_utf8_lossy(pending).into_owned());
+        pending.clear();
+    }
 }
 
 #[cfg(test)]
@@ -815,6 +940,37 @@ mod tests {
             result,
             Err(WorkspaceExecutorError::Timeout(value)) if value == timeout
         ));
+    }
+
+    #[test]
+    fn command_progress_preserves_utf8_split_across_reader_chunks() {
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let captured = deltas.clone();
+        let sink = WorkspaceCommandProgressSink::new(move |stream, delta| {
+            captured.lock().unwrap().push((stream, delta));
+        });
+        let mut pending = Vec::new();
+        let crab = "蟹".as_bytes();
+
+        emit_utf8_progress(
+            WorkspaceCommandStream::Stdout,
+            &sink,
+            &mut pending,
+            &crab[..1],
+            false,
+        );
+        emit_utf8_progress(
+            WorkspaceCommandStream::Stdout,
+            &sink,
+            &mut pending,
+            &crab[1..],
+            true,
+        );
+
+        assert_eq!(
+            *deltas.lock().unwrap(),
+            [(WorkspaceCommandStream::Stdout, "蟹".into())]
+        );
     }
 
     #[tokio::test]
