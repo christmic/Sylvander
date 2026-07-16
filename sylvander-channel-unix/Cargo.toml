@@ -13,6 +13,7 @@ sylvander-protocol = { path = "../sylvander-protocol" }
 async-trait = "0.1"
 tokio = { workspace = true }
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

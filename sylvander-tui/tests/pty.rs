@@ -20,8 +20,7 @@ fn unique_socket_path() -> PathBuf {
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |duration| duration.as_nanos())
     ))
 }
 

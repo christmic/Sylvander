@@ -58,18 +58,40 @@ pub struct ToolContext {
 
     /// Optional durable workspace mutation journal owned by the Agent runtime.
     pub workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+
+    /// Runtime-derived identity used by every memory-store operation. It is
+    /// intentionally not replaceable through a public builder or model input.
+    memory_context: crate::tools::memory::MemoryExecutionContext,
 }
 
 impl ToolContext {
-    /// Convenience constructor: minimal session + default budget +
-    /// default surface (no capabilities granted).
+    /// Construct an ordinary caller-owned tool context.
+    ///
+    /// This context has no relationship-memory authority even when the caller
+    /// later adds surface capabilities. Agent application code uses the
+    /// crate-private constructor below after resolving a real session.
     #[must_use]
     pub fn new(session: SessionContext) -> Self {
+        let memory_context = crate::tools::memory::MemoryExecutionContext::untrusted(&session);
         Self {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
             workspace_journal: None,
+            memory_context,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn application(session: SessionContext) -> Self {
+        let memory_context =
+            crate::tools::memory::MemoryExecutionContext::application_worker(&session);
+        Self {
+            session: Arc::new(session),
+            budget: ExecutionBudget::default(),
+            surface: SurfaceView::default(),
+            workspace_journal: None,
+            memory_context,
         }
     }
 
@@ -107,6 +129,12 @@ impl ToolContext {
     #[must_use]
     pub fn into_arc(self) -> Arc<Self> {
         Arc::new(self)
+    }
+
+    /// Runtime-derived memory identity for this invocation.
+    #[must_use]
+    pub fn memory_context(&self) -> &crate::tools::memory::MemoryExecutionContext {
+        &self.memory_context
     }
 
     // ---- identity shortcuts ----
@@ -150,7 +178,7 @@ impl Default for ExecutionBudget {
     fn default() -> Self {
         // Matches the upstream loop's TOOL_TIMEOUT default.
         Self {
-            timeout: Some(Duration::from_secs(120)),
+            timeout: Some(Duration::from_mins(2)),
             max_retries: 0,
         }
     }
@@ -163,7 +191,7 @@ impl Default for ExecutionBudget {
 /// What the tool is allowed to do / see in this invocation.
 ///
 /// Tools should check `capabilities` before performing the operation
-/// (e.g. WriteTool should refuse if `Cap::Write` is absent).
+/// (e.g. `WriteTool` should refuse if `Cap::Write` is absent).
 #[derive(Debug, Clone, Default)]
 pub struct SurfaceView {
     /// File-system root for this invocation. Tools that touch the
@@ -234,7 +262,7 @@ impl ToolContext {
 /// caller has not supplied one. Kept in their own module so callers
 /// don't have to scroll past struct definitions.
 pub mod defaults {
-    use super::*;
+    use super::{ModelInfo, SessionContext, ToolContext};
     use sylvander_protocol::types::SessionId;
 
     /// Build a placeholder `ToolContext` for system-originated
@@ -300,6 +328,22 @@ mod tests {
         assert_eq!(ctx.session_id().0, "sess-1");
         assert!(ctx.surface.fs_root.is_none());
         assert!(ctx.surface.capabilities.is_empty());
+        assert!(matches!(
+            ctx.memory_context().relationship_owner(),
+            Err(crate::tools::memory::MemoryStoreError::AccessDenied)
+        ));
+    }
+
+    #[test]
+    fn application_context_issues_memory_authority() {
+        let ctx = ToolContext::application(session());
+        assert_eq!(
+            ctx.memory_context().relationship_owner().unwrap(),
+            crate::tools::memory::MemoryOwner::Relationship {
+                user_id: UserId::new("alice"),
+                agent_id: AgentId::new("code-assistant"),
+            }
+        );
     }
 
     #[test]

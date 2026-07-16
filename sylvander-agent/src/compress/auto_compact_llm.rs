@@ -12,7 +12,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
+use futures_util::StreamExt as _;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_llm_anthropic::api::request::CreateMessageRequest;
@@ -88,7 +90,7 @@ impl AutoCompactLlm for AgentLoopAutoCompactLlm {
                 .messages()
                 .create(&req)
                 .await
-                .map_err(|e| AgentLoopError::Compression(format!("auto_compact: {e}")))?;
+                .map_err(|source| AgentLoopError::Llm { retries: 0, source })?;
 
             let text = response
                 .content
@@ -106,6 +108,121 @@ impl AutoCompactLlm for AgentLoopAutoCompactLlm {
             Ok(text)
         })
     }
+}
+
+pub(crate) struct ProviderAutoCompactLlm {
+    provider: Arc<dyn sylvander_llm_core::ModelProvider>,
+    model: sylvander_llm_core::ModelInfo,
+}
+
+impl ProviderAutoCompactLlm {
+    pub(crate) fn new(
+        provider: Arc<dyn sylvander_llm_core::ModelProvider>,
+        model: sylvander_llm_core::ModelInfo,
+    ) -> Self {
+        Self { provider, model }
+    }
+}
+
+pub(crate) enum BackendAutoCompactLlm {
+    Legacy(AgentLoopAutoCompactLlm),
+    Provider(ProviderAutoCompactLlm),
+}
+
+impl AutoCompactLlm for BackendAutoCompactLlm {
+    fn summarize<'a>(
+        &'a self,
+        messages: &'a [MessageParam],
+        model: &'a ModelInfo,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
+        match self {
+            Self::Legacy(llm) => llm.summarize(messages, model),
+            Self::Provider(llm) => llm.summarize(messages, model),
+        }
+    }
+}
+
+impl AutoCompactLlm for ProviderAutoCompactLlm {
+    fn summarize<'a>(
+        &'a self,
+        messages: &'a [MessageParam],
+        _model: &'a ModelInfo,
+    ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
+        Box::pin(async move {
+            let messages = messages
+                .iter()
+                .map(crate::provider_compat::message_to_core)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| AgentLoopError::Compression(error.to_string()))?;
+            let request = sylvander_llm_core::ModelRequest {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                model: self.model.reference.clone(),
+                system: vec![sylvander_llm_core::SystemInstruction {
+                    text: DEFAULT_SUMMARY_PROMPT.into(),
+                    cache_hint: None,
+                }],
+                messages,
+                tools: Vec::new(),
+                max_output_tokens: self.model.max_output_tokens.min(4096),
+                reasoning: None,
+                output_schema: None,
+            };
+            let mut stream = self
+                .provider
+                .complete_stream(request)
+                .await
+                .map_err(provider_error)?;
+            let mut completed = None;
+            while let Some(event) = stream.next().await {
+                let event = event.map_err(provider_error)?;
+                if completed.is_some() {
+                    return Err(protocol(
+                        "summary provider emitted an event after completion",
+                    ));
+                }
+                match event {
+                    sylvander_llm_core::ModelStreamEvent::TextDelta(_) => {}
+                    sylvander_llm_core::ModelStreamEvent::ReasoningDelta(_) => {
+                        return Err(protocol("summary provider emitted reasoning"));
+                    }
+                    sylvander_llm_core::ModelStreamEvent::Completed(response) => {
+                        if response.model != self.model.reference {
+                            return Err(protocol("summary provider returned an unexpected model"));
+                        }
+                        completed = Some(response);
+                    }
+                }
+            }
+            let response =
+                completed.ok_or_else(|| protocol("summary stream ended without completion"))?;
+            let mut text = String::new();
+            for block in response.content {
+                let sylvander_llm_core::ContentBlock::Text { text: part } = block else {
+                    return Err(protocol("summary response contained non-text content"));
+                };
+                text.push_str(&part);
+            }
+            if text.trim().is_empty() {
+                return Err(protocol("summary response contained no text"));
+            }
+            Ok(text)
+        })
+    }
+}
+
+fn provider_error(source: sylvander_llm_core::ProviderError) -> AgentLoopError {
+    AgentLoopError::Provider {
+        attempts: 1,
+        source,
+    }
+}
+
+fn protocol(message: &'static str) -> AgentLoopError {
+    provider_error(sylvander_llm_core::ProviderError::new(
+        sylvander_llm_core::ProviderErrorKind::Protocol,
+        sylvander_llm_core::ProviderErrorPhase::Stream,
+        message,
+    ))
 }
 
 #[cfg(test)]
@@ -145,6 +262,138 @@ pub mod tests {
                 *self.last_messages.lock().unwrap() = messages.to_vec();
                 Ok(self.canned_response.lock().unwrap().clone())
             })
+        }
+    }
+
+    struct FakeProvider {
+        events: std::sync::Mutex<
+            Option<
+                Vec<
+                    Result<sylvander_llm_core::ModelStreamEvent, sylvander_llm_core::ProviderError>,
+                >,
+            >,
+        >,
+        request: std::sync::Mutex<Option<sylvander_llm_core::ModelRequest>>,
+    }
+
+    impl sylvander_llm_core::ModelProvider for FakeProvider {
+        fn complete_stream(
+            &self,
+            request: sylvander_llm_core::ModelRequest,
+        ) -> sylvander_llm_core::ProviderFuture<'_> {
+            *self.request.lock().unwrap() = Some(request);
+            let events = self.events.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                Ok(Box::pin(futures_util::stream::iter(events))
+                    as sylvander_llm_core::ModelEventStream)
+            })
+        }
+    }
+
+    fn response(
+        content: Vec<sylvander_llm_core::ContentBlock>,
+    ) -> sylvander_llm_core::ModelResponse {
+        sylvander_llm_core::ModelResponse {
+            id: "summary".into(),
+            model: sylvander_llm_core::ModelRef::new("local", "model-a"),
+            content,
+            stop_reason: sylvander_llm_core::StopReason::EndTurn,
+            usage: sylvander_llm_core::TokenUsage::default(),
+        }
+    }
+
+    fn provider(
+        events: Vec<
+            Result<sylvander_llm_core::ModelStreamEvent, sylvander_llm_core::ProviderError>,
+        >,
+    ) -> Arc<FakeProvider> {
+        Arc::new(FakeProvider {
+            events: std::sync::Mutex::new(Some(events)),
+            request: std::sync::Mutex::new(None),
+        })
+    }
+
+    fn provider_model() -> sylvander_llm_core::ModelInfo {
+        sylvander_llm_core::ModelInfo {
+            reference: sylvander_llm_core::ModelRef::new("local", "model-a"),
+            context_window: 100_000,
+            max_output_tokens: 8192,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_summary_is_qualified_text_only_and_minimal() {
+        let provider = provider(vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
+            response(vec![sylvander_llm_core::ContentBlock::Text {
+                text: "summary".into(),
+            }]),
+        ))]);
+        let llm = ProviderAutoCompactLlm::new(provider.clone(), provider_model());
+        let legacy_model = crate::provider_compat::model_metadata_from_core(&provider_model());
+        let summary = llm
+            .summarize(&[MessageParam::user("old context")], &legacy_model)
+            .await
+            .unwrap();
+        assert_eq!(summary, "summary");
+        let request = provider.request.lock().unwrap();
+        let request = request.as_ref().unwrap();
+        assert_eq!(
+            request.model,
+            sylvander_llm_core::ModelRef::new("local", "model-a")
+        );
+        assert!(
+            request.tools.is_empty()
+                && request.reasoning.is_none()
+                && request.output_schema.is_none()
+        );
+        assert_eq!(request.max_output_tokens, 4096);
+    }
+
+    #[tokio::test]
+    async fn provider_summary_rejects_missing_late_and_non_text_completion() {
+        let cases = [
+            Vec::new(),
+            vec![
+                Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
+                    vec![sylvander_llm_core::ContentBlock::Text { text: "ok".into() }],
+                ))),
+                Ok(sylvander_llm_core::ModelStreamEvent::TextDelta(
+                    "late".into(),
+                )),
+            ],
+            vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
+                response(vec![sylvander_llm_core::ContentBlock::ToolCall {
+                    id: "call".into(),
+                    name: "tool".into(),
+                    arguments: serde_json::json!({}),
+                }]),
+            ))],
+            vec![
+                Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
+                    vec![sylvander_llm_core::ContentBlock::Text { text: "one".into() }],
+                ))),
+                Ok(sylvander_llm_core::ModelStreamEvent::Completed(response(
+                    vec![sylvander_llm_core::ContentBlock::Text { text: "two".into() }],
+                ))),
+            ],
+            vec![Ok(sylvander_llm_core::ModelStreamEvent::ReasoningDelta(
+                "not allowed".into(),
+            ))],
+            vec![Ok(sylvander_llm_core::ModelStreamEvent::Completed(
+                response(vec![sylvander_llm_core::ContentBlock::Text {
+                    text: "  ".into(),
+                }]),
+            ))],
+        ];
+        let legacy_model = crate::provider_compat::model_metadata_from_core(&provider_model());
+        for events in cases {
+            let llm = ProviderAutoCompactLlm::new(provider(events), provider_model());
+            assert!(matches!(
+                llm.summarize(&[MessageParam::user("old")], &legacy_model).await,
+                Err(AgentLoopError::Provider { source, .. })
+                    if source.kind == sylvander_llm_core::ProviderErrorKind::Protocol
+            ));
         }
     }
 }

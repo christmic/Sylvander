@@ -1,4 +1,4 @@
-//! AskUserGate — mechanism passed into AgentLoop to pause for user input.
+//! `AskUserGate` — mechanism passed into `AgentLoop` to pause for user input.
 
 use async_trait::async_trait;
 

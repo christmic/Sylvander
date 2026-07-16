@@ -47,7 +47,7 @@ pub enum ClientEvent {
     /// surface an Info message, drop session.
     Disconnected,
     /// A parsed server message arrived.
-    Message(ServerMsg),
+    Message(Box<ServerMsg>),
     Diagnostic(String),
 }
 
@@ -108,9 +108,7 @@ impl UnixClient {
         .map_err(|_| {
             std::io::Error::new(std::io::ErrorKind::TimedOut, "protocol handshake timed out")
         })??;
-        let line = if let Some(line) = handshake_line {
-            line
-        } else {
+        let Some(line) = handshake_line else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "server closed during protocol handshake",
@@ -166,7 +164,7 @@ impl UnixClient {
                         }
                         match parse_server_line(line) {
                             Ok(msg) => {
-                                if tx.send(ClientEvent::Message(msg)).await.is_err() {
+                                if tx.send(ClientEvent::Message(Box::new(msg))).await.is_err() {
                                     break;
                                 }
                             }
@@ -194,14 +192,11 @@ impl UnixClient {
 
     /// Send a client message. Returns Err if not connected or write fails.
     pub async fn send(&mut self, msg: &ClientMsg) -> std::io::Result<()> {
-        let writer = match self.writer.as_mut() {
-            Some(w) => w,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotConnected,
-                    "socket not connected",
-                ));
-            }
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "socket not connected",
+            ));
         };
         let json = serde_json::to_string(msg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -298,7 +293,7 @@ fn parse_server_line(line: &str) -> Result<ServerMsg, String> {
 // Protocol → Domain adapter (only place that knows both worlds)
 // ===========================================================================
 
-/// Translate a parsed server message into a neutral DomainEvent.
+/// Translate a parsed server message into a neutral `DomainEvent`.
 ///
 /// This is the ONLY function that bridges wire-format and domain state.
 /// Replace it when adding a new transport (WebSocket, HTTP, ...) — no
@@ -324,6 +319,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             approval_enabled,
             max_attachment_bytes,
             platform,
+            ..
         } => DomainEvent::RuntimeInfo {
             model,
             reasoning_effort,
@@ -547,6 +543,13 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::OperationError { operation, message } => {
             DomainEvent::OperationFailed { operation, message }
         }
+        ServerMsg::BoundaryDenied { error } => DomainEvent::OperationFailed {
+            operation: error.operation,
+            message: match error.retry_after_ms {
+                Some(delay) => format!("{} (retry after {delay} ms)", error.message),
+                None => error.message,
+            },
+        },
         ServerMsg::IterationEnd {
             iteration,
             input_tokens,
@@ -564,6 +567,8 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         | ServerMsg::AgentsDiscovered { .. }
         | ServerMsg::SessionConfig { .. }
         | ServerMsg::FeedbackRecorded { .. }
+        | ServerMsg::AgentAdmin { .. }
+        | ServerMsg::RegistryAdmin { .. }
         | ServerMsg::Pong => return None,
     })
 }
@@ -641,11 +646,13 @@ mod tests {
     fn runtime_wire_event_preserves_server_capabilities() {
         let event = parse_server_msg(ServerMsg::RuntimeInfo {
             model: "claude-test".into(),
+            model_selection: None,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
             models: vec![sylvander_protocol::ModelDescriptor {
                 id: "claude-test".into(),
                 provider: "test".into(),
                 capabilities: 0b10001,
+                capability_names: Vec::new(),
                 reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Medium],
                 lifecycle: sylvander_protocol::ModelLifecycle::Active,
                 pricing: None,
@@ -692,17 +699,20 @@ mod tests {
     #[test]
     fn model_selection_uses_typed_reasoning_effort_on_wire() {
         let value = serde_json::to_value(ClientMsg::SelectModel {
+            session_id: Some("session-1".into()),
             model: "thinking".into(),
             reasoning_effort: sylvander_protocol::ReasoningEffort::High,
         })
         .unwrap();
         assert_eq!(value["type"], "select_model");
+        assert_eq!(value["session_id"], "session-1");
         assert_eq!(value["reasoning_effort"], "high");
     }
 
     #[test]
     fn permission_selection_is_a_typed_wire_profile() {
         let value = serde_json::to_value(ClientMsg::SelectPermissions {
+            session_id: Some("session-1".into()),
             profile: sylvander_protocol::PermissionProfile {
                 file_access: sylvander_protocol::FileAccess::ReadOnly,
                 network_access: sylvander_protocol::NetworkAccess::Denied,
@@ -778,6 +788,24 @@ mod tests {
             event,
             Some(DomainEvent::OperationFailed { operation, message })
                 if operation == "load_session" && message == "not found"
+        ));
+    }
+
+    #[test]
+    fn boundary_denials_preserve_operation_and_retry_guidance() {
+        let event = parse_server_msg(ServerMsg::BoundaryDenied {
+            error: sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+                operation: "chat".into(),
+                request_id: "request-1".into(),
+                message: "request rate limit exceeded".into(),
+                retry_after_ms: Some(1_500),
+            },
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::OperationFailed { operation, message })
+                if operation == "chat" && message.contains("1500 ms")
         ));
     }
 

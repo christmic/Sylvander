@@ -9,27 +9,31 @@
 //!   -d "url=https://your-host/telegram/webhook"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     routing::post,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
-use sylvander_agent::session::SessionMetadata;
-use sylvander_agent::session_store::{SessionLifetime, SessionStore, StoredSession};
+use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
+use sylvander_protocol::{
+    AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
+    BoundaryErrorCode,
+};
 
 // ===========================================================================
 // Telegram types
@@ -83,6 +87,8 @@ pub struct TelegramChannel {
     last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
     http: reqwest::Client,
     webhook_secret: Option<String>,
+    instance_id: String,
+    max_request_bytes: usize,
 }
 
 impl TelegramChannel {
@@ -98,6 +104,8 @@ impl TelegramChannel {
             last_bot_msg: Arc::new(RwLock::new(HashMap::new())),
             http: reqwest::Client::new(),
             webhook_secret: None,
+            instance_id: "telegram".into(),
+            max_request_bytes: 1024 * 1024,
         }
     }
 
@@ -105,6 +113,19 @@ impl TelegramChannel {
     #[must_use]
     pub fn with_webhook_secret(mut self, secret: impl Into<String>) -> Self {
         self.webhook_secret = Some(secret.into());
+        self
+    }
+
+    /// Identify this configured bot instance for session and principal isolation.
+    #[must_use]
+    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
+        self.instance_id = instance_id.into();
+        self
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
         self
     }
 
@@ -133,10 +154,13 @@ impl Channel for TelegramChannel {
             ctx,
             agent_id: self.agent_id.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            instance_id: self.instance_id.clone(),
+            replay: ReplayCache::default(),
         });
 
         let app = Router::new()
             .route("/telegram/webhook", post(handle_webhook))
+            .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
         let listener = tokio::net::TcpListener::bind(self.webhook_addr)
@@ -164,6 +188,8 @@ impl Clone for TelegramChannel {
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
             webhook_secret: self.webhook_secret.clone(),
+            instance_id: self.instance_id.clone(),
+            max_request_bytes: self.max_request_bytes,
         }
     }
 }
@@ -177,6 +203,44 @@ struct AppState {
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
     webhook_secret: Option<String>,
+    instance_id: String,
+    replay: ReplayCache,
+}
+
+struct ReplayCache {
+    entries: Mutex<VecDeque<(String, Instant)>>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+impl ReplayCache {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            capacity: capacity.max(1),
+            ttl,
+        }
+    }
+
+    async fn claim(&self, message_id: &str) -> bool {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().await;
+        entries.retain(|(_, seen)| now.saturating_duration_since(*seen) < self.ttl);
+        if entries.iter().any(|(existing, _)| existing == message_id) {
+            return false;
+        }
+        while entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back((message_id.into(), now));
+        true
+    }
+}
+
+impl Default for ReplayCache {
+    fn default() -> Self {
+        Self::new(4096, Duration::from_mins(10))
+    }
 }
 
 async fn handle_webhook(
@@ -186,7 +250,7 @@ async fn handle_webhook(
 ) -> Result<&'static str, StatusCode> {
     if !valid_webhook_secret(&headers, state.webhook_secret.as_deref()) {
         warn!("telegram: rejected webhook with invalid secret token");
-        return Err(StatusCode::UNAUTHORIZED);
+        return Err(reject_webhook_authentication(&state).await);
     }
     let Some(msg) = update.message else {
         return Ok("ok");
@@ -194,93 +258,108 @@ async fn handle_webhook(
     let Some(text) = msg.text else {
         return Ok("ok");
     };
+    let update_id = update.update_id.to_string();
+    if !state.replay.claim(&update_id).await {
+        info!(%update_id, "telegram: ignored duplicate update");
+        return Ok("ok");
+    }
 
     let chat_id = msg.chat.id;
     let chat_id_str = chat_id.to_string();
+    let principal_id = platform_principal_id(&state.instance_id, &chat_id_str);
 
     // Find or create session
-    let session_id = resolve_session(&state.sessions, &chat_id_str, &state.agent_id).await;
+    let existing = find_by_chat_id(&state.sessions, &state.instance_id, &chat_id_str).await;
+    let boundary = BoundaryContext::authenticated(
+        AuthenticatedPrincipal::user(principal_id.clone(), AuthenticationMethod::PlatformIdentity),
+        &state.instance_id,
+        "telegram",
+        format!("telegram-update-{}", update.update_id),
+    );
+    let external_meta = BTreeMap::from([
+        ("channel_instance_id".into(), state.instance_id.clone()),
+        ("chat_id".into(), chat_id_str.clone()),
+    ]);
+    let submitted = match submit_external_chat(
+        &state.ctx,
+        &boundary,
+        ExternalChatRequest {
+            existing_session: existing,
+            agent_id: state.agent_id.clone(),
+            label: format!("telegram-{chat_id}"),
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            text: text.clone(),
+            attachments: Vec::new(),
+            external_meta,
+        },
+    )
+    .await
+    {
+        Ok(submitted) => submitted,
+        Err(error) => {
+            warn!(code = ?error.code, request_id = %error.request_id, "telegram: message denied");
+            return Ok("denied");
+        }
+    };
+    drop(submitted.events);
     let sender_name = msg
         .from
         .as_ref()
         .map_or_else(|| "user".into(), |user| user.first_name.clone());
 
-    // Send user message
-    let bus_msg = BusMessage::user_chat(session_id.clone(), &sender_name, &text);
-    if let Err(e) = state.ctx.bus.publish(bus_msg).await {
-        warn!(error = %e, "telegram: bus publish failed");
-        return Ok("error");
-    }
-
-    // Send JoinSession for agent (only first time)
-    let _ = state
-        .ctx
-        .bus
-        .publish(BusMessage {
-            session_id: session_id.clone(),
-            sender: sylvander_agent::bus::Sender::System,
-            recipient: sylvander_agent::bus::Recipient::Agent(state.agent_id.clone()),
-            kind: sylvander_agent::bus::MessageKind::System(
-                sylvander_agent::bus::SystemMessage::JoinSession {
-                    session_id: session_id.clone(),
-                    metadata: SessionMetadata {
-                        workspace: "/tmp".into(),
-                        name: format!("telegram-{chat_id}"),
-                        user_id: sender_name.clone(),
-                    },
-                },
-            ),
-            payload: String::new(),
-            attachments: Vec::new(),
-            timestamp: sylvander_agent::session::now_secs(),
-            id: sylvander_agent::bus::MessageId::new(),
-        })
-        .await;
-
     info!(%chat_id, sender = %sender_name, text, "telegram: message received");
     Ok("ok")
 }
 
-fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
-    expected.is_none_or(|expected| {
-        headers
-            .get("x-telegram-bot-api-secret-token")
-            .and_then(|value| value.to_str().ok())
-            == Some(expected)
-    })
-}
-
-async fn resolve_session(
-    store: &Arc<dyn SessionStore>,
-    chat_id: &str,
-    agent_id: &AgentId,
-) -> SessionId {
-    if let Some(sid) = find_by_chat_id(store, chat_id).await {
-        return sid;
-    }
-    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
-    let meta = SessionMetadata {
-        workspace: "/tmp".into(),
-        name: format!("telegram-{chat_id}"),
-        user_id: chat_id.into(),
+async fn reject_webhook_authentication(state: &AppState) -> StatusCode {
+    let boundary = BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "telegram",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    let Some(ui) = &state.ctx.ui else {
+        return StatusCode::UNAUTHORIZED;
     };
-    let session_name = meta.name.clone();
-    let stored = StoredSession::new(
-        sid.clone(),
-        session_name,
-        SessionLifetime::Persistent,
-        meta,
-        vec![agent_id.clone()],
-    )
-    .with_external_meta("chat_id", chat_id);
-    let _ = store.save(&stored).await;
-    sid
+    let error = ui
+        .reject_authentication(
+            &boundary,
+            AuthenticationFailure::new(AuthenticationMethod::WebhookSignature),
+        )
+        .await;
+    if error.code == BoundaryErrorCode::RateLimited {
+        StatusCode::TOO_MANY_REQUESTS
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
 }
 
-async fn find_by_chat_id(store: &Arc<dyn SessionStore>, chat_id: &str) -> Option<SessionId> {
+fn valid_webhook_secret(headers: &HeaderMap, expected: Option<&str>) -> bool {
+    let Some(expected) = expected.filter(|secret| !secret.is_empty()) else {
+        return false;
+    };
+    headers
+        .get("x-telegram-bot-api-secret-token")
+        .and_then(|value| value.to_str().ok())
+        == Some(expected)
+}
+
+fn platform_principal_id(instance_id: &str, chat_id: &str) -> String {
+    format!("telegram:{instance_id}:{chat_id}")
+}
+
+async fn find_by_chat_id(
+    store: &Arc<dyn SessionStore>,
+    instance_id: &str,
+    chat_id: &str,
+) -> Option<SessionId> {
     let list = store.list_persistent().await.ok()?;
     for s in &list {
-        if s.external_meta.get("chat_id").and_then(|v| v.as_str()) == Some(chat_id) {
+        if s.external_meta
+            .get("channel_instance_id")
+            .and_then(|v| v.as_str())
+            == Some(instance_id)
+            && s.external_meta.get("chat_id").and_then(|v| v.as_str()) == Some(chat_id)
+        {
             return Some(s.id.clone());
         }
     }
@@ -293,7 +372,6 @@ async fn find_by_chat_id(store: &Arc<dyn SessionStore>, chat_id: &str) -> Option
 
 async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
     let mut rx = ctx
-        .bus
         .subscribe(SubscriptionFilter::all())
         .await
         .expect("subscribe");
@@ -303,7 +381,8 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
             continue;
         };
 
-        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id).await else {
+        let Some(chat_id) = get_chat_id(&ctx.sessions, &msg.session_id, &ch.instance_id).await
+        else {
             continue;
         };
 
@@ -343,8 +422,20 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
     }
 }
 
-async fn get_chat_id(store: &Arc<dyn SessionStore>, sid: &SessionId) -> Option<i64> {
+async fn get_chat_id(
+    store: &Arc<dyn SessionStore>,
+    sid: &SessionId,
+    instance_id: &str,
+) -> Option<i64> {
     let session = store.get(sid).await.ok()??;
+    if session
+        .external_meta
+        .get("channel_instance_id")
+        .and_then(|value| value.as_str())
+        != Some(instance_id)
+    {
+        return None;
+    }
     let v = session.external_meta.get("chat_id")?.as_str()?;
     v.parse().ok()
 }
@@ -382,11 +473,117 @@ fn _unused_json(_v: JsonValue) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::SqliteSessionStore;
+    use sylvander_channel::UiService;
+
+    struct AuthenticationRecorder(AtomicUsize);
+
+    #[async_trait]
+    impl UiService for AuthenticationRecorder {
+        async fn reject_authentication(
+            &self,
+            boundary: &BoundaryContext,
+            failure: AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            assert_eq!(boundary.transport, "telegram");
+            assert_eq!(
+                failure.attempted_method,
+                AuthenticationMethod::WebhookSignature
+            );
+            self.0.fetch_add(1, Ordering::Relaxed);
+            sylvander_protocol::BoundaryError {
+                code: BoundaryErrorCode::RateLimited,
+                operation: failure.operation().into(),
+                request_id: boundary.request_id.clone(),
+                message: "rate limited".into(),
+                retry_after_ms: Some(1_000),
+            }
+        }
+
+        async fn authorize_message(
+            &self,
+            _: &BoundaryContext,
+            _: &sylvander_protocol::UiClientMessage,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+        async fn discover_agents(
+            &self,
+            _: &BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn create_session(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn session_config(
+            &self,
+            _: &BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn update_session_config(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+        async fn submit_feedback(
+            &self,
+            _: &BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
 
     #[test]
-    fn webhook_secret_is_required_when_configured() {
+    fn request_limit_is_configurable() {
+        let channel = TelegramChannel::new("token", "127.0.0.1:0".parse().unwrap(), "agent")
+            .with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
+
+    #[tokio::test]
+    async fn invalid_secret_reaches_runtime_authentication_boundary() {
+        let ui = Arc::new(AuthenticationRecorder(AtomicUsize::new(0)));
+        let sessions = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let mut context =
+            ChannelContext::new(Arc::new(InProcessMessageBus::new()), sessions.clone());
+        context.ui = Some(ui.clone());
+        let state = AppState {
+            ctx: Arc::new(context),
+            agent_id: AgentId::new("agent"),
+            sessions,
+            webhook_secret: Some("secret".into()),
+            instance_id: "bot-a".into(),
+            replay: ReplayCache::default(),
+        };
+
+        assert_eq!(
+            reject_webhook_authentication(&state).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(ui.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn webhook_secret_is_required_by_default() {
         let mut headers = HeaderMap::new();
-        assert!(valid_webhook_secret(&headers, None));
+        assert!(!valid_webhook_secret(&headers, None));
+        assert!(!valid_webhook_secret(&headers, Some("")));
         assert!(!valid_webhook_secret(&headers, Some("secret")));
         headers.insert("x-telegram-bot-api-secret-token", "secret".parse().unwrap());
         assert!(valid_webhook_secret(&headers, Some("secret")));
@@ -396,5 +593,27 @@ mod tests {
     #[test]
     fn message_split_respects_unicode_character_boundaries() {
         assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
+    }
+
+    #[test]
+    fn principal_identity_includes_instance_and_chat() {
+        assert_eq!(platform_principal_id("bot-a", "42"), "telegram:bot-a:42");
+    }
+
+    #[tokio::test]
+    async fn replay_cache_rejects_duplicates_and_is_bounded_and_expiring() {
+        let cache = ReplayCache::new(2, Duration::from_mins(1));
+        assert!(cache.claim("one").await);
+        assert!(!cache.claim("one").await);
+        assert!(cache.claim("two").await);
+        assert!(cache.claim("three").await);
+        assert!(cache.claim("one").await, "oldest entry must be evicted");
+
+        let expiring = ReplayCache::new(2, Duration::ZERO);
+        assert!(expiring.claim("one").await);
+        assert!(
+            expiring.claim("one").await,
+            "expired entry must be reusable"
+        );
     }
 }

@@ -72,7 +72,7 @@ async fn real_api_does_multi_turn_work() {
     let prompt = format!("Read the file at {file_name} and tell me its contents.");
 
     let result = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await;
 

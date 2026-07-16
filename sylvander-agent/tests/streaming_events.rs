@@ -1,7 +1,7 @@
 //! End-to-end tests for streaming events on the bus.
 //!
 //! Verifies that `AgentRun::handle_message` publishes `StreamEvent`
-//! variants (TextDelta, ToolCall, ToolResult, Done, etc.) to the bus
+//! variants (`TextDelta`, `ToolCall`, `ToolResult`, Done, etc.) to the bus
 //! in real-time as the loop executes.
 
 use std::sync::Arc;
@@ -40,18 +40,26 @@ async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>
         .build()
         .expect("spec");
 
-    let run = AgentRun::builder(spec, mock_client(server))
+    let (run, issuer) = AgentRun::builder(spec, mock_client(server))
         .bus(bus.clone())
-        .build()
+        .build_with_session_issuer()
         .expect("build");
 
-    let sid = run
-        .join_session(SessionMetadata {
-            workspace: "/tmp".into(),
-            name: "test".into(),
-            user_id: "user-1".into(),
-        })
-        .await;
+    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
+    run.attach_authenticated_session(
+        issuer
+            .issue(
+                sid.clone(),
+                SessionMetadata {
+                    workspace: "/tmp".into(),
+                    name: "test".into(),
+                    user_id: "user-1".into(),
+                },
+            )
+            .expect("issue session"),
+    )
+    .await
+    .expect("attach session");
 
     (run, bus, sid)
 }
@@ -93,16 +101,13 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         .model_name("claude-sonnet-5-20260601")
         .build()
         .expect("spec");
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("agent inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let session_id = SessionId::new("interrupt-session");
     bus.publish(BusMessage::system_join_session(
@@ -147,10 +152,7 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         "interrupt must not wait for the LLM response"
     );
 
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 /// Collect stream events into a vec of variant names
@@ -260,18 +262,15 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     let tools = ToolRegistry::new()
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new());
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("plan-session");
     bus.publish(BusMessage::system_join_session(
@@ -343,10 +342,7 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     })
     .await
     .expect("done after approval");
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 #[tokio::test]
@@ -415,18 +411,15 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         .build()
         .expect("spec");
     let tools = ToolRegistry::new().register(StartBackgroundTaskTool::new());
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("background-session");
     bus.publish(BusMessage::system_join_session(
@@ -484,10 +477,7 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
     })
     .await
     .expect("task cancellation");
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 // --- tests ---
@@ -540,13 +530,6 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(json!({
-            "system": [{
-                "type": "text",
-                "text": "session profile",
-                "cache_control": {"type": "ephemeral"}
-            }]
-        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_configured",
             "type": "message",
@@ -593,31 +576,65 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         user_workspace: source.clone(),
         execution_target: source,
     };
+    let prompt_policy = std::sync::Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:stream-test@1".into(),
+            spec.persona.system_prompt.clone(),
+            vec![sylvander_agent::prompt::PromptProfile {
+                id: "session".into(),
+                qualified_models: Vec::new(),
+                providers: vec![spec.model.provider.clone()],
+                models: vec![spec.model.model_name.clone()],
+                system_prompt: "session profile".into(),
+            }],
+            None,
+            false,
+        )
+        .expect("prompt policy"),
+    );
+    let composed = prompt_policy
+        .resolve(
+            &sylvander_protocol::ModelSelection {
+                provider_id: spec.model.provider.clone(),
+                model_id: spec.model.model_name.clone(),
+            },
+            Some("session"),
+            None,
+        )
+        .expect("configured prompt");
     let effective_config = SessionEffectiveConfig {
         agent_id: spec.id.clone(),
         agent_revision: 1,
         provider_id: spec.model.provider.clone(),
+        provider_revision: None,
         model_id: spec.model.model_name.clone(),
+        model_revision: None,
         reasoning_effort: ReasoningEffort::Off,
         permissions: PermissionProfile::default(),
         prompt_profile: Some("session".into()),
-        system_prompt_sha256: "test-digest".into(),
+        system_prompt_sha256: composed.system_prompt_sha256,
+        prompt_manifest: Some(composed.manifest),
         agent_workspace: None,
         user_workspace: None,
         execution_target: "local".into(),
         provenance,
     };
 
-    let agent = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
         .bus(bus)
         .session_store(store.clone())
-        .prompt_profiles(std::collections::HashMap::from([(
-            "session".into(),
-            "session profile".into(),
-        )]))
-        .build()
+        .prompt_resolver(prompt_policy)
+        .build_with_session_issuer()
         .expect("build");
-    let session_id = agent.join_session(metadata.clone()).await;
+    let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+    agent
+        .attach_authenticated_session(
+            issuer
+                .issue(session_id.clone(), metadata.clone())
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
     let mut stored = StoredSession::new(
         session_id.clone(),
         "configured",
@@ -625,12 +642,23 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         metadata,
         vec![agent.id().clone()],
     );
+    stored.config_overrides.prompt_profile = Some("session".into());
     stored.effective_config = Some(effective_config);
     store.save(&stored).await.expect("save session");
     agent
         .handle_message(BusMessage::user_chat(session_id, "user-1", "use my config"))
         .await
         .expect("configured turn");
+    let requests = server.received_requests().await.expect("provider requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("provider request body");
+    assert_eq!(
+        body["system"][0]["text"],
+        format!(
+            "{}\n\nsession profile",
+            sylvander_agent::prompt::SHARED_SAFETY_PROMPT
+        )
+    );
 
     let connection = rusqlite::Connection::open(database).expect("inspect database");
     let turn_count: i64 = connection
@@ -701,24 +729,32 @@ async fn tool_call_events_published() {
         .build()
         .expect("spec");
 
-    let agent = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
-        .build()
+        .build_with_session_issuer()
         .expect("build");
 
+    let sid = SessionId::new(uuid::Uuid::new_v4().to_string());
     agent
-        .join_session(SessionMetadata {
-            workspace: "/tmp".into(),
-            name: "test".into(),
-            user_id: "user-1".into(),
-        })
-        .await;
+        .attach_authenticated_session(
+            issuer
+                .issue(
+                    sid.clone(),
+                    SessionMetadata {
+                        workspace: "/tmp".into(),
+                        name: "test".into(),
+                        user_id: "user-1".into(),
+                    },
+                )
+                .expect("issue session"),
+        )
+        .await
+        .expect("attach session");
 
     let mut rx = subscribe_stream(&bus).await;
 
-    let sid = agent.list_sessions().await[0].clone();
     let msg = BusMessage::user_chat(sid, "user-1", "Run tool");
     agent.handle_message(msg).await.expect("handle_message");
 
@@ -833,10 +869,10 @@ async fn agent_error_published_and_returns_err() {
     // An error Chat message should have been published
     let mut found_error = false;
     while let Ok(ev) = rx.try_recv() {
-        if let MessageKind::Chat = ev.kind {
-            if ev.payload.contains("Error") {
-                found_error = true;
-            }
+        if let MessageKind::Chat = ev.kind
+            && ev.payload.contains("Error")
+        {
+            found_error = true;
         }
     }
     assert!(found_error, "expected an error Chat message on the bus");

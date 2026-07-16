@@ -22,7 +22,6 @@
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -32,7 +31,7 @@ use sylvander_tui::app::AppState;
 use sylvander_tui::client::{ServerMsg, parse_server_msg};
 
 /// Serializes e2e tests so they don't fight over the listener port.
-static E2E_LOCK: Mutex<()> = Mutex::new(());
+static E2E_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn unique_socket_path() -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -40,8 +39,7 @@ fn unique_socket_path() -> PathBuf {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |duration| duration.as_nanos())
     ))
 }
 
@@ -72,16 +70,15 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         let listener = match UnixListener::bind(&path) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("stub: bind {path:?} failed: {e}");
+                eprintln!("stub: bind {} failed: {e}", path.display());
                 return;
             }
         };
         // Refuse backlogs so two parallel stub listeners don't both
         // bind the same path on Windows-style retry semantics.
         let _ = listener.set_nonblocking(false);
-        let (mut stream, _) = match listener.accept() {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
         };
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
@@ -127,7 +124,7 @@ where
     assert!(matches!(welcome, ServerMsg::Welcome { protocol } if protocol.version == 1));
 }
 
-/// Read the next line from a `BufReader<ReadHalf>` (or anything AsyncBufRead)
+/// Read the next line from a `BufReader<ReadHalf>` (or anything `AsyncBufRead`)
 /// with a 500 ms timeout. Used by both e2e tests.
 async fn read_line_with_timeout<R>(reader: &mut R) -> String
 where
@@ -144,7 +141,7 @@ where
 
 #[tokio::test]
 async fn e2e_handshake_ping_returns_pong() {
-    let _guard = E2E_LOCK.lock().unwrap();
+    let _guard = E2E_LOCK.lock().await;
     let path = unique_socket_path();
     let _server = spawn_stub_server(&path);
 
@@ -168,7 +165,7 @@ async fn e2e_handshake_ping_returns_pong() {
 
 #[tokio::test]
 async fn e2e_state_machine_progresses_through_stream() {
-    let _guard = E2E_LOCK.lock().unwrap();
+    let _guard = E2E_LOCK.lock().await;
     let path = unique_socket_path();
     let _server = spawn_stub_server(&path);
 

@@ -65,6 +65,55 @@ pub struct EvidenceCounts {
     pub events: u64,
 }
 
+/// A durable, content-free record of a rejected boundary operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationDenial {
+    pub id: String,
+    pub occurred_at: i64,
+    pub request_id: String,
+    pub principal_digest: Option<String>,
+    pub channel_instance_id: String,
+    pub transport: String,
+    pub operation: String,
+    pub code: String,
+    pub resource_digest: Option<String>,
+}
+
+/// Content-free audit record for a privileged Agent definition mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentAdministrationAudit {
+    pub id: String,
+    pub occurred_at: i64,
+    pub request_id: String,
+    pub principal_digest: String,
+    pub channel_instance_id: String,
+    pub operation: String,
+    pub agent_digest: String,
+    pub revision: u64,
+    pub expected_active_revision: u64,
+    pub outcome: String,
+    pub error_code: Option<String>,
+}
+
+/// Content-free terminal audit for any privileged registry administration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdministrationAudit {
+    pub id: String,
+    pub occurred_at: i64,
+    pub request_id: String,
+    pub principal_digest: String,
+    pub channel_instance_id: String,
+    pub transport: String,
+    pub operation: String,
+    pub resource_kind: String,
+    pub resource_digest: String,
+    /// Exact revision/generation when the operation targets one; collection
+    /// operations such as `list` carry no fabricated version.
+    pub version: Option<u64>,
+    pub outcome: String,
+    pub error_code: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TurnQuery {
     pub session_id: Option<String>,
@@ -275,6 +324,263 @@ impl EvidenceStore {
         .await
     }
 
+    pub async fn record_authorization_denial(
+        &self,
+        denial: AuthorizationDenial,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO authorization_denials(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, code, resource_digest) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![denial.id, denial.occurred_at, denial.request_id, denial.principal_digest, denial.channel_instance_id, denial.transport, denial.operation, denial.code, denial.resource_digest],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn authorization_denials(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<AuthorizationDenial>, EvidenceError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, code, resource_digest FROM authorization_denials ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map([i64::from(limit.clamp(1, 1000))], |row| {
+                    Ok(AuthorizationDenial {
+                        id: row.get(0)?,
+                        occurred_at: row.get(1)?,
+                        request_id: row.get(2)?,
+                        principal_digest: row.get(3)?,
+                        channel_instance_id: row.get(4)?,
+                        transport: row.get(5)?,
+                        operation: row.get(6)?,
+                        code: row.get(7)?,
+                        resource_digest: row.get(8)?,
+                    })
+                })
+                .map_err(EvidenceError::sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
+    pub async fn begin_agent_administration(
+        &self,
+        audit: AgentAdministrationAudit,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO agent_administration_audit(id, occurred_at, request_id, principal_digest, channel_instance_id, operation, agent_digest, revision, expected_active_revision, outcome, error_code) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending', NULL)",
+                    params![audit.id, audit.occurred_at, audit.request_id, audit.principal_digest, audit.channel_instance_id, audit.operation, audit.agent_digest, as_i64(audit.revision)?, as_i64(audit.expected_active_revision)?],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn finish_agent_administration(
+        &self,
+        id: String,
+        outcome: &'static str,
+        error_code: Option<String>,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE agent_administration_audit SET outcome=?2, error_code=?3 WHERE id=?1 AND outcome='pending'",
+                    params![id, outcome, error_code],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            if changed != 1 {
+                return Err(EvidenceError::InvalidAuditState);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn agent_administration_audits(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<AgentAdministrationAudit>, EvidenceError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, operation, agent_digest, revision, expected_active_revision, outcome, error_code FROM agent_administration_audit ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map([i64::from(limit.clamp(1, 1000))], |row| {
+                    Ok(AgentAdministrationAudit {
+                        id: row.get(0)?,
+                        occurred_at: row.get(1)?,
+                        request_id: row.get(2)?,
+                        principal_digest: row.get(3)?,
+                        channel_instance_id: row.get(4)?,
+                        operation: row.get(5)?,
+                        agent_digest: row.get(6)?,
+                        revision: sql_nonnegative(row.get(7)?, 7)?,
+                        expected_active_revision: sql_nonnegative(row.get(8)?, 8)?,
+                        outcome: row.get(9)?,
+                        error_code: row.get(10)?,
+                    })
+                })
+                .map_err(EvidenceError::sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
+    /// Persist one already-terminal registry administration decision.
+    pub async fn record_administration_audit(
+        &self,
+        audit: AdministrationAudit,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            let version = audit.version.map(as_i64).transpose()?;
+            connection
+                .execute(
+                    "INSERT INTO administration_audit(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![audit.id, audit.occurred_at, audit.request_id, audit.principal_digest, audit.channel_instance_id, audit.transport, audit.operation, audit.resource_kind, audit.resource_digest, version, audit.outcome, audit.error_code],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Persist a mutation intent before any registry state is changed.
+    pub async fn begin_administration_mutation(
+        &self,
+        audit: AdministrationAudit,
+    ) -> Result<(), EvidenceError> {
+        if audit.outcome != "pending" || audit.error_code.is_some() {
+            return Err(EvidenceError::InvalidAuditState);
+        }
+        self.run(move |connection| {
+            let version = audit.version.map(as_i64).transpose()?;
+            connection
+                .execute(
+                    "INSERT INTO administration_audit_intents(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![audit.id, audit.occurred_at, audit.request_id, audit.principal_digest, audit.channel_instance_id, audit.transport, audit.operation, audit.resource_kind, audit.resource_digest, version],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Atomically turn one pending mutation intent into a terminal audit.
+    pub async fn finish_administration_mutation(
+        &self,
+        id: String,
+        outcome: &'static str,
+        error_code: Option<String>,
+    ) -> Result<(), EvidenceError> {
+        if !matches!(outcome, "succeeded" | "failed") {
+            return Err(EvidenceError::InvalidAuditState);
+        }
+        self.run(move |connection| {
+            let transaction = connection
+                .unchecked_transaction()
+                .map_err(EvidenceError::sqlite)?;
+            let inserted = transaction
+                .execute(
+                    "INSERT INTO administration_audit(id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code) SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, ?2, ?3 FROM administration_audit_intents WHERE id=?1",
+                    params![id, outcome, error_code],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            if inserted != 1 {
+                return Err(EvidenceError::InvalidAuditState);
+            }
+            transaction
+                .execute("DELETE FROM administration_audit_intents WHERE id=?1", [&id])
+                .map_err(EvidenceError::sqlite)?;
+            transaction.commit().map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
+    /// Read a bounded newest-first view without registry definitions or secrets.
+    pub async fn administration_audits(
+        &self,
+        limit: u16,
+    ) -> Result<Vec<AdministrationAudit>, EvidenceError> {
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, outcome, error_code FROM administration_audit UNION ALL SELECT id, occurred_at, request_id, principal_digest, channel_instance_id, transport, operation, resource_kind, resource_digest, version, 'pending', NULL FROM administration_audit_intents ORDER BY occurred_at DESC, id DESC LIMIT ?1",
+                )
+                .map_err(EvidenceError::sqlite)?;
+            let rows = statement
+                .query_map([i64::from(limit.clamp(1, 1000))], |row| {
+                    Ok(AdministrationAudit {
+                        id: row.get(0)?,
+                        occurred_at: row.get(1)?,
+                        request_id: row.get(2)?,
+                        principal_digest: row.get(3)?,
+                        channel_instance_id: row.get(4)?,
+                        transport: row.get(5)?,
+                        operation: row.get(6)?,
+                        resource_kind: row.get(7)?,
+                        resource_digest: row.get(8)?,
+                        version: row
+                            .get::<_, Option<i64>>(9)?
+                            .map(|value| sql_nonnegative(value, 9))
+                            .transpose()?,
+                        outcome: row.get(10)?,
+                        error_code: row.get(11)?,
+                    })
+                })
+                .map_err(EvidenceError::sqlite)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
+    /// Resolve the single session to which feedback may be attributed.
+    /// Run-level feedback is accepted only when the run contains one session;
+    /// callers must name a turn when a run spans multiple owners.
+    pub async fn feedback_session(
+        &self,
+        run_id: String,
+        turn_id: Option<String>,
+    ) -> Result<Option<String>, EvidenceError> {
+        self.run(move |connection| {
+            if let Some(turn_id) = turn_id {
+                return connection
+                    .query_row(
+                        "SELECT session_id FROM evidence_turns WHERE run_id=?1 AND id=?2",
+                        params![run_id, turn_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(EvidenceError::sqlite);
+            }
+            let mut statement = connection
+                .prepare("SELECT DISTINCT session_id FROM evidence_turns WHERE run_id=?1 LIMIT 2")
+                .map_err(EvidenceError::sqlite)?;
+            let sessions = statement
+                .query_map([run_id], |row| row.get::<_, String>(0))
+                .map_err(EvidenceError::sqlite)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(EvidenceError::sqlite)?;
+            Ok((sessions.len() == 1).then(|| sessions[0].clone()))
+        })
+        .await
+    }
+
     /// Persist explicit user feedback only when it can be traced to a real
     /// run and, when supplied, a turn belonging to that run.
     pub async fn record_feedback(
@@ -465,6 +771,16 @@ fn nonnegative(value: i64) -> Result<u64, EvidenceError> {
     u64::try_from(value).map_err(|_| EvidenceError::InvalidCount(value))
 }
 
+fn sql_nonnegative(value: i64, column: usize) -> rusqlite::Result<u64> {
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EvidenceError {
     #[error("SQLite evidence store failed: {0}")]
@@ -483,6 +799,8 @@ pub enum EvidenceError {
     Serialize(String),
     #[error("feedback must reference an existing run and a turn from that run")]
     InvalidFeedbackTarget,
+    #[error("Agent administration audit is missing or already terminal")]
+    InvalidAuditState,
 }
 
 impl EvidenceError {
@@ -526,9 +844,43 @@ CREATE TABLE IF NOT EXISTS evidence_feedback (
   note TEXT, tags_json TEXT NOT NULL, recorded_at INTEGER NOT NULL,
   CHECK (rating IN ('positive', 'negative'))
 );
+CREATE TABLE IF NOT EXISTS authorization_denials (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, code TEXT NOT NULL,
+  resource_digest TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_administration_audit (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+  operation TEXT NOT NULL, agent_digest TEXT NOT NULL, revision INTEGER NOT NULL,
+  expected_active_revision INTEGER NOT NULL, outcome TEXT NOT NULL,
+  error_code TEXT,
+  CHECK (outcome IN ('pending', 'succeeded', 'failed'))
+);
+CREATE TABLE IF NOT EXISTS administration_audit (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, resource_kind TEXT NOT NULL,
+  resource_digest TEXT NOT NULL, version INTEGER, outcome TEXT NOT NULL,
+  error_code TEXT,
+  CHECK (version IS NULL OR version > 0),
+  CHECK (outcome IN ('succeeded', 'failed', 'denied'))
+);
+CREATE TABLE IF NOT EXISTS administration_audit_intents (
+  id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
+  principal_digest TEXT NOT NULL, channel_instance_id TEXT NOT NULL,
+  transport TEXT NOT NULL, operation TEXT NOT NULL, resource_kind TEXT NOT NULL,
+  resource_digest TEXT NOT NULL, version INTEGER,
+  CHECK (version IS NULL OR version > 0)
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_authorization_denials_time ON authorization_denials(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_admin_audit_time ON agent_administration_audit(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_administration_audit_time ON administration_audit(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_administration_audit_intents_time ON administration_audit_intents(occurred_at DESC);
 ";
 
 #[cfg(test)]
@@ -630,6 +982,180 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authorization_denials_are_durable_and_content_free() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        let denial = AuthorizationDenial {
+            id: "denial-1".into(),
+            occurred_at: 42,
+            request_id: "request-1".into(),
+            principal_digest: Some("principal-digest".into()),
+            channel_instance_id: "desktop-primary".into(),
+            transport: "websocket".into(),
+            operation: "load_session".into(),
+            code: "forbidden".into(),
+            resource_digest: Some("resource-digest".into()),
+        };
+        store
+            .record_authorization_denial(denial.clone())
+            .await
+            .unwrap();
+        assert_eq!(store.authorization_denials(10).await.unwrap(), vec![denial]);
+    }
+
+    #[tokio::test]
+    async fn agent_administration_audit_preserves_pending_and_terminal_outcomes() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        let pending = AgentAdministrationAudit {
+            id: "admin-1".into(),
+            occurred_at: 43,
+            request_id: "request-2".into(),
+            principal_digest: "principal-digest".into(),
+            channel_instance_id: "admin-console".into(),
+            operation: "activate_revision".into(),
+            agent_digest: "agent-digest".into(),
+            revision: 2,
+            expected_active_revision: 1,
+            outcome: "pending".into(),
+            error_code: None,
+        };
+        store
+            .begin_agent_administration(pending.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.agent_administration_audits(10).await.unwrap(),
+            vec![pending]
+        );
+        store
+            .finish_agent_administration("admin-1".into(), "succeeded", None)
+            .await
+            .unwrap();
+        let completed = store.agent_administration_audits(10).await.unwrap();
+        assert_eq!(completed[0].outcome, "succeeded");
+        assert!(completed[0].error_code.is_none());
+        assert!(matches!(
+            store
+                .finish_agent_administration("admin-1".into(), "failed", None)
+                .await,
+            Err(EvidenceError::InvalidAuditState)
+        ));
+    }
+
+    #[tokio::test]
+    async fn generic_administration_audit_is_restart_durable_and_content_free() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("evidence.db");
+        let audit = AdministrationAudit {
+            id: "registry-admin-1".into(),
+            occurred_at: 44,
+            request_id: "request-3".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "activate".into(),
+            resource_kind: "provider".into(),
+            resource_digest: "resource-sha256".into(),
+            version: Some(7),
+            outcome: "failed".into(),
+            error_code: Some("revision_conflict".into()),
+        };
+        let store = EvidenceStore::open(&path).await.unwrap();
+        store
+            .record_administration_audit(audit.clone())
+            .await
+            .unwrap();
+        let list_audit = AdministrationAudit {
+            id: "registry-admin-list".into(),
+            occurred_at: 45,
+            request_id: "request-4".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "list".into(),
+            resource_kind: "provider".into(),
+            resource_digest: "provider-collection-sha256".into(),
+            version: None,
+            outcome: "succeeded".into(),
+            error_code: None,
+        };
+        store
+            .record_administration_audit(list_audit.clone())
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = EvidenceStore::open(&path).await.unwrap();
+        assert_eq!(
+            reopened.administration_audits(10).await.unwrap(),
+            vec![list_audit, audit]
+        );
+        drop(reopened);
+
+        let database = std::fs::read(path).unwrap();
+        for marker in [
+            b"https://provider.internal.example".as_slice(),
+            b"provider:alpha:api_key".as_slice(),
+            b"raw-provider-id".as_slice(),
+        ] {
+            assert!(
+                !database
+                    .windows(marker.len())
+                    .any(|window| window == marker)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn administration_mutation_intent_survives_crash_and_finishes_once() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("mutation-audit.db");
+        let pending = AdministrationAudit {
+            id: "registry-mutation-1".into(),
+            occurred_at: 50,
+            request_id: "request-5".into(),
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "admin-console".into(),
+            transport: "unix".into(),
+            operation: "activate_credential_generation".into(),
+            resource_kind: "credential".into(),
+            resource_digest: "binding-sha256".into(),
+            version: Some(3),
+            outcome: "pending".into(),
+            error_code: None,
+        };
+        let store = EvidenceStore::open(&path).await.unwrap();
+        store
+            .begin_administration_mutation(pending.clone())
+            .await
+            .unwrap();
+        drop(store);
+
+        let reopened = EvidenceStore::open(&path).await.unwrap();
+        assert_eq!(reopened.administration_audits(10).await.unwrap(), [pending]);
+        reopened
+            .finish_administration_mutation(
+                "registry-mutation-1".into(),
+                "failed",
+                Some("active_generation_conflict".into()),
+            )
+            .await
+            .unwrap();
+        let terminal = reopened.administration_audits(10).await.unwrap();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].outcome, "failed");
+        assert_eq!(
+            terminal[0].error_code.as_deref(),
+            Some("active_generation_conflict")
+        );
+        assert!(matches!(
+            reopened
+                .finish_administration_mutation("registry-mutation-1".into(), "succeeded", None,)
+                .await,
+            Err(EvidenceError::InvalidAuditState)
+        ));
+    }
+
+    #[tokio::test]
     async fn feedback_requires_traceable_run_and_turn_evidence() {
         let store = EvidenceStore::open_in_memory().await.unwrap();
         store
@@ -648,6 +1174,17 @@ mod tests {
             })
             .await
             .unwrap();
+        assert_eq!(
+            store
+                .feedback_session("run-1".into(), Some("turn-1".into()))
+                .await
+                .unwrap(),
+            Some("session-1".into())
+        );
+        assert_eq!(
+            store.feedback_session("run-1".into(), None).await.unwrap(),
+            Some("session-1".into())
+        );
 
         let feedback_id = store
             .record_feedback(

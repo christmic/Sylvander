@@ -178,9 +178,9 @@ fn render_composer_rows(frame: &mut Frame, state: &AppState, area: Rect, inner: 
     // composer cap. Earlier content scrolls inside the composer instead of
     // causing the cursor to disappear below the clipped viewport.
     let visible_rows = area.height as usize;
-    let start = cursor
-        .map(|(line, _)| line.saturating_add(1).saturating_sub(visible_rows))
-        .unwrap_or(0);
+    let start = cursor.map_or(0, |(line, _)| {
+        line.saturating_add(1).saturating_sub(visible_rows)
+    });
     let visible = visual_lines
         .into_iter()
         .skip(start)
@@ -201,7 +201,7 @@ fn composer_owns_cursor(state: &AppState) -> bool {
     state
         .modals
         .top()
-        .is_none_or(|modal| modal.uses_composer_input())
+        .is_none_or(super::super::modal::Modal::uses_composer_input)
 }
 
 fn visual_row_count(state: &AppState, width: usize) -> usize {
@@ -281,6 +281,7 @@ fn cursor_position(text: &str, cursor_cells: usize, content_width: usize) -> (us
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

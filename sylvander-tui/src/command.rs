@@ -614,7 +614,7 @@ fn dynamic_command_issue(index: usize, state: &AppState) -> Option<String> {
         {
             Some("prompt template is empty or too large".into())
         }
-        _ => None,
+        sylvander_protocol::UiCommandEffect::SubmitPrompt { .. } => None,
     }
 }
 
@@ -719,16 +719,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.mode = AppMode::Normal;
             state.status = "New session ready".into();
         }
-        CommandId::Sessions => {
-            require_no_args(&invocation)?;
-            state
-                .pending_actions
-                .push(crate::event::Action::RequestSessions);
-            state
-                .modals
-                .push(Box::new(SessionsOverlay::new(state.sessions.clone())));
-        }
-        CommandId::Resume => {
+        CommandId::Sessions | CommandId::Resume => {
             require_no_args(&invocation)?;
             state
                 .pending_actions
@@ -1226,6 +1217,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.modals.push(Box::new(ModelPicker::new(state)));
             }
             [model] | [model, _] => {
+                let session_id = state
+                    .session_id
+                    .clone()
+                    .ok_or("Start a session before selecting a model")?;
                 let descriptor = state
                     .metadata
                     .models
@@ -1247,6 +1242,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state
                     .pending_actions
                     .push(crate::event::Action::SelectModel {
+                        session_id,
                         model: (*model).to_string(),
                         reasoning_effort: effort,
                     });
@@ -1333,9 +1329,7 @@ fn platform_report(
             let status = platform_status_label(feature.status);
             let auth = platform_auth_label(feature.auth);
             let trust = feature
-                .trust
-                .map(platform_trust_label)
-                .unwrap_or_else(|| "unspecified".into());
+                .trust.map_or_else(|| "unspecified".into(), platform_trust_label);
             let source = feature
                 .source
                 .as_deref()
@@ -1475,8 +1469,7 @@ fn find_tool_output(
             _ => &[],
         })
         .filter(|child| {
-            child.output.is_some()
-                && prefix.map_or(true, |prefix| child.call_id.starts_with(prefix))
+            child.output.is_some() && prefix.is_none_or(|prefix| child.call_id.starts_with(prefix))
         })
         .collect::<Vec<_>>();
     let child = match (prefix, matches.as_slice()) {
@@ -1703,7 +1696,7 @@ mod tests {
         let mut state = AppState::new();
         execute(parse("/mention").expect("parse"), &mut state).expect("execute");
         assert_eq!(
-            state.modals.top().map(|modal| modal.title()),
+            state.modals.top().map(crate::modal::Modal::title),
             Some("Mention file")
         );
         assert!(state.pending_actions.is_empty());
@@ -1902,10 +1895,12 @@ mod tests {
     fn model_command_uses_only_server_advertised_combinations() {
         let mut state = AppState::new();
         state.connected = true;
+        state.session_id = Some("session-1".into());
         state.metadata.models = vec![sylvander_protocol::ModelDescriptor {
             id: "thinking".into(),
             provider: "test".into(),
             capabilities: 0,
+            capability_names: Vec::new(),
             reasoning_efforts: vec![
                 sylvander_protocol::ReasoningEffort::Off,
                 sylvander_protocol::ReasoningEffort::Medium,
@@ -1917,9 +1912,10 @@ mod tests {
         assert!(matches!(
             state.pending_actions.as_slice(),
             [crate::event::Action::SelectModel {
+                session_id,
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-            }] if model == "thinking"
+            }] if session_id == "session-1" && model == "thinking"
         ));
         assert!(execute(parse("model thinking high").unwrap(), &mut state).is_err());
         assert!(execute(parse("model missing off").unwrap(), &mut state).is_err());
@@ -1942,7 +1938,7 @@ mod tests {
         });
         execute(parse("inspect call-a").unwrap(), &mut state).unwrap();
         assert_eq!(
-            state.modals.top().map(|modal| modal.title()),
+            state.modals.top().map(crate::modal::Modal::title),
             Some("Tool output")
         );
         state.modals.pop();

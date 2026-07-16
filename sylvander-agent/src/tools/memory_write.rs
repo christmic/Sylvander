@@ -13,7 +13,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
-use super::memory::{MemoryEntry, MemoryStore};
+use super::memory::{MemoryAppend, MemoryStore};
 
 /// Tool that lets the model write to its long-term memory.
 ///
@@ -34,11 +34,11 @@ impl MemoryWriteTool {
 
 #[async_trait]
 impl Tool for MemoryWriteTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "write_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Store a piece of information in your long-term memory. \
          Use this to remember user preferences, important decisions, \
          project-specific facts, or anything else that should persist \
@@ -47,7 +47,7 @@ impl Tool for MemoryWriteTool {
     }
 
     fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
+        let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "content": {
                     "type": "string",
@@ -60,34 +60,34 @@ impl Tool for MemoryWriteTool {
                 }
             }),
             &["content"],
-        )
+        );
+        schema.schema["additionalProperties"] = JsonValue::Bool(false);
+        schema
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));
         }
+        reject_unknown_fields(&input, &["content", "tags"])?;
         let content = input["content"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'content' field".into()))?;
 
-        let mut entry = MemoryEntry::new(
-            uuid::Uuid::new_v4().to_string(),
-            content,
-            ctx.session.as_ref().clone(),
-        );
+        let mut append = MemoryAppend::new(content);
 
         // Parse optional tags
         if let Some(tags) = input["tags"].as_array() {
             for tag in tags {
                 if let Some(tag_str) = tag.as_str() {
-                    entry = entry.with_tag(tag_str, "true");
+                    append = append.with_tag(tag_str);
                 }
             }
         }
 
-        self.store
-            .store(&ctx.session, entry.clone())
+        let entry = self
+            .store
+            .append_relationship(ctx.memory_context(), append)
             .await
             .map_err(|e| ToolError::Other(format!("memory write failed: {e}")))?;
 
@@ -95,6 +95,18 @@ impl Tool for MemoryWriteTool {
             json!({"status": "stored", "id": entry.id}).to_string(),
         ))
     }
+}
+
+fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), ToolError> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| ToolError::Other("memory tool input must be an object".into()))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ToolError::Other(
+            "memory tool input contains an unknown field".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +120,7 @@ mod tests {
 
     use crate::tool_context::ToolContext;
     fn ctx() -> ToolContext {
-        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        ToolContext::application(sylvander_protocol::SessionContext::new("u", "a", "s"))
             .with_capability(crate::tool_context::Cap::Read)
             .with_capability(crate::tool_context::Cap::Write)
             .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -122,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "write_memory");
         assert!(!tool.description().is_empty());
     }
@@ -130,10 +142,14 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_content_field() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("content").is_some());
+        assert_eq!(schema.schema["additionalProperties"], json!(false));
+        for server_owned in ["owner", "scope", "id", "created_at", "provenance"] {
+            assert!(props.get(server_owned).is_none());
+        }
         let required = schema.schema.get("required").expect("has required");
         assert!(
             required
@@ -165,8 +181,8 @@ mod tests {
 
         // Verify it was actually stored
         let results = store
-            .search(
-                &c.session,
+            .search_relationship(
+                c.memory_context(),
                 "tabs over spaces",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -174,12 +190,13 @@ mod tests {
             .expect("search");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "The user prefers tabs over spaces");
+        assert_eq!(results[0].tags, ["preference", "code-style"]);
     }
 
     #[tokio::test]
     async fn execute_missing_content_is_error() {
         let tool = MemoryWriteTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let c = ctx();
         let result = tool.execute(&c, json!({"tags": ["test"]})).await;
         assert!(result.is_err());
@@ -199,8 +216,8 @@ mod tests {
         assert!(!result.is_error);
 
         let results = store
-            .search(
-                &c.session,
+            .search_relationship(
+                c.memory_context(),
                 "minimal entry",
                 crate::tools::memory::MemoryFilter::default(),
             )
@@ -208,5 +225,55 @@ mod tests {
             .expect("search");
         assert_eq!(results.len(), 1);
         assert!(results[0].metadata.is_empty());
+    }
+
+    #[tokio::test]
+    async fn model_input_cannot_submit_server_owned_fields() {
+        let store = test_store();
+        let tool = MemoryWriteTool::new(store.clone());
+        let c = ctx();
+        for forbidden in ["owner", "scope", "id", "created_at", "provenance"] {
+            let mut input = json!({"content": "must not persist"});
+            input[forbidden] = json!("attacker-controlled");
+            assert!(tool.execute(&c, input).await.is_err());
+        }
+
+        let results = store
+            .search_relationship(
+                c.memory_context(),
+                "",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn caller_built_tool_context_cannot_forge_memory_authority() {
+        let store = test_store();
+        let tool = MemoryWriteTool::new(store.clone());
+        let forged = ToolContext::new(sylvander_protocol::SessionContext::new(
+            "victim", "agent", "session",
+        ))
+        .with_capability(crate::tool_context::Cap::MemoryWrite);
+
+        let error = tool
+            .execute(&forged, json!({"content": "forged trusted memory"}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("memory access denied"));
+
+        assert!(
+            store
+                .search_relationship(
+                    ctx().memory_context(),
+                    "forged trusted memory",
+                    crate::tools::memory::MemoryFilter::default(),
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

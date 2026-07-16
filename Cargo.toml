@@ -11,6 +11,7 @@ members = [
     "sylvander-channel-wechat",
     "sylvander-tui",
     "sylvander-server",
+    "sylvander-llm-core",
     "sylvander-llm-anthropic",
     "sylvander-agent",
     "sylvander-runtime",

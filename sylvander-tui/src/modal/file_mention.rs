@@ -54,7 +54,7 @@ impl Modal for FileMentionModal {
     fn active(&self) -> bool {
         true
     }
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Mention file"
     }
 
@@ -193,7 +193,7 @@ fn discover_files(root: &Path, limit: usize) -> Vec<String> {
             return;
         };
         let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             if files.len() >= limit {
                 break;
@@ -215,10 +215,10 @@ fn discover_files(root: &Path, limit: usize) -> Vec<String> {
             }
             if kind.is_dir() {
                 walk(root, &path, files, limit);
-            } else if kind.is_file() {
-                if let Ok(relative) = path.strip_prefix(root) {
-                    files.push(relative.display().to_string());
-                }
+            } else if kind.is_file()
+                && let Ok(relative) = path.strip_prefix(root)
+            {
+                files.push(relative.display().to_string());
             }
         }
     }

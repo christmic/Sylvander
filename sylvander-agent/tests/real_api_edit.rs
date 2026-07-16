@@ -68,7 +68,7 @@ async fn real_api_edit_tool_e2e() {
                   Do not rewrite the whole file — just change that one line.";
 
     let _run = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");

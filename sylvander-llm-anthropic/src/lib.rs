@@ -77,6 +77,10 @@
 #![doc(html_root_url = "https://docs.rs/sylvander-llm-anthropic/0.1.0")]
 
 pub mod api;
+pub(crate) mod convert;
+mod provider;
+
+pub use provider::AnthropicProvider;
 
 /// Convenient re-exports for the most commonly used types.
 pub mod prelude {
@@ -99,4 +103,5 @@ pub mod prelude {
         TextCitation, ThinkingBlock, ThinkingConfig, Timestamp, Tool, ToolChoice, ToolResultBlock,
         ToolUseBlock, Usage, UserContent, UserContentBlock,
     };
+    pub use crate::provider::AnthropicProvider;
 }

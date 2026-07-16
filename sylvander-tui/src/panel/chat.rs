@@ -93,7 +93,7 @@ impl ChatPanel {
     }
 }
 
-fn transcript_lines<'a>(state: &'a AppState, width: usize) -> Vec<Line<'a>> {
+fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'_>> {
     // Welcome is the first block in a newly started conversation, not a
     // separate page. Once the user submits, turns append below it and the
     // lockup leaves the viewport only through ordinary transcript scroll.
@@ -101,7 +101,7 @@ fn transcript_lines<'a>(state: &'a AppState, width: usize) -> Vec<Line<'a>> {
     // Every session owns the Welcome prelude. Connection diagnostics, cached
     // session state, and temporary surfaces may append to or cover the
     // transcript, but must never remove its first block.
-    let mut lines = build_welcome_lockup(width, state).unwrap_or_default();
+    let mut lines = build_welcome_lockup(width, state);
     for message in &state.messages {
         push_message_lines(message, &mut lines, width, state.tool_details_expanded);
     }
@@ -365,14 +365,14 @@ fn detail_style(kind: crate::tool_presenter::DetailKind, is_error: bool) -> rata
 fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
     let body_width = width.saturating_sub(3).max(1);
     let body = crate::markdown::render(text, body_width);
-    let mut marked = false;
+    let mut has_marker = false;
     for mut row in body {
         if row.spans.is_empty() {
             lines.push(Line::from(""));
             continue;
         }
-        let marker = if marked { "  " } else { "⏺ " };
-        marked = true;
+        let marker = if has_marker { "  " } else { "⏺ " };
+        has_marker = true;
         row.spans
             .insert(0, Span::styled(marker, theme::agent_speaker()));
         lines.push(row);
@@ -387,8 +387,8 @@ fn wrap_words(text: &str, first_prefix: &str, continuation: String, width: usize
     for word in text.split_whitespace() {
         let separator = usize::from(has_word);
         if has_word && current.chars().count() + separator + word.chars().count() > width {
-            rows.push(current);
-            current = continuation.clone();
+            rows.push(std::mem::take(&mut current));
+            current.push_str(&continuation);
             has_word = false;
         }
         if has_word {
@@ -416,7 +416,7 @@ fn readable_area(area: Rect) -> Rect {
         .width
         .saturating_sub(LEFT_GUTTER.saturating_add(RIGHT_GUTTER));
     Rect {
-        x: area.x + LEFT_GUTTER.min(area.width),
+        x: area.x + LEFT_GUTTER,
         y: area.y,
         width: available.min(MAX_READING_WIDTH),
         height: area.height,
@@ -503,7 +503,7 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
                 .min(20);
             for (k, v) in map {
                 let rendered = render_json_value(v);
-                let label = format!("  {:<w$}  ", k, w = label_w);
+                let label = format!("  {k:<label_w$}  ");
                 let val_str = truncate(&rendered, width.saturating_sub(label_w + 6));
                 out.push(Line::from(vec![
                     Span::styled(label, theme::kv_label()),
@@ -525,7 +525,7 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
 fn summarize_output(output: &str, width: usize) -> String {
     let line = output
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .find(|l| !l.is_empty())
         .unwrap_or("");
     if line.is_empty() {
@@ -537,11 +537,10 @@ fn summarize_output(output: &str, width: usize) -> String {
 fn format_elapsed(started_at_secs: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(started_at_secs);
+        .map_or(started_at_secs, |d| d.as_secs());
     let s = now.saturating_sub(started_at_secs);
     if s < 60 {
-        format!("{:02}s", s)
+        format!("{s:02}s")
     } else if s < 3600 {
         format!("{:02}:{:02}", s / 60, s % 60)
     } else {
@@ -549,15 +548,14 @@ fn format_elapsed(started_at_secs: u64) -> String {
     }
 }
 
-fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'static>>> {
+fn build_welcome_lockup(width: usize, state: &AppState) -> Vec<Line<'static>> {
     let workspace_label = theme::compact_workspace(&state.metadata.workspace, 34);
     let model = state.metadata.model_label();
     let branch = state.metadata.branch.clone();
-    let session = state
-        .session_id
-        .as_deref()
-        .map(|id| id.chars().take(12).collect::<String>())
-        .unwrap_or_else(|| "new".into());
+    let session = state.session_id.as_deref().map_or_else(
+        || "new".into(),
+        |id| id.chars().take(12).collect::<String>(),
+    );
 
     let info = vec![
         vec![Span::styled("Sylvander", theme::brand_wordmark())],
@@ -597,7 +595,7 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Option<Vec<Line<'stat
         lines.extend(info.into_iter().map(Line::from));
     }
     lines.push(Line::from(""));
-    Some(lines)
+    lines
 }
 
 const WELCOME_HORIZONTAL_MIN_WIDTH: usize = 77;
@@ -698,11 +696,11 @@ mod tests {
         let mut found = false;
         for y in 0..12 {
             for x in 0..60 {
-                if let Some(c) = buf.cell((x, y)) {
-                    if c.fg == crate::theme::TEXT {
-                        found = true;
-                        break;
-                    }
+                if let Some(c) = buf.cell((x, y))
+                    && c.fg == crate::theme::TEXT
+                {
+                    found = true;
+                    break;
                 }
             }
             if found {
@@ -754,7 +752,7 @@ mod tests {
             "canonical character must stay inside its reserved column"
         );
 
-        let wide = build_welcome_lockup(110, &state).expect("wide welcome");
+        let wide = build_welcome_lockup(110, &state);
         assert_eq!(wide.len(), TERMINAL_SEED_CRAB.len() + 1);
         assert!(
             wide.iter()
@@ -762,7 +760,7 @@ mod tests {
             "brand information must render beside the character"
         );
 
-        let narrow = build_welcome_lockup(60, &state).expect("narrow welcome");
+        let narrow = build_welcome_lockup(60, &state);
         assert!(
             narrow.len() > TERMINAL_SEED_CRAB.len(),
             "narrow welcome reflows information below the same character"
@@ -977,11 +975,11 @@ mod tests {
         let mut you_y = None;
         for y in 0..20 {
             for x in 0..60 {
-                if let Some(c) = buf.cell((x, y)) {
-                    if c.symbol() == "❯" {
-                        you_y = Some(y);
-                        break;
-                    }
+                if let Some(c) = buf.cell((x, y))
+                    && c.symbol() == "❯"
+                {
+                    you_y = Some(y);
+                    break;
                 }
             }
             if you_y.is_some() {

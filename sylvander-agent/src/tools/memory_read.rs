@@ -34,11 +34,11 @@ impl MemoryReadTool {
 
 #[async_trait]
 impl Tool for MemoryReadTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "read_memory"
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Search your long-term memory for relevant information. \
          Use this when you need to recall user preferences, \
          project-specific context, or past decisions that are not \
@@ -47,7 +47,7 @@ impl Tool for MemoryReadTool {
     }
 
     fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
+        let mut schema = InputSchema::new_with_properties(
             serde_json::json!({
                 "query": {
                     "type": "string",
@@ -67,27 +67,37 @@ impl Tool for MemoryReadTool {
                 }
             }),
             &["query"],
-        )
+        );
+        schema.schema["additionalProperties"] = JsonValue::Bool(false);
+        schema
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));
         }
+        reject_unknown_fields(&input, &["query", "limit", "kind", "min_importance"])?;
         let query = input["query"]
             .as_str()
             .ok_or_else(|| ToolError::Other("missing 'query' field".into()))?;
 
-        let limit = input["limit"].as_u64().unwrap_or(5) as usize;
+        let limit =
+            match input.get("limit") {
+                None => 5,
+                Some(value) => usize::try_from(value.as_u64().ok_or_else(|| {
+                    ToolError::Other("'limit' must be a positive integer".into())
+                })?)
+                .map_err(|_| ToolError::Other("'limit' is too large".into()))?,
+            };
 
-        let kind_filter = parse_kind(input.get("kind").and_then(|v| v.as_str()));
+        let kind_filter = parse_kind(input.get("kind").and_then(|v| v.as_str()))?;
         let importance_filter =
-            parse_importance(input.get("min_importance").and_then(|v| v.as_str()));
+            parse_importance(input.get("min_importance").and_then(|v| v.as_str()))?;
 
         let results = self
             .store
-            .search(
-                &ctx.session,
+            .search_relationship(
+                ctx.memory_context(),
                 query,
                 super::memory::MemoryFilter {
                     kind: kind_filter,
@@ -120,6 +130,40 @@ impl Tool for MemoryReadTool {
     }
 }
 
+fn reject_unknown_fields(input: &JsonValue, allowed: &[&str]) -> Result<(), ToolError> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| ToolError::Other("memory tool input must be an object".into()))?;
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(ToolError::Other(
+            "memory tool input contains an unknown field".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_kind(s: Option<&str>) -> Result<Option<super::memory::MemoryKind>, ToolError> {
+    let Some(s) = s else { return Ok(None) };
+    Ok(Some(match s {
+        "preference" => super::memory::MemoryKind::Preference,
+        "project_fact" => super::memory::MemoryKind::ProjectFact,
+        "decision" => super::memory::MemoryKind::Decision,
+        "agent_note" => super::memory::MemoryKind::AgentNote,
+        _ => return Err(ToolError::Other("unknown memory kind".into())),
+    }))
+}
+
+fn parse_importance(s: Option<&str>) -> Result<Option<super::memory::Importance>, ToolError> {
+    let Some(s) = s else { return Ok(None) };
+    Ok(Some(match s {
+        "low" => super::memory::Importance::Low,
+        "medium" => super::memory::Importance::Medium,
+        "high" => super::memory::Importance::High,
+        "critical" => super::memory::Importance::Critical,
+        _ => return Err(ToolError::Other("unknown memory importance".into())),
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -127,11 +171,11 @@ impl Tool for MemoryReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::memory::{InMemoryMemoryStore, MemoryEntry};
+    use crate::tools::memory::{InMemoryMemoryStore, MemoryAppend};
 
     use crate::tool_context::ToolContext;
     fn ctx() -> ToolContext {
-        ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        ToolContext::application(sylvander_protocol::SessionContext::new("u", "a", "s"))
             .with_capability(crate::tool_context::Cap::Read)
             .with_capability(crate::tool_context::Cap::Write)
             .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -145,7 +189,7 @@ mod tests {
     #[tokio::test]
     async fn name_and_description() {
         let tool = MemoryReadTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         assert_eq!(tool.name(), "read_memory");
         assert!(!tool.description().is_empty());
     }
@@ -153,10 +197,11 @@ mod tests {
     #[tokio::test]
     async fn input_schema_has_query_field() {
         let tool = MemoryReadTool::new(test_store());
-        let c = ctx();
+        let _c = ctx();
         let schema = tool.input_schema();
         let props = schema.schema.get("properties").expect("has properties");
         assert!(props.get("query").is_some());
+        assert_eq!(schema.schema["additionalProperties"], json!(false));
         let required = schema.schema.get("required").expect("has required");
         assert!(
             required
@@ -171,17 +216,14 @@ mod tests {
         let store = test_store();
         let c = ctx();
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("1", "User prefers dark mode", c.session.as_ref().clone()),
+            .append_relationship(
+                c.memory_context(),
+                MemoryAppend::new("User prefers dark mode"),
             )
             .await
             .expect("store");
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("2", "Project uses Rust", c.session.as_ref().clone()),
-            )
+            .append_relationship(c.memory_context(), MemoryAppend::new("Project uses Rust"))
             .await
             .expect("store");
 
@@ -205,14 +247,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_rejects_unknown_top_level_fields() {
+        let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
+        for input in [
+            json!({"query": "", "owner": "attacker"}),
+            json!({"query": "", "scope": "relationship"}),
+            json!({"query": "", "unexpected": true}),
+        ] {
+            assert!(tool.execute(&c, input).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_filters_never_expand_the_query() {
+        let tool = MemoryReadTool::new(test_store());
+        let c = ctx();
+        for input in [
+            json!({"query": "", "kind": "everything"}),
+            json!({"query": "", "min_importance": "any"}),
+            json!({"query": "", "limit": -1}),
+            json!({"query": "", "limit": super::super::memory::MAX_MEMORY_RESULTS + 1}),
+        ] {
+            assert!(tool.execute(&c, input).await.is_err());
+        }
+    }
+
+    #[tokio::test]
     async fn execute_no_matches_returns_empty_array() {
         let store = test_store();
         let c = ctx();
         store
-            .store(
-                &c.session,
-                MemoryEntry::new("1", "some content", c.session.as_ref().clone()),
-            )
+            .append_relationship(c.memory_context(), MemoryAppend::new("some content"))
             .await
             .expect("store");
 
@@ -226,29 +292,4 @@ mod tests {
         assert!(!result.is_error);
         assert!(result.content.contains("[]"));
     }
-}
-
-// Parse a string from the model's input into a `MemoryKind`. Unknown
-// values map to `None` (no filter) so the model can probe without
-// hard-failing.
-fn parse_kind(s: Option<&str>) -> Option<super::memory::MemoryKind> {
-    let s = s?;
-    Some(match s {
-        "preference" => super::memory::MemoryKind::Preference,
-        "project_fact" => super::memory::MemoryKind::ProjectFact,
-        "decision" => super::memory::MemoryKind::Decision,
-        "agent_note" => super::memory::MemoryKind::AgentNote,
-        _ => return None,
-    })
-}
-
-fn parse_importance(s: Option<&str>) -> Option<super::memory::Importance> {
-    let s = s?;
-    Some(match s {
-        "low" => super::memory::Importance::Low,
-        "medium" => super::memory::Importance::Medium,
-        "high" => super::memory::Importance::High,
-        "critical" => super::memory::Importance::Critical,
-        _ => return None,
-    })
 }

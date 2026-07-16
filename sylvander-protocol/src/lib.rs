@@ -16,15 +16,23 @@
 //! cargo run -p sylvander-protocol --example generate_ui_schema
 //! ```
 
+pub mod agent_admin;
+pub mod boundary;
 pub mod bus_trait;
+pub mod identity_binding;
 pub mod in_process;
+pub mod registry_admin;
 pub mod schema;
 pub mod session_context;
 pub mod types;
 pub mod ui;
 
+pub use agent_admin::*;
+pub use boundary::*;
 pub use bus_trait::{BusError, MessageBus, SubscriptionFilter};
+pub use identity_binding::*;
 pub use in_process::InProcessMessageBus;
+pub use registry_admin::*;
 pub use session_context::*;
 pub use types::*;
 pub use ui::*;

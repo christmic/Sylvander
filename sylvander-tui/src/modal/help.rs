@@ -161,6 +161,7 @@ impl HelpModal {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -170,7 +171,7 @@ mod tests {
         let lines = help.lines(&AppState::new());
         let text = lines
             .iter()
-            .map(|line| line.to_string())
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("Vim Composer"));
@@ -184,7 +185,7 @@ impl Modal for HelpModal {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Help"
     }
 

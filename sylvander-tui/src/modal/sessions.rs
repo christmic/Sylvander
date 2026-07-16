@@ -4,7 +4,7 @@
 //! sessions with status badges, working directory, and relative time.
 //! In standalone TUI mode (this binary), "opening" a session replaces
 //! the current view (the Agent switch happens server-side via Chat with
-//! session_id set).
+//! `session_id` set).
 //!
 //! Data is reconciled from the server's persisted session list and refreshed
 //! by lifecycle events received after connection.
@@ -117,7 +117,7 @@ impl Modal for SessionsOverlay {
         true
     }
 
-    fn title(&self) -> &str {
+    fn title(&self) -> &'static str {
         "Sessions"
     }
 
@@ -163,8 +163,7 @@ impl Modal for SessionsOverlay {
                 let is_active = state
                     .session_id
                     .as_deref()
-                    .map(|sid| sid == entry.id.as_str())
-                    .unwrap_or(false);
+                    .is_some_and(|sid| sid == entry.id.as_str());
                 let is_cursor = row_i == self.cursor;
                 let cursor_marker = if is_cursor { "› " } else { "  " };
                 let color = if is_cursor {
@@ -316,36 +315,32 @@ impl Modal for SessionsOverlay {
 
         // Delete-confirm layer wins.
         if let Some(idx) = self.pending_delete {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if idx < self.entries.len() {
-                        let archived = self.entries[idx].clone();
-                        let id = archived.id.clone();
-                        state.last_archived_session = Some(archived);
-                        state
-                            .pending_actions
-                            .push(crate::event::Action::ArchiveSession {
-                                session_id: id.clone(),
-                            });
-                        self.entries.remove(idx);
-                        state.sessions.retain(|entry| entry.id != id);
-                        state.status = "Session archived · Ctrl+Z to undo".into();
-                    }
-                    self.pending_delete = None;
-                    let new_len = self.filtered().len();
-                    if self.cursor >= new_len && new_len > 0 {
-                        self.cursor = new_len - 1;
-                    }
-                    state.dirty.mark();
-                    return Consumed::Yes { dismiss: false };
+            if let KeyCode::Char('y' | 'Y') = key.code {
+                if idx < self.entries.len() {
+                    let archived = self.entries[idx].clone();
+                    let id = archived.id.clone();
+                    state.last_archived_session = Some(archived);
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::ArchiveSession {
+                            session_id: id.clone(),
+                        });
+                    self.entries.remove(idx);
+                    state.sessions.retain(|entry| entry.id != id);
+                    state.status = "Session archived · Ctrl+Z to undo".into();
                 }
-                _ => {
-                    // Anything else (Esc / n / etc.) cancels.
-                    self.pending_delete = None;
-                    state.dirty.mark();
-                    return Consumed::Yes { dismiss: false };
+                self.pending_delete = None;
+                let new_len = self.filtered().len();
+                if self.cursor >= new_len && new_len > 0 {
+                    self.cursor = new_len - 1;
                 }
+                state.dirty.mark();
+                return Consumed::Yes { dismiss: false };
             }
+            // Anything else (Esc / n / etc.) cancels.
+            self.pending_delete = None;
+            state.dirty.mark();
+            return Consumed::Yes { dismiss: false };
         }
 
         // Key routing.

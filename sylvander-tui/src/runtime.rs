@@ -357,13 +357,13 @@ fn edit_draft_in_external_editor(initial: &str) -> std::io::Result<String> {
 }
 
 fn edit_draft_with_command(initial: &str, editor: &str) -> std::io::Result<String> {
-    let argv = shell_words::split(&editor).map_err(|error| {
+    let command = shell_words::split(editor).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("invalid editor command: {error}"),
         )
     })?;
-    let (program, args) = argv.split_first().ok_or_else(|| {
+    let (program, arguments) = command.split_first().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "editor command is empty")
     })?;
     let unique = std::time::SystemTime::now()
@@ -382,7 +382,7 @@ fn edit_draft_with_command(initial: &str, editor: &str) -> std::io::Result<Strin
         file.write_all(initial.as_bytes())?;
         file.flush()?;
         let status = std::process::Command::new(program)
-            .args(args)
+            .args(arguments)
             .arg(&path)
             .env_remove("SYLVANDER_HOST_SOCKET")
             .env_remove("SYLVANDER_HOST_TOKEN")

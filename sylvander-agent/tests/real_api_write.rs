@@ -65,7 +65,7 @@ async fn real_api_write_tool_e2e() {
                   file at farewell.txt containing the text \"Goodbye, world!\".";
 
     let _run = run_with_events(&loop_, vec![MessageParam::user(prompt)], move |event| {
-        events_clone.lock().unwrap().push(event)
+        events_clone.lock().unwrap().push(event);
     })
     .await
     .expect("run against real API");

@@ -26,6 +26,7 @@
 //! {"type":"pong"}
 //! ```
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -34,17 +35,19 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{
-    BusMessage, MessageKind, StreamEvent, SubscriptionFilter, SystemMessage,
-};
+use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
+    unavailable_agent_admin_response, unavailable_registry_admin_response,
+};
 use sylvander_protocol::{
     UiClientMessage as ClientMsg, UiServerMessage as ServerMsg, UiToolInfo as ToolInfo,
 };
@@ -56,6 +59,15 @@ use sylvander_protocol::{
 pub struct WsChannel {
     addr: SocketAddr,
     agent_id: AgentId,
+    instance_id: String,
+    auth: Option<WsAuth>,
+    max_request_bytes: usize,
+}
+
+#[derive(Clone)]
+struct WsAuth {
+    principal_id: String,
+    bearer_token: String,
 }
 
 impl WsChannel {
@@ -63,13 +75,36 @@ impl WsChannel {
         Self {
             addr,
             agent_id: agent_id.into(),
+            instance_id: "websocket".into(),
+            auth: None,
+            max_request_bytes: 1024 * 1024,
         }
+    }
+
+    #[must_use]
+    pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn with_bearer_auth(
+        mut self,
+        instance_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Self {
+        self.instance_id = instance_id.into();
+        self.auth = Some(WsAuth {
+            principal_id: principal_id.into(),
+            bearer_token: bearer_token.into(),
+        });
+        self
     }
 }
 
 #[async_trait]
 impl Channel for WsChannel {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ws"
     }
 
@@ -87,6 +122,9 @@ impl Channel for WsChannel {
             agent_id: self.agent_id.clone(),
             clients: clients.clone(),
             next_id: next_id.clone(),
+            instance_id: self.instance_id.clone(),
+            auth: self.auth.clone(),
+            max_request_bytes: self.max_request_bytes,
         });
 
         let app = Router::new()
@@ -113,17 +151,96 @@ struct AppState {
     agent_id: AgentId,
     clients: Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<ServerMsg>>>>,
     next_id: Arc<Mutex<u64>>,
+    instance_id: String,
+    auth: Option<WsAuth>,
+    max_request_bytes: usize,
 }
 
 // ===========================================================================
 // WebSocket upgrade
 // ===========================================================================
 
-async fn ws_handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+async fn ws_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(principal) = authenticate(&state, &headers) else {
+        warn!(instance = %state.instance_id, "ws: rejected unauthenticated upgrade");
+        return reject_ws_authentication(&state).await.into_response();
+    };
+    ws.max_frame_size(state.max_request_bytes)
+        .max_message_size(state.max_request_bytes)
+        .on_upgrade(move |socket| handle_socket(socket, state, principal))
+        .into_response()
 }
 
-async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+async fn reject_ws_authentication(state: &AppState) -> StatusCode {
+    let boundary = sylvander_protocol::BoundaryContext::unauthenticated(
+        &state.instance_id,
+        "websocket",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    if let Some(ui) = &state.ctx.ui {
+        let error = ui
+            .reject_authentication(
+                &boundary,
+                sylvander_protocol::AuthenticationFailure::new(
+                    sylvander_protocol::AuthenticationMethod::BearerToken,
+                ),
+            )
+            .await;
+        boundary_status(&error)
+    } else {
+        StatusCode::UNAUTHORIZED
+    }
+}
+
+fn boundary_status(error: &sylvander_protocol::BoundaryError) -> StatusCode {
+    match error.code {
+        sylvander_protocol::BoundaryErrorCode::Unauthenticated => StatusCode::UNAUTHORIZED,
+        sylvander_protocol::BoundaryErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+        sylvander_protocol::BoundaryErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        sylvander_protocol::BoundaryErrorCode::InvalidScope => StatusCode::BAD_REQUEST,
+    }
+}
+
+fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
+    let auth = state.auth.as_ref()?;
+    let supplied = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")?;
+    constant_time_eq(supplied.as_bytes(), auth.bearer_token.as_bytes()).then(|| {
+        sylvander_protocol::AuthenticatedPrincipal::user(
+            auth.principal_id.clone(),
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        )
+    })
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut different = left.len() ^ right.len();
+    let length = left.len().max(right.len());
+    for index in 0..length {
+        different |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    different == 0
+}
+
+async fn handle_socket(
+    socket: WebSocket,
+    state: Arc<AppState>,
+    principal: sylvander_protocol::AuthenticatedPrincipal,
+) {
     let client_id = {
         let mut id = state.next_id.lock().await;
         *id += 1;
@@ -139,10 +256,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     // Writer: send ServerMsg to client
     let write_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if let Ok(s) = serde_json::to_string(&msg) {
-                if ws_tx.send(Message::Text(s.into())).await.is_err() {
-                    break;
-                }
+            if let Ok(s) = serde_json::to_string(&msg)
+                && ws_tx.send(Message::Text(s.into())).await.is_err()
+            {
+                break;
             }
         }
     });
@@ -152,12 +269,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let ctx = state.ctx.clone();
     let agent_id = state.agent_id.clone();
     let client_id_for_cleanup = client_id;
+    let mut selected_protocol = None;
     while let Some(msg) = ws_rx.next().await {
         let msg = match msg {
             Ok(Message::Text(t)) => t,
-            Ok(Message::Close(_)) => break,
+            Ok(Message::Close(_)) | Err(_) => break,
             Ok(_) => continue,
-            Err(_) => break,
         };
 
         let parsed: ClientMsg = match serde_json::from_str(&msg) {
@@ -167,7 +284,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                 continue;
             }
         };
-        handle_client_msg(parsed, &ctx, &agent_id, &tx).await;
+        if !handle_protocol_message(
+            parsed,
+            &mut selected_protocol,
+            &ctx,
+            &agent_id,
+            &tx,
+            &principal,
+            &state.instance_id,
+        )
+        .await
+        {
+            break;
+        }
     }
 
     // Cleanup
@@ -176,27 +305,124 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     info!(client_id = client_id_for_cleanup, "ws client disconnected");
 }
 
+async fn handle_protocol_message(
+    msg: ClientMsg,
+    selected: &mut Option<u16>,
+    ctx: &ChannelContext,
+    agent_id: &AgentId,
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    instance_id: &str,
+) -> bool {
+    match (&msg, *selected) {
+        (ClientMsg::Hello { protocol }, None) => {
+            match sylvander_protocol::negotiate_ui_protocol(protocol) {
+                Ok(version) => {
+                    *selected = Some(version);
+                    send_welcome(tx, version);
+                    true
+                }
+                Err(error) => {
+                    let _ = tx.send(ServerMsg::ProtocolError { error });
+                    false
+                }
+            }
+        }
+        (ClientMsg::Hello { .. }, Some(_)) => {
+            send_protocol_error(
+                tx,
+                "duplicate_handshake",
+                "connection is already negotiated",
+            );
+            true
+        }
+        (_, None) => {
+            send_protocol_error(
+                tx,
+                "handshake_required",
+                "hello must be the first client message",
+            );
+            false
+        }
+        (ClientMsg::RegistryAdmin { request }, Some(version))
+            if request.minimum_ui_protocol_version() > version =>
+        {
+            send_protocol_error(
+                tx,
+                "unsupported_message_version",
+                "message requires a newer UI protocol version",
+            );
+            true
+        }
+        (_, Some(_)) => {
+            handle_client_msg(msg, ctx, agent_id, tx, principal, instance_id).await;
+            true
+        }
+    }
+}
+
+fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
+    let mut capabilities = vec![
+        "agent_discovery".into(),
+        "session_config".into(),
+        "feedback".into(),
+    ];
+    if version >= 2 {
+        capabilities.extend([
+            "agent_administration".into(),
+            "registry_administration".into(),
+        ]);
+    }
+    if version >= 3 {
+        capabilities.push("credential_registry_lifecycle".into());
+        capabilities.push("provider_model_registry_lifecycle".into());
+    }
+    let _ = tx.send(ServerMsg::Welcome {
+        protocol: sylvander_protocol::UiProtocolWelcome {
+            server_name: "sylvander-server".into(),
+            version,
+            capabilities,
+        },
+    });
+}
+
+fn send_protocol_error(tx: &mpsc::UnboundedSender<ServerMsg>, code: &str, message: &str) {
+    let _ = tx.send(ServerMsg::ProtocolError {
+        error: sylvander_protocol::UiProtocolError {
+            code: code.into(),
+            message: message.into(),
+            server_min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+            server_max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+        },
+    });
+}
+
 async fn handle_client_msg(
     msg: ClientMsg,
     ctx: &ChannelContext,
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
+    principal: &sylvander_protocol::AuthenticatedPrincipal,
+    instance_id: &str,
 ) {
+    let boundary = sylvander_protocol::BoundaryContext::authenticated(
+        principal.clone(),
+        instance_id,
+        "websocket",
+        uuid::Uuid::new_v4().to_string(),
+    );
+    if !matches!(msg, ClientMsg::Hello { .. } | ClientMsg::Chat { .. })
+        && let Some(ui) = &ctx.ui
+        && let Err(error) = ui.authorize_message(&boundary, &msg).await
+    {
+        boundary_denied(tx, error);
+        return;
+    }
     match msg {
         ClientMsg::Hello { protocol } => match sylvander_protocol::negotiate_ui_protocol(&protocol)
         {
             Ok(version) => {
-                let _ = tx.send(ServerMsg::Welcome {
-                    protocol: sylvander_protocol::UiProtocolWelcome {
-                        server_name: "sylvander-server".into(),
-                        version,
-                        capabilities: vec![
-                            "agent_discovery".into(),
-                            "session_config".into(),
-                            "feedback".into(),
-                        ],
-                    },
-                });
+                send_welcome(tx, version);
             }
             Err(error) => {
                 let _ = tx.send(ServerMsg::ProtocolError { error });
@@ -206,55 +432,35 @@ async fn handle_client_msg(
             text,
             attachments,
             session_id,
-            workspace,
+            workspace: _,
         } => {
-            let sid = SessionId::new(match session_id {
-                Some(s) => s,
-                None => uuid::Uuid::new_v4().to_string(),
-            });
-
-            // Subscribe to bus for this session
-            let mut rx = match ctx
-                .bus
-                .subscribe(SubscriptionFilter {
-                    session_ids: Some(vec![sid.clone()]),
-                    recipients: None,
-                    kinds: None,
-                })
-                .await
+            let existing_session = session_id.map(SessionId::new);
+            let submitted = match submit_external_chat(
+                ctx,
+                &boundary,
+                ExternalChatRequest {
+                    existing_session,
+                    agent_id: agent_id.clone(),
+                    label: "websocket session".into(),
+                    overrides: sylvander_protocol::SessionConfigOverrides::default(),
+                    text: text.clone(),
+                    attachments: attachments.clone(),
+                    external_meta: BTreeMap::from([(
+                        "channel_instance_id".into(),
+                        instance_id.into(),
+                    )]),
+                },
+            )
+            .await
             {
-                Ok(rx) => rx,
-                Err(_) => return,
+                Ok(submitted) => submitted,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
             };
-
-            // Send JoinSession for the agent
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: sid.clone(),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::JoinSession {
-                        session_id: sid.clone(),
-                        metadata: sylvander_agent::session::SessionMetadata {
-                            workspace: workspace
-                                .map(std::path::PathBuf::from)
-                                .unwrap_or_else(|| std::path::PathBuf::from("/tmp")),
-                            name: "ws".into(),
-                            user_id: "ws-client".into(),
-                        },
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
-
-            // Send user message
-            let mut message = BusMessage::user_chat(sid.clone(), "ws-client", &text);
-            message.attachments = attachments;
-            let _ = ctx.bus.publish(message).await;
+            let sid = submitted.session_id;
+            let mut rx = submitted.events;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
@@ -337,7 +543,6 @@ async fn handle_client_msg(
                                 options,
                                 multi_select,
                             }),
-                            StreamEvent::UserAnswer { .. } => None,
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
@@ -361,63 +566,63 @@ async fn handle_client_msg(
             scope,
             reason,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool {
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::Approve {
+                        session_id,
                         call_id,
                         approved,
                         scope,
                         reason,
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::Answer {
             session_id,
             call_id,
             answer,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::Answer {
+                        session_id,
+                        call_id,
+                        answer,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::DiscoverAgents => {
             if let Some(ui) = &ctx.ui {
-                let _ = tx.send(ServerMsg::AgentsDiscovered {
-                    agents: ui.discover_agents().await,
-                });
+                match ui.discover_agents(&boundary).await {
+                    Ok(agents) => {
+                        let _ = tx.send(ServerMsg::AgentsDiscovered { agents });
+                    }
+                    Err(error) => boundary_denied(tx, error),
+                }
             } else {
                 operation_error(tx, "discover_agents", "UI service is unavailable");
             }
         }
         ClientMsg::CreateSession { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.create_session(request).await {
+                match ui.create_session(&boundary, request).await {
                     Ok(config) => {
                         let _ = tx.send(ServerMsg::SessionCreated {
                             session_id: config.session_id.0.clone(),
                             config: Some(config),
                         });
                     }
-                    Err(error) => operation_error(tx, "create_session", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "create_session", "UI service is unavailable");
@@ -425,11 +630,14 @@ async fn handle_client_msg(
         }
         ClientMsg::GetSessionConfig { session_id } => {
             if let Some(ui) = &ctx.ui {
-                match ui.session_config(&SessionId::new(session_id)).await {
+                match ui
+                    .session_config(&boundary, &SessionId::new(session_id))
+                    .await
+                {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "get_session_config", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "get_session_config", "UI service is unavailable");
@@ -437,11 +645,11 @@ async fn handle_client_msg(
         }
         ClientMsg::UpdateSessionConfig { request } => {
             if let Some(ui) = &ctx.ui {
-                match ui.update_session_config(request).await {
+                match ui.update_session_config(&boundary, request).await {
                     Ok(state) => {
                         let _ = tx.send(ServerMsg::SessionConfig { state });
                     }
-                    Err(error) => operation_error(tx, "update_session_config", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "update_session_config", "UI service is unavailable");
@@ -449,14 +657,130 @@ async fn handle_client_msg(
         }
         ClientMsg::SubmitFeedback { feedback } => {
             if let Some(ui) = &ctx.ui {
-                match ui.submit_feedback(feedback).await {
+                match ui.submit_feedback(&boundary, feedback).await {
                     Ok(feedback_id) => {
                         let _ = tx.send(ServerMsg::FeedbackRecorded { feedback_id });
                     }
-                    Err(error) => operation_error(tx, "submit_feedback", error),
+                    Err(error) => boundary_denied(tx, error),
                 }
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
+            }
+        }
+        ClientMsg::AgentAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.agent_admin(&boundary, request).await
+            } else {
+                unavailable_agent_admin_response()
+            };
+            let _ = tx.send(ServerMsg::AgentAdmin { response });
+        }
+        ClientMsg::RegistryAdmin { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.registry_admin(&boundary, request).await
+            } else {
+                unavailable_registry_admin_response()
+            };
+            let _ = tx.send(ServerMsg::RegistryAdmin { response });
+        }
+        ClientMsg::SelectModel {
+            session_id,
+            model,
+            reasoning_effort,
+        } => {
+            let Some(session_id) = session_id else {
+                operation_error(tx, "select_model", "select_model requires a session_id");
+                return;
+            };
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_model", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(&boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let mut overrides = state.overrides;
+            let agents = match ui.discover_agents(&boundary).await {
+                Ok(agents) => agents,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
+            let selection = match model.resolve(&catalog) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    operation_error(tx, "select_model", error.to_string());
+                    return;
+                }
+            };
+            overrides.model = Some(selection);
+            overrides.model_id = None;
+            overrides.reasoning_effort = Some(reasoning_effort);
+            match ui
+                .update_session_config(
+                    &boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => {
+                    let _ = tx.send(ServerMsg::SessionConfig { state });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
+        }
+        ClientMsg::SelectPermissions {
+            session_id,
+            profile,
+        } => {
+            let Some(session_id) = session_id else {
+                operation_error(
+                    tx,
+                    "select_permissions",
+                    "select_permissions requires a session_id",
+                );
+                return;
+            };
+            let Some(ui) = &ctx.ui else {
+                operation_error(tx, "select_permissions", "UI service is unavailable");
+                return;
+            };
+            let session_id = SessionId::new(session_id);
+            let state = match ui.session_config(&boundary, &session_id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    boundary_denied(tx, error);
+                    return;
+                }
+            };
+            let mut overrides = state.overrides;
+            overrides.permissions = Some(profile);
+            match ui
+                .update_session_config(
+                    &boundary,
+                    sylvander_protocol::SessionConfigUpdateRequest {
+                        session_id,
+                        expected_revision: state.revision,
+                        overrides,
+                    },
+                )
+                .await
+            {
+                Ok(state) => {
+                    let _ = tx.send(ServerMsg::SessionConfig { state });
+                }
+                Err(error) => boundary_denied(tx, error),
             }
         }
         ClientMsg::ListSessions => {
@@ -474,6 +798,23 @@ async fn handle_client_msg(
     }
 }
 
+fn visible_model_catalog(
+    agents: &[sylvander_protocol::AgentDescriptor],
+    agent_id: &AgentId,
+) -> Vec<sylvander_protocol::ModelSelection> {
+    let Some(agent) = agents.iter().find(|agent| agent.id == *agent_id) else {
+        return Vec::new();
+    };
+    agent
+        .models
+        .iter()
+        .map(|model| sylvander_protocol::ModelSelection {
+            provider_id: model.provider.clone(),
+            model_id: model.id.clone(),
+        })
+        .collect()
+}
+
 fn operation_error(
     tx: &mpsc::UnboundedSender<ServerMsg>,
     operation: &str,
@@ -485,9 +826,942 @@ fn operation_error(
     });
 }
 
+fn boundary_denied(
+    tx: &mpsc::UnboundedSender<ServerMsg>,
+    error: sylvander_protocol::BoundaryError,
+) {
+    let _ = tx.send(ServerMsg::BoundaryDenied { error });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sylvander_agent::bus::InProcessMessageBus;
+    use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
+    use sylvander_channel::UiService;
+
+    struct DenyAgentAccess;
+
+    struct SessionConfigUi {
+        states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
+    }
+
+    struct CredentialRegistryUi {
+        received: Mutex<Option<sylvander_protocol::RegistryAdminRequest>>,
+    }
+
+    #[async_trait]
+    impl UiService for CredentialRegistryUi {
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin"))
+            {
+                Ok(())
+            } else {
+                Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "registry_admin",
+                ))
+            }
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn update_session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+
+        async fn registry_admin(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::RegistryAdminRequest,
+        ) -> sylvander_protocol::RegistryAdminResponse {
+            *self.received.lock().await = Some(request);
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(
+                    sylvander_protocol::RegistryAdminResult::CredentialBindingCreated {
+                        generation: sylvander_protocol::CredentialGenerationView {
+                            binding_id_sha256: "binding-digest".into(),
+                            generation: 1,
+                            reference_kind:
+                                sylvander_protocol::CredentialReferenceKind::Environment,
+                            reference_configured: true,
+                            reference_digest_sha256: "reference-digest".into(),
+                            created_at_unix_secs: 7,
+                            active: true,
+                        },
+                    },
+                ),
+            }
+        }
+    }
+
+    fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
+        use sylvander_protocol::{
+            SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+            SessionEffectiveConfig,
+        };
+        let source = SessionConfigSource {
+            kind: SessionConfigSourceKind::AgentDefault,
+            reference: Some("agent-1".into()),
+        };
+        sylvander_protocol::SessionConfigState {
+            session_id: SessionId::new(id),
+            revision: 1,
+            overrides: sylvander_protocol::SessionConfigOverrides::default(),
+            effective: SessionEffectiveConfig {
+                agent_id: AgentId::new("agent-1"),
+                agent_revision: 1,
+                provider_id: "test".into(),
+                provider_revision: None,
+                model_id: "default-model".into(),
+                model_revision: None,
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+                permissions: sylvander_protocol::PermissionProfile::default(),
+                prompt_profile: None,
+                system_prompt_sha256: "digest".into(),
+                prompt_manifest: None,
+                agent_workspace: None,
+                user_workspace: None,
+                execution_target: "local".into(),
+                provenance: SessionConfigProvenance {
+                    model: source.clone(),
+                    reasoning_effort: source.clone(),
+                    permissions: source.clone(),
+                    prompt_profile: source.clone(),
+                    system_prompt: source.clone(),
+                    agent_workspace: source.clone(),
+                    user_workspace: source.clone(),
+                    execution_target: source,
+                },
+            },
+        }
+    }
+
+    #[async_trait]
+    impl UiService for SessionConfigUi {
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &ClientMsg,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::RegistryAdmin { .. })
+                && !boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin"))
+            {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "registry_admin",
+                ));
+            }
+            Ok(())
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            let model = |provider: &str, id: &str| sylvander_protocol::ModelDescriptor {
+                id: id.into(),
+                provider: provider.into(),
+                capabilities: 0,
+                capability_names: Vec::new(),
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
+            };
+            Ok(vec![sylvander_protocol::AgentDescriptor {
+                id: AgentId::new("agent-1"),
+                revision: 1,
+                name: "Agent".into(),
+                provider_id: "test".into(),
+                default_model_id: "default-model".into(),
+                models: vec![
+                    model("test", "default-model"),
+                    model("test", "thinking-model"),
+                    model("provider-a", "shared"),
+                    model("provider-b", "shared"),
+                ],
+                default_prompt_profile: None,
+                agent_workspace: None,
+            }])
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn session_config(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            session_id: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            self.states
+                .lock()
+                .await
+                .get(&session_id.0)
+                .cloned()
+                .ok_or_else(|| {
+                    sylvander_protocol::BoundaryError::forbidden(boundary, "get_session_config")
+                })
+        }
+
+        async fn update_session_config(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            let mut states = self.states.lock().await;
+            let state = states.get_mut(&request.session_id.0).ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "update_session_config")
+            })?;
+            assert_eq!(request.expected_revision, state.revision);
+            state.revision += 1;
+            state.overrides = request.overrides;
+            if let Some(model) = &state.overrides.model {
+                state.effective.provider_id = model.provider_id.clone();
+                state.effective.model_id = model.model_id.clone();
+            }
+            if let Some(effort) = state.overrides.reasoning_effort {
+                state.effective.reasoning_effort = effort;
+            }
+            if let Some(profile) = &state.overrides.permissions {
+                state.effective.permissions = profile.clone();
+            }
+            Ok(state.clone())
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+
+        async fn agent_admin(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::AgentAdminRequest,
+        ) -> sylvander_protocol::AgentAdminResponse {
+            let sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                agent_id, revision, ..
+            } = request
+            else {
+                unreachable!()
+            };
+            sylvander_protocol::AgentAdminResponse::Success {
+                result: Box::new(sylvander_protocol::AgentAdminResult::RevisionActivated {
+                    agent_id,
+                    active_revision: revision,
+                }),
+            }
+        }
+
+        async fn registry_admin(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            request: sylvander_protocol::RegistryAdminRequest,
+        ) -> sylvander_protocol::RegistryAdminResponse {
+            assert!(
+                boundary
+                    .principal
+                    .as_ref()
+                    .is_some_and(|principal| principal.has_role("admin")),
+                "non-administrator reached registry dispatch"
+            );
+            let sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                provider_id,
+                revision,
+            } = request
+            else {
+                unreachable!()
+            };
+            sylvander_protocol::RegistryAdminResponse::Success {
+                result: Box::new(
+                    sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
+                        revision: sylvander_protocol::ProviderRevisionView {
+                            definition: sylvander_protocol::RedactedProviderDefinition {
+                                provider_id,
+                                revision,
+                                kind: "mock".into(),
+                                base_url_sha256: "base-digest".into(),
+                                credential_binding_id_sha256: "binding-digest".into(),
+                            },
+                            digest_sha256: "definition-digest".into(),
+                            created_at_unix_secs: 7,
+                            active: true,
+                        },
+                    },
+                ),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn welcome_declares_administration_and_credential_lifecycle_capabilities() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "client",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::Hello {
+                protocol: sylvander_protocol::UiProtocolHello {
+                    client_name: "test-client".into(),
+                    min_version: sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+                    max_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+                    capabilities: Vec::new(),
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let ServerMsg::Welcome { protocol } = rx.recv().await.expect("welcome response") else {
+            panic!("hello must receive welcome")
+        };
+        for capability in [
+            "agent_administration",
+            "registry_administration",
+            "credential_registry_lifecycle",
+            "provider_model_registry_lifecycle",
+        ] {
+            assert!(
+                protocol.capabilities.iter().any(|item| item == capability),
+                "missing {capability} capability"
+            );
+        }
+    }
+
+    fn hello(version: u16) -> ClientMsg {
+        ClientMsg::Hello {
+            protocol: sylvander_protocol::UiProtocolHello {
+                client_name: "test-client".into(),
+                min_version: version,
+                max_version: version,
+                capabilities: Vec::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "client",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut selected = None;
+
+        assert!(
+            !handle_protocol_message(
+                ClientMsg::Ping,
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::ProtocolError { error }) if error.code == "handshake_required"
+        ));
+
+        assert!(
+            handle_protocol_message(
+                hello(1),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test"
+            )
+            .await
+        );
+        let Some(ServerMsg::Welcome { protocol }) = rx.recv().await else {
+            panic!("expected v1 Welcome")
+        };
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item.contains("administration"))
+        );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
+        );
+        selected = None;
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        let Some(ServerMsg::Welcome { protocol }) = rx.recv().await else {
+            panic!("expected Welcome")
+        };
+        assert!(
+            protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "registry_administration")
+        );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "credential_registry_lifecycle")
+        );
+        assert!(
+            !protocol
+                .capabilities
+                .iter()
+                .any(|item| item == "provider_model_registry_lifecycle")
+        );
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "websocket-test",
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::ProtocolError { error }) if error.code == "duplicate_handshake"
+        ));
+    }
+
+    #[tokio::test]
+    async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
+        let ui = Arc::new(CredentialRegistryUi {
+            received: Mutex::new(None),
+        });
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(ui.clone()),
+            None,
+        );
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        principal.roles.push("admin".into());
+        let request = || ClientMsg::RegistryAdmin {
+            request: sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+                binding_id: "private".into(),
+                reference: sylvander_protocol::CredentialSecretReferenceDraft::Environment {
+                    name: "PRIVATE_TOKEN".into(),
+                },
+            },
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut selected = None;
+
+        assert!(
+            handle_protocol_message(
+                hello(2),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let _ = rx.recv().await;
+        assert!(
+            handle_protocol_message(
+                request(),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let rejected = rx.recv().await.expect("version rejection");
+        assert!(matches!(
+            &rejected,
+            ServerMsg::ProtocolError { error }
+                if error.code == "unsupported_message_version"
+        ));
+        let rejected_wire = serde_json::to_string(&rejected).unwrap();
+        assert!(!rejected_wire.contains("private"));
+        assert!(!rejected_wire.contains("PRIVATE_TOKEN"));
+        assert!(
+            ui.received.lock().await.is_none(),
+            "v2 request reached UI service"
+        );
+
+        selected = None;
+        assert!(
+            handle_protocol_message(
+                hello(3),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        let _ = rx.recv().await;
+        assert!(
+            handle_protocol_message(
+                request(),
+                &mut selected,
+                &context,
+                &AgentId::new("agent-1"),
+                &tx,
+                &principal,
+                "ws"
+            )
+            .await
+        );
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::RegistryAdmin { .. })
+        ));
+        assert!(
+            ui.received.lock().await.is_some(),
+            "v3 request was not dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_admin_dispatches_through_the_ui_service() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(SessionConfigUi {
+                states: Mutex::new(HashMap::new()),
+            })),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::AgentAdmin {
+                request: sylvander_protocol::AgentAdminRequest::ActivateRevision {
+                    agent_id: AgentId::new("oraculo"),
+                    revision: 5,
+                    expected_active_revision: 4,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await.expect("Agent admin response"),
+            ServerMsg::AgentAdmin {
+                response: sylvander_protocol::AgentAdminResponse::Success {
+                    result
+                }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::AgentAdminResult::RevisionActivated {
+                    agent_id,
+                    active_revision: 5,
+                } if agent_id == &AgentId::new("oraculo")
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_without_ui_service_returns_content_free_error() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            ClientMsg::RegistryAdmin {
+                request: sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
+                    provider_id: "private-provider".into(),
+                    revision: 42,
+                },
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let response = rx.recv().await.expect("registry admin response");
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(matches!(
+            response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Error {
+                    error: sylvander_protocol::RegistryAdminError {
+                        code: sylvander_protocol::RegistryAdminErrorCode::Unauthorized,
+                        provider_id: None,
+                        revision: None,
+                        ..
+                    }
+                }
+            }
+        ));
+        assert!(!json.contains("private-provider"));
+        assert!(!json.contains("42"));
+    }
+
+    async fn dispatch_registry_admin_as(
+        principal: sylvander_protocol::AuthenticatedPrincipal,
+    ) -> ServerMsg {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(SessionConfigUi {
+                states: Mutex::new(HashMap::new()),
+            })),
+            None,
+        );
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "inspect_provider_revision",
+                "provider_id": "provider-a",
+                "revision": 9
+            }
+        }))
+        .expect("decode registry request");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg(
+            request,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+        rx.recv().await.expect("registry transport response")
+    }
+
+    #[tokio::test]
+    async fn registry_admin_round_trip_preserves_success_response() {
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        principal.roles.push("admin".into());
+        let response = dispatch_registry_admin_as(principal).await;
+        let wire = serde_json::to_string(&response).expect("encode registry response");
+        let decoded: ServerMsg = serde_json::from_str(&wire).expect("decode registry response");
+
+        assert!(matches!(
+            decoded,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected { revision }
+                    if revision.definition.provider_id == "provider-a"
+                        && revision.definition.revision == 9
+            )
+        ));
+    }
+
+    #[tokio::test]
+    async fn credential_binding_create_dispatches_reference_without_echoing_it() {
+        const BINDING_ID: &str = "credential/private-provider";
+        const ENVIRONMENT_NAME: &str = "SYLVANDER_PRIVATE_PROVIDER_TOKEN";
+
+        let ui = Arc::new(CredentialRegistryUi {
+            received: Mutex::new(None),
+        });
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(ui.clone()),
+            None,
+        );
+        let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "admin",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        principal.roles.push("admin".into());
+        let request: ClientMsg = serde_json::from_value(serde_json::json!({
+            "type": "registry_admin",
+            "request": {
+                "operation": "create_credential_binding",
+                "binding_id": BINDING_ID,
+                "reference": {
+                    "source": "environment",
+                    "name": ENVIRONMENT_NAME
+                }
+            }
+        }))
+        .expect("decode credential binding request");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            request,
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let received = ui
+            .received
+            .lock()
+            .await
+            .take()
+            .expect("registry service received request");
+        assert!(matches!(
+            received,
+            sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
+                binding_id,
+                reference:
+                    sylvander_protocol::CredentialSecretReferenceDraft::Environment { name },
+            } if binding_id == BINDING_ID && name == ENVIRONMENT_NAME
+        ));
+
+        let response = rx.recv().await.expect("credential registry response");
+        assert!(matches!(
+            &response,
+            ServerMsg::RegistryAdmin {
+                response: sylvander_protocol::RegistryAdminResponse::Success { result }
+            } if matches!(
+                result.as_ref(),
+                sylvander_protocol::RegistryAdminResult::CredentialBindingCreated { generation }
+                    if generation.binding_id_sha256 == "binding-digest"
+                        && generation.reference_digest_sha256 == "reference-digest"
+                        && generation.reference_configured
+            )
+        ));
+        let wire = serde_json::to_string(&response).expect("encode credential registry response");
+        assert!(!wire.contains(BINDING_ID));
+        assert!(!wire.contains(ENVIRONMENT_NAME));
+    }
+
+    #[tokio::test]
+    async fn registry_admin_non_administrator_is_rejected_before_dispatch() {
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "reader",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        assert!(matches!(
+            dispatch_registry_admin_as(principal).await,
+            ServerMsg::BoundaryDenied { error }
+                if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+                    && error.operation == "registry_admin"
+        ));
+    }
+
+    #[test]
+    fn message_limit_is_configurable() {
+        let channel =
+            WsChannel::new("127.0.0.1:0".parse().unwrap(), "agent").with_request_limit(4096);
+        assert_eq!(channel.max_request_bytes, 4096);
+    }
+
+    #[async_trait]
+    impl UiService for DenyAgentAccess {
+        async fn reject_authentication(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::AuthenticationFailure,
+        ) -> sylvander_protocol::BoundaryError {
+            sylvander_protocol::BoundaryError {
+                code: sylvander_protocol::BoundaryErrorCode::RateLimited,
+                operation: "authenticate_bearer_token".into(),
+                request_id: boundary.request_id.clone(),
+                message: "request rate limit exceeded".into(),
+                retry_after_ms: Some(1_000),
+            }
+        }
+
+        async fn authorize_message(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            message: &sylvander_protocol::UiClientMessage,
+        ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(
+                message,
+                sylvander_protocol::UiClientMessage::CreateSession { .. }
+            ) {
+                Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "create_session",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn submit_chat(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_channel::ExternalChatRequest,
+        ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "submit_chat",
+            ))
+        }
+
+        async fn discover_agents(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+        ) -> Result<Vec<sylvander_protocol::AgentDescriptor>, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn create_session(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionCreateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            panic!("denied Agent access must stop before session creation")
+        }
+
+        async fn session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: &SessionId,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn update_session_config(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::SessionConfigUpdateRequest,
+        ) -> Result<sylvander_protocol::SessionConfigState, sylvander_protocol::BoundaryError>
+        {
+            unreachable!()
+        }
+
+        async fn submit_feedback(
+            &self,
+            _: &sylvander_protocol::BoundaryContext,
+            _: sylvander_protocol::RunFeedback,
+        ) -> Result<String, sylvander_protocol::BoundaryError> {
+            unreachable!()
+        }
+    }
 
     #[test]
     fn approval_reason_is_optional_and_transport_neutral() {
@@ -511,5 +1785,236 @@ mod tests {
             ClientMsg::Approve { reason: Some(reason), .. }
                 if reason == "unsafe outside workspace"
         ));
+    }
+
+    #[test]
+    fn bearer_comparison_checks_content_and_length() {
+        assert!(constant_time_eq(b"correct-token", b"correct-token"));
+        assert!(!constant_time_eq(b"correct-token", b"wrong-token"));
+        assert!(!constant_time_eq(b"token", b"token-extra"));
+    }
+
+    #[tokio::test]
+    async fn first_chat_cannot_create_a_session_without_agent_access() {
+        let sessions: Arc<dyn SessionStore> =
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            sessions.clone(),
+            Some(Arc::new(DenyAgentAccess)),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::Chat {
+                text: "hello".into(),
+                attachments: Vec::new(),
+                session_id: None,
+                workspace: None,
+            },
+            &context,
+            &AgentId::new("private-agent"),
+            &tx,
+            &principal,
+            "ws-private",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::BoundaryDenied { error })
+                if error.code == sylvander_protocol::BoundaryErrorCode::Forbidden
+        ));
+        assert!(sessions.list_persistent().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authentication_rejection_uses_runtime_status() {
+        let state = AppState {
+            ctx: Arc::new(ChannelContext::with_services(
+                Arc::new(InProcessMessageBus::new()),
+                Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                Some(Arc::new(DenyAgentAccess)),
+                None,
+            )),
+            agent_id: AgentId::new("private-agent"),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(0)),
+            instance_id: "ws-private".into(),
+            auth: None,
+            max_request_bytes: 4096,
+        };
+        assert_eq!(
+            reject_ws_authentication(&state).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn selection_updates_only_the_addressed_session() {
+        let ui = Arc::new(SessionConfigUi {
+            states: Mutex::new(HashMap::from([
+                ("session-a".into(), config_state("session-a")),
+                ("session-b".into(), config_state("session-b")),
+            ])),
+        });
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(ui.clone()),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::SelectModel {
+                session_id: Some("session-a".into()),
+                model: sylvander_protocol::ModelSelectionInput::Qualified(
+                    sylvander_protocol::ModelSelection {
+                        provider_id: "test".into(),
+                        model_id: "thinking-model".into(),
+                    },
+                ),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::High,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::SessionConfig { state })
+                if state.session_id.0 == "session-a"
+                    && state.effective.model_id == "thinking-model"
+                    && state.effective.reasoning_effort
+                        == sylvander_protocol::ReasoningEffort::High
+        ));
+        let states = ui.states.lock().await;
+        assert_eq!(states["session-a"].revision, 2);
+        assert_eq!(
+            states["session-a"].overrides.model,
+            Some(sylvander_protocol::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "thinking-model".into(),
+            })
+        );
+        assert!(states["session-a"].overrides.model_id.is_none());
+        assert_eq!(states["session-b"], config_state("session-b"));
+    }
+
+    #[tokio::test]
+    async fn session_prompt_is_redacted_from_the_websocket_payload() {
+        const SENTINEL: &str = "WS_PRIVATE_SESSION_PROMPT_SENTINEL";
+        const DIGEST: &str = "ws-public-prompt-digest";
+        let mut state = config_state("session-secret");
+        state.overrides.system_prompt = Some(SENTINEL.into());
+        state.effective.system_prompt_sha256 = DIGEST.into();
+        state.effective.prompt_manifest = Some(sylvander_protocol::PromptManifest {
+            layers: vec![sylvander_protocol::PromptLayerDigest {
+                kind: sylvander_protocol::PromptLayerKind::SessionInput,
+                reference: Some("session".into()),
+                sha256: DIGEST.into(),
+                byte_count: SENTINEL.len() as u64,
+            }],
+            aggregate_sha256: "aggregate-digest".into(),
+            total_bytes: SENTINEL.len() as u64,
+        });
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(Arc::new(SessionConfigUi {
+                states: Mutex::new(HashMap::from([("session-secret".into(), state)])),
+            })),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::GetSessionConfig {
+                session_id: "session-secret".into(),
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+        let response = rx.recv().await.expect("session config response");
+        let wire = serde_json::to_string(&response).expect("websocket JSON payload");
+        let encoded: serde_json::Value = serde_json::from_str(&wire).expect("session config JSON");
+
+        assert!(!wire.contains(SENTINEL));
+        assert!(encoded["state"]["overrides"].get("system_prompt").is_none());
+        assert_eq!(
+            encoded["state"]["effective"]["system_prompt_sha256"],
+            DIGEST
+        );
+        assert_eq!(
+            encoded["state"]["effective"]["prompt_manifest"]["layers"][0]["sha256"],
+            DIGEST
+        );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_legacy_selection_fails_without_mutating_session() {
+        let ui = Arc::new(SessionConfigUi {
+            states: Mutex::new(HashMap::from([(
+                "session-a".into(),
+                config_state("session-a"),
+            )])),
+        });
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(ui.clone()),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "caller",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::SelectModel {
+                session_id: Some("session-a".into()),
+                model: sylvander_protocol::ModelSelectionInput::Legacy("shared".into()),
+                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "ws-test",
+        )
+        .await;
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(ServerMsg::OperationError { operation, message })
+                if operation == "select_model" && message.contains("ambiguous")
+        ));
+        assert_eq!(
+            ui.states.lock().await["session-a"],
+            config_state("session-a")
+        );
     }
 }
