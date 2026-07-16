@@ -216,16 +216,15 @@ impl MemoryIntegrityBackend {
                 if let Some(reference) = client_identity {
                     reference.validate("server memory integrity HTTP client_identity", errors);
                 }
-                if !(100..=60_000).contains(timeout_millis) {
+                if !(100..=30_000).contains(timeout_millis) {
                     errors.push(
-                        "server memory integrity HTTP timeout_millis must be between 100 and 60000"
+                        "server memory integrity HTTP timeout_millis must be between 100 and 30000"
                             .into(),
                     );
                 }
-                if *read_retries > 10 {
-                    errors.push(
-                        "server memory integrity HTTP read_retries must not exceed 10".into(),
-                    );
+                if *read_retries > 3 {
+                    errors
+                        .push("server memory integrity HTTP read_retries must not exceed 3".into());
                 }
             }
         }
