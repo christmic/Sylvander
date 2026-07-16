@@ -223,6 +223,34 @@ retry on the next scheduled interval without replacing the last valid copy.
 The backup directory is derived beneath `data_dir`; configuration cannot route
 memory snapshots to an arbitrary filesystem path. Restore remains an explicit
 offline operator action: Runtime never restores or falls back automatically.
+
+Each scheduled backup run also bounds the relationship-memory audit and
+retention ledgers. Runtime first publishes and verifies a signed backup whose
+epoch and database root exactly equal the committed external anchor. Only that
+artifact can authorize one maintenance-only compaction batch. Missing,
+modified, forged, or older-epoch artifacts fail closed. After every non-empty
+batch, Runtime publishes another verified backup before continuing, so the
+compacted live database always has a current, offline-restorable artifact even
+when the batch budget is exhausted or shutdown follows immediately.
+
+One batch deletes at most `batch_size` audit rows and `batch_size` paired
+retention run/batch records. The newest row in each ledger is retained as a
+live continuity boundary. Deleted rows are folded, in deterministic order,
+into domain-separated cumulative summary roots. Counts, roots, checkpoint
+epoch/root, and backup digest live in one constant-size checkpoint row covered
+by the same external anchor. Backup rotation may eventually remove the older
+artifact containing individual compacted rows; the cumulative root preserves
+cryptographic evidence of those rows, not their plaintext inspection history.
+Deployments that require indefinite row-level inspection must export signed
+backups to a separately governed archive before rotation.
+
+Ordinary SQLite writes cannot delete audit or retention rows or write the
+checkpoint accumulator: exact-schema triggers require an in-process,
+thread-scoped maintenance gate. Transaction failure rolls back deletions and
+the accumulator together, while the existing pending/committed anchor protocol
+covers crash recovery. A no-op convergence check does not advance the anchor,
+so its just-published backup remains current.
+
 Retention policy revision starts at 1 and is persisted with every row. Any
 policy change must increase it; changing policy values under the same revision
 fails startup instead of silently reinterpreting existing memory.
