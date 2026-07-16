@@ -8,7 +8,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::Mutex;
 use tokio::task;
 
-use sylvander_protocol::{FeedbackRating, RunFeedback};
+use sylvander_protocol::{
+    EvidenceReference, FeedbackPrivacyClass, FeedbackRating, FeedbackTaskResult, RunFeedback,
+};
 
 mod recorder;
 
@@ -136,6 +138,30 @@ pub struct TurnSummary {
     pub step_count: u64,
     pub failed_step_count: u64,
     pub successful_outcome: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedbackAttribution {
+    pub principal_digest: String,
+    pub channel_instance_id: String,
+    pub transport: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFeedback {
+    pub id: String,
+    pub run_id: String,
+    pub turn_id: Option<String>,
+    pub rating: FeedbackRating,
+    pub note: Option<String>,
+    pub correction: Option<String>,
+    pub tags: Vec<String>,
+    pub task_result: Option<FeedbackTaskResult>,
+    pub artifacts: Vec<EvidenceReference>,
+    pub validations: Vec<EvidenceReference>,
+    pub privacy_class: FeedbackPrivacyClass,
+    pub attribution: FeedbackAttribution,
+    pub recorded_at: i64,
 }
 
 impl EvidenceStore {
@@ -586,6 +612,7 @@ impl EvidenceStore {
     pub async fn record_feedback(
         &self,
         feedback: RunFeedback,
+        attribution: FeedbackAttribution,
         recorded_at: i64,
     ) -> Result<String, EvidenceError> {
         let id = uuid::Uuid::new_v4().to_string();
@@ -614,17 +641,29 @@ impl EvidenceStore {
             };
             let tags_json = serde_json::to_string(&feedback.tags)
                 .map_err(|error| EvidenceError::Serialize(error.to_string()))?;
+            let artifacts_json = serde_json::to_string(&feedback.artifacts)
+                .map_err(|error| EvidenceError::Serialize(error.to_string()))?;
+            let validations_json = serde_json::to_string(&feedback.validations)
+                .map_err(|error| EvidenceError::Serialize(error.to_string()))?;
             connection
                 .execute(
-                    "INSERT INTO evidence_feedback(id, run_id, turn_id, rating, note, tags_json, recorded_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO evidence_feedback(id, run_id, turn_id, rating, note, correction, tags_json, task_result, artifacts_json, validations_json, privacy_class, principal_digest, channel_instance_id, transport, recorded_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         stored_id,
                         feedback.run_id,
                         feedback.turn_id,
                         rating,
                         feedback.note,
+                        feedback.correction,
                         tags_json,
+                        feedback.task_result.map(task_result_name),
+                        artifacts_json,
+                        validations_json,
+                        privacy_class_name(feedback.privacy_class),
+                        attribution.principal_digest,
+                        attribution.channel_instance_id,
+                        attribution.transport,
                         recorded_at
                     ],
                 )
@@ -633,6 +672,40 @@ impl EvidenceStore {
         })
         .await?;
         Ok(id)
+    }
+
+    pub async fn feedback(&self, id: String) -> Result<Option<StoredFeedback>, EvidenceError> {
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT id, run_id, turn_id, rating, note, correction, tags_json, task_result, artifacts_json, validations_json, privacy_class, principal_digest, channel_instance_id, transport, recorded_at FROM evidence_feedback WHERE id=?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                            row.get::<_, String>(8)?,
+                            row.get::<_, String>(9)?,
+                            row.get::<_, String>(10)?,
+                            row.get::<_, String>(11)?,
+                            row.get::<_, String>(12)?,
+                            row.get::<_, String>(13)?,
+                            row.get::<_, i64>(14)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(EvidenceError::sqlite)?
+                .map(decode_feedback)
+                .transpose()
+        })
+        .await
     }
 
     pub async fn feedback_count(&self) -> Result<u64, EvidenceError> {
@@ -781,6 +854,83 @@ fn sql_nonnegative(value: i64, column: usize) -> rusqlite::Result<u64> {
     })
 }
 
+fn task_result_name(result: FeedbackTaskResult) -> &'static str {
+    match result {
+        FeedbackTaskResult::Succeeded => "succeeded",
+        FeedbackTaskResult::Failed => "failed",
+        FeedbackTaskResult::Partial => "partial",
+        FeedbackTaskResult::Cancelled => "cancelled",
+    }
+}
+
+fn privacy_class_name(class: FeedbackPrivacyClass) -> &'static str {
+    match class {
+        FeedbackPrivacyClass::MetadataOnly => "metadata_only",
+        FeedbackPrivacyClass::Private => "private",
+        FeedbackPrivacyClass::Shareable => "shareable",
+    }
+}
+
+type StoredFeedbackRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+);
+
+fn decode_feedback(row: StoredFeedbackRow) -> Result<StoredFeedback, EvidenceError> {
+    let rating = match row.3.as_str() {
+        "positive" => FeedbackRating::Positive,
+        "negative" => FeedbackRating::Negative,
+        _ => return Err(EvidenceError::InvalidFeedbackData),
+    };
+    let task_result = match row.7.as_deref() {
+        None => None,
+        Some("succeeded") => Some(FeedbackTaskResult::Succeeded),
+        Some("failed") => Some(FeedbackTaskResult::Failed),
+        Some("partial") => Some(FeedbackTaskResult::Partial),
+        Some("cancelled") => Some(FeedbackTaskResult::Cancelled),
+        Some(_) => return Err(EvidenceError::InvalidFeedbackData),
+    };
+    let privacy_class = match row.10.as_str() {
+        "metadata_only" => FeedbackPrivacyClass::MetadataOnly,
+        "private" => FeedbackPrivacyClass::Private,
+        "shareable" => FeedbackPrivacyClass::Shareable,
+        _ => return Err(EvidenceError::InvalidFeedbackData),
+    };
+    Ok(StoredFeedback {
+        id: row.0,
+        run_id: row.1,
+        turn_id: row.2,
+        rating,
+        note: row.4,
+        correction: row.5,
+        tags: serde_json::from_str(&row.6).map_err(|_| EvidenceError::InvalidFeedbackData)?,
+        task_result,
+        artifacts: serde_json::from_str(&row.8).map_err(|_| EvidenceError::InvalidFeedbackData)?,
+        validations: serde_json::from_str(&row.9)
+            .map_err(|_| EvidenceError::InvalidFeedbackData)?,
+        privacy_class,
+        attribution: FeedbackAttribution {
+            principal_digest: row.11,
+            channel_instance_id: row.12,
+            transport: row.13,
+        },
+        recorded_at: row.14,
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EvidenceError {
     #[error("SQLite evidence store failed: {0}")]
@@ -799,6 +949,8 @@ pub enum EvidenceError {
     Serialize(String),
     #[error("feedback must reference an existing run and a turn from that run")]
     InvalidFeedbackTarget,
+    #[error("stored feedback is invalid")]
+    InvalidFeedbackData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
@@ -841,8 +993,14 @@ CREATE TABLE IF NOT EXISTS evidence_events (
 CREATE TABLE IF NOT EXISTS evidence_feedback (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES evidence_runs(id),
   turn_id TEXT REFERENCES evidence_turns(id), rating TEXT NOT NULL,
-  note TEXT, tags_json TEXT NOT NULL, recorded_at INTEGER NOT NULL,
-  CHECK (rating IN ('positive', 'negative'))
+  note TEXT, correction TEXT, tags_json TEXT NOT NULL, task_result TEXT,
+  artifacts_json TEXT NOT NULL, validations_json TEXT NOT NULL,
+  privacy_class TEXT NOT NULL, principal_digest TEXT NOT NULL,
+  channel_instance_id TEXT NOT NULL, transport TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL,
+  CHECK (rating IN ('positive', 'negative')),
+  CHECK (task_result IS NULL OR task_result IN ('succeeded', 'failed', 'partial', 'cancelled')),
+  CHECK (privacy_class IN ('metadata_only', 'private', 'shareable'))
 );
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
@@ -886,6 +1044,14 @@ CREATE INDEX IF NOT EXISTS idx_administration_audit_intents_time ON administrati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn feedback_attribution() -> FeedbackAttribution {
+        FeedbackAttribution {
+            principal_digest: "principal-sha256".into(),
+            channel_instance_id: "terminal".into(),
+            transport: "unix".into(),
+        }
+    }
 
     #[tokio::test]
     async fn stores_structured_run_turn_step_outcome_and_event() {
@@ -1193,19 +1359,31 @@ mod tests {
                     turn_id: Some("turn-1".into()),
                     rating: FeedbackRating::Positive,
                     note: Some("useful".into()),
-                    correction: None,
+                    correction: Some("keep the smaller patch".into()),
                     tags: vec!["correct".into()],
-                    task_result: None,
-                    artifacts: Vec::new(),
-                    validations: Vec::new(),
+                    task_result: Some(FeedbackTaskResult::Succeeded),
+                    artifacts: vec![EvidenceReference {
+                        locator: "worktree:session-1".into(),
+                        digest_sha256: None,
+                    }],
+                    validations: vec![EvidenceReference {
+                        locator: "test:cargo-test".into(),
+                        digest_sha256: Some("a".repeat(64)),
+                    }],
                     privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
                 },
+                feedback_attribution(),
                 3,
             )
             .await
             .unwrap();
         assert!(!feedback_id.is_empty());
         assert_eq!(store.feedback_count().await.unwrap(), 1);
+        let stored = store.feedback(feedback_id).await.unwrap().unwrap();
+        assert_eq!(stored.correction.as_deref(), Some("keep the smaller patch"));
+        assert_eq!(stored.task_result, Some(FeedbackTaskResult::Succeeded));
+        assert_eq!(stored.artifacts[0].locator, "worktree:session-1");
+        assert_eq!(stored.attribution, feedback_attribution());
 
         let error = store
             .record_feedback(
@@ -1221,6 +1399,7 @@ mod tests {
                     validations: Vec::new(),
                     privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
                 },
+                feedback_attribution(),
                 4,
             )
             .await

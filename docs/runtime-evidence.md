@@ -18,7 +18,9 @@ The SQLite evidence store normalizes six layers:
 - **event** — the append-only bus observation used to reconstruct ordering and
   diagnose normalization defects.
 - **feedback** — an explicit positive/negative user assessment bound to a real
-  run and optionally to a turn from that same run, with a bounded note and tags.
+  run and optionally to a turn from that same run. It records bounded notes and
+  corrections, task result, tags, artifact and validation references, privacy
+  class, and Runtime-derived principal/channel/transport attribution.
 
 Run, session, turn, step, bus-message, and tool-call identities provide
 correlation without depending on log text. Query APIs return bounded turn
@@ -74,7 +76,9 @@ deployment merely because it appears in the ledger.
 ## Current boundary
 
 The durable store, bus recorder, crash recovery, content policies, retention,
-Rust query surface, and evidence-linked feedback API are implemented.
+Rust query surface, and evidence-linked feedback API are implemented. Feedback
+attribution is derived at the authenticated Runtime boundary rather than
+accepted from the client, and references are bounded and digest-validated.
 Evaluation datasets, proposal records, worktree experiments, signing, and
 deployment observation remain the P5 backlog and must be completed before
 claiming autonomous self-improvement.
