@@ -1,8 +1,10 @@
 use super::*;
 use crate::evidence::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
-    ProposalTransition, RegressionMetric, ScoreDirection, ScoringAdapterKind,
+    ExperimentPhase, HmacSha256EvidenceSigner, MetricMeasurement, ProposalTransition,
+    RecordExperimentEvidence, RegressionMetric, ScoreDirection, ScoringAdapterKind,
     ScoringAdapterRevision, SelfChangeExperiment, SelfChangeExperimentStatus,
+    UnsignedExperimentEvidence, verify_experiment_evidence,
 };
 
 async fn evaluation_fixture(store: &EvidenceStore) {
@@ -196,4 +198,77 @@ async fn proposal_is_immutable_canonical_and_requires_real_evaluations() {
             .status,
         ImprovementProposalStatus::Experimenting
     );
+
+    let comparison = store
+        .compare_evaluation_baseline(
+            "coding-main".into(),
+            vec![MetricMeasurement {
+                metric: "passed".into(),
+                value: 10_000,
+                sample_count: 2,
+            }],
+        )
+        .await
+        .unwrap();
+    let signer = HmacSha256EvidenceSigner::new("local-test", vec![7; 32]).unwrap();
+    let baseline = store
+        .record_experiment_evidence(
+            RecordExperimentEvidence {
+                id: "experiment-1-baseline".into(),
+                expected_state_revision: 1,
+                principal_digest: "8".repeat(64),
+                evidence: UnsignedExperimentEvidence {
+                    experiment_id: "experiment-1".into(),
+                    phase: ExperimentPhase::Baseline,
+                    proposal_digest_sha256: digest.clone(),
+                    workspace_commit: "1".repeat(40),
+                    evaluations: vec![comparison.clone()],
+                    artifacts: vec![],
+                    recorded_at: 9,
+                },
+            },
+            &signer,
+        )
+        .await
+        .unwrap();
+    assert!(verify_experiment_evidence(&baseline, &signer).unwrap());
+    assert_eq!(
+        store
+            .experiment_evidence("experiment-1".into(), ExperimentPhase::Baseline)
+            .await
+            .unwrap()
+            .unwrap(),
+        baseline
+    );
+    let candidate = store
+        .record_experiment_evidence(
+            RecordExperimentEvidence {
+                id: "experiment-1-candidate".into(),
+                expected_state_revision: 2,
+                principal_digest: "8".repeat(64),
+                evidence: UnsignedExperimentEvidence {
+                    experiment_id: "experiment-1".into(),
+                    phase: ExperimentPhase::Candidate,
+                    proposal_digest_sha256: digest,
+                    workspace_commit: "2".repeat(40),
+                    evaluations: vec![comparison],
+                    artifacts: vec![],
+                    recorded_at: 10,
+                },
+            },
+            &signer,
+        )
+        .await
+        .unwrap();
+    assert!(verify_experiment_evidence(&candidate, &signer).unwrap());
+    let experiment = store
+        .self_change_experiment("experiment-1".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        experiment.status,
+        SelfChangeExperimentStatus::CandidateEvaluated
+    );
+    assert_eq!(experiment.state_revision, 3);
 }
