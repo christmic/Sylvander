@@ -172,3 +172,84 @@ async fn guardian_and_system_relationship_access_fails_closed() {
 fn opens_in_memory_with_current_schema() {
     SqliteMemoryStore::open_in_memory().unwrap();
 }
+
+#[tokio::test]
+async fn generated_identifier_collisions_retry_and_exhaust_deterministically() {
+    let store = SqliteMemoryStore::open_in_memory().unwrap();
+    let ctx = worker("alice", "agent-a");
+    let entry = store
+        .append_relationship(&ctx, MemoryAppend::new("collision seed"))
+        .await
+        .unwrap();
+    store.maintenance().purge().unwrap();
+    let user_id = UserId("alice".into());
+    let agent_id = AgentId("agent-a".into());
+    let mut connection = store.connection.lock().unwrap();
+    let transaction = connection.transaction().unwrap();
+    let record_key: String = transaction
+        .query_row("SELECT record_key FROM relationship_memories", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let event_id: String = transaction
+        .query_row(
+            "SELECT event_id FROM relationship_memory_audit LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let run_id: String = transaction
+        .query_row(
+            "SELECT run_id FROM relationship_memory_retention_runs",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let batch_id: String = transaction
+        .query_row(
+            "SELECT batch_id FROM relationship_memory_retention_batches",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let namespaces = [
+        (
+            IdentifierNamespace::Memory {
+                user_id: &user_id,
+                agent_id: &agent_id,
+            },
+            entry.id.clone(),
+        ),
+        (IdentifierNamespace::RecordKey, record_key),
+        (IdentifierNamespace::AuditEvent, event_id),
+        (IdentifierNamespace::RetentionRun, run_id),
+        (IdentifierNamespace::RetentionBatch, batch_id),
+    ];
+    for (index, (namespace, existing)) in namespaces.into_iter().enumerate() {
+        let fresh = format!("00000000-0000-4000-8000-{index:012}");
+        let mut candidates = [existing, fresh.clone()].into_iter();
+        let allocated =
+            allocate_identifier_with(&transaction, namespace, || candidates.next().unwrap())
+                .unwrap();
+        assert_eq!(allocated, fresh);
+    }
+
+    let mut attempts = 0;
+    let exhausted = allocate_identifier_with(
+        &transaction,
+        IdentifierNamespace::Memory {
+            user_id: &user_id,
+            agent_id: &agent_id,
+        },
+        || {
+            attempts += 1;
+            entry.id.clone()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(attempts, MAX_IDENTIFIER_ATTEMPTS);
+    assert_eq!(
+        exhausted.to_string(),
+        "store error: memory store operation failed"
+    );
+}

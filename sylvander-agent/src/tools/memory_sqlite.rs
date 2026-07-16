@@ -25,6 +25,7 @@ pub use integrity::{FileMemoryIntegrityAnchor, MemoryIntegrityConfig};
 
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 5;
+const MAX_IDENTIFIER_ATTEMPTS: usize = 8;
 const MAX_UNCONFIRMED_CLOCK_FORWARD_SECS: i64 = 31 * 24 * 60 * 60;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
 const SCHEMA: &str = r"
@@ -551,14 +552,20 @@ impl MemoryStore for SqliteMemoryStore {
         let append = self.retention_policy.apply_append(append)?;
         validate_append(&append)?;
         let wall_now = self.clock.now_secs();
-        let id = uuid::Uuid::new_v4().to_string();
         let provenance = ctx.provenance();
-        let record_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(move |transaction| {
             let now =
                 resolve_effective_now(transaction, self.retention_policy.revision(), wall_now)
                     .map_err(|_| store_failure())?
                     .now;
+            let MemoryOwner::Relationship { user_id, agent_id } = &owner else {
+                unreachable!("relationship constructor returned another scope")
+            };
+            let id = allocate_identifier(
+                transaction,
+                IdentifierNamespace::Memory { user_id, agent_id },
+            )?;
+            let record_key = allocate_identifier(transaction, IdentifierNamespace::RecordKey)?;
             let entry = MemoryEntry::materialize(
                 id,
                 owner,
@@ -727,11 +734,18 @@ impl MemoryStore for SqliteMemoryStore {
             _ => unreachable!("relationship constructor returned another scope"),
         };
         let wall_now = self.clock.now_secs();
-        let replacement_id = uuid::Uuid::new_v4().to_string();
         let provenance = ctx.provenance();
-        let replacement_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(move |transaction| {
             let now = resolve_effective_now(transaction, self.retention_policy.revision(), wall_now).map_err(|_| mutation_error())?.now;
+            let replacement_id = allocate_identifier(
+                transaction,
+                IdentifierNamespace::Memory {
+                    user_id: &user_id,
+                    agent_id: &agent_id,
+                },
+            )?;
+            let replacement_key =
+                allocate_identifier(transaction, IdentifierNamespace::RecordKey)?;
             let replacement = MemoryEntry::materialize(
                 replacement_id,
                 owner,
@@ -1081,9 +1095,11 @@ fn append_maintenance_audit(
     now: i64,
     superseded: bool,
 ) -> Result<(), MemoryStoreError> {
+    let event_id = allocate_identifier(transaction, IdentifierNamespace::AuditEvent)
+        .map_err(|_| retention_error())?;
     transaction.execute(
         "INSERT INTO relationship_memory_audit (event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask) VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'system_service', NULL, NULL, NULL, NULL, 0)",
-        params![uuid::Uuid::new_v4().to_string(), now, if superseded { "purge_superseded" } else { "purge_expired" }, record_key, i64::try_from(revision).map_err(|_| retention_error())?],
+        params![event_id, now, if superseded { "purge_superseded" } else { "purge_expired" }, record_key, i64::try_from(revision).map_err(|_| retention_error())?],
     ).map_err(|_| retention_error())?;
     Ok(())
 }
@@ -1094,10 +1110,12 @@ fn append_chain_forget_audit(
     revision: i64,
     now: i64,
 ) -> Result<(), MemoryStoreError> {
+    let event_id = allocate_identifier(transaction, IdentifierNamespace::AuditEvent)
+        .map_err(|_| forget_error())?;
     transaction
         .execute(
             "INSERT INTO relationship_memory_audit (event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask) VALUES (?1, ?2, 'forget_chain', ?3, ?4, NULL, 'system_service', NULL, NULL, NULL, NULL, 0)",
-            params![uuid::Uuid::new_v4().to_string(), now, record_key, revision],
+            params![event_id, now, record_key, revision],
         )
         .map_err(|_| forget_error())?;
     Ok(())
@@ -1109,14 +1127,17 @@ fn insert_retention_ledgers(
     now: i64,
     report: MemoryPurgeReport,
 ) -> Result<(), MemoryStoreError> {
-    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_id = allocate_identifier(transaction, IdentifierNamespace::RetentionRun)
+        .map_err(|_| retention_error())?;
+    let batch_id = allocate_identifier(transaction, IdentifierNamespace::RetentionBatch)
+        .map_err(|_| retention_error())?;
     transaction.execute(
         "INSERT INTO relationship_memory_retention_runs (run_id, started_at, completed_at, policy_revision, clock_watermark, expired_count, superseded_count) VALUES (?1, ?2, ?2, ?3, ?2, ?4, ?5)",
         params![run_id, now, i64::try_from(policy.revision()).map_err(|_| retention_error())?, report.expired_count, report.superseded_count],
     ).map_err(|_| retention_error())?;
     transaction.execute(
         "INSERT INTO relationship_memory_retention_batches (batch_id, run_id, occurred_at, attempted_limit, expired_count, superseded_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![uuid::Uuid::new_v4().to_string(), run_id, now, policy.batch_limit(), report.expired_count, report.superseded_count],
+        params![batch_id, run_id, now, policy.batch_limit(), report.expired_count, report.superseded_count],
     ).map_err(|_| retention_error())?;
     Ok(())
 }
@@ -1293,6 +1314,67 @@ fn option_id<T: std::fmt::Display>(value: Option<&T>) -> Option<String> {
     value.map(ToString::to_string)
 }
 
+#[derive(Clone, Copy)]
+enum IdentifierNamespace<'a> {
+    Memory {
+        user_id: &'a UserId,
+        agent_id: &'a AgentId,
+    },
+    RecordKey,
+    AuditEvent,
+    RetentionRun,
+    RetentionBatch,
+}
+
+fn allocate_identifier(
+    transaction: &rusqlite::Transaction<'_>,
+    namespace: IdentifierNamespace<'_>,
+) -> Result<String, MemoryStoreError> {
+    allocate_identifier_with(transaction, namespace, || uuid::Uuid::new_v4().to_string())
+}
+
+fn allocate_identifier_with(
+    transaction: &rusqlite::Transaction<'_>,
+    namespace: IdentifierNamespace<'_>,
+    mut candidate: impl FnMut() -> String,
+) -> Result<String, MemoryStoreError> {
+    for _ in 0..MAX_IDENTIFIER_ATTEMPTS {
+        let candidate = candidate();
+        let exists = match namespace {
+            IdentifierNamespace::Memory { user_id, agent_id } => transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationship_memories WHERE owner_user = ?1 AND owner_agent = ?2 AND id = ?3)",
+                params![&user_id.0, &agent_id.0, &candidate],
+                |row| row.get::<_, bool>(0),
+            ),
+            IdentifierNamespace::RecordKey => transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationship_memories WHERE record_key = ?1)",
+                [&candidate],
+                |row| row.get::<_, bool>(0),
+            ),
+            IdentifierNamespace::AuditEvent => transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationship_memory_audit WHERE event_id = ?1)",
+                [&candidate],
+                |row| row.get::<_, bool>(0),
+            ),
+            IdentifierNamespace::RetentionRun => transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationship_memory_retention_runs WHERE run_id = ?1)",
+                [&candidate],
+                |row| row.get::<_, bool>(0),
+            ),
+            IdentifierNamespace::RetentionBatch => transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM relationship_memory_retention_batches WHERE batch_id = ?1)",
+                [&candidate],
+                |row| row.get::<_, bool>(0),
+            ),
+        }
+        .map_err(store_error)?;
+        if !exists {
+            return Ok(candidate);
+        }
+    }
+    Err(store_failure())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn append_audit(
     transaction: &rusqlite::Transaction<'_>,
@@ -1312,10 +1394,11 @@ fn append_audit(
         .map(i64::try_from)
         .transpose()
         .map_err(|_| MemoryStoreError::InvalidInput)?;
+    let event_id = allocate_identifier(transaction, IdentifierNamespace::AuditEvent)?;
     transaction
         .execute(
             "INSERT INTO relationship_memory_audit (event_id, occurred_at, operation, target_record_key, before_revision, after_revision, actor_kind, actor_user_id, actor_agent_id, session_id, trace_id, changed_mask) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![uuid::Uuid::new_v4().to_string(), occurred_at, operation, record_key, before, after, actor_value(ctx.actor()), option_id(ctx.user_id()), option_id(ctx.agent_id()), option_id(ctx.session_id()), ctx.trace_id(), changed_mask],
+            params![event_id, occurred_at, operation, record_key, before, after, actor_value(ctx.actor()), option_id(ctx.user_id()), option_id(ctx.agent_id()), option_id(ctx.session_id()), ctx.trace_id(), changed_mask],
         )
         .map_err(store_error)?;
     Ok(())
