@@ -542,7 +542,10 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   arguments, bounded operations, remote workspace-relative file access, and
   stdin-separated file/command payloads. Structured List/Search and read-only
   Git status/diff/log now use the same executor boundary and return explicitly
-  bounded results. Environment and streaming contracts, container/sandbox
+  bounded results. Local and SSH command execution concurrently drains both
+  output streams, keeps only a fixed head/tail capture, records exact byte
+  totals and truncation, and returns a compact structured result to the model
+  and TUI. Live output delivery, environment contracts, container/sandbox
   adapters, SSH pooling, explicit host-key policy, and remote worktree review
   keep P3.1/P3.2/P3.3 open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential

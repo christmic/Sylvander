@@ -80,10 +80,11 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
         );
     }
     match normalized_name(tool_name).as_str() {
-        "bash" | "shell" | "exec" => string_field(input, &["command", "cmd"]).map_or_else(
-            || tool_name.to_string(),
-            |command| format!("$ {}", one_line(command)),
-        ),
+        "bash" | "shell" | "exec" | "command" => string_field(input, &["command", "cmd"])
+            .map_or_else(
+                || tool_name.to_string(),
+                |command| format!("$ {}", one_line(command)),
+            ),
         "read" | "read_file" => path_with_range(input, "Read"),
         "write" | "write_file" => mutation_target(input, "Write"),
         "edit" | "edit_file" => mutation_target(input, "Edit"),
@@ -335,12 +336,27 @@ fn shell_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
         ));
     }
     for (label, kind) in [("stdout", DetailKind::Label), ("stderr", DetailKind::Error)] {
+        let truncated_key = format!("{label}_truncated");
+        let total_bytes_key = format!("{label}_total_bytes");
+        let truncated = object
+            .get(&truncated_key)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let total_bytes = object.get(&total_bytes_key).and_then(Value::as_u64);
         if let Some(content) = object
             .get(label)
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
-            rows.push(DetailRow::new(label, kind));
+            let heading = if truncated {
+                total_bytes.map_or_else(
+                    || format!("{label} · truncated"),
+                    |bytes| format!("{label} · truncated from {bytes} bytes"),
+                )
+            } else {
+                label.into()
+            };
+            rows.push(DetailRow::new(heading, kind));
             rows.extend(output_rows(content, width, DEFAULT_DETAIL_LIMIT));
         }
     }
@@ -485,7 +501,10 @@ fn collect_resource_rows(value: &Value, width: usize, rows: &mut Vec<DetailRow>)
 }
 
 fn is_shell(name: &str) -> bool {
-    matches!(normalized_name(name).as_str(), "bash" | "shell" | "exec")
+    matches!(
+        normalized_name(name).as_str(),
+        "bash" | "shell" | "exec" | "command"
+    )
 }
 
 fn is_search(name: &str) -> bool {

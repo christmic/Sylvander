@@ -4,6 +4,7 @@
 //! program is fixed, paths are passed as positional parameters with POSIX
 //! shell quoting, and file contents or user commands travel only on stdin.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
@@ -13,11 +14,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use sylvander_agent::workspace_executor::{
-    WorkspaceCommandOutput, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
-    WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
-    WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+    COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, WorkspaceCommandOutput,
+    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListEntry,
+    WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits, WorkspaceSearchMatch,
+    WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 const READ_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec cat -- \"$2\"";
@@ -263,6 +265,70 @@ impl SshExecutor {
         Ok(output)
     }
 
+    async fn invoke_command(
+        &self,
+        remote_command: OsString,
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mut command = Command::new(&self.executable);
+        command
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-p")
+            .arg(self.port.to_string())
+            .arg("-i")
+            .arg(&self.identity_path)
+            .arg(self.destination())
+            .arg(remote_command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = command.spawn()?;
+        let mut child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("SSH command stdin was not piped"))?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("SSH command stdout was not piped"))?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("SSH command stderr was not piped"))?;
+
+        let operation = async {
+            let write_and_wait = async {
+                child_stdin.write_all(stdin).await?;
+                child_stdin.shutdown().await?;
+                drop(child_stdin);
+                child.wait().await
+            };
+            let (status, stdout, stderr) = tokio::try_join!(
+                write_and_wait,
+                drain_command_stream(child_stdout),
+                drain_command_stream(child_stderr),
+            )?;
+            Ok::<_, io::Error>((status, stdout, stderr))
+        };
+        let (status, stdout, stderr) = tokio::time::timeout(timeout, operation)
+            .await
+            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
+        Ok(WorkspaceCommandOutput {
+            success: status.success(),
+            status_code: status.code(),
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
+            stdout_total_bytes: stdout.total_bytes,
+            stderr_total_bytes: stderr.total_bytes,
+        })
+    }
+
     async fn file_operation(
         &self,
         target: &WorkspaceTarget,
@@ -325,15 +391,8 @@ impl WorkspaceExecutor for SshExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
-        let output = self
-            .invoke(remote, command.as_bytes(), Some(timeout))
-            .await?;
-        Ok(WorkspaceCommandOutput {
-            success: output.status.success(),
-            status_code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        self.invoke_command(remote, command.as_bytes(), timeout)
+            .await
     }
 
     async fn list(
@@ -378,6 +437,55 @@ impl WorkspaceExecutor for SshExecutor {
         }
         Ok(parse_search_output(&output.stdout, limits))
     }
+}
+
+struct BoundedCommandStream {
+    bytes: Vec<u8>,
+    truncated: bool,
+    total_bytes: u64,
+}
+
+async fn drain_command_stream(
+    mut stream: impl AsyncRead + Unpin,
+) -> Result<BoundedCommandStream, io::Error> {
+    let tail_capacity =
+        MAX_COMMAND_OUTPUT_BYTES_PER_STREAM.saturating_sub(COMMAND_OUTPUT_HEAD_BYTES);
+    let mut head = Vec::with_capacity(COMMAND_OUTPUT_HEAD_BYTES);
+    let mut tail = VecDeque::with_capacity(tail_capacity);
+    let mut total_bytes = 0_u64;
+    let mut chunk = vec![0_u8; 16 * 1024];
+    loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(read as u64);
+        let mut remaining = &chunk[..read];
+        if head.len() < COMMAND_OUTPUT_HEAD_BYTES {
+            let head_bytes = remaining
+                .len()
+                .min(COMMAND_OUTPUT_HEAD_BYTES.saturating_sub(head.len()));
+            head.extend_from_slice(&remaining[..head_bytes]);
+            remaining = &remaining[head_bytes..];
+        }
+        for byte in remaining {
+            if tail.len() == tail_capacity {
+                tail.pop_front();
+            }
+            if tail_capacity > 0 {
+                tail.push_back(*byte);
+            }
+        }
+    }
+
+    let mut bytes = head;
+    bytes.reserve(tail.len());
+    bytes.extend(tail);
+    Ok(BoundedCommandStream {
+        truncated: total_bytes > bytes.len() as u64,
+        total_bytes,
+        bytes,
+    })
 }
 
 fn parse_list_output(raw: &[u8], limits: WorkspaceQueryLimits) -> WorkspaceListResult {
@@ -618,10 +726,54 @@ mod tests {
         assert_eq!(output.status_code, Some(7));
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"err");
+        assert!(!output.stdout_truncated);
+        assert!(!output.stderr_truncated);
+        assert_eq!(output.stdout_total_bytes, 3);
+        assert_eq!(output.stderr_total_bytes, 3);
         assert_eq!(
             fs::read_to_string(&fake.stdin_log).expect("stdin log"),
             "printf '%s' \"用户命令; $(safe as data)\""
         );
+    }
+
+    #[tokio::test]
+    async fn command_concurrently_drains_and_bounds_both_output_streams() {
+        const BODY_BYTES: usize = 300_000;
+        const STDOUT_HEAD: &str = "stdout-head\n";
+        const STDOUT_TAIL: &str = "\nstdout-tail";
+        const STDERR_HEAD: &str = "stderr-head\n";
+        const STDERR_TAIL: &str = "\nstderr-tail";
+        let fake = FakeSsh::new(&format!(
+            "printf '{STDOUT_HEAD}'\n\
+             awk 'BEGIN {{ for (i = 0; i < {BODY_BYTES}; i++) printf \"o\" }}'\n\
+             printf '{STDOUT_TAIL}'\n\
+             printf '{STDERR_HEAD}' >&2\n\
+             awk 'BEGIN {{ for (i = 0; i < {BODY_BYTES}; i++) printf \"e\" }}' >&2\n\
+             printf '{STDERR_TAIL}' >&2"
+        ));
+        let output = fake
+            .executor()
+            .run_command(&target(false), "true", Duration::from_secs(5))
+            .await
+            .expect("large dual-stream command completes");
+
+        assert!(output.success);
+        assert!(output.stdout_truncated);
+        assert!(output.stderr_truncated);
+        assert_eq!(output.stdout.len(), MAX_COMMAND_OUTPUT_BYTES_PER_STREAM);
+        assert_eq!(output.stderr.len(), MAX_COMMAND_OUTPUT_BYTES_PER_STREAM);
+        assert_eq!(
+            output.stdout_total_bytes,
+            (STDOUT_HEAD.len() + BODY_BYTES + STDOUT_TAIL.len()) as u64
+        );
+        assert_eq!(
+            output.stderr_total_bytes,
+            (STDERR_HEAD.len() + BODY_BYTES + STDERR_TAIL.len()) as u64
+        );
+        assert!(output.stdout.starts_with(STDOUT_HEAD.as_bytes()));
+        assert!(output.stdout.ends_with(STDOUT_TAIL.as_bytes()));
+        assert!(output.stderr.starts_with(STDERR_HEAD.as_bytes()));
+        assert!(output.stderr.ends_with(STDERR_TAIL.as_bytes()));
     }
 
     #[tokio::test]

@@ -2959,19 +2959,28 @@ fn now_secs() -> u64 {
 /// target.  Falls back to the bare tool name when no recognizable
 /// input shape is available.
 fn step_name_for(tool: &str, input: &serde_json::Value) -> String {
-    match tool {
+    match tool.to_ascii_lowercase().as_str() {
         "read" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+            let path = input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
             format!("Read {path}")
         }
         "write" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or("file");
+            let path = input
+                .get("path")
+                .or_else(|| input.get("file_path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
             format!("Write {path}")
         }
         "edit" => "Edit file".into(),
-        "bash" => {
+        "bash" | "shell" | "exec" | "command" => {
             let cmd = input
                 .get("command")
+                .or_else(|| input.get("cmd"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("command");
             let first_token = cmd.split_whitespace().next().unwrap_or("");

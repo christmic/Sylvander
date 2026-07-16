@@ -3505,6 +3505,10 @@ mod tests {
                 status_code: Some(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_total_bytes: 0,
+                stderr_total_bytes: 0,
             })
         }
     }
