@@ -995,7 +995,19 @@ fn validate_workspace(
 
 fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<String>) {
     match &target.transport {
-        ExecutionTransportConfig::Local { .. } => {}
+        ExecutionTransportConfig::Local { root } => {
+            if let Some(root) = root
+                && (!root.is_absolute()
+                    || root
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir))
+            {
+                errors.push(format!(
+                    "local execution target {} root must be an absolute normalized path",
+                    target.id
+                ));
+            }
+        }
         ExecutionTransportConfig::Ssh {
             host,
             port,

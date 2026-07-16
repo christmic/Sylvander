@@ -1,6 +1,6 @@
 //! Production composition of configured Agent runs.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +33,8 @@ use sylvander_protocol::{
 #[cfg(test)]
 use crate::config::SystemSecretResolver;
 use crate::config::{
-    AgentDefinitionConfig, ModelDefinitionConfig, ModelProviderConfig, SecretResolver, ServerConfig,
+    AgentDefinitionConfig, ExecutionTransportConfig, ModelDefinitionConfig, ModelProviderConfig,
+    SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
 #[cfg(test)]
@@ -64,7 +65,7 @@ pub struct ConfiguredAgent {
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
     pub definition: AgentDefinitionConfig,
-    pub execution_targets: HashSet<String>,
+    pub execution_targets: HashMap<String, ExecutionTransportConfig>,
     #[cfg(test)]
     memory_store: Arc<dyn MemoryStore>,
     prompt_resolver: Arc<PromptResolver>,
@@ -566,9 +567,18 @@ pub fn resolve_session_config(
                 .map(|workspace| workspace.execution_target.clone())
         })
         .unwrap_or_else(|| "local".into());
-    if !agent.execution_targets.contains(&execution_target) {
+    if !agent.execution_targets.contains_key(&execution_target) {
         return Err(CompositionError::MissingExecutionTarget(execution_target));
     }
+    if user_workspace
+        .as_ref()
+        .or(agent_workspace.as_ref())
+        .is_some_and(|workspace| workspace.execution_target != execution_target)
+    {
+        return Err(CompositionError::WorkspaceExecutionTargetMismatch);
+    }
+    validate_local_workspace_root(&agent.execution_targets, agent_workspace.as_ref())?;
+    validate_local_workspace_root(&agent.execution_targets, user_workspace.as_ref())?;
     let agent_default = source(SessionConfigSourceKind::AgentDefault, &definition.spec.id.0);
     let session_override = source(SessionConfigSourceKind::SessionOverride, "session");
     let legacy = source(
@@ -738,13 +748,48 @@ fn configured_prompt_resolver(
     .map_err(|_| CompositionError::InvalidPrompt)
 }
 
-fn execution_targets(config: &ServerConfig) -> HashSet<String> {
-    config
+fn execution_targets(config: &ServerConfig) -> HashMap<String, ExecutionTransportConfig> {
+    let mut targets = config
         .execution_targets
         .iter()
-        .map(|target| target.id.clone())
-        .chain(std::iter::once("local".into()))
-        .collect()
+        .map(|target| (target.id.clone(), target.transport.clone()))
+        .collect::<HashMap<_, _>>();
+    targets
+        .entry("local".into())
+        .or_insert(ExecutionTransportConfig::Local { root: None });
+    targets
+}
+
+fn validate_local_workspace_root(
+    targets: &HashMap<String, ExecutionTransportConfig>,
+    workspace: Option<&SessionWorkspaceBinding>,
+) -> Result<(), CompositionError> {
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+    let target = targets.get(&workspace.execution_target).ok_or_else(|| {
+        CompositionError::MissingExecutionTarget(workspace.execution_target.clone())
+    })?;
+    let ExecutionTransportConfig::Local { root: Some(root) } = target else {
+        return Ok(());
+    };
+    if !workspace.path.is_absolute() || !workspace.path.starts_with(root) {
+        return Err(CompositionError::WorkspaceOutsideExecutionRoot {
+            workspace: workspace.path.display().to_string(),
+            root: root.display().to_string(),
+        });
+    }
+    if workspace
+        .path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(CompositionError::WorkspaceOutsideExecutionRoot {
+            workspace: workspace.path.display().to_string(),
+            root: root.display().to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn apply_server_run_settings(
@@ -1027,6 +1072,10 @@ pub enum CompositionError {
     UnsupportedReasoning(String),
     #[error("execution target `{0}` is unavailable")]
     MissingExecutionTarget(String),
+    #[error("workspace `{workspace}` is outside local execution root `{root}`")]
+    WorkspaceOutsideExecutionRoot { workspace: String, root: String },
+    #[error("workspace and session execution targets do not match")]
+    WorkspaceExecutionTargetMismatch,
     #[error("approval policy `ask` requires approvals to be enabled")]
     ApprovalDisabled,
     #[error("session system prompt overrides are disabled")]
@@ -1502,6 +1551,34 @@ path = "/tmp/sylvander-test.sock"
         );
         assert_eq!(effective.system_prompt_sha256.len(), 64);
         assert!(effective.prompt_manifest.is_some());
+
+        agents[0].execution_targets.insert(
+            "local".into(),
+            ExecutionTransportConfig::Local {
+                root: Some("/allowed".into()),
+            },
+        );
+        let outside_root = resolve_session_config(
+            &agents[0],
+            &SessionConfigOverrides {
+                user_workspace: Some(SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path: "/other/project".into(),
+                    read_only: false,
+                }),
+                ..SessionConfigOverrides::default()
+            },
+            None,
+            None,
+        );
+        assert!(matches!(
+            outside_root,
+            Err(CompositionError::WorkspaceOutsideExecutionRoot { .. })
+        ));
+        agents[0].execution_targets.insert(
+            "local".into(),
+            ExecutionTransportConfig::Local { root: None },
+        );
 
         let qualified = resolve_session_config(
             &agents[0],
