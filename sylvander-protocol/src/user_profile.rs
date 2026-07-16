@@ -292,55 +292,47 @@ impl fmt::Debug for UserProfileExport {
 }
 
 #[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UserProfileResponse {
-    pub version: u16,
-    pub result: UserProfileResult,
-}
-
-impl fmt::Debug for UserProfileResponse {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("UserProfileResponse")
-            .field("version", &self.version)
-            .field("result", &self.result.kind())
-            .field("profile_data", &"[REDACTED]")
-            .finish_non_exhaustive()
-    }
-}
-
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
-pub enum UserProfileResult {
+pub enum UserProfileResponse {
     Created {
+        version: u16,
         profile: UserProfileView,
     },
     Read {
+        version: u16,
         profile: UserProfileView,
     },
     Updated {
+        version: u16,
         profile: UserProfileView,
     },
     Exported {
+        version: u16,
         export: UserProfileExport,
     },
     Corrected {
+        version: u16,
         profile: UserProfileView,
     },
     Deleted {
+        version: u16,
         deleted_revision: u64,
         do_not_learn_preserved: bool,
     },
     DoNotLearnUpdated {
+        version: u16,
         profile: UserProfileView,
     },
-    NotFound {},
+    NotFound {
+        version: u16,
+    },
     Error {
+        version: u16,
         error: UserProfileError,
     },
 }
 
-impl UserProfileResult {
+impl UserProfileResponse {
     const fn kind(&self) -> &'static str {
         match self {
             Self::Created { .. } => "created",
@@ -350,9 +342,19 @@ impl UserProfileResult {
             Self::Corrected { .. } => "corrected",
             Self::Deleted { .. } => "deleted",
             Self::DoNotLearnUpdated { .. } => "do_not_learn_updated",
-            Self::NotFound {} => "not_found",
+            Self::NotFound { .. } => "not_found",
             Self::Error { .. } => "error",
         }
+    }
+}
+
+impl fmt::Debug for UserProfileResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UserProfileResponse")
+            .field("result", &self.kind())
+            .field("profile_data", &"[REDACTED]")
+            .finish_non_exhaustive()
     }
 }
 
@@ -514,3 +516,6 @@ fn validate_text(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
