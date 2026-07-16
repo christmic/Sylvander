@@ -55,6 +55,8 @@ pub struct ServerSettings {
     pub evidence: EvidenceSettings,
     #[serde(default)]
     pub boundary: BoundarySettings,
+    #[serde(default)]
+    pub identity: IdentitySettings,
 }
 
 impl Default for ServerSettings {
@@ -69,8 +71,64 @@ impl Default for ServerSettings {
             approval: ApprovalSettings::default(),
             evidence: EvidenceSettings::default(),
             boundary: BoundarySettings::default(),
+            identity: IdentitySettings::default(),
         }
     }
+}
+
+/// Optional durable stable-user identity service.
+///
+/// Supplying a digest key enables the service. Trusted issuers are exact
+/// authenticated ingress identities allowed to request link challenges for a
+/// configured stable user; request payloads can never select that user.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IdentitySettings {
+    pub database: Option<PathBuf>,
+    pub digest_key: Option<SecretRef>,
+    #[serde(default = "default_identity_challenge_ttl_seconds")]
+    pub challenge_ttl_seconds: u32,
+    #[serde(default)]
+    pub trusted_issuers: Vec<IdentityIssuerSettings>,
+}
+
+impl Default for IdentitySettings {
+    fn default() -> Self {
+        Self {
+            database: None,
+            digest_key: None,
+            challenge_ttl_seconds: default_identity_challenge_ttl_seconds(),
+            trusted_issuers: Vec::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for IdentitySettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IdentitySettings")
+            .field("database", &self.database)
+            .field(
+                "digest_key",
+                &self.digest_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("challenge_ttl_seconds", &self.challenge_ttl_seconds)
+            .field("trusted_issuer_count", &self.trusted_issuers.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityIssuerSettings {
+    pub transport: String,
+    pub channel_instance_id: String,
+    pub principal_id: String,
+    pub user_id: String,
+}
+
+const fn default_identity_challenge_ttl_seconds() -> u32 {
+    300
 }
 
 /// Bounded production maintenance policy for durable Agent memory.
@@ -722,6 +780,7 @@ impl ServerConfig {
         if !(1..=100_000).contains(&self.server.boundary.requests_per_minute) {
             errors.push("server boundary requests_per_minute must be between 1 and 100000".into());
         }
+        validate_identity_settings(&self.server.identity, &mut errors);
 
         unique_ids(
             "model provider",
@@ -826,6 +885,48 @@ impl ServerConfig {
 fn require_text(field: &str, value: &str, errors: &mut Vec<String>) {
     if value.trim().is_empty() {
         errors.push(format!("{field} is empty"));
+    }
+}
+
+fn validate_identity_settings(settings: &IdentitySettings, errors: &mut Vec<String>) {
+    if let Some(reference) = &settings.digest_key {
+        reference.validate("server identity digest_key", errors);
+    }
+    if !(30..=900).contains(&settings.challenge_ttl_seconds) {
+        errors.push("server identity challenge_ttl_seconds must be between 30 and 900".into());
+    }
+    if settings.digest_key.is_none() && !settings.trusted_issuers.is_empty() {
+        errors.push("server identity trusted_issuers require a digest_key".into());
+    }
+    if settings.digest_key.is_some() && settings.trusted_issuers.is_empty() {
+        errors.push("server identity digest_key requires at least one trusted issuer".into());
+    }
+    let mut issuers = HashSet::new();
+    for issuer in &settings.trusted_issuers {
+        for (field, value) in [
+            ("transport", issuer.transport.as_str()),
+            ("channel_instance_id", issuer.channel_instance_id.as_str()),
+            ("principal_id", issuer.principal_id.as_str()),
+            ("user_id", issuer.user_id.as_str()),
+        ] {
+            if value.is_empty()
+                || value.trim() != value
+                || value.len() > 512
+                || value.chars().any(char::is_control)
+            {
+                errors.push(format!("server identity issuer {field} is invalid"));
+            }
+        }
+        if issuer.user_id == "__system__" {
+            errors.push("server identity issuer user_id cannot be the system sentinel".into());
+        }
+        if !issuers.insert((
+            issuer.transport.as_str(),
+            issuer.channel_instance_id.as_str(),
+            issuer.principal_id.as_str(),
+        )) {
+            errors.push("server identity has a duplicate trusted issuer ingress".into());
+        }
     }
 }
 
