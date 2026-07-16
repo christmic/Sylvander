@@ -5,6 +5,7 @@
 //! discover the tools, and register the returned [`McpTool`] values in the
 //! ordinary [`ToolRegistry`](crate::tool::ToolRegistry).
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -88,6 +89,7 @@ struct McpInner {
     reconnect: Mutex<()>,
     io: Mutex<ProcessIo>,
     child: Mutex<Child>,
+    result_artifact_root: Option<PathBuf>,
 }
 
 /// A connected MCP stdio server.
@@ -111,6 +113,27 @@ impl McpStdioClient {
     pub async fn connect(
         config: &McpServerConfig,
         request_timeout: Duration,
+    ) -> Result<Self, McpError> {
+        Self::connect_inner(config, request_timeout, None).await
+    }
+
+    /// Start a server and persist every complete tool result below `root`.
+    ///
+    /// Callers still receive a bounded summary. The durable JSON artifact is
+    /// retained for later inspection, debugging, and evidence-driven
+    /// improvement without flooding the model or UI.
+    pub async fn connect_with_result_artifacts(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+        root: PathBuf,
+    ) -> Result<Self, McpError> {
+        Self::connect_inner(config, request_timeout, Some(root)).await
+    }
+
+    async fn connect_inner(
+        config: &McpServerConfig,
+        request_timeout: Duration,
+        result_artifact_root: Option<PathBuf>,
     ) -> Result<Self, McpError> {
         let mut command = Command::new(&config.command);
         command
@@ -147,6 +170,7 @@ impl McpStdioClient {
                     stdout: BufReader::new(stdout),
                 }),
                 child: Mutex::new(child),
+                result_artifact_root,
             }),
         };
 
@@ -203,7 +227,12 @@ impl McpStdioClient {
         stop_child(&self.inner.server_name, &mut child).await
     }
 
-    async fn call_tool(&self, name: &str, arguments: JsonValue) -> Result<ToolOutput, McpError> {
+    async fn call_tool(
+        &self,
+        name: &str,
+        arguments: JsonValue,
+        session_id: &str,
+    ) -> Result<ToolOutput, McpError> {
         let generation = self.inner.generation.load(Ordering::Acquire);
         let result = self
             .request(
@@ -212,7 +241,35 @@ impl McpStdioClient {
             )
             .await;
         match result {
-            Ok(result) => Ok(map_tool_result(&result)),
+            Ok(result) => {
+                let artifact = match &self.inner.result_artifact_root {
+                    Some(root) => {
+                        match persist_result_artifact(
+                            root,
+                            session_id,
+                            &self.inner.server_name,
+                            name,
+                            &result,
+                        )
+                        .await
+                        {
+                            Ok(path) => Some(path),
+                            Err(error) => {
+                                tracing::warn!(
+                                    server = %self.inner.server_name,
+                                    tool = name,
+                                    session_id,
+                                    error = %error,
+                                    "failed to persist complete MCP result artifact"
+                                );
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                Ok(map_tool_result(&result, artifact.as_deref()))
+            }
             Err(error) => {
                 if is_recoverable_transport_error(&error) {
                     let _ = self.reconnect_if_current(generation).await;
@@ -227,7 +284,12 @@ impl McpStdioClient {
         if self.inner.generation.load(Ordering::Acquire) != observed_generation {
             return Ok(());
         }
-        let replacement = Self::connect(&self.inner.config, self.inner.request_timeout).await?;
+        let replacement = Self::connect_inner(
+            &self.inner.config,
+            self.inner.request_timeout,
+            self.inner.result_artifact_root.clone(),
+        )
+        .await?;
         let replacement =
             Arc::try_unwrap(replacement.inner).map_err(|_| McpError::InvalidResult {
                 server: self.inner.server_name.clone(),
@@ -404,9 +466,9 @@ impl Tool for McpTool {
         self.input_schema.clone()
     }
 
-    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.client
-            .call_tool(&self.name, input)
+            .call_tool(&self.name, input, &ctx.session_id().0)
             .await
             .map_err(|error| match error {
                 McpError::Timeout { duration, .. } => ToolError::Timeout(duration),
@@ -457,7 +519,7 @@ async fn read_frame(
     })
 }
 
-fn map_tool_result(result: &JsonValue) -> ToolOutput {
+fn map_tool_result(result: &JsonValue, artifact: Option<&Path>) -> ToolOutput {
     let is_error = result
         .get("isError")
         .and_then(JsonValue::as_bool)
@@ -488,11 +550,61 @@ fn map_tool_result(result: &JsonValue) -> ToolOutput {
                 .unwrap_or_else(|_| "<invalid MCP structured content>".into()),
         );
     }
-    let content = bound_tool_result(parts.join("\n"));
+    let content = match artifact {
+        Some(path) => {
+            let suffix = format!("\n\nFull result artifact: {}", path.display());
+            let summary_limit = MAX_TOOL_RESULT_BYTES.saturating_sub(suffix.len());
+            format!(
+                "{}{suffix}",
+                bound_tool_result_to_limit(parts.join("\n"), summary_limit)
+            )
+        }
+        None => bound_tool_result(parts.join("\n")),
+    };
     if is_error {
         ToolOutput::err(content)
     } else {
         ToolOutput::ok(content)
+    }
+}
+
+async fn persist_result_artifact(
+    root: &Path,
+    session_id: &str,
+    server: &str,
+    tool: &str,
+    result: &JsonValue,
+) -> std::io::Result<PathBuf> {
+    let directory = root
+        .join(safe_path_component(session_id))
+        .join(safe_path_component(server));
+    tokio::fs::create_dir_all(&directory).await?;
+    let id = uuid::Uuid::new_v4();
+    let filename = format!("{}-{id}.json", safe_path_component(tool));
+    let path = directory.join(filename);
+    let temporary = path.with_extension("json.tmp");
+    let body =
+        serde_json::to_vec_pretty(result).expect("serializing an MCP JSON result cannot fail");
+    tokio::fs::write(&temporary, body).await?;
+    tokio::fs::rename(&temporary, &path).await?;
+    Ok(path)
+}
+
+fn safe_path_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        "_".into()
+    } else {
+        sanitized
     }
 }
 
@@ -521,14 +633,18 @@ fn redact_binary_payloads(value: &mut JsonValue) {
 }
 
 fn bound_tool_result(content: String) -> String {
-    if content.len() <= MAX_TOOL_RESULT_BYTES {
+    bound_tool_result_to_limit(content, MAX_TOOL_RESULT_BYTES)
+}
+
+fn bound_tool_result_to_limit(content: String, limit: usize) -> String {
+    if content.len() <= limit {
         return content;
     }
     let marker = format!(
         "\n… MCP result truncated: {} bytes total …\n",
         content.len()
     );
-    let available = MAX_TOOL_RESULT_BYTES.saturating_sub(marker.len());
+    let available = limit.saturating_sub(marker.len());
     let head_end = floor_char_boundary(&content, TOOL_RESULT_HEAD_BYTES.min(available));
     let tail_bytes = available.saturating_sub(head_end);
     let tail_start = ceil_char_boundary(&content, content.len().saturating_sub(tail_bytes));
@@ -732,14 +848,51 @@ while True:
     #[test]
     fn tool_results_keep_unicode_safe_head_and_tail_with_explicit_truncation() {
         let content = format!("{}TAIL-蟹", "前".repeat(MAX_TOOL_RESULT_BYTES));
-        let output = map_tool_result(&json!({
-            "content": [{ "type": "text", "text": content }],
-            "isError": false
-        }));
+        let output = map_tool_result(
+            &json!({
+                "content": [{ "type": "text", "text": content }],
+                "isError": false
+            }),
+            None,
+        );
 
         assert!(output.content.len() <= MAX_TOOL_RESULT_BYTES);
         assert!(output.content.starts_with('前'));
         assert!(output.content.contains("MCP result truncated"));
         assert!(output.content.ends_with("TAIL-蟹"));
+    }
+
+    #[tokio::test]
+    async fn complete_results_are_persisted_but_presented_as_bounded_summaries() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let result = json!({
+            "content": [{
+                "type": "text",
+                "text": format!("{}TAIL", "x".repeat(MAX_TOOL_RESULT_BYTES))
+            }],
+            "structuredContent": {
+                "kept": true
+            }
+        });
+
+        let path = persist_result_artifact(
+            directory.path(),
+            "session/one",
+            "search server",
+            "lookup",
+            &result,
+        )
+        .await
+        .expect("persist result");
+        let output = map_tool_result(&result, Some(&path));
+
+        assert!(path.starts_with(directory.path().join("session_one/search_server")));
+        assert_eq!(
+            serde_json::from_slice::<JsonValue>(&tokio::fs::read(&path).await.unwrap()).unwrap(),
+            result
+        );
+        assert!(output.content.contains("MCP result truncated"));
+        assert!(output.content.contains("Full result artifact:"));
+        assert!(output.content.len() <= MAX_TOOL_RESULT_BYTES);
     }
 }

@@ -396,7 +396,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
-    let tools = configured_tools(&spec, memory.clone()).await?;
+    let tools = configured_tools(config, &spec, memory.clone()).await?;
     let lifecycles = definitions
         .iter()
         .map(|model| {
@@ -693,6 +693,7 @@ pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
 }
 
 async fn configured_tools(
+    server: &ServerConfig,
     spec: &AgentSpec,
     memory: Arc<dyn MemoryStore>,
 ) -> Result<ToolRegistry, CompositionError> {
@@ -702,9 +703,23 @@ async fn configured_tools(
             continue;
         };
         let resolved = resolve_mcp_config(config)?;
-        let client = McpStdioClient::connect(&resolved, Duration::from_secs(30))
-            .await
-            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
+        let artifact_root = server
+            .server
+            .data_dir
+            .as_ref()
+            .map(|directory| directory.join("tool-results/mcp"));
+        let client = match artifact_root {
+            Some(root) => {
+                McpStdioClient::connect_with_result_artifacts(
+                    &resolved,
+                    Duration::from_secs(30),
+                    root,
+                )
+                .await
+            }
+            None => McpStdioClient::connect(&resolved, Duration::from_secs(30)).await,
+        }
+        .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
         for tool in client
             .list_tools()
             .await
