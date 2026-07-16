@@ -318,6 +318,17 @@ mod tests {
             }
         }
 
+        async fn submit_chat(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_channel::ExternalChatRequest,
+        ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "submit_chat",
+            ))
+        }
+
         async fn discover_agents(
             &self,
             _: &sylvander_protocol::BoundaryContext,
@@ -374,12 +385,12 @@ mod tests {
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
         let state = Arc::new(AppState {
-            ctx: Arc::new(ChannelContext {
-                bus: Arc::new(InProcessMessageBus::new()),
-                sessions: sessions.clone(),
-                ui: Some(Arc::new(DenyAgentAccess)),
-                readiness: None,
-            }),
+            ctx: Arc::new(ChannelContext::with_services(
+                Arc::new(InProcessMessageBus::new()),
+                sessions.clone(),
+                Some(Arc::new(DenyAgentAccess)),
+                None,
+            )),
             agent_id: sylvander_agent::spec::AgentId::new("private-agent"),
             sessions: Mutex::new(std::collections::HashMap::new()),
             instance_id: "http-private".into(),
@@ -410,12 +421,12 @@ mod tests {
     #[tokio::test]
     async fn authentication_rejection_uses_runtime_status() {
         let state = AppState {
-            ctx: Arc::new(ChannelContext {
-                bus: Arc::new(InProcessMessageBus::new()),
-                sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-                ui: Some(Arc::new(DenyAgentAccess)),
-                readiness: None,
-            }),
+            ctx: Arc::new(ChannelContext::with_services(
+                Arc::new(InProcessMessageBus::new()),
+                Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                Some(Arc::new(DenyAgentAccess)),
+                None,
+            )),
             agent_id: sylvander_agent::spec::AgentId::new("private-agent"),
             sessions: Mutex::new(std::collections::HashMap::new()),
             instance_id: "http-private".into(),

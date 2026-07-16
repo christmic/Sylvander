@@ -352,7 +352,6 @@ async fn find_by_user(
 
 async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
     let mut rx = ctx
-        .bus
         .subscribe(SubscriptionFilter::all())
         .await
         .expect("subscribe");

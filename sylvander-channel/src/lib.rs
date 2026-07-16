@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
-use sylvander_agent::bus::{BusMessage, MessageBus};
+use sylvander_agent::bus::{BusError, BusMessage, MessageBus, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
@@ -122,6 +122,22 @@ pub trait UiService: Send + Sync {
             operation: "submit_chat".into(),
             request_id: boundary.request_id.clone(),
             message: "authenticated chat submission is unavailable".into(),
+            retry_after_ms: None,
+        })
+    }
+
+    /// Authorize and dispatch one session-scoped interactive control through
+    /// the runtime. Chat submission has a separate atomic operation.
+    async fn submit_control(
+        &self,
+        boundary: &BoundaryContext,
+        _message: UiClientMessage,
+    ) -> Result<(), BoundaryError> {
+        Err(BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "submit_control".into(),
+            request_id: boundary.request_id.clone(),
+            message: "authenticated control submission is unavailable".into(),
             retry_after_ms: None,
         })
     }
@@ -233,8 +249,9 @@ pub trait Channel: Send + Sync {
 /// It never accesses `AgentRun`, Engine, or Runtime directly.
 #[derive(Clone)]
 pub struct ChannelContext {
-    /// Publish messages to the bus, subscribe to events.
-    pub bus: Arc<dyn MessageBus>,
+    /// Event subscription is exposed through [`ChannelContext::subscribe`].
+    /// Channels never receive a public bus publisher.
+    bus: Arc<dyn MessageBus>,
     /// Session persistence and external-ID mapping.
     pub sessions: Arc<dyn SessionStore>,
     /// Runtime-owned UI application service. Channels adapt transports only.
@@ -254,6 +271,56 @@ impl ChannelContext {
             ui: None,
             readiness: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_runtime_services(
+        bus: Arc<dyn MessageBus>,
+        sessions: Arc<dyn SessionStore>,
+        ui: Arc<dyn UiService>,
+        readiness: Option<ChannelReadiness>,
+    ) -> Self {
+        Self::with_services(bus, sessions, Some(ui), readiness)
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_services(
+        bus: Arc<dyn MessageBus>,
+        sessions: Arc<dyn SessionStore>,
+        ui: Option<Arc<dyn UiService>>,
+        readiness: Option<ChannelReadiness>,
+    ) -> Self {
+        Self {
+            bus,
+            sessions,
+            ui,
+            readiness,
+        }
+    }
+
+    /// Subscribe to runtime output without obtaining publish authority.
+    pub async fn subscribe(
+        &self,
+        filter: SubscriptionFilter,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<BusMessage>, BusError> {
+        self.bus.subscribe(filter).await
+    }
+
+    /// Submit one authenticated interactive control through the UI boundary.
+    pub async fn submit_control(
+        &self,
+        boundary: &BoundaryContext,
+        message: UiClientMessage,
+    ) -> Result<(), BoundaryError> {
+        let ui = self.ui.as_ref().ok_or_else(|| BoundaryError {
+            code: BoundaryErrorCode::InvalidScope,
+            operation: "submit_control".into(),
+            request_id: boundary.request_id.clone(),
+            message: "runtime authorization service is unavailable".into(),
+            retry_after_ms: None,
+        })?;
+        ui.submit_control(boundary, message).await
     }
 
     pub fn mark_ready(&self) {

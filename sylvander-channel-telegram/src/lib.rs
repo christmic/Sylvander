@@ -372,7 +372,6 @@ async fn find_by_chat_id(
 
 async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
     let mut rx = ctx
-        .bus
         .subscribe(SubscriptionFilter::all())
         .await
         .expect("subscribe");

@@ -920,6 +920,74 @@ impl sylvander_channel::UiService for RuntimeUiService {
         Ok(sylvander_channel::SubmittedChat { session_id, events })
     }
 
+    async fn submit_control(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        message: sylvander_protocol::UiClientMessage,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        use sylvander_protocol::UiClientMessage as ClientMessage;
+
+        let session_id = ui_session_id(&message)
+            .map(SessionId::new)
+            .ok_or_else(|| boundary_failure(boundary, "submit_control", "session is required"))?;
+        self.authorize_message(boundary, &message).await?;
+        let session = self
+            .owned_session(boundary, &session_id, "submit_control")
+            .await?;
+        let agent_id = session.agents.first().cloned().ok_or_else(|| {
+            sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control")
+        })?;
+        let system = match message {
+            ClientMessage::Approve {
+                call_id,
+                approved,
+                scope,
+                reason,
+                ..
+            } => sylvander_agent::bus::SystemMessage::ApproveTool {
+                call_id,
+                approved,
+                scope,
+                reason,
+            },
+            ClientMessage::Answer {
+                call_id, answer, ..
+            } => sylvander_agent::bus::SystemMessage::AnswerQuestion { call_id, answer },
+            ClientMessage::Interrupt { .. } => sylvander_agent::bus::SystemMessage::InterruptTurn {
+                session_id: session_id.clone(),
+            },
+            ClientMessage::ResolvePlan {
+                plan_id, decision, ..
+            } => sylvander_agent::bus::SystemMessage::ResolvePlan { plan_id, decision },
+            ClientMessage::CancelTask { task_id, .. } => {
+                sylvander_agent::bus::SystemMessage::CancelTask {
+                    session_id: session_id.clone(),
+                    task_id,
+                }
+            }
+            _ => {
+                return Err(boundary_failure(
+                    boundary,
+                    "submit_control",
+                    "unsupported interactive control",
+                ));
+            }
+        };
+        self.bus
+            .publish(BusMessage {
+                session_id,
+                sender: sylvander_agent::bus::Sender::System,
+                recipient: Recipient::Agent(agent_id),
+                kind: sylvander_agent::bus::MessageKind::System(system),
+                payload: String::new(),
+                attachments: Vec::new(),
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|_| boundary_failure(boundary, "submit_control", "control dispatch failed"))
+    }
+
     async fn agent_admin(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -2396,12 +2464,12 @@ impl Runtime {
         }
         for ch in channels {
             let readiness = ChannelReadiness::new();
-            let ctx = ChannelContext {
-                bus: self.bus.clone(),
-                sessions: self.session_store.clone(),
-                ui: Some(self.ui_service.clone()),
-                readiness: Some(readiness.clone()),
-            };
+            let ctx = ChannelContext::with_runtime_services(
+                self.bus.clone(),
+                self.session_store.clone(),
+                self.ui_service.clone(),
+                Some(readiness.clone()),
+            );
             let name = ch.name().to_string();
             let task_name = name.clone();
             let exit_tx = self.channel_exit_tx.clone();
@@ -4003,12 +4071,12 @@ model_name = "model-a"
             "telegram",
             "telegram-update-1",
         );
-        let channel_context = ChannelContext {
-            bus: runtime.bus(),
-            sessions: runtime.session_store.clone(),
-            ui: Some(runtime.ui_service.clone()),
-            readiness: None,
-        };
+        let channel_context = ChannelContext::with_runtime_services(
+            runtime.bus(),
+            runtime.session_store.clone(),
+            runtime.ui_service.clone(),
+            None,
+        );
         let mut platform_submission = sylvander_channel::submit_external_chat(
             &channel_context,
             &platform_boundary,
@@ -4063,6 +4131,36 @@ model_name = "model-a"
             "telegram",
             "telegram-update-2",
         );
+        let mut victim_inbox = runtime
+            .bus()
+            .subscribe(SubscriptionFilter {
+                session_ids: Some(vec![platform_session.clone()]),
+                recipients: Some(vec![Recipient::Agent(AgentId::new("assistant"))]),
+                kinds: None,
+            })
+            .await
+            .unwrap();
+        let control_denial = channel_context
+            .submit_control(
+                &other_bot,
+                sylvander_protocol::UiClientMessage::Approve {
+                    session_id: platform_session.0.clone(),
+                    call_id: "victim-call".into(),
+                    approved: true,
+                    scope: sylvander_protocol::ApprovalScope::Once,
+                    reason: None,
+                },
+            )
+            .await
+            .expect_err("an external channel must not control a victim session");
+        assert_eq!(
+            control_denial.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        assert!(matches!(
+            victim_inbox.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
         let denial = sylvander_channel::submit_external_chat(
             &channel_context,
             &other_bot,
@@ -4233,7 +4331,7 @@ model_name = "model-a"
             .await
             .unwrap();
         let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 8);
+        assert_eq!(denials.len(), 9);
         let authentication_audit = denials
             .iter()
             .find(|denial| denial.operation == "authenticate_bearer_token")

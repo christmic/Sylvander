@@ -42,7 +42,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SystemMessage};
+use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::{AgentId, SessionId};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
@@ -566,43 +566,40 @@ async fn handle_client_msg(
             scope,
             reason,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::ApproveTool {
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::Approve {
+                        session_id,
                         call_id,
                         approved,
                         scope,
                         reason,
-                    }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::Answer {
             session_id,
             call_id,
             answer,
         } => {
-            let _ = ctx
-                .bus
-                .publish(BusMessage {
-                    session_id: SessionId::new(session_id),
-                    sender: sylvander_agent::bus::Sender::System,
-                    recipient: sylvander_agent::bus::Recipient::Agent(agent_id.clone()),
-                    kind: MessageKind::System(SystemMessage::AnswerQuestion { call_id, answer }),
-                    payload: String::new(),
-                    attachments: Vec::new(),
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await;
+            if let Err(error) = ctx
+                .submit_control(
+                    &boundary,
+                    ClientMsg::Answer {
+                        session_id,
+                        call_id,
+                        answer,
+                    },
+                )
+                .await
+            {
+                boundary_denied(tx, error);
+            }
         }
         ClientMsg::DiscoverAgents => {
             if let Some(ui) = &ctx.ui {
@@ -1157,12 +1154,12 @@ mod tests {
 
     #[tokio::test]
     async fn welcome_declares_administration_and_credential_lifecycle_capabilities() {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "client",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1215,12 +1212,12 @@ mod tests {
 
     #[tokio::test]
     async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "client",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1331,12 +1328,12 @@ mod tests {
         let ui = Arc::new(CredentialRegistryUi {
             received: Mutex::new(None),
         });
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(ui.clone()),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(ui.clone()),
+            None,
+        );
         let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "admin",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1430,14 +1427,14 @@ mod tests {
 
     #[tokio::test]
     async fn agent_admin_dispatches_through_the_ui_service() {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(SessionConfigUi {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(SessionConfigUi {
                 states: Mutex::new(HashMap::new()),
             })),
-            readiness: None,
-        };
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "admin",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1478,12 +1475,12 @@ mod tests {
 
     #[tokio::test]
     async fn registry_admin_without_ui_service_returns_content_free_error() {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: None,
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            None,
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "admin",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1526,14 +1523,14 @@ mod tests {
     async fn dispatch_registry_admin_as(
         principal: sylvander_protocol::AuthenticatedPrincipal,
     ) -> ServerMsg {
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(Arc::new(SessionConfigUi {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(SessionConfigUi {
                 states: Mutex::new(HashMap::new()),
             })),
-            readiness: None,
-        };
+            None,
+        );
         let request: ClientMsg = serde_json::from_value(serde_json::json!({
             "type": "registry_admin",
             "request": {
@@ -1588,12 +1585,12 @@ mod tests {
         let ui = Arc::new(CredentialRegistryUi {
             received: Mutex::new(None),
         });
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            ui: Some(ui.clone()),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(ui.clone()),
+            None,
+        );
         let mut principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "admin",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1711,6 +1708,17 @@ mod tests {
             }
         }
 
+        async fn submit_chat(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _: sylvander_channel::ExternalChatRequest,
+        ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "submit_chat",
+            ))
+        }
+
         async fn discover_agents(
             &self,
             _: &sylvander_protocol::BoundaryContext,
@@ -1790,12 +1798,12 @@ mod tests {
     async fn first_chat_cannot_create_a_session_without_agent_access() {
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: sessions.clone(),
-            ui: Some(Arc::new(DenyAgentAccess)),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            sessions.clone(),
+            Some(Arc::new(DenyAgentAccess)),
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "caller",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1828,12 +1836,12 @@ mod tests {
     #[tokio::test]
     async fn authentication_rejection_uses_runtime_status() {
         let state = AppState {
-            ctx: Arc::new(ChannelContext {
-                bus: Arc::new(InProcessMessageBus::new()),
-                sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-                ui: Some(Arc::new(DenyAgentAccess)),
-                readiness: None,
-            }),
+            ctx: Arc::new(ChannelContext::with_services(
+                Arc::new(InProcessMessageBus::new()),
+                Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+                Some(Arc::new(DenyAgentAccess)),
+                None,
+            )),
             agent_id: AgentId::new("private-agent"),
             clients: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(0)),
@@ -1855,12 +1863,12 @@ mod tests {
                 ("session-b".into(), config_state("session-b")),
             ])),
         });
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-            ui: Some(ui.clone()),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(ui.clone()),
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "caller",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1924,14 +1932,14 @@ mod tests {
             aggregate_sha256: "aggregate-digest".into(),
             total_bytes: SENTINEL.len() as u64,
         });
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-            ui: Some(Arc::new(SessionConfigUi {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(Arc::new(SessionConfigUi {
                 states: Mutex::new(HashMap::from([("session-secret".into(), state)])),
             })),
-            readiness: None,
-        };
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "caller",
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -1973,12 +1981,12 @@ mod tests {
                 config_state("session-a"),
             )])),
         });
-        let context = ChannelContext {
-            bus: Arc::new(InProcessMessageBus::new()),
-            sessions: Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-            ui: Some(ui.clone()),
-            readiness: None,
-        };
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Some(ui.clone()),
+            None,
+        );
         let principal = sylvander_protocol::AuthenticatedPrincipal::user(
             "caller",
             sylvander_protocol::AuthenticationMethod::BearerToken,
