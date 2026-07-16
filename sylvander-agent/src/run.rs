@@ -2385,10 +2385,6 @@ impl AgentRunInner {
         let mut background_loop = loop_config.clone();
         background_loop.tool_context = tool_context;
         background_loop.tools = background_loop.tools.retain_named(&["read", "memory_read"]);
-        background_loop.tool_definitions = crate::loop_::tool_definitions_for_model(
-            &background_loop.tools,
-            &background_loop.model,
-        );
         background_loop.approval_gate = None;
         background_loop.ask_user_gate = None;
         background_loop.plan_gate = None;

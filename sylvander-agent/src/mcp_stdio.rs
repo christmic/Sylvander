@@ -22,7 +22,7 @@ use tokio::time::timeout;
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::spec::McpServerConfig;
-use crate::tool::{Tool, ToolError, ToolOutput};
+use crate::tool::{DynamicToolSource, Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -90,6 +90,7 @@ struct McpInner {
     io: Mutex<ProcessIo>,
     child: Mutex<Child>,
     result_artifact_root: Option<PathBuf>,
+    tool_definitions: std::sync::RwLock<Vec<JsonValue>>,
 }
 
 /// A connected MCP stdio server.
@@ -171,6 +172,7 @@ impl McpStdioClient {
                 }),
                 child: Mutex::new(child),
                 result_artifact_root,
+                tool_definitions: std::sync::RwLock::new(Vec::new()),
             }),
         };
 
@@ -215,9 +217,25 @@ impl McpStdioClient {
                 message: "missing tools array".into(),
             })?;
 
-        tools
+        let discovered = tools
             .iter()
             .map(|definition| McpTool::from_definition(self.clone(), definition))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.inner
+            .tool_definitions
+            .write()
+            .unwrap()
+            .clone_from(tools);
+        Ok(discovered)
+    }
+
+    fn current_tools(&self) -> Vec<McpTool> {
+        self.inner
+            .tool_definitions
+            .read()
+            .unwrap()
+            .iter()
+            .filter_map(|definition| McpTool::from_definition(self.clone(), definition).ok())
             .collect()
     }
 
@@ -290,6 +308,8 @@ impl McpStdioClient {
             self.inner.result_artifact_root.clone(),
         )
         .await?;
+        let refreshed = replacement.list_tools().await?;
+        drop(refreshed);
         let replacement =
             Arc::try_unwrap(replacement.inner).map_err(|_| McpError::InvalidResult {
                 server: self.inner.server_name.clone(),
@@ -304,6 +324,8 @@ impl McpStdioClient {
         stop_child(&self.inner.server_name, &mut child).await?;
         *io = new_io;
         *child = new_child;
+        *self.inner.tool_definitions.write().unwrap() =
+            replacement.tool_definitions.into_inner().unwrap();
         self.inner.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
@@ -373,6 +395,15 @@ impl McpStdioClient {
             server: self.inner.server_name.clone(),
             source,
         }
+    }
+}
+
+impl DynamicToolSource for McpStdioClient {
+    fn snapshot(&self) -> Vec<Arc<dyn Tool>> {
+        self.current_tools()
+            .into_iter()
+            .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
+            .collect()
     }
 }
 
@@ -709,8 +740,13 @@ while True:
         pass
     elif method == "tools/list":
         send({"jsonrpc":"2.0", "method":"notifications/tools/list_changed"})
+        tool_name = "echo"
+        if os.environ.get("MCP_TEST_DYNAMIC") == "1":
+            with open(log_path, "r", encoding="utf-8") as log:
+                if sum(1 for entry in log if entry.strip() == "tools/list") > 1:
+                    tool_name = "echo_v2"
         send({"jsonrpc":"2.0", "id":message["id"], "result":{"tools":[{
-            "name":"echo",
+            "name":tool_name,
             "description":"Echo an input value",
             "inputSchema":{"type":"object", "properties":{"value":{"type":"string"}}}
         }]}})
@@ -843,6 +879,37 @@ while True:
             log.lines().filter(|method| *method == "tools/call").count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn reconnect_atomically_refreshes_the_dynamic_tool_catalog() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut config = fake_config(&temp);
+        config.envs.insert("MCP_TEST_DYNAMIC".into(), "1".into());
+        let client = McpStdioClient::connect(&config, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        client.list_tools().await.expect("initial discovery");
+        let registry = crate::tool::ToolRegistry::new().register_dynamic_source(client.clone());
+        assert!(registry.get("echo").is_some());
+        assert!(registry.get("echo_v2").is_none());
+
+        let tool = registry.get("echo").expect("initial tool");
+        let context = crate::tool_context::defaults::system_tool_context();
+        tool.execute(&context, json!({ "crash": true }))
+            .await
+            .expect_err("crashed call triggers reconnect");
+
+        assert!(registry.get("echo").is_none());
+        assert!(registry.get("echo_v2").is_some());
+        let names = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["echo_v2"]);
+
+        client.shutdown().await.expect("shutdown replacement");
     }
 
     #[test]

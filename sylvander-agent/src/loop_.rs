@@ -53,10 +53,6 @@ pub struct AgentLoop {
     pub(crate) model: ModelInfo,
     pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub(crate) tools: ToolRegistry,
-    /// Cached tool definitions for the LLM `tools` field. Built once
-    /// at `build()` time and reused every iteration. The registry
-    /// is immutable post-build, so this is safe.
-    pub(crate) tool_definitions: Vec<sylvander_llm_anthropic::api::types::Tool>,
     pub(crate) compression_pipeline: Arc<super::compress::pipeline::CompressionPipeline>,
     pub(crate) max_iterations: u32,
     pub(crate) max_retries: u32,
@@ -380,17 +376,11 @@ impl AgentLoopBuilder {
             .tool_context
             .unwrap_or_else(|| crate::tool_context::defaults::model_tool_context(&model));
 
-        // Cache tool definitions once — tools are immutable post-build.
-        // Prompt caching is an optional model feature, so omit its wire hint
-        // instead of making otherwise valid tool use incompatible.
-        let tool_definitions = tool_definitions_for_model(&self.tools, &model);
-
         Ok(AgentLoop {
             backend,
             model,
             reasoning_effort: self.reasoning_effort,
             tools: self.tools,
-            tool_definitions,
             compression_pipeline,
             max_iterations: self.max_iterations,
             max_retries: self.max_retries,
@@ -913,7 +903,7 @@ pub fn run_stream(
                                 continue;
                             }
 
-                            let tool = config.tools.get(tool_use.name.as_str()).cloned();
+                            let tool = config.tools.get(tool_use.name.as_str());
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
                             let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
@@ -1023,7 +1013,7 @@ pub fn run_stream(
                         let name = tool_use.name.clone();
                         let input = tool_use.input.clone();
                         let decision = decision.clone();
-                        let tool = config.tools.get(&name).cloned();
+                        let tool = config.tools.get(&name);
                         let context = config.tool_context.clone();
                         let progress_id = id.clone();
                         let progress_name = name.clone();
@@ -1559,7 +1549,8 @@ impl AgentLoop {
             .map(crate::provider_compat::message_to_core)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
-        let tools = crate::provider_compat::tools_to_core(&self.tool_definitions)
+        let definitions = tool_definitions_for_model(&self.tools, &self.model);
+        let tools = crate::provider_compat::tools_to_core(&definitions)
             .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
         Ok(Some(ModelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -1707,11 +1698,9 @@ impl AgentLoop {
             builder = builder.thinking(budget.min(self.model.max_output_tokens));
         }
 
-        // Use cached tool definitions (built once at construction
-        // time; tools are immutable post-build). Avoids re-serializing
-        // every iteration.
-        if !self.tool_definitions.is_empty() {
-            builder = builder.tools(self.tool_definitions.clone());
+        let definitions = tool_definitions_for_model(&self.tools, &self.model);
+        if !definitions.is_empty() {
+            builder = builder.tools(definitions);
         }
 
         builder
@@ -2044,9 +2033,9 @@ mod tests {
                 .build()
                 .unwrap();
 
-            assert_eq!(loop_.tool_definitions[0].cache_control.is_some(), enabled);
             let legacy =
                 serde_json::to_value(loop_.build_request(&[MessageParam::user("go")])).unwrap();
+            assert_eq!(legacy.pointer("/tools/0/cache_control").is_some(), enabled);
             assert_eq!(legacy.pointer("/system/0/cache_control").is_some(), enabled);
             let neutral = loop_
                 .build_provider_request(&[MessageParam::user("go")])
