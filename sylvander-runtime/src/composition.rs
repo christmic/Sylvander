@@ -735,7 +735,7 @@ async fn configured_tools(
             .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
         registry = registry.register_dynamic_source(client);
     }
-    Ok(registry)
+    Ok(registry.with_hooks(spec.hooks.clone()))
 }
 
 fn resolve_mcp_config(

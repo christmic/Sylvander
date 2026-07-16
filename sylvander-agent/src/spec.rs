@@ -225,6 +225,9 @@ pub struct AgentSpec {
     /// Workspace-owned prompt commands exposed to interactive UIs.
     #[serde(default)]
     pub ui_commands: Vec<UiCommandConfig>,
+    /// Before-tool hooks executed through the selected workspace executor.
+    #[serde(default)]
+    pub hooks: Vec<crate::tool::ToolHookConfig>,
     /// Behavior tuning.
     #[serde(default)]
     pub behavior: BehaviorConfig,
@@ -281,6 +284,7 @@ pub struct AgentSpecBuilder {
     mcp_servers: Vec<McpServerConfig>,
     memory_stores: Vec<MemoryStoreConfig>,
     ui_commands: Vec<UiCommandConfig>,
+    hooks: Vec<crate::tool::ToolHookConfig>,
     behavior: BehaviorConfig,
 }
 
@@ -377,6 +381,13 @@ impl AgentSpecBuilder {
         self
     }
 
+    /// Replace the before-tool hook set.
+    #[must_use]
+    pub fn hooks(mut self, hooks: Vec<crate::tool::ToolHookConfig>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
     /// Register an MCP server definition (does not auto-add to tools).
     #[must_use]
     pub fn mcp_server_def(mut self, config: McpServerConfig) -> Self {
@@ -443,6 +454,7 @@ impl AgentSpecBuilder {
             mcp_servers: self.mcp_servers,
             memory_stores: self.memory_stores,
             ui_commands: self.ui_commands,
+            hooks: self.hooks,
             behavior: self.behavior,
         })
     }
