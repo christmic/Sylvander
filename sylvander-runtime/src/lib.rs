@@ -3835,8 +3835,13 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use sylvander_agent::tool::Tool;
+    use sylvander_agent::tool_context::{Cap, ToolContext};
     use sylvander_agent::tools::memory::MemoryFilter;
-    use sylvander_agent::tools::{MemoryActorKind, MemoryAppend, MemoryProvenanceSource};
+    use sylvander_agent::tools::{
+        CommandTool, MemoryActorKind, MemoryAppend, MemoryProvenanceSource,
+    };
+    use sylvander_protocol::SessionContext;
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -4176,6 +4181,171 @@ id = "model-a"
             .discard_coding_session(&created.session_id)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn coding_tool_review_and_resume_survive_runtime_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("project");
+        std::fs::create_dir(&repository).unwrap();
+        git(&repository, &["init", "-b", "master"]);
+        git(&repository, &["config", "user.email", "test@example.com"]);
+        git(&repository, &["config", "user.name", "Sylvander Test"]);
+        std::fs::write(repository.join("tracked.txt"), "before\n").unwrap();
+        git(&repository, &["add", "tracked.txt"]);
+        git(&repository, &["commit", "-m", "initial"]);
+
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "workspace-owner",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "tui-local",
+            "unix",
+            "coding-lifecycle",
+        );
+        let overrides = SessionConfigOverrides {
+            model: Some(ModelSelection {
+                provider_id: "primary".into(),
+                model_id: "model-a".into(),
+            }),
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: repository.clone(),
+                read_only: false,
+            }),
+            ..SessionConfigOverrides::default()
+        };
+
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "restartable coding".into(),
+                channel_id: Some("tui-local".into()),
+                overrides: overrides.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let worktree = created
+            .effective
+            .user_workspace
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
+        assert_ne!(worktree, repository);
+
+        let tool_context = ToolContext::new(SessionContext::new(
+            UserId::new("workspace-owner"),
+            AgentId::new("assistant"),
+            created.session_id.clone(),
+        ))
+        .with_fs_root(&worktree)
+        .with_capability(Cap::Spawn);
+        let output = CommandTool::new("/")
+            .execute(
+                &tool_context,
+                json!({"command": "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt"}),
+            )
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "before\n"
+        );
+
+        let diff = sylvander_channel::UiService::inspect_coding_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert!(diff.status.contains("M tracked.txt"));
+        assert!(diff.status.contains("?? generated.txt"));
+        assert!(diff.patch.contains("+accepted"));
+        assert!(diff.patch.contains("+generated"));
+        sylvander_channel::UiService::accept_coding_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "accepted\n"
+        );
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let restarted = Runtime::boot_config(config).await.unwrap();
+        let resumed = sylvander_channel::UiService::session_config(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.effective.agent_id, AgentId::new("assistant"));
+        assert_eq!(resumed.effective.provider_id, "primary");
+        assert_eq!(resumed.effective.model_id, "model-a");
+        assert_eq!(resumed.effective.user_workspace.unwrap().path, worktree);
+        assert_eq!(resumed.overrides, overrides);
+        let clean = sylvander_channel::UiService::inspect_coding_session(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert!(clean.status.is_empty());
+        assert!(clean.patch.is_empty());
+
+        let output = CommandTool::new("/")
+            .execute(
+                &tool_context,
+                json!({"command": "printf 'discarded\\n' > tracked.txt"}),
+            )
+            .await
+            .unwrap();
+        assert!(!output.is_error, "{}", output.content);
+        let pending = sylvander_channel::UiService::inspect_coding_session(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert!(pending.patch.contains("+discarded"));
+        sylvander_channel::UiService::discard_coding_session(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "accepted\n"
+        );
+        assert!(!worktree.exists());
+        assert!(
+            restarted
+                .session_store
+                .get(&created.session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        restarted.shutdown().await.unwrap();
     }
 
     fn ui_service_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeUiService {
