@@ -539,8 +539,7 @@ impl ChannelContext {
                     IdentityBindingErrorCode::UnsupportedVersion,
                     "identity binding protocol version is unsupported",
                 ),
-                IdentityBindingValidationError::InvalidUserId
-                | IdentityBindingValidationError::InvalidChallengeId
+                IdentityBindingValidationError::InvalidChallengeId
                 | IdentityBindingValidationError::InvalidSecret => (
                     IdentityBindingErrorCode::InvalidRequest,
                     "identity binding request is invalid",

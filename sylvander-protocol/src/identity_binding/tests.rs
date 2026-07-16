@@ -23,7 +23,7 @@ fn welcome(capabilities: &[&str]) -> UiProtocolWelcome {
 fn request_never_accepts_transport_or_external_principal_fields() {
     let valid: IdentityBindingRequest = serde_json::from_value(json!({
         "version": 1,
-        "action": {"operation": "begin", "target_user_id": "user-1"}
+        "action": {"operation": "begin"}
     }))
     .unwrap();
     assert_eq!(valid.operation(), IdentityBindingOperation::Begin);
@@ -37,6 +37,13 @@ fn request_never_accepts_transport_or_external_principal_fields() {
         value[forbidden] = json!("attacker-controlled");
         assert!(serde_json::from_value::<IdentityBindingRequest>(value).is_err());
     }
+    assert!(
+        serde_json::from_value::<IdentityBindingRequest>(json!({
+            "version": 1,
+            "action": {"operation": "begin", "target_user_id": "victim"}
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -49,16 +56,6 @@ fn requests_are_exact_version_bounded_and_strict() {
     assert_eq!(
         unsupported.validate(),
         Err(IdentityBindingValidationError::UnsupportedVersion)
-    );
-
-    let invalid_user: IdentityBindingRequest = serde_json::from_value(json!({
-        "version": 1,
-        "action": {"operation": "begin", "target_user_id": " user-1"}
-    }))
-    .unwrap();
-    assert_eq!(
-        invalid_user.validate(),
-        Err(IdentityBindingValidationError::InvalidUserId)
     );
 
     assert!(

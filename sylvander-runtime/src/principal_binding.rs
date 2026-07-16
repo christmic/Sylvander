@@ -129,8 +129,8 @@ impl fmt::Debug for LinkSecret {
     }
 }
 
-/// One pending challenge. The caller must deliver `secret` to the exact
-/// external principal and later return it to `confirm_link`.
+/// One pending challenge issued to an authenticated stable user. The user
+/// carries `secret` to the external Channel that should become linked.
 #[derive(Debug)]
 pub struct IssuedLinkChallenge {
     pub challenge_id: String,
@@ -152,8 +152,6 @@ pub enum PrincipalBindingError {
     UnknownBinding,
     #[error("unknown link challenge")]
     UnknownChallenge,
-    #[error("link challenge does not belong to this external principal")]
-    ChallengePrincipalMismatch,
     #[error("link challenge expired")]
     ChallengeExpired,
     #[error("link challenge secret is invalid")]
@@ -359,11 +357,10 @@ impl PrincipalBindingStore {
         .await
     }
 
-    /// Issue a challenge for an unbound principal and an existing user.
-    /// A newer challenge for the same principal invalidates the older one.
+    /// Issue a challenge for an existing, already authenticated stable user.
+    /// A newer challenge for the same user invalidates the older one.
     pub async fn begin_link(
         &self,
-        principal: ExternalPrincipal,
         user_id: UserId,
         ttl: Duration,
     ) -> Result<IssuedLinkChallenge, PrincipalBindingError> {
@@ -388,36 +385,23 @@ impl PrincipalBindingStore {
         let challenge_id = Uuid::new_v4().to_string();
         let secret = Uuid::new_v4().as_simple().to_string();
         let secret_hash = challenge_digest(&challenge_id, &secret);
-        let external_digest = self.principal_digest(&principal);
         let result_id = challenge_id.clone();
-        let transport = principal.transport;
-        let instance = principal.channel_instance_id;
         let target_user = user_id.0;
         self.run(move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
             require_user(&transaction, &target_user)?;
-            if load_binding(
-                &transaction,
-                &transport,
-                &instance,
-                &external_digest,
-            )?
-            .is_some()
-            {
-                return Err(PrincipalBindingError::AlreadyLinked);
-            }
             transaction
                 .execute(
-                    "DELETE FROM link_challenges WHERE transport=?1 AND channel_instance_id=?2 AND external_principal_digest=?3",
-                    params![transport, instance, external_digest],
+                    "DELETE FROM link_challenges WHERE target_user_id=?1",
+                    [&target_user],
                 )
                 .map_err(storage)?;
             transaction
                 .execute(
-                    "INSERT INTO link_challenges(challenge_id,transport,channel_instance_id,external_principal_digest,target_user_id,secret_hash,expires_at,attempts,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)",
-                    params![challenge_id, transport, instance, external_digest, target_user, secret_hash, expires_at, now],
+                    "INSERT INTO link_challenges(challenge_id,target_user_id,secret_hash,expires_at,attempts,created_at) VALUES (?1,?2,?3,?4,0,?5)",
+                    params![challenge_id, target_user, secret_hash, expires_at, now],
                 )
                 .map_err(storage)?;
             transaction.commit().map_err(storage)
@@ -451,12 +435,6 @@ impl PrincipalBindingStore {
                 .map_err(storage)?;
             let challenge = load_challenge(&transaction, &challenge_id)?
                 .ok_or(PrincipalBindingError::UnknownChallenge)?;
-            if challenge.transport != transport
-                || challenge.instance != instance
-                || challenge.external_digest != external_digest
-            {
-                return Err(PrincipalBindingError::ChallengePrincipalMismatch);
-            }
             if challenge.expires_at <= now {
                 transaction
                     .execute(
@@ -594,9 +572,6 @@ impl PrincipalBindingStore {
 }
 
 struct StoredChallenge {
-    transport: String,
-    instance: String,
-    external_digest: String,
     target_user: String,
     secret_hash: String,
     expires_at: i64,
@@ -685,9 +660,6 @@ fn validate_schema(connection: &Connection) -> Result<(), PrincipalBindingError>
             "link_challenges",
             &[
                 "challenge_id",
-                "transport",
-                "channel_instance_id",
-                "external_principal_digest",
                 "target_user_id",
                 "secret_hash",
                 "expires_at",
@@ -813,17 +785,14 @@ fn load_challenge(
 ) -> Result<Option<StoredChallenge>, PrincipalBindingError> {
     connection
         .query_row(
-            "SELECT transport,channel_instance_id,external_principal_digest,target_user_id,secret_hash,expires_at,attempts FROM link_challenges WHERE challenge_id=?1",
+            "SELECT target_user_id,secret_hash,expires_at,attempts FROM link_challenges WHERE challenge_id=?1",
             [challenge_id],
             |row| {
                 Ok(StoredChallenge {
-                    transport: row.get(0)?,
-                    instance: row.get(1)?,
-                    external_digest: row.get(2)?,
-                    target_user: row.get(3)?,
-                    secret_hash: row.get(4)?,
-                    expires_at: row.get(5)?,
-                    attempts: row.get(6)?,
+                    target_user: row.get(0)?,
+                    secret_hash: row.get(1)?,
+                    expires_at: row.get(2)?,
+                    attempts: row.get(3)?,
                 })
             },
         )
@@ -890,15 +859,11 @@ CREATE TABLE principal_bindings (
 CREATE INDEX principal_bindings_by_user ON principal_bindings(user_id);
 CREATE TABLE link_challenges (
     challenge_id TEXT PRIMARY KEY NOT NULL,
-    transport TEXT NOT NULL CHECK(length(transport) BETWEEN 1 AND 512),
-    channel_instance_id TEXT NOT NULL CHECK(length(channel_instance_id) BETWEEN 1 AND 512),
-    external_principal_digest TEXT NOT NULL CHECK(length(external_principal_digest)=64),
-    target_user_id TEXT NOT NULL,
+    target_user_id TEXT NOT NULL UNIQUE,
     secret_hash TEXT NOT NULL CHECK(length(secret_hash)=64),
     expires_at INTEGER NOT NULL,
     attempts INTEGER NOT NULL CHECK(attempts BETWEEN 0 AND 4),
     created_at INTEGER NOT NULL,
-    UNIQUE(transport,channel_instance_id,external_principal_digest),
     FOREIGN KEY(target_user_id) REFERENCES users(user_id) ON DELETE CASCADE
 ) STRICT;
 PRAGMA user_version=1;
