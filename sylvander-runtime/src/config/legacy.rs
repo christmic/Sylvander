@@ -7,8 +7,9 @@ use sylvander_agent::spec::{AgentSpec, BehaviorConfig, ModelConfig, PersonaConfi
 
 use super::{
     AgentDefinitionConfig, ApprovalSettings, CONFIG_SCHEMA_VERSION, ChannelInstanceConfig,
-    ChannelTransportConfig, ConfigError, ExecutionTargetConfig, ExecutionTransportConfig,
-    ModelDefinitionConfig, ModelProviderConfig, SecretRef, ServerConfig, ServerSettings,
+    ChannelSupervisionConfig, ChannelTransportConfig, ConfigError, ExecutionTargetConfig,
+    ExecutionTransportConfig, ModelDefinitionConfig, ModelProviderConfig, SecretRef, ServerConfig,
+    ServerSettings,
 };
 
 const LEGACY_KEYS: &[&str] = &[
@@ -132,6 +133,7 @@ impl ServerConfig {
                 enabled: true,
                 default_agent: "assistant".into(),
                 default_workspace: None,
+                supervision: ChannelSupervisionConfig::default(),
                 transport: ChannelTransportConfig::Unix {
                     path: values
                         .get("SYLVANDER_SOCKET")
@@ -143,6 +145,7 @@ impl ServerConfig {
                 enabled: values.contains_key("SYLVANDER_HTTP_TOKEN"),
                 default_agent: "assistant".into(),
                 default_workspace: None,
+                supervision: ChannelSupervisionConfig::default(),
                 transport: ChannelTransportConfig::Http {
                     bind: values
                         .get("HTTP_ADDR")
@@ -279,6 +282,7 @@ fn add_legacy_dingtalk(
             enabled: true,
             default_agent: "assistant".into(),
             default_workspace: None,
+            supervision: ChannelSupervisionConfig::default(),
             transport: ChannelTransportConfig::DingTalk {
                 app_key: SecretRef::Env {
                     name: "DINGTALK_APP_KEY".into(),
@@ -316,6 +320,7 @@ fn add_legacy_telegram(
         enabled: true,
         default_agent: "assistant".into(),
         default_workspace: None,
+        supervision: ChannelSupervisionConfig::default(),
         transport: ChannelTransportConfig::Telegram {
             token: SecretRef::Env {
                 name: "TELEGRAM_BOT_TOKEN".into(),

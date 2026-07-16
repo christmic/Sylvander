@@ -492,11 +492,16 @@ IDs and credential references. Telegram webhooks require
 
 The current server can construct Unix, HTTP, WebSocket, DingTalk, Telegram,
 and WeChat adapters. External principals, session mappings, and outbound
-routing are scoped to the configured instance. Full route policy, interactive
-channel decisions, retry/backoff, and per-instance operational health remain
-tracked in P4. See
+routing are scoped to the configured instance. Each entry also accepts a
+`channels.supervision` table with `max_restart_attempts`,
+`initial_backoff_ms`, and `max_backoff_ms`. Runtime health, readiness,
+bounded restart/backoff, failure isolation, and cooperative drain are
+instance-scoped. Interactive channel decisions and transport-specific
+delivery retry remain tracked in P4. See
 [`boundary-authorization.md`](boundary-authorization.md) for authentication,
-Agent access policy, limits, audit, and migration requirements.
+Agent access policy, limits, audit, and migration requirements, and
+[`channel-supervision.md`](../sylvander-runtime/docs/channel-supervision.md)
+for the lifecycle contract.
 
 ## Capability names
 

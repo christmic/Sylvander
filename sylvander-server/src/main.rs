@@ -6,14 +6,14 @@ use std::sync::Arc;
 
 use sylvander_agent::bus::{
     ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
-    PermissionProfile, ReasoningEffort,
+    PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionWorkspaceBinding,
 };
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
 use sylvander_runtime::config::{
     ChannelTransportConfig, SecretResolver, ServerConfig, SystemSecretResolver,
 };
-use sylvander_runtime::{ChannelRegistration, Runtime};
+use sylvander_runtime::{ChannelRegistration, ChannelRestartPolicy, Runtime};
 use tracing::info;
 
 #[tokio::main]
@@ -224,7 +224,34 @@ fn build_channels(
                 }
             };
             info!(instance = %channel.id, kind = result.name(), "channel configured");
-            Ok(ChannelRegistration::new(&channel.id, result))
+            let defaults = SessionConfigOverrides {
+                user_workspace: channel.default_workspace.as_ref().map(|workspace| {
+                    SessionWorkspaceBinding {
+                        execution_target: workspace.execution_target.clone(),
+                        path: workspace.path.clone().into(),
+                        read_only: workspace.read_only,
+                        instruction_focus: workspace
+                            .instruction_focus
+                            .as_ref()
+                            .map(std::path::PathBuf::from),
+                    }
+                }),
+                ..SessionConfigOverrides::default()
+            };
+            Ok(
+                ChannelRegistration::new(&channel.id, result)
+                    .with_session_defaults(defaults)
+                    .with_restart_policy(
+                    ChannelRestartPolicy {
+                        max_attempts: channel.supervision.max_restart_attempts,
+                        initial_backoff: std::time::Duration::from_millis(
+                            channel.supervision.initial_backoff_ms,
+                        ),
+                        max_backoff: std::time::Duration::from_millis(
+                            channel.supervision.max_backoff_ms,
+                        ),
+                    }),
+            )
         })
         .collect()
 }

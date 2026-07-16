@@ -153,6 +153,11 @@ id = "terminal"
 enabled = true
 default_agent = "sylvander"
 
+[channels.supervision]
+max_restart_attempts = 5
+initial_backoff_ms = 250
+max_backoff_ms = 5000
+
 [channels.transport]
 kind = "unix"
 path = "/tmp/sylvander.sock"

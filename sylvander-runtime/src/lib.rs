@@ -228,6 +228,7 @@ pub struct ChannelRegistration {
     pub instance_id: String,
     pub channel: Arc<dyn Channel>,
     pub restart: ChannelRestartPolicy,
+    pub session_defaults: SessionConfigOverrides,
 }
 
 impl ChannelRegistration {
@@ -237,12 +238,19 @@ impl ChannelRegistration {
             instance_id: instance_id.into(),
             channel,
             restart: ChannelRestartPolicy::default(),
+            session_defaults: SessionConfigOverrides::default(),
         }
     }
 
     #[must_use]
     pub fn with_restart_policy(mut self, restart: ChannelRestartPolicy) -> Self {
         self.restart = restart;
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_defaults(mut self, defaults: SessionConfigOverrides) -> Self {
+        self.session_defaults = defaults;
         self
     }
 }
@@ -254,6 +262,7 @@ impl fmt::Debug for ChannelRegistration {
             .field("instance_id", &self.instance_id)
             .field("kind", &self.channel.name())
             .field("restart", &self.restart)
+            .field("session_defaults", &self.session_defaults)
             .finish()
     }
 }
@@ -3512,9 +3521,8 @@ impl Runtime {
                 supervise_channel(
                     registration.channel,
                     registration.restart,
-                    bus,
-                    sessions,
-                    ui,
+                    registration.session_defaults,
+                    (bus, sessions, ui),
                     task_lifecycle,
                     task_health,
                 )
@@ -3725,12 +3733,16 @@ async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), Runti
 async fn supervise_channel(
     channel: Arc<dyn Channel>,
     policy: ChannelRestartPolicy,
-    bus: Arc<dyn MessageBus>,
-    sessions: Arc<dyn SessionStore>,
-    ui: Arc<RuntimeUiService>,
+    session_defaults: SessionConfigOverrides,
+    services: (
+        Arc<dyn MessageBus>,
+        Arc<dyn SessionStore>,
+        Arc<RuntimeUiService>,
+    ),
     lifecycle: ChannelReadiness,
     health: Arc<std::sync::RwLock<ChannelHealth>>,
 ) {
+    let (bus, sessions, ui) = services;
     let mut ready_once = false;
     let mut failures = 0_u32;
     loop {
@@ -3744,11 +3756,12 @@ async fn supervise_channel(
             failures,
         );
         let attempt = lifecycle.next_attempt();
-        let ctx = ChannelContext::with_runtime_services(
+        let ctx = ChannelContext::with_runtime_services_and_defaults(
             bus.clone(),
             sessions.clone(),
             ui.clone(),
             Some(attempt.clone()),
+            session_defaults.clone(),
         );
         let run = channel.clone().run(ctx);
         tokio::pin!(run);
