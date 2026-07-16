@@ -682,6 +682,11 @@ impl ChannelReadiness {
         }
     }
 
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.inner.ready.load(Ordering::SeqCst)
+    }
+
     pub async fn wait(&self) {
         if !self.inner.ready.load(Ordering::SeqCst) {
             self.inner.notify.notified().await;
@@ -690,6 +695,26 @@ impl ChannelReadiness {
 
     pub fn request_shutdown(&self) {
         let _ = self.inner.shutdown.send(true);
+    }
+
+    /// Create a fresh readiness gate sharing this lifecycle's shutdown signal.
+    ///
+    /// A supervised restart must independently report readiness, while one
+    /// shutdown request still drains every attempt of the channel instance.
+    #[must_use]
+    pub fn next_attempt(&self) -> Self {
+        Self {
+            inner: Arc::new(ReadinessInner {
+                ready: AtomicBool::new(false),
+                notify: tokio::sync::Notify::new(),
+                shutdown: self.inner.shutdown.clone(),
+            }),
+        }
+    }
+
+    #[must_use]
+    pub fn is_shutdown_requested(&self) -> bool {
+        *self.inner.shutdown.borrow()
     }
 
     pub async fn shutdown_requested(&self) {

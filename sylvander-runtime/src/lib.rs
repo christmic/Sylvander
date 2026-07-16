@@ -84,7 +84,9 @@ mod request_scoped_provider;
 mod user_profile_store;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
@@ -214,9 +216,80 @@ pub struct Runtime {
 }
 
 struct ChannelTask {
-    name: String,
+    instance_id: String,
     task: JoinHandle<()>,
     lifecycle: ChannelReadiness,
+    health: Arc<std::sync::RwLock<ChannelHealth>>,
+}
+
+/// One configured channel instance owned by the Runtime supervisor.
+#[derive(Clone)]
+pub struct ChannelRegistration {
+    pub instance_id: String,
+    pub channel: Arc<dyn Channel>,
+    pub restart: ChannelRestartPolicy,
+}
+
+impl ChannelRegistration {
+    #[must_use]
+    pub fn new(instance_id: impl Into<String>, channel: Arc<dyn Channel>) -> Self {
+        Self {
+            instance_id: instance_id.into(),
+            channel,
+            restart: ChannelRestartPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_restart_policy(mut self, restart: ChannelRestartPolicy) -> Self {
+        self.restart = restart;
+        self
+    }
+}
+
+impl fmt::Debug for ChannelRegistration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChannelRegistration")
+            .field("instance_id", &self.instance_id)
+            .field("kind", &self.channel.name())
+            .field("restart", &self.restart)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChannelRestartPolicy {
+    pub max_attempts: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for ChannelRestartPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 5,
+            initial_backoff: Duration::from_millis(250),
+            max_backoff: Duration::from_secs(5),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelStatus {
+    Starting,
+    Ready,
+    Restarting,
+    Failed,
+    Stopped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChannelHealth {
+    pub instance_id: String,
+    pub kind: String,
+    pub status: ChannelStatus,
+    pub restart_count: u32,
 }
 
 struct RuntimeUiService {
@@ -3392,7 +3465,7 @@ impl Runtime {
     /// Start protocol channels. Each runs in its own tokio task.
     pub async fn start_channels(
         &self,
-        channels: Vec<Arc<dyn Channel>>,
+        channels: Vec<ChannelRegistration>,
     ) -> Result<(), RuntimeError> {
         let mut tasks = self.channels.lock().await;
         if !tasks.is_empty() {
@@ -3400,40 +3473,70 @@ impl Runtime {
                 "channels have already been started".into(),
             ));
         }
-        for ch in channels {
-            let readiness = ChannelReadiness::new();
-            let ctx = ChannelContext::with_runtime_services(
-                self.bus.clone(),
-                self.session_store.clone(),
-                self.ui_service.clone(),
-                Some(readiness.clone()),
-            );
-            let name = ch.name().to_string();
-            let task_name = name.clone();
+        let mut instance_ids = BTreeSet::new();
+        for registration in &channels {
+            if registration.instance_id.trim().is_empty() {
+                return Err(RuntimeError::Channel(
+                    "channel instance id cannot be empty".into(),
+                ));
+            }
+            if !instance_ids.insert(registration.instance_id.clone()) {
+                return Err(RuntimeError::Channel(format!(
+                    "duplicate channel instance id {}",
+                    registration.instance_id
+                )));
+            }
+        }
+        for registration in channels {
+            let lifecycle = ChannelReadiness::new();
+            let instance_id = registration.instance_id;
+            let kind = registration.channel.name().to_string();
+            let health = Arc::new(std::sync::RwLock::new(ChannelHealth {
+                instance_id: instance_id.clone(),
+                kind: kind.clone(),
+                status: ChannelStatus::Starting,
+                restart_count: 0,
+            }));
+            let task_instance_id = instance_id.clone();
             let exit_tx = self.channel_exit_tx.clone();
+            let task_lifecycle = lifecycle.clone();
+            let task_health = health.clone();
+            let bus = self.bus.clone();
+            let sessions = self.session_store.clone();
+            let ui = self.ui_service.clone();
             let mut task = tokio::spawn(async move {
                 let _exit_signal = ChannelExitSignal {
-                    name: task_name,
+                    name: task_instance_id,
                     sender: exit_tx,
                 };
-                ch.run(ctx).await;
+                supervise_channel(
+                    registration.channel,
+                    registration.restart,
+                    bus,
+                    sessions,
+                    ui,
+                    task_lifecycle,
+                    task_health,
+                )
+                .await;
             });
             let startup = tokio::select! {
                 result = &mut task => {
                     Err(RuntimeError::Channel(match result {
-                        Ok(()) => format!("channel {name} exited before becoming ready"),
-                        Err(error) => format!("channel {name} failed during startup: {error}"),
+                        Ok(()) => format!("channel {instance_id} exited before becoming ready"),
+                        Err(error) => format!("channel {instance_id} failed during startup: {error}"),
                     }))
                 }
                 result = tokio::time::timeout(
                     tokio::time::Duration::from_secs(5),
-                    readiness.wait(),
+                    lifecycle.wait(),
                 ) => {
                     if result.is_err() {
+                        lifecycle.request_shutdown();
                         task.abort();
                         let _ = (&mut task).await;
                         Err(RuntimeError::Channel(format!(
-                            "channel {name} did not become ready within 5 seconds"
+                            "channel {instance_id} did not become ready within 5 seconds"
                         )))
                     } else {
                         Ok(())
@@ -3447,14 +3550,24 @@ impl Runtime {
                 }
                 return Err(error);
             }
-            info!(channel = %name, "channel ready");
+            info!(instance = %instance_id, kind = %kind, "channel ready");
             tasks.push(ChannelTask {
-                name,
+                instance_id,
                 task,
-                lifecycle: readiness,
+                lifecycle,
+                health,
             });
         }
         Ok(())
+    }
+
+    /// Return a stable snapshot of every supervised channel instance.
+    pub async fn channel_health(&self) -> Vec<ChannelHealth> {
+        let tasks = self.channels.lock().await;
+        tasks
+            .iter()
+            .filter_map(|task| task.health.read().ok().map(|health| health.clone()))
+            .collect()
     }
 
     /// Wait until a started channel exits unexpectedly.
@@ -3583,18 +3696,21 @@ async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), Runti
         let result = if let Ok(result) = result {
             result
         } else {
-            warn!(channel = %channel.name, "channel drain timed out; aborting task");
+            warn!(instance = %channel.instance_id, "channel drain timed out; aborting task");
             channel.task.abort();
             channel.task.await
         };
         match result {
-            Ok(()) => info!(channel = %channel.name, "channel stopped"),
+            Ok(()) => info!(instance = %channel.instance_id, "channel stopped"),
             Err(error) if error.is_cancelled() => {
-                info!(channel = %channel.name, "channel cancelled during shutdown");
+                info!(instance = %channel.instance_id, "channel cancelled during shutdown");
             }
             Err(error) => {
                 first_error.get_or_insert_with(|| {
-                    RuntimeError::Channel(format!("channel {} task failed: {error}", channel.name))
+                    RuntimeError::Channel(format!(
+                        "channel {} task failed: {error}",
+                        channel.instance_id
+                    ))
                 });
             }
         }
@@ -3603,6 +3719,92 @@ async fn stop_channel_tasks(channel_tasks: Vec<ChannelTask>) -> Result<(), Runti
         Err(error)
     } else {
         Ok(())
+    }
+}
+
+async fn supervise_channel(
+    channel: Arc<dyn Channel>,
+    policy: ChannelRestartPolicy,
+    bus: Arc<dyn MessageBus>,
+    sessions: Arc<dyn SessionStore>,
+    ui: Arc<RuntimeUiService>,
+    lifecycle: ChannelReadiness,
+    health: Arc<std::sync::RwLock<ChannelHealth>>,
+) {
+    let mut ready_once = false;
+    let mut failures = 0_u32;
+    loop {
+        set_channel_status(
+            &health,
+            if ready_once {
+                ChannelStatus::Restarting
+            } else {
+                ChannelStatus::Starting
+            },
+            failures,
+        );
+        let attempt = lifecycle.next_attempt();
+        let ctx = ChannelContext::with_runtime_services(
+            bus.clone(),
+            sessions.clone(),
+            ui.clone(),
+            Some(attempt.clone()),
+        );
+        let run = channel.clone().run(ctx);
+        tokio::pin!(run);
+        let run_completed = tokio::select! {
+            biased;
+            () = attempt.wait() => false,
+            () = &mut run => true,
+        };
+        let became_ready = !run_completed || attempt.is_ready();
+        if became_ready {
+            if !ready_once {
+                ready_once = true;
+                lifecycle.mark_ready();
+            }
+            set_channel_status(&health, ChannelStatus::Ready, failures);
+            if !run_completed {
+                run.await;
+            }
+        } else if !ready_once {
+            set_channel_status(&health, ChannelStatus::Failed, failures);
+            return;
+        }
+        if lifecycle.is_shutdown_requested() {
+            set_channel_status(&health, ChannelStatus::Stopped, failures);
+            return;
+        }
+        failures = failures.saturating_add(1);
+        if failures > policy.max_attempts {
+            set_channel_status(&health, ChannelStatus::Failed, failures);
+            return;
+        }
+        set_channel_status(&health, ChannelStatus::Restarting, failures);
+        let exponent = failures.saturating_sub(1).min(31);
+        let multiplier = 1_u32 << exponent;
+        let delay = policy
+            .initial_backoff
+            .saturating_mul(multiplier)
+            .min(policy.max_backoff);
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            () = lifecycle.shutdown_requested() => {
+                set_channel_status(&health, ChannelStatus::Stopped, failures);
+                return;
+            }
+        }
+    }
+}
+
+fn set_channel_status(
+    health: &std::sync::RwLock<ChannelHealth>,
+    status: ChannelStatus,
+    restart_count: u32,
+) {
+    if let Ok(mut health) = health.write() {
+        health.status = status;
+        health.restart_count = restart_count;
     }
 }
 
@@ -3872,7 +4074,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use sylvander_agent::tool::Tool;
     use sylvander_agent::tool_context::{Cap, ToolContext};
     use sylvander_agent::tools::memory::MemoryFilter;
@@ -3993,6 +4195,17 @@ mod tests {
         exit: Arc<Notify>,
     }
 
+    struct RestartOnceChannel {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    fn channel_registration(
+        instance_id: &str,
+        channel: impl Channel + 'static,
+    ) -> ChannelRegistration {
+        ChannelRegistration::new(instance_id, Arc::new(channel))
+    }
+
     #[async_trait::async_trait]
     impl Channel for ExitingChannel {
         fn name(&self) -> &'static str {
@@ -4011,6 +4224,21 @@ mod tests {
         async fn run(self: Arc<Self>, ctx: ChannelContext) {
             ctx.mark_ready();
             self.exit.notified().await;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Channel for RestartOnceChannel {
+        fn name(&self) -> &'static str {
+            "restart-once-test"
+        }
+
+        async fn run(self: Arc<Self>, ctx: ChannelContext) {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            ctx.mark_ready();
+            if attempt > 0 {
+                ctx.shutdown_requested().await;
+            }
         }
     }
 
@@ -5120,10 +5348,13 @@ exec "$@"
         let started = Arc::new(Notify::new());
         let dropped = Arc::new(AtomicBool::new(false));
         runtime
-            .start_channels(vec![Arc::new(BlockingChannel {
-                started: started.clone(),
-                dropped: dropped.clone(),
-            })])
+            .start_channels(vec![channel_registration(
+                "blocking-1",
+                BlockingChannel {
+                    started: started.clone(),
+                    dropped: dropped.clone(),
+                },
+            )])
             .await
             .unwrap();
         started.notified().await;
@@ -5146,7 +5377,7 @@ exec "$@"
         .unwrap();
 
         let error = runtime
-            .start_channels(vec![Arc::new(ExitingChannel)])
+            .start_channels(vec![channel_registration("exiting-1", ExitingChannel)])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("before becoming ready"));
@@ -5169,11 +5400,14 @@ exec "$@"
 
         let error = runtime
             .start_channels(vec![
-                Arc::new(BlockingChannel {
-                    started: Arc::new(Notify::new()),
-                    dropped: dropped.clone(),
-                }),
-                Arc::new(ExitingChannel),
+                channel_registration(
+                    "blocking-1",
+                    BlockingChannel {
+                        started: Arc::new(Notify::new()),
+                        dropped: dropped.clone(),
+                    },
+                ),
+                channel_registration("exiting-1", ExitingChannel),
             ])
             .await
             .unwrap_err();
@@ -5197,7 +5431,14 @@ exec "$@"
         .unwrap();
         let exit = Arc::new(Notify::new());
         runtime
-            .start_channels(vec![Arc::new(ReadyThenExitChannel { exit: exit.clone() })])
+            .start_channels(vec![
+                channel_registration("ready-exit-1", ReadyThenExitChannel { exit: exit.clone() })
+                    .with_restart_policy(ChannelRestartPolicy {
+                        max_attempts: 0,
+                        initial_backoff: Duration::ZERO,
+                        max_backoff: Duration::ZERO,
+                    }),
+            ])
             .await
             .unwrap();
 
@@ -5208,7 +5449,54 @@ exec "$@"
         )
         .await
         .unwrap();
-        assert_eq!(channel.as_deref(), Some("ready-then-exit-test"));
+        assert_eq!(channel.as_deref(), Some("ready-exit-1"));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_channel_is_restarted_and_health_is_instance_scoped() {
+        let runtime = Runtime::boot(
+            SystemConfig {
+                name: "test-runtime".into(),
+                agents: Vec::new(),
+                sessions: Vec::new(),
+            },
+            test_client(),
+        )
+        .await
+        .unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        runtime
+            .start_channels(vec![
+                channel_registration(
+                    "restart-1",
+                    RestartOnceChannel {
+                        attempts: attempts.clone(),
+                    },
+                )
+                .with_restart_policy(ChannelRestartPolicy {
+                    max_attempts: 2,
+                    initial_backoff: Duration::from_millis(1),
+                    max_backoff: Duration::from_millis(1),
+                }),
+            ])
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while attempts.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let health = runtime.channel_health().await;
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].instance_id, "restart-1");
+        assert_eq!(health[0].kind, "restart-once-test");
+        assert_eq!(health[0].status, ChannelStatus::Ready);
+        assert_eq!(health[0].restart_count, 1);
+
         runtime.shutdown().await.unwrap();
     }
 

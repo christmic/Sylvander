@@ -10,10 +10,10 @@ use sylvander_agent::bus::{
 };
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
-use sylvander_runtime::Runtime;
 use sylvander_runtime::config::{
     ChannelTransportConfig, SecretResolver, ServerConfig, SystemSecretResolver,
 };
+use sylvander_runtime::{ChannelRegistration, Runtime};
 use tracing::info;
 
 #[tokio::main]
@@ -74,7 +74,7 @@ fn load_config() -> Result<ServerConfig, ServerError> {
 fn build_channels(
     config: &ServerConfig,
     runtime: &Runtime,
-) -> Result<Vec<Arc<dyn Channel>>, ServerError> {
+) -> Result<Vec<ChannelRegistration>, ServerError> {
     let secrets = SystemSecretResolver;
     config
         .channels
@@ -224,7 +224,7 @@ fn build_channels(
                 }
             };
             info!(instance = %channel.id, kind = result.name(), "channel configured");
-            Ok(result)
+            Ok(ChannelRegistration::new(&channel.id, result))
         })
         .collect()
 }
