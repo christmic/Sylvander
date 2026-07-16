@@ -10,6 +10,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 /// A workspace mounted on an execution target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceTarget {
@@ -674,7 +677,43 @@ fn ensure_writable(target: &WorkspaceTarget) -> Result<(), WorkspaceExecutorErro
 fn shell_command(command: &str) -> tokio::process::Command {
     let mut process = tokio::process::Command::new("sh");
     process.args(["-lc", command]);
+    process.as_std_mut().process_group(0);
     process
+}
+
+#[cfg(unix)]
+struct ProcessGroupGuard {
+    process_group: i32,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl ProcessGroupGuard {
+    fn new(process_group: i32) -> Self {
+        Self {
+            process_group,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // A negative pid addresses the whole process group. Use the
+            // platform utility because this workspace forbids unsafe FFI.
+            let _ = std::process::Command::new("/bin/kill")
+                .args(["-KILL", "--", &format!("-{}", self.process_group)])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
 }
 
 async fn run_local_command(
@@ -697,6 +736,14 @@ async fn run_local_command(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = process.spawn()?;
+    #[cfg(unix)]
+    let mut process_group = ProcessGroupGuard::new(
+        child
+            .id()
+            .ok_or_else(|| std::io::Error::other("command process has no pid"))?
+            .try_into()
+            .map_err(|_| std::io::Error::other("command pid exceeds i32"))?,
+    );
     let stdout = child
         .stdout
         .take()
@@ -706,7 +753,7 @@ async fn run_local_command(
         .take()
         .ok_or_else(|| std::io::Error::other("command stderr was not piped"))?;
     let execution = async move {
-        let (stdout, stderr, status) = tokio::try_join!(
+        let result = tokio::try_join!(
             capture_command_output(
                 stdout,
                 progress
@@ -718,8 +765,12 @@ async fn run_local_command(
                 progress.map(|sink| (WorkspaceCommandStream::Stderr, sink)),
             ),
             child.wait(),
-        )?;
-        Ok::<_, std::io::Error>((stdout, stderr, status))
+        );
+        #[cfg(unix)]
+        if result.is_ok() {
+            process_group.disarm();
+        }
+        result
     };
     let (stdout, stderr, status) = Box::pin(tokio::time::timeout(timeout, execution))
         .await
@@ -997,15 +1048,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_command_timeout_cancels_capture() {
+    async fn local_command_timeout_cancels_the_process_group() {
         let workspace = tempfile::tempdir().unwrap();
         let target = WorkspaceTarget::local(workspace.path(), false);
+        let survived = workspace.path().join("survived");
         let timeout = Duration::from_millis(30);
 
         let result = LocalExecutor
             .run_command(
                 &target,
-                "while :; do printf stdout; printf stderr >&2; done",
+                "(sleep 1; printf survived > survived) & wait",
                 timeout,
             )
             .await;
@@ -1014,10 +1066,15 @@ mod tests {
             result,
             Err(WorkspaceExecutorError::Timeout(value)) if value == timeout
         ));
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !survived.exists(),
+            "timed-out command left a descendant process running"
+        );
     }
 
     #[tokio::test]
-    async fn dropping_local_command_future_terminates_the_process() {
+    async fn dropping_local_command_future_terminates_the_process_group() {
         let workspace = tempfile::tempdir().unwrap();
         let target = WorkspaceTarget::local(workspace.path(), false);
         let ready = workspace.path().join("ready");
@@ -1026,7 +1083,7 @@ mod tests {
             LocalExecutor
                 .run_command(
                     &target,
-                    "printf ready > ready; sleep 1; printf survived > survived",
+                    "printf ready > ready; (sleep 1; printf survived > survived) & wait",
                     Duration::from_secs(10),
                 )
                 .await
@@ -1044,7 +1101,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1_100)).await;
         assert!(
             !survived.exists(),
-            "cancelled command continued after its future was dropped"
+            "cancelled command left a descendant process running"
         );
     }
 

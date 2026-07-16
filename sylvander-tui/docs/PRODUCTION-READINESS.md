@@ -170,7 +170,7 @@ completed backend feature.
   - [x] Persisted SQLite session resume completes against the real Agent service
         in a PTY; canned recovery history does not satisfy this item.
 - [x] Long-running and burst-stream tests show bounded memory and responsive input.
-- [ ] Security review:
+- [x] Security review:
   - [x] Workspace path scope rejects absolute paths, parent traversal, and
         symlink escape for Agent read/write/edit operations.
   - [x] Tool and diagnostic presentation removes controls and masks structured
@@ -181,8 +181,9 @@ completed backend feature.
         events only for their attached session.
   - [x] Adversarial multi-client PTY decisions, interrupt, replay, and history
         isolation are verified together.
-  - [ ] Shell process-group cancellation is verified when the Agent exposes a
-        real shell/exec tool; the current renderer alone does not satisfy this.
+  - [x] The real local Command executor starts each shell in an isolated process
+        group. Timeout, interrupt, and dropped-future tests prove that a
+        background descendant cannot outlive the owned operation.
 
 Verification evidence (2026-07-13): `cargo test --workspace --locked` passed,
 including 265 TUI unit tests, 2 TUI Unix-service E2E tests, and 46 TUI snapshots.
