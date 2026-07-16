@@ -3877,6 +3877,7 @@ mod tests {
     use sylvander_agent::tools::{
         CommandTool, MemoryActorKind, MemoryAppend, MemoryProvenanceSource,
     };
+    use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
     use sylvander_protocol::SessionContext;
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
@@ -4126,6 +4127,38 @@ id = "model-a"
             "git {arguments:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[cfg(unix)]
+    fn fake_container_runtime(directory: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = directory.join("fake-container-runtime");
+        std::fs::write(
+            &executable,
+            r#"#!/bin/sh
+if [ "$1" = rm ]; then exit 0; fi
+[ "$1" = run ] || exit 90
+shift
+mount=
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --rm|--network=none|--interactive) shift ;;
+    --name) shift 2 ;;
+    --mount) mount=$2; shift 2 ;;
+    --workdir) shift 2 ;;
+    *) shift; break ;;
+  esac
+done
+workspace=$(printf '%s' "$mount" | sed -n 's/.*source=\([^,]*\),target=.*/\1/p')
+[ -n "$workspace" ] || exit 91
+cd "$workspace" || exit 92
+exec "$@"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable
     }
 
     #[tokio::test]
@@ -4416,6 +4449,143 @@ id = "model-a"
                 .unwrap()
                 .is_none()
         );
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn container_coding_session_runs_in_worktree_and_survives_restart() {
+        use crate::execution::container::ContainerExecutor;
+
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("project");
+        std::fs::create_dir(&repository).unwrap();
+        git(&repository, &["init", "-b", "master"]);
+        git(&repository, &["config", "user.email", "test@example.com"]);
+        git(&repository, &["config", "user.name", "Sylvander Test"]);
+        std::fs::write(repository.join("tracked.txt"), "before\n").unwrap();
+        git(&repository, &["add", "tracked.txt"]);
+        git(&repository, &["commit", "-m", "initial"]);
+        let container_runtime = fake_container_runtime(directory.path());
+
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
+        config
+            .execution_targets
+            .push(config::ExecutionTargetConfig {
+                id: "container".into(),
+                transport: config::ExecutionTransportConfig::Container {
+                    runtime: container_runtime.display().to_string(),
+                    image: "sylvander/test:latest".into(),
+                },
+            });
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "container-owner",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "tui-local",
+            "unix",
+            "container-coding",
+        );
+        let overrides = SessionConfigOverrides {
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "container".into(),
+                path: repository.clone(),
+                read_only: false,
+            }),
+            ..SessionConfigOverrides::default()
+        };
+
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "container coding".into(),
+                channel_id: Some("tui-local".into()),
+                overrides,
+            },
+        )
+        .await
+        .unwrap();
+        let worktree = created
+            .effective
+            .user_workspace
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
+        assert_ne!(worktree, repository);
+
+        let executor = ContainerExecutor::new(&container_runtime, "sylvander/test:latest").unwrap();
+        let target = WorkspaceTarget {
+            id: "container".into(),
+            workspace_path: worktree.clone(),
+            read_only: false,
+        };
+        let output = executor
+            .run_command(
+                &target,
+                "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt",
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(output.success);
+        let diff = sylvander_channel::UiService::inspect_coding_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert!(diff.patch.contains("+accepted"));
+        assert!(diff.patch.contains("+generated"));
+        sylvander_channel::UiService::accept_coding_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "accepted\n"
+        );
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let restarted = Runtime::boot_config(config).await.unwrap();
+        let resumed = sylvander_channel::UiService::session_config(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.effective.user_workspace.unwrap().path, worktree);
+        executor
+            .run_command(
+                &target,
+                "printf 'discarded\\n' > tracked.txt",
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        sylvander_channel::UiService::discard_coding_session(
+            restarted.ui_service.as_ref(),
+            &boundary,
+            &created.session_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "accepted\n"
+        );
+        assert!(!worktree.exists());
         restarted.shutdown().await.unwrap();
     }
 
