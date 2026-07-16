@@ -1,7 +1,8 @@
 use super::*;
 use crate::evidence::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
-    RegressionMetric, ScoreDirection, ScoringAdapterKind, ScoringAdapterRevision,
+    ProposalTransition, RegressionMetric, ScoreDirection, ScoringAdapterKind,
+    ScoringAdapterRevision,
 };
 
 async fn evaluation_fixture(store: &EvidenceStore) {
@@ -128,4 +129,46 @@ async fn proposal_is_immutable_canonical_and_requires_real_evaluations() {
             .unwrap_err(),
         EvidenceError::InvalidImprovementProposal
     ));
+
+    let reviewer = "9".repeat(64);
+    let ready = store
+        .transition_improvement_proposal(ProposalTransition {
+            proposal_id: "proposal-1".into(),
+            expected_state_revision: 1,
+            status: ImprovementProposalStatus::ReadyForReview,
+            principal_digest: reviewer.clone(),
+            reason: Some("Evidence package is complete.".into()),
+            occurred_at: 5,
+        })
+        .await
+        .unwrap();
+    assert_eq!(ready.status, ImprovementProposalStatus::ReadyForReview);
+    assert_eq!(ready.state_revision, 2);
+    assert!(matches!(
+        store
+            .transition_improvement_proposal(ProposalTransition {
+                proposal_id: "proposal-1".into(),
+                expected_state_revision: 1,
+                status: ImprovementProposalStatus::Approved,
+                principal_digest: reviewer.clone(),
+                reason: None,
+                occurred_at: 6,
+            })
+            .await
+            .unwrap_err(),
+        EvidenceError::ProposalStateConflict
+    ));
+    let approved = store
+        .transition_improvement_proposal(ProposalTransition {
+            proposal_id: "proposal-1".into(),
+            expected_state_revision: 2,
+            status: ImprovementProposalStatus::Approved,
+            principal_digest: reviewer,
+            reason: Some("Approved for isolated evaluation only.".into()),
+            occurred_at: 7,
+        })
+        .await
+        .unwrap();
+    assert_eq!(approved.status, ImprovementProposalStatus::Approved);
+    assert_eq!(approved.state_revision, 3);
 }
