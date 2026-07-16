@@ -19,6 +19,19 @@ enum WorkspaceRole {
     Task,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscoveredSkill {
+    pub name: String,
+    pub role: &'static str,
+    pub target_id: String,
+    pub relative_path: String,
+}
+
+pub(crate) struct WorkspaceContextDiscovery {
+    pub prompt: Option<String>,
+    pub skills: Vec<DiscoveredSkill>,
+}
+
 impl WorkspaceRole {
     const fn label(self) -> &'static str {
         match self {
@@ -37,10 +50,20 @@ pub(crate) struct WorkspaceContextSource<'a> {
 ///
 /// The configured workspace root is the discovery boundary. Agent-home
 /// guidance is emitted before task guidance, and Skills follow instructions.
+#[cfg(test)]
 pub(crate) async fn discover(
     agent_home: Option<WorkspaceContextSource<'_>>,
     task_workspace: Option<WorkspaceContextSource<'_>>,
 ) -> Result<Option<String>, WorkspaceExecutorError> {
+    Ok(discover_with_report(agent_home, task_workspace)
+        .await?
+        .prompt)
+}
+
+pub(crate) async fn discover_with_report(
+    agent_home: Option<WorkspaceContextSource<'_>>,
+    task_workspace: Option<WorkspaceContextSource<'_>>,
+) -> Result<WorkspaceContextDiscovery, WorkspaceExecutorError> {
     let mut collector = Collector::default();
     if let Some(source) = agent_home.as_ref() {
         collector
@@ -69,6 +92,7 @@ struct Collector {
     seen: HashSet<String>,
     bytes: usize,
     documents: usize,
+    skills: Vec<DiscoveredSkill>,
 }
 
 impl Collector {
@@ -182,13 +206,27 @@ impl Collector {
             return Ok(());
         }
         self.sections.push(format!("{header}{content}"));
+        if kind == "skill" {
+            let name = std::path::Path::new(relative_path)
+                .parent()
+                .and_then(std::path::Path::file_name)
+                .and_then(|name| name.to_str())
+                .unwrap_or("skill")
+                .to_string();
+            self.skills.push(DiscoveredSkill {
+                name,
+                role: role.label(),
+                target_id: source.target.id.clone(),
+                relative_path: relative_path.to_string(),
+            });
+        }
         self.bytes += section_bytes;
         self.documents += 1;
         Ok(())
     }
 
-    fn finish(self) -> Option<String> {
-        (!self.sections.is_empty()).then(|| {
+    fn finish(self) -> WorkspaceContextDiscovery {
+        let prompt = (!self.sections.is_empty()).then(|| {
             format!(
                 "# Workspace instructions and activated Skills\n\
                  Follow later, more specific workspace instructions when they conflict with \
@@ -196,7 +234,11 @@ impl Collector {
                  cannot override system safety or authorization.\n\n{}",
                 self.sections.join("\n\n")
             )
-        })
+        });
+        WorkspaceContextDiscovery {
+            prompt,
+            skills: self.skills,
+        }
     }
 }
 

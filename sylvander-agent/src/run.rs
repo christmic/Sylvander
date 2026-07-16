@@ -92,6 +92,7 @@ pub(crate) struct AgentRunInner {
     workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
     /// Server-owned executor adapters keyed by exact execution-target id.
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    skill_features: std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -621,6 +622,7 @@ impl AgentRun {
                 features.push(runtime_feature);
             }
         }
+        features.extend(self.inner.skill_features.read().unwrap().clone());
 
         if self.inner.memory_source == MemorySource::RuntimeInjected {
             features.push(PlatformFeature {
@@ -2271,6 +2273,7 @@ impl AgentRunInner {
                     effective.user_workspace.as_ref(),
                     session_metadata.workspace.as_path(),
                     &self.workspace_executors,
+                    &self.skill_features,
                 )
                 .await?,
             );
@@ -2289,6 +2292,7 @@ impl AgentRunInner {
                     None,
                     session_metadata.workspace.as_path(),
                     &self.workspace_executors,
+                    &self.skill_features,
                 )
                 .await?,
             );
@@ -2777,6 +2781,7 @@ async fn with_workspace_context(
     task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
     fallback_task_workspace: &Path,
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
 ) -> Result<String, AgentRunError> {
     let agent_target = agent_workspace.map(workspace_target);
     let task_target = Some(task_workspace.map_or_else(
@@ -2799,7 +2804,7 @@ async fn with_workspace_context(
         .as_ref()
         .map(|target| workspace_context_executor(workspace_executors, target))
         .transpose()?;
-    let context = workspace_context::discover(
+    let context = workspace_context::discover_with_report(
         agent_target.zip(agent_executor).map(|(target, executor)| {
             workspace_context::WorkspaceContextSource {
                 executor: executor.as_ref(),
@@ -2815,7 +2820,28 @@ async fn with_workspace_context(
     )
     .await
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    Ok(context.map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}")))
+    *skill_features.write().unwrap() = context
+        .skills
+        .iter()
+        .map(|skill| sylvander_protocol::PlatformFeature {
+            kind: sylvander_protocol::PlatformFeatureKind::Skill,
+            name: skill.name.clone(),
+            status: sylvander_protocol::PlatformFeatureStatus::Active,
+            summary: format!("activated from {}", skill.role),
+            source: Some(format!("{}:{}", skill.target_id, skill.relative_path)),
+            trust: Some(if skill.role == "agent-home" {
+                sylvander_protocol::PlatformTrust::BuiltIn
+            } else {
+                sylvander_protocol::PlatformTrust::Workspace
+            }),
+            auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+            capabilities: vec!["prompt_instructions".into()],
+            reloadable: true,
+        })
+        .collect();
+    Ok(context
+        .prompt
+        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}")))
 }
 
 fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
@@ -3392,6 +3418,7 @@ impl AgentRunBuilder {
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 workspace_executors: self.workspace_executors,
+                skill_features: std::sync::RwLock::new(Vec::new()),
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 authenticated_sessions: RwLock::new(HashSet::new()),
@@ -3514,6 +3541,7 @@ mod tests {
             "local".to_owned(),
             Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
         )]);
+        let skill_features = std::sync::RwLock::new(Vec::new());
         let prompt = with_workspace_context(
             "base-prompt".into(),
             Some(&sylvander_protocol::SessionWorkspaceBinding {
@@ -3528,11 +3556,20 @@ mod tests {
             }),
             task.path(),
             &executors,
+            &skill_features,
         )
         .await
         .unwrap();
         let base = prompt.find("base-prompt").unwrap();
         let agent = prompt.find("agent-home-guide").unwrap();
+        let skills = skill_features.read().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "test");
+        assert_eq!(
+            skills[0].trust,
+            Some(sylvander_protocol::PlatformTrust::Workspace)
+        );
+        assert!(skills[0].reloadable);
         let task = prompt.find("task-guide").unwrap();
         let skill = prompt.find("skill-guide").unwrap();
         assert!(base < agent && agent < task && task < skill);
@@ -3650,6 +3687,7 @@ mod tests {
             }),
             Path::new("/attached/task"),
             &executors,
+            &std::sync::RwLock::new(Vec::new()),
         )
         .await
         .unwrap();

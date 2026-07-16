@@ -116,7 +116,8 @@ completed backend feature.
       generation, and reconnect count are inspectable through fresh server
       truth.
 - [ ] MCP resource discovery and resource-specific health are inspectable.
-- [ ] Skills show source, trust, activation, and reload state.
+- [x] Skills show the successfully activated source, Agent-home/workspace trust,
+      active state, and per-turn reload behavior from fresh server truth.
 - [ ] Hooks show execution, output, failure, and blocking decisions.
 - [ ] Extensions can contribute tools, renderers, and slash commands safely.
 - [x] Unknown protocol/tool additions degrade visibly, never silently disappear.
