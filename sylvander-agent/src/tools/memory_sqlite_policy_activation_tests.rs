@@ -122,16 +122,25 @@ fn concurrent_different_rollouts_require_the_winning_stage_cas() {
 
     let revision_two = open(&database, &anchor, policy(2, 60));
     let revision_three = open(&database, &anchor, policy(3, 90));
-    assert!(matches!(
-        revision_two
-            .maintenance()
-            .activate_staged_retention_policy(),
-        Err(MemoryStoreError::Conflict)
-    ));
-    revision_three
-        .maintenance()
-        .activate_staged_retention_policy()
-        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let activate = |store: SqliteMemoryStore, barrier: std::sync::Arc<std::sync::Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            store.maintenance().activate_staged_retention_policy()
+        })
+    };
+    let first = activate(revision_two, barrier.clone());
+    let second = activate(revision_three, barrier.clone());
+    barrier.wait();
+    let results = [first.join().unwrap(), second.join().unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(MemoryStoreError::Conflict)))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -148,12 +157,16 @@ fn concurrent_identical_rollouts_activate_idempotently() {
 
     let first = open(&database, &anchor, policy(2, 60));
     let second = open(&database, &anchor, policy(2, 60));
-    first
-        .maintenance()
-        .activate_staged_retention_policy()
-        .unwrap();
-    second
-        .maintenance()
-        .activate_staged_retention_policy()
-        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let activate = |store: SqliteMemoryStore, barrier: std::sync::Arc<std::sync::Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            store.maintenance().activate_staged_retention_policy()
+        })
+    };
+    let first = activate(first, barrier.clone());
+    let second = activate(second, barrier.clone());
+    barrier.wait();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
 }

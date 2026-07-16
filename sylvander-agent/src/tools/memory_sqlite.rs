@@ -305,19 +305,22 @@ impl SqliteMemoryStore {
             .connection
             .lock()
             .map_err(|_| MemoryStoreError::Store("memory database lock poisoned".into()))?;
+        // Serialize independent store instances in SQLite before reading the
+        // external anchor. Otherwise one writer could advance the database
+        // and anchor between another writer's verification and transaction.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(store_error)?;
         let before = self
             .integrity
             .as_ref()
-            .map(|integrity| integrity.verify(&connection))
+            .map(|integrity| integrity.verify(&transaction))
             .transpose()?;
         let current_epoch = self
             .integrity
             .as_ref()
             .map(|integrity| integrity.snapshot().map(|(epoch, _)| epoch))
             .transpose()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(store_error)?;
         let result = operation(&transaction)?;
         if let (Some(integrity), Some(before), Some(current_epoch)) =
             (&self.integrity, before, current_epoch)
