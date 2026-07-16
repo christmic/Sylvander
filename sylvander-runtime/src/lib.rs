@@ -78,6 +78,8 @@ mod registry_domain;
 mod registry_domain_tests;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
+#[allow(dead_code)] // Runtime-owned profile dispatch is integrated in the next bounded batch
+mod user_profile_store;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
