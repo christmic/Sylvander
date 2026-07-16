@@ -114,6 +114,39 @@ pub fn compact_target(tool_name: &str, input: &Value) -> String {
     }
 }
 
+pub fn compact_output_summary(
+    tool_name: &str,
+    output: Option<&str>,
+    pending: bool,
+    width: usize,
+) -> String {
+    let Some(output) = output.filter(|output| !output.trim().is_empty()) else {
+        return if pending && is_shell(tool_name) {
+            "running…".into()
+        } else {
+            String::new()
+        };
+    };
+    if is_shell(tool_name) {
+        if let Some(summary) = structured_shell_summary(output) {
+            return truncate(&summary, width.saturating_sub(20).min(80));
+        }
+        let clean = safe_output(output);
+        let latest = clean
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.contains("live output omitted"))
+            .unwrap_or("");
+        return truncate(latest, width.saturating_sub(20).min(80));
+    }
+    let clean = safe_output(output);
+    let first = clean.lines().map(str::trim).find(|line| !line.is_empty());
+    first.map_or_else(String::new, |line| {
+        truncate(line, width.saturating_sub(20).min(80))
+    })
+}
+
 /// Return a bounded, file-scoped diff for mutations that benefit from an
 /// immediate visual result. Other tools stay collapsed until detail is opened.
 pub fn inline_mutation_rows(
@@ -157,7 +190,7 @@ fn input_rows(tool_name: &str, input: &Value, width: usize) -> Vec<DetailRow> {
         return resource_input_rows(Some(server), tool, input, width);
     }
     match normalized_name(tool_name).as_str() {
-        "bash" | "shell" | "exec" => {
+        "bash" | "shell" | "exec" | "command" => {
             let mut rows = Vec::new();
             if let Some(cwd) = string_field(input, &["cwd", "workdir"]) {
                 rows.push(DetailRow::new(
@@ -313,7 +346,7 @@ fn file_heading(path: &str, width: usize) -> Vec<DetailRow> {
 
 fn shell_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
     let Ok(value) = serde_json::from_str::<Value>(output) else {
-        return output_rows(output, width, DEFAULT_DETAIL_LIMIT);
+        return head_tail_output_rows(output, width, DEFAULT_DETAIL_LIMIT);
     };
     let Some(object) = value.as_object() else {
         return output_rows(output, width, DEFAULT_DETAIL_LIMIT);
@@ -357,7 +390,68 @@ fn shell_output_rows(output: &str, width: usize) -> Vec<DetailRow> {
                 label.into()
             };
             rows.push(DetailRow::new(heading, kind));
-            rows.extend(output_rows(content, width, DEFAULT_DETAIL_LIMIT));
+            rows.extend(head_tail_output_rows(content, width, DEFAULT_DETAIL_LIMIT));
+        }
+    }
+    rows
+}
+
+fn structured_shell_summary(output: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(output).ok()?;
+    let object = value.as_object()?;
+    if !object.contains_key("exit_code") && !object.contains_key("duration_ms") {
+        return None;
+    }
+    let exit = object
+        .get("exit_code")
+        .and_then(Value::as_i64)
+        .map_or_else(|| "signal".into(), |code| code.to_string());
+    let duration = object
+        .get("duration_ms")
+        .and_then(Value::as_u64)
+        .map_or_else(String::new, |ms| format!(" · {ms}ms"));
+    let truncated = ["stdout_truncated", "stderr_truncated"]
+        .iter()
+        .any(|key| object.get(*key).and_then(Value::as_bool).unwrap_or(false));
+    Some(format!(
+        "exit {exit}{duration}{}",
+        if truncated {
+            " · output truncated"
+        } else {
+            ""
+        }
+    ))
+}
+
+fn head_tail_output_rows(output: &str, width: usize, limit: usize) -> Vec<DetailRow> {
+    let normalized = safe_output(output);
+    let lines = normalized.lines().collect::<Vec<_>>();
+    if lines.len() <= limit {
+        return output_rows(&normalized, width, limit);
+    }
+    let head_count = (limit / 3).max(1);
+    let tail_count = limit.saturating_sub(head_count + 1);
+    let omitted = lines.len().saturating_sub(head_count + tail_count);
+    let selected = lines[..head_count]
+        .iter()
+        .copied()
+        .chain(std::iter::once(""))
+        .chain(lines[lines.len() - tail_count..].iter().copied());
+    let mut rows = Vec::new();
+    for (index, line) in selected.enumerate() {
+        if index == head_count {
+            rows.push(DetailRow::new(
+                format!("… {omitted} lines omitted …"),
+                DetailKind::Meta,
+            ));
+        } else if line.is_empty() {
+            rows.push(DetailRow::new("", DetailKind::Normal));
+        } else {
+            rows.extend(
+                wrap_prefixed("  ", line, width)
+                    .into_iter()
+                    .map(|row| DetailRow::new(row, DetailKind::Normal)),
+            );
         }
     }
     rows
@@ -923,6 +1017,54 @@ mod tests {
             rows.iter()
                 .any(|row| row.text == "stderr" && row.kind == DetailKind::Error)
         );
+    }
+
+    #[test]
+    fn command_summary_uses_latest_live_line_and_structured_completion() {
+        assert_eq!(
+            compact_output_summary("Command", None, true, 80),
+            "running…"
+        );
+        assert_eq!(
+            compact_output_summary(
+                "Command",
+                Some("first\n… earlier live output omitted …\nCompiling runtime"),
+                true,
+                80,
+            ),
+            "Compiling runtime"
+        );
+        let completed = serde_json::json!({
+            "exit_code": 1,
+            "duration_ms": 8421,
+            "stdout": "",
+            "stderr": "failed",
+            "stdout_truncated": false,
+            "stderr_truncated": true
+        })
+        .to_string();
+        assert_eq!(
+            compact_output_summary("Command", Some(&completed), false, 80),
+            "exit 1 · 8421ms · output truncated"
+        );
+    }
+
+    #[test]
+    fn expanded_command_output_keeps_bounded_head_and_tail() {
+        let output = (1..=30)
+            .map(|number| format!("line {number}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rows = detail_rows(
+            "Command",
+            &serde_json::json!({"command": "build"}),
+            Some(&output),
+            false,
+            80,
+        );
+        assert!(rows.iter().any(|row| row.text.contains("line 1")));
+        assert!(rows.iter().any(|row| row.text.contains("lines omitted")));
+        assert!(rows.iter().any(|row| row.text.contains("line 30")));
     }
 
     #[test]

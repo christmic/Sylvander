@@ -916,13 +916,15 @@ pub fn run_stream(
                             let tool = config.tools.get(tool_use.name.as_str()).cloned();
                             let input = tool_use.input.clone();
                             let name = tool_use.name.clone();
-                            let (progress_tx, mut progress_rx) =
-                                tokio::sync::mpsc::unbounded_channel();
+                            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
+                                crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
+                            );
                             let progress_id = tool_use.id.clone();
                             let progress_name = name.clone();
-                            let progress = crate::tool::ToolProgressSink::new(move |delta| {
-                                let _ = progress_tx.send(delta);
-                            });
+                            let (progress, progress_omission) =
+                                crate::tool::ToolProgressSink::bounded(move |delta| {
+                                    progress_tx.try_send(delta).is_ok()
+                                });
                             let execution = execute_registered_tool(
                                 tool,
                                 &config.tool_context,
@@ -951,6 +953,13 @@ pub fn run_stream(
                                     id: progress_id.clone(),
                                     name: progress_name.clone(),
                                     delta,
+                                };
+                            }
+                            if progress_omission.occurred() {
+                                yield AgentEvent::ToolCallOutputDelta {
+                                    id: progress_id,
+                                    name: progress_name,
+                                    delta: crate::tool::TOOL_PROGRESS_OMITTED_MARKER.into(),
                                 };
                             }
 
@@ -1006,7 +1015,9 @@ pub fn run_stream(
                             };
                         }
                     }
-                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(
+                        crate::tool::TOOL_PROGRESS_CHANNEL_CAPACITY,
+                    );
                     let executions = tool_blocks.iter().zip(decisions.iter()).map(|(tool_use, decision)| {
                         let id = tool_use.id.clone();
                         let name = tool_use.name.clone();
@@ -1017,13 +1028,16 @@ pub fn run_stream(
                         let progress_id = id.clone();
                         let progress_name = name.clone();
                         let progress_tx = progress_tx.clone();
-                        let progress = crate::tool::ToolProgressSink::new(move |delta| {
-                            let _ = progress_tx.send((
-                                progress_id.clone(),
-                                progress_name.clone(),
-                                delta,
-                            ));
-                        });
+                        let (progress, progress_omission) =
+                            crate::tool::ToolProgressSink::bounded(move |delta| {
+                                progress_tx
+                                    .try_send((
+                                        progress_id.clone(),
+                                        progress_name.clone(),
+                                        delta,
+                                    ))
+                                    .is_ok()
+                            });
                         async move {
                             let outcome = match decision {
                                 crate::approval::ApprovalDecision::Approved => {
@@ -1043,7 +1057,7 @@ pub fn run_stream(
                                     ParallelToolOutcome::Rejected(reason)
                                 }
                             };
-                            (id, name, outcome)
+                            (id, name, outcome, progress_omission.occurred())
                         }
                     });
                     let executions = futures_util::future::join_all(executions);
@@ -1061,7 +1075,14 @@ pub fn run_stream(
                         yield AgentEvent::ToolCallOutputDelta { id, name, delta };
                     }
                     let mut tool_result_blocks = Vec::with_capacity(outcomes.len());
-                    for (id, name, outcome) in outcomes {
+                    for (id, name, outcome, progress_omitted) in outcomes {
+                        if progress_omitted {
+                            yield AgentEvent::ToolCallOutputDelta {
+                                id: id.clone(),
+                                name: name.clone(),
+                                delta: crate::tool::TOOL_PROGRESS_OMITTED_MARKER.into(),
+                            };
+                        }
                         match outcome {
                             ParallelToolOutcome::Executed(execution) => {
                                 let ToolExecutionOutcome {

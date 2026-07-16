@@ -15,9 +15,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sylvander_agent::workspace_executor::{
     COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, WorkspaceCommandOutput,
-    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListEntry,
-    WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits, WorkspaceSearchMatch,
-    WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
+    WorkspaceCommandProgressSink, WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor,
+    WorkspaceExecutorError, WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult,
+    WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
+    WorkspaceTarget,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
@@ -270,6 +271,7 @@ impl SshExecutor {
         remote_command: OsString,
         stdin: &[u8],
         timeout: Duration,
+        progress: Option<WorkspaceCommandProgressSink>,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         let mut command = Command::new(&self.executable);
         command
@@ -309,8 +311,16 @@ impl SshExecutor {
             };
             let (status, stdout, stderr) = tokio::try_join!(
                 write_and_wait,
-                drain_command_stream(child_stdout),
-                drain_command_stream(child_stderr),
+                drain_command_stream(
+                    child_stdout,
+                    progress
+                        .clone()
+                        .map(|sink| (WorkspaceCommandStream::Stdout, sink)),
+                ),
+                drain_command_stream(
+                    child_stderr,
+                    progress.map(|sink| (WorkspaceCommandStream::Stderr, sink)),
+                ),
             )?;
             Ok::<_, io::Error>((status, stdout, stderr))
         };
@@ -381,7 +391,22 @@ impl WorkspaceExecutor for SshExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        self.run_read_only_command(target, command, timeout).await
+        let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
+        self.invoke_command(remote, command.as_bytes(), timeout, None)
+            .await
+    }
+
+    async fn run_command_streaming(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        ensure_writable(target)?;
+        let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
+        self.invoke_command(remote, command.as_bytes(), timeout, Some(progress))
+            .await
     }
 
     async fn run_read_only_command(
@@ -391,7 +416,7 @@ impl WorkspaceExecutor for SshExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
-        self.invoke_command(remote, command.as_bytes(), timeout)
+        self.invoke_command(remote, command.as_bytes(), timeout, None)
             .await
     }
 
@@ -447,6 +472,7 @@ struct BoundedCommandStream {
 
 async fn drain_command_stream(
     mut stream: impl AsyncRead + Unpin,
+    progress: Option<(WorkspaceCommandStream, WorkspaceCommandProgressSink)>,
 ) -> Result<BoundedCommandStream, io::Error> {
     let tail_capacity =
         MAX_COMMAND_OUTPUT_BYTES_PER_STREAM.saturating_sub(COMMAND_OUTPUT_HEAD_BYTES);
@@ -454,10 +480,14 @@ async fn drain_command_stream(
     let mut tail = VecDeque::with_capacity(tail_capacity);
     let mut total_bytes = 0_u64;
     let mut chunk = vec![0_u8; 16 * 1024];
+    let mut utf8_pending = Vec::new();
     loop {
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
             break;
+        }
+        if let Some((kind, sink)) = &progress {
+            emit_utf8_progress(*kind, sink, &mut utf8_pending, &chunk[..read], false);
         }
         total_bytes = total_bytes.saturating_add(read as u64);
         let mut remaining = &chunk[..read];
@@ -477,6 +507,9 @@ async fn drain_command_stream(
             }
         }
     }
+    if let Some((kind, sink)) = &progress {
+        emit_utf8_progress(*kind, sink, &mut utf8_pending, &[], true);
+    }
 
     let mut bytes = head;
     bytes.reserve(tail.len());
@@ -486,6 +519,48 @@ async fn drain_command_stream(
         total_bytes,
         bytes,
     })
+}
+
+fn emit_utf8_progress(
+    stream: WorkspaceCommandStream,
+    sink: &WorkspaceCommandProgressSink,
+    pending: &mut Vec<u8>,
+    bytes: &[u8],
+    eof: bool,
+) {
+    pending.extend_from_slice(bytes);
+    let mut offset = 0;
+    while offset < pending.len() {
+        match std::str::from_utf8(&pending[offset..]) {
+            Ok(text) => {
+                sink.emit(stream, text.to_owned());
+                offset = pending.len();
+            }
+            Err(error) => {
+                let valid_end = offset + error.valid_up_to();
+                if valid_end > offset {
+                    sink.emit(
+                        stream,
+                        String::from_utf8_lossy(&pending[offset..valid_end]).into_owned(),
+                    );
+                }
+                if let Some(invalid_len) = error.error_len() {
+                    sink.emit(stream, "\u{fffd}".into());
+                    offset = valid_end.saturating_add(invalid_len);
+                } else {
+                    offset = valid_end;
+                    break;
+                }
+            }
+        }
+    }
+    if offset > 0 {
+        pending.drain(..offset);
+    }
+    if eof && !pending.is_empty() {
+        sink.emit(stream, String::from_utf8_lossy(pending).into_owned());
+        pending.clear();
+    }
 }
 
 fn parse_list_output(raw: &[u8], limits: WorkspaceQueryLimits) -> WorkspaceListResult {
@@ -624,6 +699,7 @@ fn remote_failure(operation: &str, output: &std::process::Output) -> WorkspaceEx
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
 
     use tempfile::TempDir;
 
@@ -774,6 +850,42 @@ mod tests {
         assert!(output.stdout.ends_with(STDOUT_TAIL.as_bytes()));
         assert!(output.stderr.starts_with(STDERR_HEAD.as_bytes()));
         assert!(output.stderr.ends_with(STDERR_TAIL.as_bytes()));
+    }
+
+    #[tokio::test]
+    async fn command_streaming_preserves_unicode_and_stream_identity() {
+        let fake = FakeSsh::new("printf '远程输出'; printf '远程错误' >&2");
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let captured = deltas.clone();
+        let progress = WorkspaceCommandProgressSink::new(move |stream, delta| {
+            captured.lock().unwrap().push((stream, delta));
+        });
+
+        let output = fake
+            .executor()
+            .run_command_streaming(
+                &target(false),
+                "printf ignored",
+                Duration::from_secs(5),
+                progress,
+            )
+            .await
+            .expect("streaming command completes");
+
+        assert!(output.success);
+        let deltas = deltas.lock().unwrap();
+        assert!(
+            deltas
+                .iter()
+                .any(|(stream, delta)| *stream == WorkspaceCommandStream::Stdout
+                    && delta.contains("远程输出"))
+        );
+        assert!(
+            deltas
+                .iter()
+                .any(|(stream, delta)| *stream == WorkspaceCommandStream::Stderr
+                    && delta.contains("远程错误"))
+        );
     }
 
     #[tokio::test]

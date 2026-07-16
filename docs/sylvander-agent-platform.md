@@ -545,9 +545,11 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   bounded results. Local and SSH command execution concurrently drains both
   output streams, keeps only a fixed head/tail capture, records exact byte
   totals and truncation, and returns a compact structured result to the model
-  and TUI. Live output delivery, environment contracts, container/sandbox
-  adapters, SSH pooling, explicit host-key policy, and remote worktree review
-  keep P3.1/P3.2/P3.3 open.
+  and TUI. Live command progress now crosses the existing tool-delta protocol
+  through a bounded Agent queue. The collapsed TUI shows only the latest useful
+  line; expanded details remain bounded and favor the error-bearing tail.
+  Environment contracts, container/sandbox adapters, SSH pooling, explicit
+  host-key policy, and remote worktree review keep P3.1/P3.2/P3.3 open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, cancellation, upload/download semantics, and conformance tests.
 - [ ] **P3.4 Container and sandbox executors:** lifecycle, mounts, resource and

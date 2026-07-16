@@ -6,6 +6,7 @@
 //! The trait uses `async_trait` for dyn-compatibility + Send safety.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -15,6 +16,10 @@ use thiserror::Error;
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool_context::ToolContext;
+
+pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
+pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
+    "\n… intermediate tool output omitted because the progress buffer was full …\n";
 
 /// Bounded interface for a tool to expose user-visible output while it runs.
 /// The Agent owns transport and call identity; tools only emit text deltas.
@@ -30,8 +35,31 @@ impl ToolProgressSink {
         }
     }
 
+    pub(crate) fn bounded(
+        try_emit: impl Fn(String) -> bool + Send + Sync + 'static,
+    ) -> (Self, ToolProgressOmission) {
+        let omitted = Arc::new(AtomicBool::new(false));
+        let dropped = omitted.clone();
+        let sink = Self::new(move |delta| {
+            if !try_emit(delta) {
+                dropped.store(true, Ordering::Release);
+            }
+        });
+        (sink, ToolProgressOmission { omitted })
+    }
+
     pub fn emit(&self, delta: impl Into<String>) {
         (self.emit_delta)(delta.into());
+    }
+}
+
+pub(crate) struct ToolProgressOmission {
+    omitted: Arc<AtomicBool>,
+}
+
+impl ToolProgressOmission {
+    pub(crate) fn occurred(&self) -> bool {
+        self.omitted.load(Ordering::Acquire)
     }
 }
 

@@ -229,11 +229,12 @@ fn push_message_lines<'a>(
                 let meta = if tool_details_expanded || !inline_diff.is_empty() {
                     String::new()
                 } else {
-                    child
-                        .output
-                        .as_deref()
-                        .map(|o| summarize_output(o, width))
-                        .unwrap_or_default()
+                    crate::tool_presenter::compact_output_summary(
+                        &child.name,
+                        child.output.as_deref(),
+                        child.status == ToolStatus::Pending,
+                        width,
+                    )
                 };
                 lines.push(Line::from(vec![
                     Span::styled("  ⎿  ", theme::guide()),
@@ -449,16 +450,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn truncate_first(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
-}
-
 fn render_json_value(v: &serde_json::Value) -> String {
     use serde_json::Value;
     match v {
@@ -520,47 +511,6 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
         }
     }
     out
-}
-
-fn summarize_output(output: &str, width: usize) -> String {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output)
-        && let Some(object) = value.as_object()
-        && (object.contains_key("exit_code") || object.contains_key("duration_ms"))
-    {
-        let exit = object
-            .get("exit_code")
-            .and_then(serde_json::Value::as_i64)
-            .map_or_else(|| "signal".into(), |code| code.to_string());
-        let duration = object
-            .get("duration_ms")
-            .and_then(serde_json::Value::as_u64)
-            .map_or_else(String::new, |ms| format!(" · {ms}ms"));
-        let truncated = object
-            .get("stdout_truncated")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            || object
-                .get("stderr_truncated")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-        return format!(
-            "exit {exit}{duration}{}",
-            if truncated {
-                " · output truncated"
-            } else {
-                ""
-            }
-        );
-    }
-    let line = output
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
-    if line.is_empty() {
-        return String::new();
-    }
-    truncate_first(line, width.saturating_sub(20).min(80))
 }
 
 fn format_elapsed(started_at_secs: u64) -> String {
@@ -870,6 +820,33 @@ mod tests {
 
         assert_eq!(rendered.matches('❯').count(), 1);
         assert!(rendered.lines().skip(1).all(|line| line.starts_with("  ")));
+    }
+
+    #[test]
+    fn collapsed_command_shows_only_the_latest_live_progress() {
+        let mut lines = Vec::new();
+        let message = ChatMessage::ToolStep {
+            name: "Run `cargo`".into(),
+            started_at_secs: 0,
+            children: vec![crate::app::ToolStepChild {
+                call_id: "call-1".into(),
+                name: "Command".into(),
+                status: ToolStatus::Pending,
+                input: serde_json::json!({"command": "cargo test"}),
+                output: Some("Compiling agent\nCompiling runtime".into()),
+                is_error: None,
+            }],
+        };
+        push_message_lines(&message, &mut lines, 100, false);
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("$ cargo test"));
+        assert!(rendered.contains("Compiling runtime"));
+        assert!(!rendered.contains("Compiling agent"));
     }
 
     #[test]

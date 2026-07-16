@@ -144,10 +144,10 @@ pub mod prelude {
         SqliteMemoryStore, StartBackgroundTaskTool, SystemMemoryClock, UpdatePlanTool, WriteTool,
     };
     pub use crate::workspace_executor::{
-        LocalExecutor, WorkspaceCommandOutput, WorkspaceEntryKind, WorkspaceExecutor,
-        WorkspaceExecutorError, WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult,
-        WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
-        WorkspaceTarget,
+        LocalExecutor, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
+        WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
+        WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
+        WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;
