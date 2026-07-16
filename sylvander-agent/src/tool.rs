@@ -165,6 +165,11 @@ pub trait Tool: Send + Sync {
 /// discovery happens before publishing a replacement snapshot.
 pub trait DynamicToolSource: Send + Sync {
     fn snapshot(&self) -> Vec<Arc<dyn Tool>>;
+
+    /// Optional redacted runtime state for UI inspection.
+    fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
+        None
+    }
 }
 
 /// Registry of tools available to the agent. Builder-style.
@@ -202,6 +207,15 @@ impl ToolRegistry {
             }
         }
         tools
+    }
+
+    /// Redacted runtime state contributed by dynamic capability sources.
+    #[must_use]
+    pub fn platform_features(&self) -> Vec<sylvander_protocol::PlatformFeature> {
+        self.dynamic_sources
+            .iter()
+            .filter_map(|source| source.platform_feature())
+            .collect()
     }
 
     /// Number of registered tools.
