@@ -6,7 +6,7 @@
 //! confirming a short-lived, single-use challenge delivered through that
 //! exact external principal.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,6 +24,35 @@ const MAX_CHALLENGE_TTL: Duration = Duration::from_mins(15);
 const MAX_CONFIRM_ATTEMPTS: i64 = 5;
 const SCHEMA_VERSION: i64 = 1;
 const APPLICATION_ID: i64 = 0x5359_5042;
+const KEY_VERIFIER_CONTEXT: &[u8] = b"sylvander.principal-binding-key.v1";
+
+/// Secret material used to make persisted principal digests resistant to
+/// offline enumeration. Runtime must resolve it outside the database.
+pub struct PrincipalDigestKey(Vec<u8>);
+
+impl PrincipalDigestKey {
+    pub fn new(key: &[u8]) -> Result<Self, PrincipalBindingError> {
+        if !(32..=4096).contains(&key.len()) {
+            return Err(PrincipalBindingError::Invalid {
+                field: "principal digest key",
+                reason: "must contain between 32 and 4096 bytes".into(),
+            });
+        }
+        Ok(Self(key.to_vec()))
+    }
+}
+
+impl fmt::Debug for PrincipalDigestKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PrincipalDigestKey([REDACTED])")
+    }
+}
+
+impl Drop for PrincipalDigestKey {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
 
 /// One principal in one concrete channel deployment.
 #[derive(Clone, PartialEq, Eq)]
@@ -61,13 +90,16 @@ impl ExternalPrincipal {
         Ok(principal)
     }
 
-    fn digest(&self) -> String {
-        digest_parts(&[
-            b"sylvander.external-principal.v1",
-            self.transport.as_bytes(),
-            self.channel_instance_id.as_bytes(),
-            self.external_id.as_bytes(),
-        ])
+    fn digest(&self, key: &[u8]) -> String {
+        hmac_parts(
+            key,
+            &[
+                b"sylvander.external-principal.v1",
+                self.transport.as_bytes(),
+                self.channel_instance_id.as_bytes(),
+                self.external_id.as_bytes(),
+            ],
+        )
     }
 }
 
@@ -159,6 +191,7 @@ impl Clock for SystemClock {
 pub struct PrincipalBindingStore {
     connection: Arc<Mutex<Connection>>,
     clock: Arc<dyn Clock>,
+    digest_key: Arc<PrincipalDigestKey>,
 }
 
 fn validate_id(field: &'static str, value: &str) -> Result<(), PrincipalBindingError> {
@@ -177,32 +210,89 @@ fn validate_id(field: &'static str, value: &str) -> Result<(), PrincipalBindingE
     Ok(())
 }
 
-fn digest_parts(parts: &[&[u8]]) -> String {
+fn digest_parts(parts: &[&[u8]]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for part in parts {
         hasher.update((part.len() as u64).to_be_bytes());
         hasher.update(part);
     }
-    format!("{:x}", hasher.finalize())
+    hasher.finalize().into()
+}
+
+fn hex_digest(parts: &[&[u8]]) -> String {
+    encode_hex(&digest_parts(parts))
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut output, byte| {
+            write!(output, "{byte:02x}").expect("writing to String cannot fail");
+            output
+        },
+    )
+}
+
+fn hmac_parts(key: &[u8], parts: &[&[u8]]) -> String {
+    const BLOCK_SIZE: usize = 64;
+    let mut block = [0_u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        block[..32].copy_from_slice(&digest_parts(&[key]));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_pad = [0x36_u8; BLOCK_SIZE];
+    let mut outer_pad = [0x5c_u8; BLOCK_SIZE];
+    for index in 0..BLOCK_SIZE {
+        inner_pad[index] ^= block[index];
+        outer_pad[index] ^= block[index];
+    }
+    let mut inner_hasher = Sha256::new();
+    inner_hasher.update(inner_pad);
+    for part in parts {
+        inner_hasher.update((part.len() as u64).to_be_bytes());
+        inner_hasher.update(part);
+    }
+    let inner = inner_hasher.finalize();
+    let mut outer_hasher = Sha256::new();
+    outer_hasher.update(outer_pad);
+    outer_hasher.update(inner);
+    let result = outer_hasher.finalize();
+    block.fill(0);
+    inner_pad.fill(0);
+    outer_pad.fill(0);
+    encode_hex(&result)
 }
 
 impl PrincipalBindingStore {
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, PrincipalBindingError> {
+    pub async fn open(
+        path: impl AsRef<Path>,
+        digest_key: PrincipalDigestKey,
+    ) -> Result<Self, PrincipalBindingError> {
         let path = path.as_ref().to_path_buf();
-        Self::open_with(move || Connection::open(path), Arc::new(SystemClock)).await
+        Self::open_with(
+            move || Connection::open(path),
+            Arc::new(SystemClock),
+            digest_key,
+        )
+        .await
     }
 
     #[cfg(test)]
     pub(crate) async fn open_in_memory(
         clock: Arc<dyn Clock>,
+        digest_key: PrincipalDigestKey,
     ) -> Result<Self, PrincipalBindingError> {
-        Self::open_with(Connection::open_in_memory, clock).await
+        Self::open_with(Connection::open_in_memory, clock, digest_key).await
     }
 
     async fn open_with(
         open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
         clock: Arc<dyn Clock>,
+        digest_key: PrincipalDigestKey,
     ) -> Result<Self, PrincipalBindingError> {
+        let digest_key = Arc::new(digest_key);
+        let schema_key = digest_key.clone();
         let connection = task::spawn_blocking(move || {
             let mut connection = open().map_err(storage)?;
             connection
@@ -211,7 +301,7 @@ impl PrincipalBindingStore {
             connection
                 .execute_batch("PRAGMA foreign_keys=ON;")
                 .map_err(storage)?;
-            initialize_schema(&mut connection)?;
+            initialize_schema(&mut connection, &schema_key.0)?;
             Ok(connection)
         })
         .await
@@ -219,6 +309,7 @@ impl PrincipalBindingStore {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             clock,
+            digest_key,
         })
     }
 
@@ -233,6 +324,10 @@ impl PrincipalBindingStore {
         })
         .await
         .map_err(|_| PrincipalBindingError::Task)?
+    }
+
+    fn principal_digest(&self, principal: &ExternalPrincipal) -> String {
+        principal.digest(&self.digest_key.0)
     }
 
     /// Register a stable user identity. User ids are never implicitly created
@@ -293,7 +388,7 @@ impl PrincipalBindingStore {
         let challenge_id = Uuid::new_v4().to_string();
         let secret = Uuid::new_v4().as_simple().to_string();
         let secret_hash = challenge_digest(&challenge_id, &secret);
-        let external_digest = principal.digest();
+        let external_digest = self.principal_digest(&principal);
         let result_id = challenge_id.clone();
         let transport = principal.transport;
         let instance = principal.channel_instance_id;
@@ -347,7 +442,7 @@ impl PrincipalBindingStore {
         let now = self.clock.now();
         let challenge_id = challenge_id.to_owned();
         let supplied_hash = challenge_digest(&challenge_id, secret);
-        let external_digest = principal.digest();
+        let external_digest = self.principal_digest(&principal);
         let transport = principal.transport;
         let instance = principal.channel_instance_id;
         self.run(move |connection| {
@@ -435,7 +530,7 @@ impl PrincipalBindingStore {
         &self,
         principal: ExternalPrincipal,
     ) -> Result<Option<PrincipalBinding>, PrincipalBindingError> {
-        let external_digest = principal.digest();
+        let external_digest = self.principal_digest(&principal);
         let transport = principal.transport;
         let instance = principal.channel_instance_id;
         self.run(move |connection| {
@@ -453,7 +548,7 @@ impl PrincipalBindingStore {
         expected_revision: u64,
     ) -> Result<(), PrincipalBindingError> {
         validate_id("user id", &owner.0)?;
-        let external_digest = principal.digest();
+        let external_digest = self.principal_digest(&principal);
         let transport = principal.transport;
         let instance = principal.channel_instance_id;
         let owner = owner.0.clone();
@@ -508,7 +603,10 @@ struct StoredChallenge {
     attempts: i64,
 }
 
-fn initialize_schema(connection: &mut Connection) -> Result<(), PrincipalBindingError> {
+fn initialize_schema(
+    connection: &mut Connection,
+    digest_key: &[u8],
+) -> Result<(), PrincipalBindingError> {
     let version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
         .map_err(storage)?;
@@ -523,9 +621,29 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), PrincipalBinding
         .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
         .map_err(storage)?;
     match (version, object_count, application_id) {
-        (0, 0, 0) => connection.execute_batch(SCHEMA).map_err(storage)?,
+        (0, 0, 0) => {
+            connection.execute_batch(SCHEMA).map_err(storage)?;
+            let verifier = hmac_parts(digest_key, &[KEY_VERIFIER_CONTEXT]);
+            connection
+                .execute(
+                    "INSERT INTO principal_binding_metadata(singleton,key_verifier) VALUES (1,?1)",
+                    [verifier],
+                )
+                .map_err(storage)?;
+        }
         (SCHEMA_VERSION, _, APPLICATION_ID) => validate_schema(connection)?,
         _ => return Err(PrincipalBindingError::IncompatibleSchema),
+    }
+    let stored_verifier = connection
+        .query_row(
+            "SELECT key_verifier FROM principal_binding_metadata WHERE singleton=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(storage)?;
+    let expected_verifier = hmac_parts(digest_key, &[KEY_VERIFIER_CONTEXT]);
+    if !constant_time_eq(stored_verifier.as_bytes(), expected_verifier.as_bytes()) {
+        return Err(PrincipalBindingError::Storage);
     }
     connection
         .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
@@ -540,7 +658,16 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), PrincipalBinding
 }
 
 fn validate_schema(connection: &Connection) -> Result<(), PrincipalBindingError> {
+    let expected = Connection::open_in_memory().map_err(storage)?;
+    expected.execute_batch(SCHEMA).map_err(storage)?;
+    if schema_objects(connection)? != schema_objects(&expected)? {
+        return Err(PrincipalBindingError::IncompatibleSchema);
+    }
     for (table, expected_columns) in [
+        (
+            "principal_binding_metadata",
+            &["singleton", "key_verifier"][..],
+        ),
         ("users", &["user_id", "created_at"][..]),
         (
             "principal_bindings",
@@ -594,6 +721,23 @@ fn validate_schema(connection: &Connection) -> Result<(), PrincipalBindingError>
         }
     }
     Ok(())
+}
+
+fn schema_objects(
+    connection: &Connection,
+) -> Result<Vec<(String, String, String, String)>, PrincipalBindingError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+        )
+        .map_err(storage)?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)
 }
 
 fn require_user(connection: &Connection, user_id: &str) -> Result<(), PrincipalBindingError> {
@@ -688,7 +832,7 @@ fn load_challenge(
 }
 
 fn challenge_digest(challenge_id: &str, secret: &str) -> String {
-    digest_parts(&[
+    hex_digest(&[
         b"sylvander.principal-link-challenge.v1",
         challenge_id.as_bytes(),
         secret.as_bytes(),
@@ -726,6 +870,10 @@ CREATE TABLE users (
     user_id TEXT PRIMARY KEY NOT NULL
         CHECK(length(user_id) BETWEEN 1 AND 512 AND user_id=trim(user_id)),
     created_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE principal_binding_metadata (
+    singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton=1),
+    key_verifier TEXT NOT NULL CHECK(length(key_verifier)=64)
 ) STRICT;
 CREATE TABLE principal_bindings (
     transport TEXT NOT NULL CHECK(length(transport) BETWEEN 1 AND 512),
