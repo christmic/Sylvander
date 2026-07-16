@@ -517,7 +517,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 ### P2 — Workspace and extension platform
 
-- [ ] **P2.1 Workspace composition:** Agent home plus task/dependency/artifact
+- [x] **P2.1 Workspace composition:** Agent home plus task/dependency/artifact
   mounts, logical references, capability policy, collision rules, and effective
   workspace inspection.
 
@@ -525,10 +525,14 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   canonical role-bearing mount set. Agent home and task bindings become
   `@agent` and `@task`; configured dependency and artifact mounts retain their
   declared logical references and independent read/write/command/Git policy.
-  Invalid references, duplicate references, duplicate target/path locations,
-  and read-only capability conflicts fail before a turn can execute. Public
+  Invalid references, duplicate references, ambiguous dependency/artifact
+  target-path overlaps, and read-only capability conflicts fail before a turn
+  can execute; Agent home and task may intentionally alias one location. Public
   Agent administration preserves mount definitions and redacted inspection
-  reports their count. File-tool logical routing remains the next P2.1 slice.
+  reports their count. Read/Write/Edit/List/Search route `@reference/path`;
+  Command and Git accept an explicit workspace reference. The turn prompt
+  lists only logical names, roles, and allowed operations so the model can use
+  the composition without depending on backend paths.
 - [ ] **P2.2 AGENTS.md resolver:** hierarchical discovery across Agent/task
   workspaces, precedence, aliases, size limits, provenance, cache invalidation,
   and prompt integration.

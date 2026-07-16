@@ -70,6 +70,10 @@ impl Tool for GitTool {
                     "minimum": 1,
                     "maximum": MAX_LOG_COUNT,
                     "description": "For log only: maximum number of commits"
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "Optional logical workspace reference without the @ prefix"
                 }
             }),
             &["operation"],
@@ -98,7 +102,14 @@ impl Tool for GitTool {
             }
         };
 
-        let target = ctx.execution_target_for(&self.workdir);
+        let workspace = object.get("workspace").and_then(JsonValue::as_str);
+        let target = match ctx
+            .executor
+            .select_mount_target(&ctx.execution_target_for(&self.workdir), workspace)
+        {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let output = match ctx
             .executor

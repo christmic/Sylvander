@@ -66,6 +66,19 @@ execution_target = "local"
 path = "/workspace/agent-home"
 read_only = false
 
+[[agents.workspace_mounts]]
+reference = "shared-lib"
+role = "dependency"
+
+[agents.workspace_mounts.binding]
+execution_target = "local"
+path = "/workspace/shared-lib"
+read_only = true
+
+[agents.workspace_mounts.capabilities]
+read = true
+git = true
+
 [[agents.prompt_profiles]]
 id = "model-a"
 qualified_models = [{ provider_id = "primary", model_id = "model-a" }]
@@ -89,6 +102,12 @@ fn valid_configuration_parses_and_resolves_references() {
     assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
     assert_eq!(config.agents[0].spec.id.0, "assistant");
     assert_eq!(config.agents[0].revision, 7);
+    assert_eq!(config.agents[0].workspace_mounts[0].reference, "shared-lib");
+    assert_eq!(
+        config.agents[0].workspace_mounts[0].role,
+        sylvander_protocol::WorkspaceMountRole::Dependency
+    );
+    assert!(config.agents[0].workspace_mounts[0].capabilities.git);
     assert_eq!(config.channels[0].id, "terminal");
     assert!(matches!(
         config.model_providers[0].api_key,

@@ -104,6 +104,33 @@ per-field provenance before provider or tool work begins. Runtime updates
 require the caller's expected configuration revision so concurrent clients
 cannot silently overwrite each other.
 
+Agents may compose additional dependency and artifact workspaces beside their
+home and the session task workspace:
+
+```toml
+[[agents.workspace_mounts]]
+reference = "shared-lib"
+role = "dependency"
+
+[agents.workspace_mounts.binding]
+execution_target = "local"
+path = "/srv/dependencies/shared-lib"
+read_only = true
+
+[agents.workspace_mounts.capabilities]
+read = true
+git = true
+write = false
+command = false
+```
+
+Unqualified file paths use the task workspace. Other mounts use
+`@reference/path`; Command and Git accept `workspace = "reference"`. Logical
+references must be unique. Explicit dependency/artifact target-path overlap is
+rejected; Agent home and task may intentionally alias the same location. The
+effective session configuration exposes every mount and capability policy for
+UI inspection.
+
 ## Prompt resolution and privacy
 
 The runtime has one deterministic resolver for session creation, restart, and
