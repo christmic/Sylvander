@@ -4,7 +4,8 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{digest_text, valid_key};
 use crate::evidence::evaluation_types::{
-    EvaluationBaseline, RegressionMetric, ScoreDirection, StoredEvaluationBaseline,
+    EvaluationBaseline, EvaluationComparison, MetricMeasurement, RegressionDecision,
+    RegressionMetric, ScoreDirection, StoredEvaluationBaseline,
 };
 use crate::evidence::{EvidenceError, EvidenceStore, as_i64};
 
@@ -186,6 +187,62 @@ impl EvidenceStore {
         })
         .await
     }
+
+    /// Compare one complete candidate measurement set against an immutable
+    /// baseline. Missing, extra, duplicate, or differently sampled metrics
+    /// fail instead of producing a partial pass.
+    pub async fn compare_evaluation_baseline(
+        &self,
+        baseline_id: String,
+        mut measurements: Vec<MetricMeasurement>,
+    ) -> Result<EvaluationComparison, EvidenceError> {
+        if measurements.is_empty() || measurements.len() > 128 {
+            return Err(EvidenceError::InvalidEvaluationDefinition);
+        }
+        measurements.sort_by(|left, right| left.metric.cmp(&right.metric));
+        if measurements
+            .windows(2)
+            .any(|pair| pair[0].metric == pair[1].metric)
+        {
+            return Err(EvidenceError::InvalidEvaluationDefinition);
+        }
+        let baseline = self
+            .evaluation_baseline(baseline_id.clone())
+            .await?
+            .ok_or(EvidenceError::InvalidEvaluationDefinition)?;
+        if baseline.definition.metrics.len() != measurements.len() {
+            return Err(EvidenceError::InvalidEvaluationDefinition);
+        }
+        let mut decisions = Vec::with_capacity(measurements.len());
+        for (metric, measurement) in baseline.definition.metrics.iter().zip(measurements) {
+            if metric.metric != measurement.metric
+                || metric.sample_count != measurement.sample_count
+                || !valid_key(&measurement.metric)
+            {
+                return Err(EvidenceError::InvalidEvaluationDefinition);
+            }
+            let allowed_boundary = regression_boundary(metric)?;
+            let passed = match metric.direction {
+                ScoreDirection::HigherIsBetter => measurement.value >= allowed_boundary,
+                ScoreDirection::LowerIsBetter => measurement.value <= allowed_boundary,
+            };
+            decisions.push(RegressionDecision {
+                metric: metric.metric.clone(),
+                direction: metric.direction,
+                baseline_value: metric.baseline_value,
+                candidate_value: measurement.value,
+                allowed_boundary,
+                sample_count: measurement.sample_count,
+                passed,
+            });
+        }
+        Ok(EvaluationComparison {
+            baseline_id,
+            baseline_digest_sha256: baseline.digest_sha256,
+            passed: decisions.iter().all(|decision| decision.passed),
+            decisions,
+        })
+    }
 }
 
 fn validate_baseline(definition: &EvaluationBaseline) -> Result<(), EvidenceError> {
@@ -242,4 +299,15 @@ fn parse_direction(value: &str) -> Result<ScoreDirection, EvidenceError> {
         "lower_is_better" => Ok(ScoreDirection::LowerIsBetter),
         _ => Err(EvidenceError::InvalidEvaluationData),
     }
+}
+
+fn regression_boundary(metric: &RegressionMetric) -> Result<i64, EvidenceError> {
+    let baseline = i128::from(metric.baseline_value);
+    let delta =
+        baseline.abs() * i128::from(metric.max_regression_basis_points) / i128::from(10_000);
+    let boundary = match metric.direction {
+        ScoreDirection::HigherIsBetter => baseline - delta,
+        ScoreDirection::LowerIsBetter => baseline + delta,
+    };
+    i64::try_from(boundary).map_err(|_| EvidenceError::InvalidEvaluationDefinition)
 }
