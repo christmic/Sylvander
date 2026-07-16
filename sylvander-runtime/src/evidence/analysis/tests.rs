@@ -181,6 +181,10 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
     assert_eq!(first, second);
     assert_eq!(first.turns.len(), 2);
     assert_eq!(first.success_rate_basis_points, Some(5_000));
+    assert_eq!(first.latency_sample_count, 2);
+    assert_eq!(first.mean_latency_secs, Some(3));
+    assert_eq!(first.p50_latency_secs, Some(2));
+    assert_eq!(first.p95_latency_secs, Some(4));
     assert_eq!(first.input_tokens, 17);
     assert_eq!(first.output_tokens, 8);
     assert_eq!(first.fully_priced_cost_nano_usd, None);
@@ -194,6 +198,7 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
         first.turns[1].failure_class,
         FailureClass::InteractionTimeout
     );
+    assert_eq!(first.failure_breakdown.interaction_timeout, 1);
     for warning in [
         AnalysisWarning::MixedAgents,
         AnalysisWarning::IncompletePricing,
@@ -203,4 +208,17 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
     ] {
         assert!(first.warnings.contains(&warning), "{warning:?}");
     }
+
+    let limited = store
+        .analyze_cohort(CohortQuery {
+            agent_id: None,
+            started_at_inclusive: 0,
+            started_before_exclusive: 100,
+            privacy_scope: AnalysisPrivacyScope::ShareableOnly,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(limited.turns.len(), 1);
+    assert!(limited.warnings.contains(&AnalysisWarning::LimitReached));
 }

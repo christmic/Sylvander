@@ -257,7 +257,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A22 | Channel supervision | implemented | Stable instance registrations carry bounded configuration-driven restart policy and channel workspace defaults. Runtime provides readiness, startup rollback, content-free instance health, exponential restart/backoff, failure isolation, cooperative drain, and terminal instance-ID reporting. Adapter startup and subscription failures return to supervision rather than panicking. |
 | A23 | Run evidence | implemented | The durable run ledger correlates runs, turns, steps, outcomes, usage, tool activity, recovery, retention, queries, feedback, and content-free administration/authorization audit. Raw content is governed separately from structured evidence. |
 | A24 | Feedback | complete | Typed positive/negative feedback records bounded corrections, task result, artifact/validation references, privacy class, and Runtime-derived immutable principal/channel/transport attribution. It is persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
-| A25 | Self-improvement | missing | There is no evidence selection, evaluation corpus, proposal, experiment, comparison, or human merge gate. |
+| A25 | Self-improvement | partial | Privacy-scoped deterministic cohort selection now reports a stable digest, failure taxonomy, success/feedback rates, exact token and complete-cost truth, latency distribution, tool/approval/retry/timeout metrics, and explicit bias/completeness warnings. Evaluation corpora, proposals, experiments, comparison, and human merge gates remain. |
 | A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
 | A27 | Secrets | partial | Typed environment/file references, bounded zeroizing values, request-scoped Provider resolution, immutable generations, live rotation, activation preflight, and redacted administration are implemented. External secret backends, lease renewal, and uniform channel-credential rotation remain. |
 | A28 | Database migrations | partial | Registry components and relationship memory have explicit component ledgers. Relationship memory accepts only its exact latest schema and rejects unmanaged, older, future, or damaged layouts without repair or fallback. This is deliberate latest-only validation, not migration support. Session/evidence schema convergence, backup/restore drills, and any explicitly approved upgrade or downgrade migration remain. |
@@ -647,7 +647,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 - [x] **P5.1 Feedback and outcome APIs:** user ratings/corrections, task result,
   artifact and validation links, privacy class, and immutable attribution.
-- [ ] **P5.2 Analysis pipeline:** reproducible cohorts, failure taxonomy,
+- [x] **P5.2 Analysis pipeline:** reproducible cohorts, failure taxonomy,
   quality/cost/latency/tool/approval/recovery metrics, and bias/leakage checks.
 - [ ] **P5.3 Evaluation registry:** versioned datasets, deterministic fixtures,
   held-out cases, scoring adapters, baselines, and regression thresholds.

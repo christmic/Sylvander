@@ -17,7 +17,8 @@ mod analysis_types;
 mod recorder;
 
 pub use analysis_types::{
-    AnalysisPrivacyScope, AnalysisWarning, CohortAnalysis, CohortQuery, CohortTurn, FailureClass,
+    AnalysisPrivacyScope, AnalysisWarning, CohortAnalysis, CohortQuery, CohortTurn,
+    FailureBreakdown, FailureClass,
 };
 pub use recorder::EvidenceRecorder;
 
