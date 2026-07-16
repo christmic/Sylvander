@@ -3,8 +3,9 @@
 use serde_json::{Value, json};
 
 use crate::{
-    AgentAdminRequest, AgentAdminResponse, RegistryAdminRequest, RegistryAdminResponse,
-    UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION, UiClientMessage, UiServerMessage,
+    AgentAdminRequest, AgentAdminResponse, IdentityBindingRequest, IdentityBindingResponse,
+    RegistryAdminRequest, RegistryAdminResponse, UI_PROTOCOL_MAX_VERSION, UI_PROTOCOL_MIN_VERSION,
+    UiClientMessage, UiServerMessage,
 };
 
 #[must_use]
@@ -28,6 +29,17 @@ pub fn registry_admin_protocol_schema() -> Value {
 }
 
 #[must_use]
+pub fn identity_binding_protocol_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Sylvander Identity Binding Protocol",
+        "version": crate::IDENTITY_BINDING_PROTOCOL_VERSION,
+        "request": schemars::schema_for!(IdentityBindingRequest),
+        "response": schemars::schema_for!(IdentityBindingResponse)
+    })
+}
+
+#[must_use]
 pub fn ui_protocol_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -38,6 +50,7 @@ pub fn ui_protocol_schema() -> Value {
         },
         "client_message": schemars::schema_for!(UiClientMessage),
         "server_message": schemars::schema_for!(UiServerMessage),
+        "identity_binding": identity_binding_protocol_schema(),
         "agent_administration": agent_admin_protocol_schema(),
         "registry_administration": registry_admin_protocol_schema()
     })
