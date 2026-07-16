@@ -81,8 +81,11 @@ struct ProcessIo {
 
 struct McpInner {
     server_name: String,
+    config: McpServerConfig,
     request_timeout: Duration,
     next_id: AtomicU64,
+    generation: AtomicU64,
+    reconnect: Mutex<()>,
     io: Mutex<ProcessIo>,
     child: Mutex<Child>,
 }
@@ -134,8 +137,11 @@ impl McpStdioClient {
         let client = Self {
             inner: Arc::new(McpInner {
                 server_name: config.name.clone(),
+                config: config.clone(),
                 request_timeout,
                 next_id: AtomicU64::new(1),
+                generation: AtomicU64::new(1),
+                reconnect: Mutex::new(()),
                 io: Mutex::new(ProcessIo {
                     stdin,
                     stdout: BufReader::new(stdout),
@@ -194,24 +200,50 @@ impl McpStdioClient {
     /// Stop the child process and wait for it to exit.
     pub async fn shutdown(&self) -> Result<(), McpError> {
         let mut child = self.inner.child.lock().await;
-        match child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
-            Ok(None) => {}
-            Err(source) => return Err(self.io_error(source)),
-        }
-        child.kill().await.map_err(|source| self.io_error(source))?;
-        child.wait().await.map_err(|source| self.io_error(source))?;
-        Ok(())
+        stop_child(&self.inner.server_name, &mut child).await
     }
 
     async fn call_tool(&self, name: &str, arguments: JsonValue) -> Result<ToolOutput, McpError> {
+        let generation = self.inner.generation.load(Ordering::Acquire);
         let result = self
             .request(
                 "tools/call",
                 json!({ "name": name, "arguments": arguments }),
             )
-            .await?;
-        Ok(map_tool_result(&result))
+            .await;
+        match result {
+            Ok(result) => Ok(map_tool_result(&result)),
+            Err(error) => {
+                if is_recoverable_transport_error(&error) {
+                    let _ = self.reconnect_if_current(generation).await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn reconnect_if_current(&self, observed_generation: u64) -> Result<(), McpError> {
+        let _reconnect = self.inner.reconnect.lock().await;
+        if self.inner.generation.load(Ordering::Acquire) != observed_generation {
+            return Ok(());
+        }
+        let replacement = Self::connect(&self.inner.config, self.inner.request_timeout).await?;
+        let replacement =
+            Arc::try_unwrap(replacement.inner).map_err(|_| McpError::InvalidResult {
+                server: self.inner.server_name.clone(),
+                method: "reconnect".into(),
+                message: "replacement process is unexpectedly shared".into(),
+            })?;
+        let new_io = replacement.io.into_inner();
+        let new_child = replacement.child.into_inner();
+
+        let mut io = self.inner.io.lock().await;
+        let mut child = self.inner.child.lock().await;
+        stop_child(&self.inner.server_name, &mut child).await?;
+        *io = new_io;
+        *child = new_child;
+        self.inner.generation.fetch_add(1, Ordering::Release);
+        Ok(())
     }
 
     async fn request(&self, method: &str, params: JsonValue) -> Result<JsonValue, McpError> {
@@ -280,6 +312,35 @@ impl McpStdioClient {
             source,
         }
     }
+}
+
+fn is_recoverable_transport_error(error: &McpError) -> bool {
+    matches!(
+        error,
+        McpError::Closed { .. } | McpError::Io { .. } | McpError::Timeout { .. }
+    )
+}
+
+async fn stop_child(server: &str, child: &mut Child) -> Result<(), McpError> {
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(source) => {
+            return Err(McpError::Io {
+                server: server.into(),
+                source,
+            });
+        }
+    }
+    child.kill().await.map_err(|source| McpError::Io {
+        server: server.into(),
+        source,
+    })?;
+    child.wait().await.map_err(|source| McpError::Io {
+        server: server.into(),
+        source,
+    })?;
+    Ok(())
 }
 
 /// A discovered MCP tool adapted to Sylvander's ordinary tool interface.
@@ -539,6 +600,8 @@ while True:
         }]}})
     elif method == "tools/call":
         arguments = message.get("params", {}).get("arguments", {})
+        if arguments.get("crash"):
+            os._exit(3)
         if arguments.get("sleep"):
             time.sleep(0.3)
         send({"jsonrpc":"2.0", "id":message["id"], "result":{
@@ -625,6 +688,45 @@ while True:
             .expect_err("slow call must time out");
         assert!(matches!(error, ToolError::Timeout(duration) if duration == timeout));
         client.shutdown().await.expect("shutdown after timeout");
+    }
+
+    #[tokio::test]
+    async fn transport_failure_reconnects_for_the_next_tool_call_without_replaying_it() {
+        let temp = TempDir::new().expect("temp dir");
+        let config = fake_config(&temp);
+        let client = McpStdioClient::connect(&config, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let tool = client.list_tools().await.expect("list tools").remove(0);
+        let context = crate::tool_context::defaults::system_tool_context();
+
+        let error = tool
+            .execute(&context, json!({ "crash": true }))
+            .await
+            .expect_err("crashed process must fail the in-flight call");
+        assert!(matches!(error, ToolError::Other(_)));
+        let recovered = tool
+            .execute(&context, json!({ "value": "after-reconnect" }))
+            .await
+            .expect("the next call uses the replacement process");
+        assert_eq!(
+            recovered.content.lines().next(),
+            Some("echo:after-reconnect")
+        );
+
+        client
+            .shutdown()
+            .await
+            .expect("shutdown replacement process");
+        let log = fs::read_to_string(temp.path().join("requests.log")).unwrap();
+        assert_eq!(
+            log.lines().filter(|method| *method == "initialize").count(),
+            2
+        );
+        assert_eq!(
+            log.lines().filter(|method| *method == "tools/call").count(),
+            2
+        );
     }
 
     #[test]
