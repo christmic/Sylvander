@@ -28,7 +28,8 @@ use sylvander_protocol::{
     AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
     ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,
     SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
-    SessionEffectiveConfig, SessionWorkspaceBinding,
+    SessionEffectiveConfig, SessionWorkspaceBinding, SessionWorkspaceMount,
+    WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 
 #[cfg(test)]
@@ -599,6 +600,14 @@ pub fn resolve_session_config(
     }
     validate_local_workspace_root(&agent.execution_targets, agent_workspace.as_ref())?;
     validate_local_workspace_root(&agent.execution_targets, user_workspace.as_ref())?;
+    let workspace_mounts = compose_workspace_mounts(
+        definition,
+        agent_workspace.as_ref(),
+        user_workspace.as_ref(),
+    )?;
+    for mount in &workspace_mounts {
+        validate_local_workspace_root(&agent.execution_targets, Some(&mount.binding))?;
+    }
     let agent_default = source(SessionConfigSourceKind::AgentDefault, &definition.spec.id.0);
     let session_override = source(SessionConfigSourceKind::SessionOverride, "session");
     let legacy = source(
@@ -622,6 +631,7 @@ pub fn resolve_session_config(
         prompt_manifest: Some(resolved_prompt.manifest),
         agent_workspace,
         user_workspace,
+        workspace_mounts,
         execution_target,
         provenance: SessionConfigProvenance {
             model: choose(
@@ -675,6 +685,99 @@ pub fn resolve_session_config(
             },
         },
     })
+}
+
+fn compose_workspace_mounts(
+    definition: &AgentDefinitionConfig,
+    agent_workspace: Option<&SessionWorkspaceBinding>,
+    user_workspace: Option<&SessionWorkspaceBinding>,
+) -> Result<Vec<SessionWorkspaceMount>, CompositionError> {
+    let mut mounts = Vec::with_capacity(definition.workspace_mounts.len() + 2);
+    if let Some(binding) = agent_workspace {
+        mounts.push(SessionWorkspaceMount {
+            reference: "agent".into(),
+            role: WorkspaceMountRole::AgentHome,
+            binding: binding.clone(),
+            capabilities: WorkspaceCapabilityPolicy {
+                read: true,
+                write: !binding.read_only,
+                command: false,
+                git: false,
+            },
+        });
+    }
+    if let Some(binding) = user_workspace {
+        mounts.push(SessionWorkspaceMount {
+            reference: "task".into(),
+            role: WorkspaceMountRole::Task,
+            binding: binding.clone(),
+            capabilities: WorkspaceCapabilityPolicy {
+                read: true,
+                write: !binding.read_only,
+                command: !binding.read_only,
+                git: true,
+            },
+        });
+    }
+    mounts.extend(
+        definition
+            .workspace_mounts
+            .iter()
+            .map(|mount| SessionWorkspaceMount {
+                reference: mount.reference.clone(),
+                role: mount.role,
+                binding: workspace_binding(&mount.binding),
+                capabilities: mount.capabilities,
+            }),
+    );
+
+    validate_workspace_mounts(&mounts)?;
+    Ok(mounts)
+}
+
+fn validate_workspace_mounts(mounts: &[SessionWorkspaceMount]) -> Result<(), CompositionError> {
+    let mut references = std::collections::HashSet::new();
+    let mut locations = std::collections::HashSet::new();
+    for mount in mounts {
+        let reference = mount.reference.trim();
+        if reference.is_empty()
+            || reference.len() > 48
+            || !reference.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+            })
+        {
+            return Err(CompositionError::InvalidWorkspaceMountReference(
+                mount.reference.clone(),
+            ));
+        }
+        if !references.insert(reference.to_owned()) {
+            return Err(CompositionError::DuplicateWorkspaceMountReference(
+                reference.to_owned(),
+            ));
+        }
+        let location = (
+            mount.binding.execution_target.clone(),
+            mount.binding.path.clone(),
+        );
+        if !locations.insert(location) {
+            return Err(CompositionError::DuplicateWorkspaceMountLocation(
+                reference.to_owned(),
+            ));
+        }
+        if mount.binding.read_only && (mount.capabilities.write || mount.capabilities.command) {
+            return Err(CompositionError::WorkspaceMountCapabilityConflict(
+                reference.to_owned(),
+            ));
+        }
+        if !mount.capabilities.read
+            && (mount.capabilities.write || mount.capabilities.command || mount.capabilities.git)
+        {
+            return Err(CompositionError::WorkspaceMountCapabilityConflict(
+                reference.to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> SessionWorkspaceBinding {
@@ -1150,6 +1253,14 @@ pub enum CompositionError {
     WorkspaceOutsideExecutionRoot { workspace: String, root: String },
     #[error("workspace and session execution targets do not match")]
     WorkspaceExecutionTargetMismatch,
+    #[error("workspace mount reference `{0}` is invalid")]
+    InvalidWorkspaceMountReference(String),
+    #[error("workspace mount reference `{0}` is duplicated")]
+    DuplicateWorkspaceMountReference(String),
+    #[error("workspace mount `{0}` duplicates another execution target and path")]
+    DuplicateWorkspaceMountLocation(String),
+    #[error("workspace mount `{0}` has capabilities that conflict with its binding")]
+    WorkspaceMountCapabilityConflict(String),
     #[error("approval policy `ask` requires approvals to be enabled")]
     ApprovalDisabled,
     #[error("session system prompt overrides are disabled")]
@@ -1586,6 +1697,43 @@ path = "/tmp/sylvander-test.sock"
                     },
                 },
             });
+        config.agents[0].agent_workspace = Some(crate::config::WorkspaceBindingConfig {
+            execution_target: "local".into(),
+            path: "/agent-home".into(),
+            read_only: true,
+        });
+        config.agents[0].workspace_mounts = vec![
+            crate::config::WorkspaceMountConfig {
+                reference: "shared-lib".into(),
+                role: WorkspaceMountRole::Dependency,
+                binding: crate::config::WorkspaceBindingConfig {
+                    execution_target: "local".into(),
+                    path: "/dependencies/shared-lib".into(),
+                    read_only: true,
+                },
+                capabilities: WorkspaceCapabilityPolicy {
+                    read: true,
+                    write: false,
+                    command: false,
+                    git: true,
+                },
+            },
+            crate::config::WorkspaceMountConfig {
+                reference: "artifacts".into(),
+                role: WorkspaceMountRole::Artifact,
+                binding: crate::config::WorkspaceBindingConfig {
+                    execution_target: "local".into(),
+                    path: "/artifacts".into(),
+                    read_only: false,
+                },
+                capabilities: WorkspaceCapabilityPolicy {
+                    read: true,
+                    write: true,
+                    command: false,
+                    git: false,
+                },
+            },
+        ];
         let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
@@ -1631,6 +1779,26 @@ path = "/tmp/sylvander-test.sock"
         assert_eq!(effective.prompt_profile.as_deref(), Some("optimized"));
         assert_eq!(effective.execution_target, "local");
         assert_eq!(
+            effective
+                .workspace_mounts
+                .iter()
+                .map(|mount| (mount.reference.as_str(), mount.role))
+                .collect::<Vec<_>>(),
+            vec![
+                ("agent", WorkspaceMountRole::AgentHome),
+                ("task", WorkspaceMountRole::Task),
+                ("shared-lib", WorkspaceMountRole::Dependency),
+                ("artifacts", WorkspaceMountRole::Artifact),
+            ]
+        );
+        assert!(
+            effective
+                .workspace_mounts
+                .iter()
+                .find(|mount| mount.reference == "artifacts")
+                .is_some_and(|mount| mount.capabilities.write)
+        );
+        assert_eq!(
             effective.user_workspace.unwrap().path,
             std::path::PathBuf::from("/work/project")
         );
@@ -1638,6 +1806,31 @@ path = "/tmp/sylvander-test.sock"
             effective.provenance.user_workspace.kind,
             SessionConfigSourceKind::LegacyMigration
         );
+
+        agents[0]
+            .definition
+            .workspace_mounts
+            .push(crate::config::WorkspaceMountConfig {
+                reference: "task".into(),
+                role: WorkspaceMountRole::Dependency,
+                binding: crate::config::WorkspaceBindingConfig {
+                    execution_target: "local".into(),
+                    path: "/collision".into(),
+                    read_only: true,
+                },
+                capabilities: WorkspaceCapabilityPolicy::default(),
+            });
+        assert!(matches!(
+            resolve_session_config(
+                &agents[0],
+                &SessionConfigOverrides::default(),
+                None,
+                Some(std::path::Path::new("/work/project")),
+            ),
+            Err(CompositionError::DuplicateWorkspaceMountReference(reference))
+                if reference == "task"
+        ));
+        agents[0].definition.workspace_mounts.pop();
         assert_eq!(effective.system_prompt_sha256.len(), 64);
         assert!(effective.prompt_manifest.is_some());
 

@@ -520,6 +520,15 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P2.1 Workspace composition:** Agent home plus task/dependency/artifact
   mounts, logical references, capability policy, collision rules, and effective
   workspace inspection.
+
+  Current evidence: the effective session configuration now carries the
+  canonical role-bearing mount set. Agent home and task bindings become
+  `@agent` and `@task`; configured dependency and artifact mounts retain their
+  declared logical references and independent read/write/command/Git policy.
+  Invalid references, duplicate references, duplicate target/path locations,
+  and read-only capability conflicts fail before a turn can execute. Public
+  Agent administration preserves mount definitions and redacted inspection
+  reports their count. File-tool logical routing remains the next P2.1 slice.
 - [ ] **P2.2 AGENTS.md resolver:** hierarchical discovery across Agent/task
   workspaces, precedence, aliases, size limits, provenance, cache invalidation,
   and prompt integration.

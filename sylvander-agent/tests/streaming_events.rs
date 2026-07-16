@@ -616,6 +616,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         prompt_manifest: Some(composed.manifest),
         agent_workspace: None,
         user_workspace: None,
+        workspace_mounts: Vec::new(),
         execution_target: "local".into(),
         provenance,
     };

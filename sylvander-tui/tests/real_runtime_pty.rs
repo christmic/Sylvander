@@ -241,6 +241,7 @@ impl HarnessUiService {
             prompt_manifest: Some(self.prompt_manifest.clone()),
             agent_workspace: None,
             user_workspace: request.overrides.user_workspace.clone(),
+            workspace_mounts: Vec::new(),
             execution_target: request
                 .overrides
                 .execution_target

@@ -2092,6 +2092,7 @@ impl AgentRunInner {
                 path: metadata.workspace.clone(),
                 read_only: false,
             }),
+            workspace_mounts: Vec::new(),
             execution_target: "local".into(),
             provenance: sylvander_protocol::SessionConfigProvenance {
                 model: source(),
@@ -3780,6 +3781,7 @@ mod tests {
                 path: workspace.into(),
                 read_only: false,
             }),
+            workspace_mounts: Vec::new(),
             execution_target: target_id.into(),
             provenance: sylvander_protocol::SessionConfigProvenance {
                 model: source(),

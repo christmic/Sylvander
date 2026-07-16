@@ -200,6 +200,7 @@ impl ServerConfig {
                         read_only: false,
                     }
                 }),
+                workspace_mounts: Vec::new(),
                 prompt_profiles: Vec::new(),
                 default_prompt_profile: None,
                 allow_session_prompt: false,

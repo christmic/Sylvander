@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, ModelSelection, SessionWorkspaceBinding};
+use crate::{AgentId, ModelSelection, SessionWorkspaceBinding, SessionWorkspaceMount};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -83,6 +83,8 @@ pub struct AgentDefinitionDraft {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default)]
+    pub workspace_mounts: Vec<SessionWorkspaceMount>,
+    #[serde(default)]
     pub prompt_profiles: Vec<AgentPromptProfileDraft>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_prompt_profile: Option<String>,
@@ -113,6 +115,7 @@ impl fmt::Debug for AgentDefinitionDraft {
                 "agent_workspace_configured",
                 &self.agent_workspace.is_some(),
             )
+            .field("workspace_mount_count", &self.workspace_mounts.len())
             .field("default_prompt_profile", &self.default_prompt_profile)
             .field("allow_session_prompt", &self.allow_session_prompt)
             .finish_non_exhaustive()
@@ -310,6 +313,7 @@ pub struct RedactedAgentDefinition {
     pub tool_presentations: Vec<AgentToolPresentationDraft>,
     pub behavior: AgentBehaviorDraft,
     pub agent_workspace_configured: bool,
+    pub workspace_mount_count: usize,
     #[serde(default)]
     pub prompt_profiles: Vec<RedactedAgentPromptProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -460,6 +464,7 @@ mod tests {
                 tool_presentations: Vec::new(),
                 behavior: AgentBehaviorDraft::default(),
                 agent_workspace: None,
+                workspace_mounts: Vec::new(),
                 prompt_profiles: Vec::new(),
                 default_prompt_profile: None,
                 allow_session_prompt: false,
@@ -504,6 +509,7 @@ mod tests {
                         tool_presentations: Vec::new(),
                         behavior: AgentBehaviorDraft::default(),
                         agent_workspace_configured: true,
+                        workspace_mount_count: 2,
                         prompt_profiles: Vec::new(),
                         default_prompt_profile: None,
                         allow_session_prompt: false,
