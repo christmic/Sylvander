@@ -136,6 +136,7 @@ use crate::memory_maintenance::{
 };
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
+use crate::user_profile_store::UserProfileStore;
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
@@ -199,6 +200,8 @@ struct RuntimeUiService {
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     evidence: Option<EvidenceStore>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
+    #[allow(dead_code)] // consumed by UserProfile dispatch in the next bounded batch
+    user_profiles: Option<UserProfileStore>,
     boundary: BoundaryGuard,
 }
 
@@ -2312,6 +2315,7 @@ impl Runtime {
             credential_resolver: None,
             evidence: None,
             identity_bindings: None,
+            user_profiles: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
         Ok(Self {
@@ -2348,6 +2352,12 @@ impl Runtime {
             .as_ref()
             .expect("resolved memory database")
             .clone();
+        let user_profile_db = config
+            .server
+            .user_profile_db
+            .as_ref()
+            .expect("resolved user profile database")
+            .clone();
         if let Some(parent) = session_db.parent() {
             std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
                 operation: "create session database directory",
@@ -2362,6 +2372,17 @@ impl Runtime {
                 message: error.to_string(),
             })?;
         }
+        if let Some(parent) = user_profile_db.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+                operation: "create user profile database directory",
+                path: parent.display().to_string(),
+                message: error.to_string(),
+            })?;
+        }
+
+        let user_profiles = UserProfileStore::open(&user_profile_db)
+            .await
+            .map_err(|_| RuntimeError::Store("open user profile store failed".into()))?;
 
         let agent_registry = AgentRegistry::open(session_db)
             .await
@@ -2665,6 +2686,7 @@ impl Runtime {
             credential_resolver: Some(credential_resolver),
             evidence: Some(security_audit),
             identity_bindings,
+            user_profiles: Some(user_profiles),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
@@ -3084,6 +3106,10 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .memory_db
         .get_or_insert_with(|| data_dir.join("memory.db"));
+    config
+        .server
+        .user_profile_db
+        .get_or_insert_with(|| data_dir.join("user-profiles.db"));
     if let Some(MemoryIntegrityBackend::File { anchor_path }) =
         config.server.memory_maintenance.integrity.backend.as_ref()
     {
@@ -3462,6 +3488,7 @@ id = "model-a"
             credential_resolver: runtime.ui_service.credential_resolver.clone(),
             evidence: runtime.ui_service.evidence.clone(),
             identity_bindings: runtime.ui_service.identity_bindings.clone(),
+            user_profiles: runtime.ui_service.user_profiles.clone(),
             boundary: runtime.ui_service.boundary.clone(),
         }
     }
@@ -3763,6 +3790,10 @@ id = "model-a"
 
         let resolved = with_resolved_paths(config.clone()).unwrap();
         assert_eq!(resolved.server.memory_db, Some(data_dir.join("memory.db")));
+        assert_eq!(
+            resolved.server.user_profile_db,
+            Some(data_dir.join("user-profiles.db"))
+        );
 
         let explicit = directory.path().join("stores/custom-memory.db");
         config.server.memory_db = Some(explicit.clone());

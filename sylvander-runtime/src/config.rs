@@ -46,6 +46,7 @@ pub struct ServerSettings {
     pub data_dir: Option<PathBuf>,
     pub session_db: Option<PathBuf>,
     pub memory_db: Option<PathBuf>,
+    pub user_profile_db: Option<PathBuf>,
     pub workspace_journal: Option<PathBuf>,
     #[serde(default)]
     pub memory_maintenance: MemoryMaintenanceSettings,
@@ -66,6 +67,7 @@ impl Default for ServerSettings {
             data_dir: None,
             session_db: None,
             memory_db: None,
+            user_profile_db: None,
             workspace_journal: None,
             memory_maintenance: MemoryMaintenanceSettings::default(),
             approval: ApprovalSettings::default(),
