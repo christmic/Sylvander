@@ -186,7 +186,7 @@ mod tests {
     };
 
     fn protected_store(directory: &std::path::Path) -> SqliteMemoryStore {
-        SqliteMemoryStore::open_with_integrity(
+        let store = SqliteMemoryStore::open_with_integrity(
             directory.join("memory.db"),
             RelationshipMemoryRetentionPolicy::default(),
             MemoryIntegrityConfig::new(
@@ -195,7 +195,12 @@ mod tests {
             )
             .unwrap(),
         )
-        .unwrap()
+        .unwrap();
+        store
+            .maintenance()
+            .activate_staged_retention_policy()
+            .unwrap();
+        store
     }
 
     #[test]
