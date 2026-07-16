@@ -1044,7 +1044,36 @@ pub enum FeedbackRating {
     Negative,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackTaskResult {
+    Succeeded,
+    Failed,
+    Partial,
+    Cancelled,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackPrivacyClass {
+    MetadataOnly,
+    #[default]
+    Private,
+    Shareable,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceReference {
+    pub locator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RunFeedback {
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1052,8 +1081,18 @@ pub struct RunFeedback {
     pub rating: FeedbackRating,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correction: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_result: Option<FeedbackTaskResult>,
+    #[serde(default)]
+    pub artifacts: Vec<EvidenceReference>,
+    #[serde(default)]
+    pub validations: Vec<EvidenceReference>,
+    #[serde(default)]
+    pub privacy_class: FeedbackPrivacyClass,
 }
 
 // ===========================================================================
@@ -2043,7 +2082,18 @@ mod tests {
             turn_id: Some("turn-2".into()),
             rating: FeedbackRating::Negative,
             note: Some("tool changed the wrong file".into()),
+            correction: Some("edit src/api.rs instead".into()),
             tags: vec!["correctness".into()],
+            task_result: Some(FeedbackTaskResult::Failed),
+            artifacts: vec![EvidenceReference {
+                locator: "worktree:session-1".into(),
+                digest_sha256: None,
+            }],
+            validations: vec![EvidenceReference {
+                locator: "test:cargo-test".into(),
+                digest_sha256: Some("a".repeat(64)),
+            }],
+            privacy_class: FeedbackPrivacyClass::Private,
         };
         let json = serde_json::to_value(&feedback).unwrap();
         assert_eq!(json["rating"], "negative");

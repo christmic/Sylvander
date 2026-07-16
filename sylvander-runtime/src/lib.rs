@@ -6852,7 +6852,12 @@ model_name = "model-a"
                 turn_id: Some("feedback-auth-turn".into()),
                 rating: sylvander_protocol::FeedbackRating::Positive,
                 note: None,
+                correction: None,
                 tags: Vec::new(),
+                task_result: None,
+                artifacts: Vec::new(),
+                validations: Vec::new(),
+                privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
             },
         };
         sylvander_channel::UiService::authorize_message(
@@ -7588,7 +7593,12 @@ model_name = "model-a"
                 turn_id: Some("feedback-auth-turn".into()),
                 rating: sylvander_protocol::FeedbackRating::Positive,
                 note: None,
+                correction: None,
                 tags: Vec::new(),
+                task_result: None,
+                artifacts: Vec::new(),
+                validations: Vec::new(),
+                privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
             },
         )
         .await
