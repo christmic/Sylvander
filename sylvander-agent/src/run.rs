@@ -58,6 +58,9 @@ use crate::tools::MemoryReadTool;
 use crate::tools::memory::{
     MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
+use crate::workspace_executor::{
+    LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
+};
 
 #[path = "workspace_context.rs"]
 mod workspace_context;
@@ -87,6 +90,8 @@ pub(crate) struct AgentRunInner {
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
     workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
+    /// Server-owned executor adapters keyed by exact execution-target id.
+    workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
     /// Handle to the message bus.
     bus: Arc<dyn MessageBus>,
     /// Per-session conversation state.
@@ -2348,6 +2353,7 @@ impl AgentRunInner {
             ToolSessionExecution {
                 metadata: &session_metadata,
                 effective_config: effective_config.as_ref(),
+                workspace_executors: &self.workspace_executors,
             },
             &self.id,
             &session_id,
@@ -2783,6 +2789,7 @@ impl TurnCorrelation {
 struct ToolSessionExecution<'a> {
     metadata: &'a SessionMetadata,
     effective_config: Option<&'a sylvander_protocol::SessionEffectiveConfig>,
+    workspace_executors: &'a HashMap<String, Arc<dyn WorkspaceExecutor>>,
 }
 
 fn tool_context_for_permissions(
@@ -2821,7 +2828,19 @@ fn tool_context_for_permissions(
     let permission_read_only =
         permissions.file_access != sylvander_protocol::FileAccess::WorkspaceWrite;
     let read_only = permission_read_only || binding.is_some_and(|binding| binding.read_only);
-    context = context.with_execution_target(target_id, workspace, read_only);
+    let target = WorkspaceTarget {
+        id: target_id.to_owned(),
+        workspace_path: workspace.to_path_buf(),
+        read_only,
+    };
+    let executor = execution
+        .workspace_executors
+        .get(target_id)
+        .cloned()
+        .unwrap_or_else(|| {
+            Arc::new(UnavailableExecutor::new(target_id)) as Arc<dyn WorkspaceExecutor>
+        });
+    context = context.with_executor(executor, target);
     if target_id == "local"
         && !read_only
         && let Some(journal) = workspace_journal
@@ -2888,6 +2907,7 @@ pub struct AgentRunBuilder {
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
+    workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
 }
 
 enum AgentRunModelBackend {
@@ -2930,6 +2950,10 @@ impl AgentRunBuilder {
     }
 
     fn with_backend(spec: AgentSpec, backend: AgentRunModelBackend) -> Self {
+        let workspace_executors = HashMap::from([(
+            "local".to_owned(),
+            Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        )]);
         Self {
             spec,
             backend,
@@ -2951,6 +2975,7 @@ impl AgentRunBuilder {
             approval_rules: Vec::new(),
             approval_store_path: None,
             workspace_journal_path: None,
+            workspace_executors,
         }
     }
 
@@ -3088,6 +3113,20 @@ impl AgentRunBuilder {
         self
     }
 
+    /// Register the adapter responsible for one exact execution target.
+    ///
+    /// `local` is registered by default and can be replaced explicitly (for
+    /// example by a sandbox adapter). Unknown target ids remain unavailable.
+    #[must_use]
+    pub fn workspace_executor(
+        mut self,
+        target_id: impl Into<String>,
+        executor: Arc<dyn WorkspaceExecutor>,
+    ) -> Self {
+        self.workspace_executors.insert(target_id.into(), executor);
+        self
+    }
+
     pub fn override_compression(
         mut self,
         pipeline: crate::compress::pipeline::CompressionPipeline,
@@ -3106,6 +3145,11 @@ impl AgentRunBuilder {
     pub fn build_with_session_issuer(
         self,
     ) -> Result<(AgentRun, AgentSessionIssuer), AgentRunError> {
+        if self.workspace_executors.keys().any(String::is_empty) {
+            return Err(AgentRunError::Build(
+                "workspace executor target id must not be empty".into(),
+            ));
+        }
         let id = self.spec.id.clone();
         let bus = self
             .bus
@@ -3276,6 +3320,7 @@ impl AgentRunBuilder {
                 user_profile_provider: self.user_profile_provider,
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
+                workspace_executors: self.workspace_executors,
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 authenticated_sessions: RwLock::new(HashSet::new()),
@@ -3409,6 +3454,99 @@ mod tests {
     #[derive(Default)]
     struct RecordingProvider {
         requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
+    }
+
+    #[derive(Debug)]
+    struct MarkerWorkspaceExecutor {
+        marker: &'static [u8],
+        reads: std::sync::Mutex<Vec<WorkspaceTarget>>,
+    }
+
+    impl MarkerWorkspaceExecutor {
+        fn new(marker: &'static [u8]) -> Self {
+            Self {
+                marker,
+                reads: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceExecutor for MarkerWorkspaceExecutor {
+        async fn read_file(
+            &self,
+            target: &WorkspaceTarget,
+            _relative_path: &str,
+        ) -> Result<Vec<u8>, crate::workspace_executor::WorkspaceExecutorError> {
+            self.reads.lock().unwrap().push(target.clone());
+            Ok(self.marker.to_vec())
+        }
+
+        async fn write_file(
+            &self,
+            _target: &WorkspaceTarget,
+            _relative_path: &str,
+            _content: &[u8],
+        ) -> Result<(), crate::workspace_executor::WorkspaceExecutorError> {
+            Ok(())
+        }
+
+        async fn run_command(
+            &self,
+            _target: &WorkspaceTarget,
+            _command: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<
+            crate::workspace_executor::WorkspaceCommandOutput,
+            crate::workspace_executor::WorkspaceExecutorError,
+        > {
+            Ok(crate::workspace_executor::WorkspaceCommandOutput {
+                success: true,
+                status_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    fn remote_effective_config(
+        target_id: &str,
+        workspace: &str,
+    ) -> sylvander_protocol::SessionEffectiveConfig {
+        let source = || sylvander_protocol::SessionConfigSource {
+            kind: sylvander_protocol::SessionConfigSourceKind::LegacyMigration,
+            reference: None,
+        };
+        sylvander_protocol::SessionEffectiveConfig {
+            agent_id: AgentId::new("test-agent"),
+            agent_revision: 0,
+            provider_id: "test".into(),
+            provider_revision: None,
+            model_id: "test".into(),
+            model_revision: None,
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            permissions: sylvander_protocol::PermissionProfile::default(),
+            prompt_profile: None,
+            system_prompt_sha256: String::new(),
+            prompt_manifest: None,
+            agent_workspace: None,
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: target_id.into(),
+                path: workspace.into(),
+                read_only: false,
+            }),
+            execution_target: target_id.into(),
+            provenance: sylvander_protocol::SessionConfigProvenance {
+                model: source(),
+                reasoning_effort: source(),
+                permissions: source(),
+                prompt_profile: source(),
+                system_prompt: source(),
+                agent_workspace: source(),
+                user_workspace: source(),
+                execution_target: source(),
+            },
+        }
     }
 
     impl sylvander_llm_core::ModelProvider for RecordingProvider {
@@ -4400,6 +4538,10 @@ mod tests {
             ToolSessionExecution {
                 metadata: &metadata,
                 effective_config: None,
+                workspace_executors: &HashMap::from([(
+                    "local".to_owned(),
+                    Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+                )]),
             },
             &AgentId::new("agent"),
             &SessionId::new("session"),
@@ -4423,6 +4565,135 @@ mod tests {
         assert!(context.has_cap(Cap::MemoryRead));
         assert_eq!(context.user_id().0, metadata.user_id);
         assert_eq!(context.session.request.trace_id.as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn builder_registers_local_and_injected_workspace_executors() {
+        let (spec, client) = test_spec_and_client();
+        let remote: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
+        let run = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .workspace_executor("ssh:build", remote.clone())
+            .build()
+            .expect("build");
+
+        assert!(run.inner.workspace_executors.contains_key("local"));
+        assert!(Arc::ptr_eq(
+            run.inner.workspace_executors.get("ssh:build").unwrap(),
+            &remote
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_context_resolves_the_effective_execution_target() {
+        let metadata = test_metadata();
+        let effective = remote_effective_config("ssh:build", "/remote/project");
+        let remote = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
+        let executors = HashMap::from([(
+            "ssh:build".to_owned(),
+            remote.clone() as Arc<dyn WorkspaceExecutor>,
+        )]);
+        let context = tool_context_for_permissions(
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: Some(&effective),
+                workspace_executors: &executors,
+            },
+            &AgentId::new("agent"),
+            &SessionId::new("session"),
+            &sylvander_protocol::PermissionProfile::default(),
+            false,
+            None,
+            Some("turn-1"),
+        );
+
+        let bytes = context
+            .executor
+            .read_file(&context.execution_target, "README.md")
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"remote");
+        assert_eq!(context.execution_target.id, "ssh:build");
+        assert_eq!(
+            context.execution_target.workspace_path,
+            Path::new("/remote/project")
+        );
+        assert_eq!(
+            remote.reads.lock().unwrap().as_slice(),
+            &[context.execution_target]
+        );
+    }
+
+    #[tokio::test]
+    async fn executor_resolution_is_rebuilt_after_agent_restart() {
+        let metadata = test_metadata();
+        let effective = remote_effective_config("container:dev", "/workspace");
+        let old: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"old"));
+        let new: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"new"));
+        let (spec, client) = test_spec_and_client();
+        let before_restart = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .workspace_executor("container:dev", old)
+            .build()
+            .unwrap();
+        drop(before_restart);
+        let (spec, client) = test_spec_and_client();
+        let after_restart = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .workspace_executor("container:dev", new)
+            .build()
+            .unwrap();
+        let permissions = sylvander_protocol::PermissionProfile::default();
+        let context_after_restart = tool_context_for_permissions(
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: Some(&effective),
+                workspace_executors: &after_restart.inner.workspace_executors,
+            },
+            &AgentId::new("agent"),
+            &SessionId::new("restored-session"),
+            &permissions,
+            false,
+            None,
+            Some("new-turn"),
+        );
+
+        let bytes = context_after_restart
+            .executor
+            .read_file(&context_after_restart.execution_target, "Cargo.toml")
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"new");
+    }
+
+    #[tokio::test]
+    async fn unknown_execution_target_is_explicitly_unavailable() {
+        let metadata = test_metadata();
+        let effective = remote_effective_config("ssh:missing", "/remote/project");
+        let context = tool_context_for_permissions(
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: Some(&effective),
+                workspace_executors: &HashMap::new(),
+            },
+            &AgentId::new("agent"),
+            &SessionId::new("session"),
+            &sylvander_protocol::PermissionProfile::default(),
+            false,
+            None,
+            None,
+        );
+
+        let error = context
+            .executor
+            .read_file(&context.execution_target, "README.md")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::workspace_executor::WorkspaceExecutorError::Unavailable(target)
+                if target == "ssh:missing"
+        ));
     }
 
     #[test]

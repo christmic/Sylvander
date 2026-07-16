@@ -32,6 +32,35 @@ Startup is fail-fast and ordered:
 No channel accepts traffic when an Agent, model, secret, bind address, or
 session store fails to initialize.
 
+## Execution targets
+
+Built-in coding tools resolve the session's exact execution target on every
+turn. `local` executes below the configured local root. An SSH target uses the
+system OpenSSH client with batch mode, a bounded operation timeout, and one
+configured identity. Its `credential` secret resolves to the absolute path of
+that identity file; it is a path reference, not private-key content. For
+example:
+
+```toml
+[[execution_targets]]
+id = "build-host"
+
+[execution_targets.transport]
+kind = "ssh"
+host = "build.example.com"
+port = 22
+user = "builder"
+
+[execution_targets.transport.credential]
+source = "env"
+name = "SYLVANDER_SSH_IDENTITY_PATH"
+```
+
+Workspace paths for SSH targets are absolute paths on the remote host. Unknown
+or unimplemented targets fail explicitly before a tool can fall back to the
+server filesystem. A read-only workspace permits reads and rejects writes,
+edits, and commands.
+
 ## Agents, providers, and models
 
 `model_providers` contains credentials and a catalog of model capabilities.
