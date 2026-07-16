@@ -30,6 +30,8 @@ pub struct SelfChangeExperiment {
     pub lease_id: String,
     pub branch: String,
     pub base_commit: String,
+    pub proposal_state_revision: u64,
+    pub started_by_principal_digest: String,
     pub created_at: i64,
 }
 
@@ -41,6 +43,7 @@ pub struct StoredSelfChangeExperiment {
     pub baseline_bundle_id: Option<String>,
     pub candidate_bundle_id: Option<String>,
     pub merge_commit: Option<String>,
+    pub rollback_commit: Option<String>,
     pub observation_bundle_id: Option<String>,
     pub merge_approved_by: Option<String>,
 }

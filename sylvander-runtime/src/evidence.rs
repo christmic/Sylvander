@@ -16,6 +16,8 @@ mod analysis;
 mod analysis_types;
 mod evaluation;
 mod evaluation_types;
+mod experiment_signer;
+mod experiment_types;
 mod proposal;
 mod proposal_types;
 mod recorder;
@@ -28,6 +30,13 @@ pub use evaluation_types::{
     EvaluationBaseline, EvaluationCase, EvaluationComparison, EvaluationDatasetRevision,
     EvaluationSplit, MetricMeasurement, RegressionDecision, RegressionMetric, ScoreDirection,
     ScoringAdapterKind, ScoringAdapterRevision, StoredEvaluationBaseline, StoredEvaluationDataset,
+};
+pub use experiment_signer::{
+    ExperimentEvidenceSigner, HmacSha256EvidenceSigner, sign_experiment_evidence,
+};
+pub use experiment_types::{
+    ExperimentPhase, SelfChangeExperiment, SelfChangeExperimentStatus, SignedExperimentEvidence,
+    StoredSelfChangeExperiment, UnsignedExperimentEvidence,
 };
 pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
@@ -1066,6 +1075,8 @@ pub enum EvidenceError {
     ProposalStateConflict,
     #[error("stored improvement proposal data is invalid")]
     InvalidProposalData,
+    #[error("self-change experiment evidence is invalid")]
+    InvalidExperimentEvidence,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
