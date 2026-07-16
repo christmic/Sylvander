@@ -2633,6 +2633,7 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::AgentAdmin { .. } => "agent_admin",
         Message::RegistryAdmin { .. } => "registry_admin",
         Message::UserProfile { .. } => "user_profile",
+        Message::IdentityBinding { .. } => "identity_binding",
         Message::ListSessions => "list_sessions",
         Message::LoadSession { .. } => "load_session",
         Message::ReattachSession { .. } => "reattach_session",

@@ -364,6 +364,7 @@ fn ui_protocol_capabilities(version: u16) -> Vec<String> {
         ("compaction", 1),
         ("credential_registry_lifecycle", 3),
         ("diagnostics", 1),
+        (sylvander_protocol::IDENTITY_BINDING_CAPABILITY, 1),
         ("model_selection", 1),
         ("plans", 1),
         ("provider_model_registry_lifecycle", 3),
@@ -1025,6 +1026,19 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             };
             let _ = tx.send(ServerMsg::UserProfile { response });
+        }
+        ClientMsg::IdentityBinding { request } => {
+            let operation = request.operation();
+            let response = match Arc::into_inner(request) {
+                Some(request) => ctx.submit_identity_binding(boundary, request).await,
+                None => sylvander_protocol::IdentityBindingResponse::Error {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    error: sylvander_protocol::IdentityBindingError::service_unavailable(operation),
+                },
+            };
+            let _ = tx.send(ServerMsg::IdentityBinding {
+                response: Arc::new(response),
+            });
         }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(
@@ -1962,6 +1976,33 @@ mod tests {
             Ok("feedback-1".into())
         }
 
+        fn identity_binding_capabilities(&self) -> sylvander_protocol::IdentityBindingCapabilities {
+            sylvander_protocol::IdentityBindingCapabilities::current()
+        }
+
+        async fn identity_binding(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            identity: sylvander_channel::AuthenticatedTransportIdentity,
+            _request: sylvander_protocol::IdentityBindingRequest,
+        ) -> sylvander_protocol::IdentityBindingResponse {
+            let (transport, instance, principal) = identity.into_parts();
+            assert_eq!(transport, boundary.transport);
+            assert_eq!(instance, boundary.channel_instance_id);
+            assert_eq!(
+                principal,
+                boundary.principal.as_ref().expect("principal").id.0
+            );
+            sylvander_protocol::IdentityBindingResponse::Resolved {
+                version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                binding: sylvander_protocol::IdentityBindingView {
+                    user_id: sylvander_protocol::UserId::new("stable-user"),
+                    revision: 7,
+                    linked_at_unix_secs: 11,
+                },
+            }
+        }
+
         async fn compact_session(
             &self,
             boundary: &sylvander_protocol::BoundaryContext,
@@ -2265,6 +2306,7 @@ mod tests {
                     reloadable: true,
                 }],
                 commands: Vec::new(),
+                tool_presentations: Vec::new(),
             }
         }));
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2330,6 +2372,61 @@ mod tests {
         assert!(matches!(
             rx.recv().await.expect("feedback response"),
             ServerMsg::FeedbackRecorded { feedback_id } if feedback_id == "feedback-1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn identity_binding_round_trip_uses_authenticated_unix_ingress() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(EmptyUiService::default())),
+            None,
+        );
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "unix:local:uid:501",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "local",
+            "unix",
+            "identity-request",
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_client_msg_for_client(
+            ClientMsg::IdentityBinding {
+                request: Arc::new(sylvander_protocol::IdentityBindingRequest {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    action: sylvander_protocol::IdentityBindingAction::Resolve {},
+                }),
+            },
+            ClientHandler {
+                boundary: &boundary,
+                ctx: &context,
+                agent_id: &AgentId::new("agent-1"),
+                tx: &tx,
+                runtime: &runtime_info(),
+                hub: &Arc::new(Mutex::new(RelayHub::default())),
+                client_id: 1,
+                ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
+            },
+        )
+        .await;
+
+        let response = rx.recv().await.expect("identity response");
+        let encoded = serde_json::to_string(&response).expect("serialize once");
+        let decoded: ServerMsg = serde_json::from_str(&encoded).expect("decode response");
+        assert!(matches!(
+            decoded,
+            ServerMsg::IdentityBinding { response }
+                if matches!(
+                    response.as_ref(),
+                    sylvander_protocol::IdentityBindingResponse::Resolved {
+                        binding,
+                        ..
+                    } if binding.user_id == sylvander_protocol::UserId::new("stable-user")
+                        && binding.revision == 7
+                )
         ));
     }
 
@@ -2507,6 +2604,10 @@ mod tests {
         let v1 = ui_protocol_capabilities(1);
         let v2 = ui_protocol_capabilities(2);
         let v3 = ui_protocol_capabilities(3);
+        assert!(
+            v1.iter()
+                .any(|item| item == sylvander_protocol::IDENTITY_BINDING_CAPABILITY)
+        );
         assert!(!v1.iter().any(|item| item.contains("administration")));
         assert!(
             !v1.iter()

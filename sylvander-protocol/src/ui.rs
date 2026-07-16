@@ -2,6 +2,8 @@
 //!
 //! Transports encode these messages; they do not define competing wire types.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -74,6 +76,9 @@ pub enum UiClientMessage {
     },
     UserProfile {
         request: crate::UserProfileRequest,
+    },
+    IdentityBinding {
+        request: Arc<crate::IdentityBindingRequest>,
     },
     ListSessions,
     LoadSession {
@@ -327,6 +332,9 @@ pub enum UiServerMessage {
     },
     UserProfile {
         response: crate::UserProfileResponse,
+    },
+    IdentityBinding {
+        response: Arc<crate::IdentityBindingResponse>,
     },
     RuntimeInfo {
         /// Legacy model-only identity retained for older clients.
@@ -658,5 +666,29 @@ mod tests {
             serde_json::from_value::<UiServerMessage>(json).unwrap(),
             server
         );
+    }
+
+    #[test]
+    fn identity_binding_reuses_the_strict_owner_free_subprotocol() {
+        let client: UiClientMessage = serde_json::from_value(serde_json::json!({
+            "type": "identity_binding",
+            "request": {
+                "version": 1,
+                "action": {"operation": "resolve"}
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            client,
+            UiClientMessage::IdentityBinding { request }
+                if matches!(request.action, crate::IdentityBindingAction::Resolve {})
+        ));
+
+        let server = UiServerMessage::IdentityBinding {
+            response: std::sync::Arc::new(crate::IdentityBindingResponse::NotLinked { version: 1 }),
+        };
+        let json = serde_json::to_value(server).unwrap();
+        assert_eq!(json["type"], "identity_binding");
+        assert_eq!(json["response"]["result"], "not_linked");
     }
 }
