@@ -133,6 +133,7 @@ impl Default for ModalStack {
 
 pub mod approval;
 pub mod ask_user;
+pub mod coding_session;
 pub mod file_mention;
 pub mod help;
 pub mod model_picker;
@@ -146,6 +147,7 @@ pub mod tool_inspector;
 
 pub use approval::ApprovalModal;
 pub use ask_user::AskUserModal;
+pub use coding_session::CodingSessionConfirmationModal;
 pub use file_mention::FileMentionModal;
 pub use help::HelpModal;
 pub use model_picker::ModelPicker;

@@ -1219,6 +1219,100 @@ impl sylvander_channel::UiService for RuntimeUiService {
         })
     }
 
+    async fn inspect_coding_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CodingSessionDiff, sylvander_protocol::BoundaryError> {
+        self.owned_session(boundary, session_id, "inspect_coding_session")
+            .await?;
+        let manager = self.worktrees.clone().ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "inspect_coding_session",
+                "coding worktrees are unavailable",
+            )
+        })?;
+        let id = session_id.0.clone();
+        let diff = tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.inspect(&lease)
+        })
+        .await
+        .map_err(|_| {
+            boundary_failure(
+                boundary,
+                "inspect_coding_session",
+                "worktree inspection stopped",
+            )
+        })?
+        .map_err(|error| boundary_failure(boundary, "inspect_coding_session", error))?;
+        Ok(sylvander_protocol::CodingSessionDiff {
+            status: diff.status,
+            patch: diff.patch,
+        })
+    }
+
+    async fn accept_coding_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        self.owned_session(boundary, session_id, "accept_coding_session")
+            .await?;
+        let manager = self.worktrees.clone().ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "accept_coding_session",
+                "coding worktrees are unavailable",
+            )
+        })?;
+        let id = session_id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.accept(&lease)
+        })
+        .await
+        .map_err(|_| boundary_failure(boundary, "accept_coding_session", "worktree merge stopped"))?
+        .map_err(|error| boundary_failure(boundary, "accept_coding_session", error))
+    }
+
+    async fn discard_coding_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        let (session, agent) = self
+            .owned_session_agent(boundary, session_id, "discard_coding_session")
+            .await?;
+        let manager = self.worktrees.clone().ok_or_else(|| {
+            boundary_failure(
+                boundary,
+                "discard_coding_session",
+                "coding worktrees are unavailable",
+            )
+        })?;
+        let id = session_id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.discard(&lease)
+        })
+        .await
+        .map_err(|_| {
+            boundary_failure(
+                boundary,
+                "discard_coding_session",
+                "worktree discard stopped",
+            )
+        })?
+        .map_err(|error| boundary_failure(boundary, "discard_coding_session", error))?;
+        self.engine.detach_session(session_id).await;
+        agent.detach_authenticated_session(session_id).await;
+        self.sessions.delete(&session.id).await.map_err(|error| {
+            boundary_failure(boundary, "discard_coding_session", error.to_string())
+        })
+    }
+
     async fn agent_admin(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -2504,6 +2598,9 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::Compact { .. } => "compact",
         Message::PreviewWorkspaceRollback { .. } => "preview_workspace_rollback",
         Message::RollbackWorkspace { .. } => "rollback_workspace",
+        Message::InspectCodingSession { .. } => "inspect_coding_session",
+        Message::AcceptCodingSession { .. } => "accept_coding_session",
+        Message::DiscardCodingSession { .. } => "discard_coding_session",
         Message::SelectModel { .. } => "select_model",
         Message::SelectPermissions { .. } => "select_permissions",
         Message::Ping => "ping",
@@ -2532,7 +2629,10 @@ fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> 
         | Message::ForkSession { session_id, .. }
         | Message::Compact { session_id }
         | Message::PreviewWorkspaceRollback { session_id }
-        | Message::RollbackWorkspace { session_id, .. } => Some(session_id),
+        | Message::RollbackWorkspace { session_id, .. }
+        | Message::InspectCodingSession { session_id }
+        | Message::AcceptCodingSession { session_id }
+        | Message::DiscardCodingSession { session_id } => Some(session_id),
         Message::UpdateSessionConfig { request } => Some(&request.session_id.0),
         _ => None,
     }

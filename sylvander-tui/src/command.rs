@@ -26,6 +26,8 @@ pub enum CommandId {
     Attachments,
     Mention,
     Diff,
+    Accept,
+    Discard,
     Review,
     Config,
     Doctor,
@@ -170,9 +172,23 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Diff,
         name: "diff",
-        usage: "/diff [staged|unstaged]",
-        description: "Inspect workspace changes",
-        hint: "searchable · copyable",
+        usage: "/diff",
+        description: "Inspect this coding session's changes",
+        hint: "server worktree",
+    },
+    CommandSpec {
+        id: CommandId::Accept,
+        name: "accept",
+        usage: "/accept",
+        description: "Merge this coding session's reviewed changes",
+        hint: "confirmation required",
+    },
+    CommandSpec {
+        id: CommandId::Discard,
+        name: "discard",
+        usage: "/discard",
+        description: "Delete this coding session and its changes",
+        hint: "confirmation required",
     },
     CommandSpec {
         id: CommandId::Review,
@@ -403,6 +419,9 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Context
             | CommandId::Compact
             | CommandId::Rollback
+            | CommandId::Diff
+            | CommandId::Accept
+            | CommandId::Discard
             | CommandId::Model
             | CommandId::Permissions
             | CommandId::Mcp
@@ -423,6 +442,8 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
                 | CommandId::Review
                 | CommandId::Compact
                 | CommandId::Rollback
+                | CommandId::Accept
+                | CommandId::Discard
         )
     {
         return Unavailable("interrupt active work first".into());
@@ -435,6 +456,9 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Checkpoint
             | CommandId::Compact
             | CommandId::Rollback
+            | CommandId::Diff
+            | CommandId::Accept
+            | CommandId::Discard
     ) && state.session_id.is_none()
     {
         return Unavailable("requires a persisted session".into());
@@ -1064,14 +1088,37 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             )));
         }
         CommandId::Diff => {
-            let scope = diff_scope(&invocation)?;
+            require_no_args(&invocation)?;
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no coding session to inspect".to_string())?;
             state
                 .pending_actions
-                .push(crate::event::Action::InspectWorkspaceDiff {
-                    scope,
-                    workspace: state.metadata.workspace.clone(),
-                });
-            state.status = format!("Loading {}…", scope.label());
+                .push(crate::event::Action::InspectCodingSession { session_id });
+            state.status = "Loading coding session changes…".into();
+        }
+        CommandId::Accept => {
+            require_no_args(&invocation)?;
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no coding session to accept".to_string())?;
+            state.modals.push(Box::new(
+                crate::modal::CodingSessionConfirmationModal::accept(session_id),
+            ));
+            state.status = "Review merge confirmation".into();
+        }
+        CommandId::Discard => {
+            require_no_args(&invocation)?;
+            let session_id = state
+                .session_id
+                .clone()
+                .ok_or_else(|| "There is no coding session to discard".to_string())?;
+            state.modals.push(Box::new(
+                crate::modal::CodingSessionConfirmationModal::discard(session_id),
+            ));
+            state.status = "Review discard confirmation".into();
         }
         CommandId::Review => {
             if state.turn_active {
@@ -1703,18 +1750,17 @@ mod tests {
     }
 
     #[test]
-    fn diff_command_requests_a_scoped_read_only_workspace_effect() {
+    fn diff_command_inspects_the_server_coding_session() {
         let mut state = AppState::new();
-        state.metadata.workspace = "/workspace".into();
-        execute(parse("/diff staged").expect("parse"), &mut state).expect("execute");
+        state.connected = true;
+        state.session_id = Some("session-1".into());
+        execute(parse("/diff").expect("parse"), &mut state).expect("execute");
         assert!(matches!(
             state.pending_actions.as_slice(),
-            [crate::event::Action::InspectWorkspaceDiff {
-                scope: crate::event::WorkspaceDiffScope::Staged,
-                workspace,
-            }] if workspace == std::path::Path::new("/workspace")
+            [crate::event::Action::InspectCodingSession { session_id }]
+                if session_id == "session-1"
         ));
-        assert!(execute(parse("/diff unknown").expect("parse"), &mut state).is_err());
+        assert!(execute(parse("/diff staged").expect("parse"), &mut state).is_err());
     }
 
     #[test]

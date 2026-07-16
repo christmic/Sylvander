@@ -790,6 +790,45 @@ impl AppState {
                     compact_runtime_reason(&reason)
                 )));
             }
+            DomainEvent::CodingSessionDiffLoaded { status, patch } => {
+                let output = match (status.trim().is_empty(), patch.trim().is_empty()) {
+                    (true, true) => String::new(),
+                    (false, true) => format!("git status --short\n{status}"),
+                    (true, false) => patch,
+                    (false, false) => format!("git status --short\n{status}\n\ngit diff HEAD\n{patch}"),
+                };
+                if output.is_empty() {
+                    self.status = "Coding session has no changes".into();
+                } else {
+                    self.status = "Loaded coding session changes".into();
+                    self.modals.push(Box::new(ToolInspector::new(
+                        "coding-session-diff".into(),
+                        "coding session · git diff".into(),
+                        output,
+                    )));
+                }
+            }
+            DomainEvent::CodingSessionAccepted => {
+                self.status = "Coding changes merged".into();
+                self.messages.push(ChatMessage::Info(
+                    "coding session accepted · reviewed changes merged".into(),
+                ));
+            }
+            DomainEvent::CodingSessionDiscarded => {
+                self.status = "Coding session discarded · new session ready".into();
+                self.session_id = None;
+                self.messages.clear();
+                self.streaming.clear();
+                self.streaming_thinking.clear();
+                self.welcomed = false;
+            }
+            DomainEvent::CodingSessionOperationFailed { operation, reason } => {
+                self.status = format!(
+                    "Coding session {operation} failed: {}",
+                    compact_runtime_reason(&reason)
+                );
+                self.messages.push(ChatMessage::Info(self.status.clone()));
+            }
             DomainEvent::WorkspaceDiffLoaded { scope, diff } => {
                 if diff.is_empty() {
                     self.status = format!("No {}", scope.label());

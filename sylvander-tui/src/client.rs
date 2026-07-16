@@ -354,6 +354,15 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::WorkspaceRollbackFailed { reason, .. } => {
             DomainEvent::WorkspaceRollbackFailed { reason }
         }
+        ServerMsg::CodingSessionDiff { diff, .. } => DomainEvent::CodingSessionDiffLoaded {
+            status: diff.status,
+            patch: diff.patch,
+        },
+        ServerMsg::CodingSessionAccepted { .. } => DomainEvent::CodingSessionAccepted,
+        ServerMsg::CodingSessionDiscarded { .. } => DomainEvent::CodingSessionDiscarded,
+        ServerMsg::CodingSessionOperationFailed {
+            operation, reason, ..
+        } => DomainEvent::CodingSessionOperationFailed { operation, reason },
         ServerMsg::TextDelta { delta, .. } => DomainEvent::TextChunk { delta },
         ServerMsg::ThinkingDelta { delta, .. } => DomainEvent::ThinkingChunk { delta },
         ServerMsg::ModelRetry {

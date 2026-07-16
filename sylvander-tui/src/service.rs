@@ -145,6 +145,15 @@ impl AgentService {
                 session_id,
                 expected_turn_id,
             },
+            Action::InspectCodingSession { session_id } => {
+                ClientMsg::InspectCodingSession { session_id }
+            }
+            Action::AcceptCodingSession { session_id } => {
+                ClientMsg::AcceptCodingSession { session_id }
+            }
+            Action::DiscardCodingSession { session_id } => {
+                ClientMsg::DiscardCodingSession { session_id }
+            }
             Action::SelectModel {
                 session_id,
                 model,

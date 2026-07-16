@@ -307,6 +307,33 @@ pub trait UiService: Send + Sync {
         Err(unavailable_ui_control(boundary, "rollback_workspace"))
     }
 
+    /// Inspect the isolated coding worktree owned by a session.
+    async fn inspect_coding_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CodingSessionDiff, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "inspect_coding_session"))
+    }
+
+    /// Merge the reviewed coding worktree into its source branch.
+    async fn accept_coding_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "accept_coding_session"))
+    }
+
+    /// Delete an isolated coding worktree and its session.
+    async fn discard_coding_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "discard_coding_session"))
+    }
+
     /// Apply one privileged Agent registry operation.
     ///
     /// Runtimes that have not installed an administration service fail closed.
