@@ -8,14 +8,17 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool_context::ToolContext;
+use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
 pub(crate) const TOOL_PROGRESS_OMITTED_MARKER: &str =
@@ -172,11 +175,26 @@ pub trait DynamicToolSource: Send + Sync {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolHookConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_hook_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub blocking: bool,
+}
+
+const fn default_hook_timeout_secs() -> u64 {
+    30
+}
+
 /// Registry of tools available to the agent. Builder-style.
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
     dynamic_sources: Vec<Arc<dyn DynamicToolSource>>,
+    hooks: Vec<ToolHookConfig>,
 }
 
 impl ToolRegistry {
@@ -199,6 +217,12 @@ impl ToolRegistry {
         self
     }
 
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Vec<ToolHookConfig>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
     fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
         let mut tools = self.tools.clone();
         for source in &self.dynamic_sources {
@@ -206,16 +230,51 @@ impl ToolRegistry {
                 tools.insert(tool.name().to_string(), tool);
             }
         }
+        if !self.hooks.is_empty() {
+            tools = tools
+                .into_iter()
+                .map(|(name, tool)| {
+                    (
+                        name,
+                        Arc::new(HookedTool {
+                            inner: tool,
+                            hooks: self.hooks.clone(),
+                        }) as Arc<dyn Tool>,
+                    )
+                })
+                .collect();
+        }
         tools
     }
 
     /// Redacted runtime state contributed by dynamic capability sources.
     #[must_use]
     pub fn platform_features(&self) -> Vec<sylvander_protocol::PlatformFeature> {
-        self.dynamic_sources
+        let mut features = self
+            .dynamic_sources
             .iter()
             .filter_map(|source| source.platform_feature())
-            .collect()
+            .collect::<Vec<_>>();
+        features.extend(
+            self.hooks
+                .iter()
+                .map(|hook| sylvander_protocol::PlatformFeature {
+                    kind: sylvander_protocol::PlatformFeatureKind::Hook,
+                    name: hook.name.clone(),
+                    status: sylvander_protocol::PlatformFeatureStatus::Configured,
+                    summary: if hook.blocking {
+                        "before-tool · blocking".into()
+                    } else {
+                        "before-tool · advisory".into()
+                    },
+                    source: None,
+                    trust: Some(sylvander_protocol::PlatformTrust::User),
+                    auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+                    capabilities: vec!["before_tool".into()],
+                    reloadable: false,
+                }),
+        );
+        features
     }
 
     /// Number of registered tools.
@@ -233,13 +292,7 @@ impl ToolRegistry {
     /// Look up a tool by name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        if let Some(tool) = self.tools.get(name) {
-            return Some(tool.clone());
-        }
-        self.dynamic_sources
-            .iter()
-            .flat_map(|source| source.snapshot())
-            .find(|tool| tool.name() == name)
+        self.snapshot().remove(name)
     }
 
     /// Iterate over all registered tools as (name, &Arc<dyn Tool>) pairs.
@@ -258,7 +311,98 @@ impl ToolRegistry {
                 .filter(|(name, _)| allowed.contains(&name.as_str()))
                 .collect(),
             dynamic_sources: Vec::new(),
+            hooks: Vec::new(),
         }
+    }
+}
+
+struct HookedTool {
+    inner: Arc<dyn Tool>,
+    hooks: Vec<ToolHookConfig>,
+}
+
+#[async_trait]
+impl Tool for HookedTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        self.inner.input_schema()
+    }
+
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+        self.execute_streaming(ctx, input, ToolProgressSink::new(|_| {}))
+            .await
+    }
+
+    async fn execute_streaming(
+        &self,
+        ctx: &ToolContext,
+        input: JsonValue,
+        progress: ToolProgressSink,
+    ) -> Result<ToolOutput, ToolError> {
+        for hook in &self.hooks {
+            progress.emit(format!("hook {} · running\n", hook.name));
+            let stdout_progress = progress.clone();
+            let stderr_progress = progress.clone();
+            let hook_progress =
+                WorkspaceCommandProgressSink::new(move |stream, delta| match stream {
+                    WorkspaceCommandStream::Stdout => {
+                        stdout_progress.emit(format!("hook stdout · {delta}"));
+                    }
+                    WorkspaceCommandStream::Stderr => {
+                        stderr_progress.emit(format!("hook stderr · {delta}"));
+                    }
+                });
+            let result = ctx
+                .executor
+                .run_command_streaming(
+                    &ctx.execution_target,
+                    &hook.command,
+                    Duration::from_secs(hook.timeout_secs.clamp(1, 300)),
+                    hook_progress,
+                )
+                .await;
+            match result {
+                Ok(output) if output.success => {
+                    progress.emit(format!("hook {} · passed\n", hook.name));
+                }
+                Ok(output) => {
+                    let decision = if hook.blocking { "blocked" } else { "failed" };
+                    progress.emit(format!(
+                        "hook {} · {decision} · exit {}\n",
+                        hook.name,
+                        output
+                            .status_code
+                            .map_or_else(|| "unknown".into(), |code| code.to_string())
+                    ));
+                    if hook.blocking {
+                        return Ok(ToolOutput::err(format!(
+                            "blocked by hook `{}` before `{}`",
+                            hook.name,
+                            self.inner.name()
+                        )));
+                    }
+                }
+                Err(error) => {
+                    let decision = if hook.blocking { "blocked" } else { "failed" };
+                    progress.emit(format!("hook {} · {decision} · {error}\n", hook.name));
+                    if hook.blocking {
+                        return Ok(ToolOutput::err(format!(
+                            "blocked by hook `{}` before `{}`",
+                            hook.name,
+                            self.inner.name()
+                        )));
+                    }
+                }
+            }
+        }
+        self.inner.execute_streaming(ctx, input, progress).await
     }
 }
 
@@ -499,5 +643,76 @@ mod tests {
         let out = tool.execute(&c, json!({})).await.unwrap();
         assert!(out.is_error);
         assert_eq!(out.content, "boom");
+    }
+
+    #[tokio::test]
+    async fn hooks_report_lifecycle_and_block_before_tool_execution() {
+        let directory = tempfile::tempdir().unwrap();
+        let inner = MockTool::new("write", "write", ToolOutput::ok("written"));
+        let observed = inner.clone();
+        let registry = ToolRegistry::new().register(inner).with_hooks(vec![
+            ToolHookConfig {
+                name: "lint".into(),
+                command: "printf 'checked'".into(),
+                timeout_secs: 5,
+                blocking: false,
+            },
+            ToolHookConfig {
+                name: "policy".into(),
+                command: "exit 7".into(),
+                timeout_secs: 5,
+                blocking: true,
+            },
+        ]);
+        let deltas = Arc::new(Mutex::new(Vec::new()));
+        let captured = deltas.clone();
+        let output = registry
+            .get("write")
+            .unwrap()
+            .execute_streaming(
+                &ctx().with_fs_root(directory.path()),
+                json!({"path":"file"}),
+                ToolProgressSink::new(move |delta| captured.lock().unwrap().push(delta)),
+            )
+            .await
+            .unwrap();
+
+        assert!(output.is_error);
+        assert!(output.content.contains("blocked by hook `policy`"));
+        assert_eq!(observed.call_count(), 0);
+        let lifecycle = deltas.lock().unwrap().join("");
+        assert!(lifecycle.contains("hook lint · running"));
+        assert!(lifecycle.contains("hook lint · passed"));
+        assert!(lifecycle.contains("hook policy · blocked · exit 7"));
+        let features = registry.platform_features();
+        assert_eq!(features.len(), 2);
+        assert_eq!(
+            features[1].status,
+            sylvander_protocol::PlatformFeatureStatus::Configured
+        );
+    }
+
+    #[tokio::test]
+    async fn advisory_hook_failure_does_not_hide_the_tool_result() {
+        let directory = tempfile::tempdir().unwrap();
+        let inner = MockTool::new("read", "read", ToolOutput::ok("contents"));
+        let observed = inner.clone();
+        let registry = ToolRegistry::new()
+            .register(inner)
+            .with_hooks(vec![ToolHookConfig {
+                name: "optional-check".into(),
+                command: "exit 2".into(),
+                timeout_secs: 5,
+                blocking: false,
+            }]);
+
+        let output = registry
+            .get("read")
+            .unwrap()
+            .execute(&ctx().with_fs_root(directory.path()), json!({}))
+            .await
+            .unwrap();
+        assert_eq!(output, ToolOutput::ok("contents"));
+        assert_eq!(observed.call_count(), 1);
     }
 }

@@ -35,6 +35,7 @@ pub enum CommandId {
     Doctor,
     Mcp,
     Skills,
+    Hooks,
     Memory,
     Inspect,
     Copy,
@@ -232,6 +233,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "skills",
         usage: "/skills",
         description: "Inspect advertised skills and activation state",
+        hint: "server truth",
+    },
+    CommandSpec {
+        id: CommandId::Hooks,
+        name: "hooks",
+        usage: "/hooks",
+        description: "Inspect before-tool hooks and blocking policy",
         hint: "server truth",
     },
     CommandSpec {
@@ -436,6 +444,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Permissions
             | CommandId::Mcp
             | CommandId::Skills
+            | CommandId::Hooks
             | CommandId::Memory
     );
     if needs_connection && !state.connected {
@@ -1220,6 +1229,14 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 &state.platform,
             )));
         }
+        CommandId::Hooks => {
+            require_no_args(&invocation)?;
+            state.messages.push(ChatMessage::Info(platform_report(
+                "Hooks",
+                sylvander_protocol::PlatformFeatureKind::Hook,
+                &state.platform,
+            )));
+        }
         CommandId::Memory => {
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
@@ -1906,6 +1923,17 @@ mod tests {
                 capabilities: vec!["search".into()],
                 reloadable: false,
             },
+            sylvander_protocol::PlatformFeature {
+                kind: sylvander_protocol::PlatformFeatureKind::Hook,
+                name: "lint".into(),
+                status: sylvander_protocol::PlatformFeatureStatus::Configured,
+                summary: "before-tool · blocking".into(),
+                source: None,
+                trust: Some(sylvander_protocol::PlatformTrust::User),
+                auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+                capabilities: vec!["before_tool".into()],
+                reloadable: false,
+            },
         ];
 
         execute(parse("/mcp").unwrap(), &mut state).unwrap();
@@ -1926,6 +1954,14 @@ mod tests {
         assert!(matches!(
             state.messages.last(),
             Some(ChatMessage::Info(report)) if report.contains("No Skills advertised")
+        ));
+        execute(parse("/hooks").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(report))
+                if report.contains("lint")
+                    && report.contains("before-tool · blocking")
+                    && report.contains("capabilities before_tool")
         ));
     }
 

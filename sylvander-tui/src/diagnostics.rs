@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn report_does_not_expose_parent_directories() {
-        let mut config = TuiConfig::from_env_and_args().expect("config");
+        let mut config = TuiConfig::from_args(std::iter::empty()).expect("config");
         config.socket_path = "/Users/private-name/run/agent.sock".into();
         config.history_path = Some("/Users/private-name/cache/history.json".into());
         let mut state = AppState::new();

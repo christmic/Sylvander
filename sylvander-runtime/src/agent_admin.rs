@@ -13,14 +13,18 @@ use sylvander_agent::spec::{
     AgentSpec, BehaviorConfig, McpServerConfig, MemoryStoreConfig, ModelConfig, PersonaConfig,
     ToolRef, UiCommandConfig,
 };
+use sylvander_agent::tool::ToolHookConfig;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentBehaviorDraft, AgentDefinitionDraft, AgentRevisionView, AgentSecretReference,
     AgentToolDraft, AuthenticatedPrincipal, PrincipalKind, RedactedAgentAccess,
-    RedactedAgentDefinition, RedactedAgentPromptProfile, RedactedAgentTool, RedactedAgentUiCommand,
+    RedactedAgentDefinition, RedactedAgentHook, RedactedAgentPromptProfile, RedactedAgentTool,
+    RedactedAgentUiCommand,
 };
 #[cfg(test)]
-use sylvander_protocol::{AgentPromptProfileDraft, AgentUiCommandDraft, SessionWorkspaceBinding};
+use sylvander_protocol::{
+    AgentHookDraft, AgentPromptProfileDraft, AgentUiCommandDraft, SessionWorkspaceBinding,
+};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError, AgentRevision};
 use crate::config::{
@@ -253,6 +257,16 @@ pub(crate) fn definition_from_draft(
                     prompt: command.prompt,
                 })
                 .collect(),
+            hooks: draft
+                .hooks
+                .into_iter()
+                .map(|hook| ToolHookConfig {
+                    name: hook.name,
+                    command: hook.command,
+                    timeout_secs: hook.timeout_secs,
+                    blocking: hook.blocking,
+                })
+                .collect(),
             behavior: BehaviorConfig {
                 max_iterations: draft.behavior.max_iterations,
                 max_retries: draft.behavior.max_retries,
@@ -341,6 +355,17 @@ pub(crate) fn draft_from_definition(
             .iter()
             .map(command_to_draft)
             .collect(),
+        hooks: definition
+            .spec
+            .hooks
+            .iter()
+            .map(|hook| AgentHookDraft {
+                name: hook.name.clone(),
+                command: hook.command.clone(),
+                timeout_secs: hook.timeout_secs,
+                blocking: hook.blocking,
+            })
+            .collect(),
         behavior: AgentBehaviorDraft {
             max_iterations: definition.spec.behavior.max_iterations,
             max_retries: definition.spec.behavior.max_retries,
@@ -407,6 +432,16 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .ui_commands
                 .iter()
                 .map(redact_command)
+                .collect(),
+            hooks: definition
+                .spec
+                .hooks
+                .iter()
+                .map(|hook| RedactedAgentHook {
+                    name: hook.name.clone(),
+                    timeout_secs: hook.timeout_secs,
+                    blocking: hook.blocking,
+                })
                 .collect(),
             behavior: AgentBehaviorDraft {
                 max_iterations: definition.spec.behavior.max_iterations,
@@ -574,6 +609,19 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
         draft.ui_commands.iter().map(|item| item.id.as_str()),
         "UI command",
     )?;
+    if draft.hooks.len() > 32 {
+        return Err(invalid_definition("at most 32 hooks are allowed"));
+    }
+    unique_non_empty(draft.hooks.iter().map(|hook| hook.name.as_str()), "hook")?;
+    if draft.hooks.iter().any(|hook| {
+        hook.command.trim().is_empty()
+            || hook.command.len() > 4096
+            || !(1..=300).contains(&hook.timeout_secs)
+    }) {
+        return Err(invalid_definition(
+            "hook command or timeout is outside the supported bounds",
+        ));
+    }
     if draft
         .default_prompt_profile
         .as_ref()
@@ -856,6 +904,12 @@ id = "sonnet"
             }],
             memory_stores: Vec::new(),
             ui_commands: Vec::new(),
+            hooks: vec![AgentHookDraft {
+                name: "lint".into(),
+                command: "cargo check --quiet".into(),
+                timeout_secs: 20,
+                blocking: true,
+            }],
             behavior: AgentBehaviorDraft::default(),
             agent_workspace: None,
             prompt_profiles: Vec::new(),
@@ -914,6 +968,9 @@ id = "sonnet"
         assert!(!json.contains("never reveal me"));
         assert!(!json.contains("SEARCH_TOKEN"));
         assert!(!json.contains("mcp-search"));
+        assert!(!json.contains("cargo check"));
+        assert_eq!(view.definition.hooks[0].name, "lint");
+        assert!(view.definition.hooks[0].blocking);
         assert_eq!(
             view.definition.system_prompt_sha256,
             digest("never reveal me")

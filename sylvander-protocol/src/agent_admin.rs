@@ -75,6 +75,8 @@ pub struct AgentDefinitionDraft {
     #[serde(default)]
     pub ui_commands: Vec<AgentUiCommandDraft>,
     #[serde(default)]
+    pub hooks: Vec<AgentHookDraft>,
+    #[serde(default)]
     pub behavior: AgentBehaviorDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_workspace: Option<SessionWorkspaceBinding>,
@@ -102,6 +104,7 @@ impl fmt::Debug for AgentDefinitionDraft {
             .field("tool_count", &self.tools.len())
             .field("memory_store_count", &self.memory_stores.len())
             .field("ui_command_count", &self.ui_commands.len())
+            .field("hook_count", &self.hooks.len())
             .field("prompt_profile_count", &self.prompt_profiles.len())
             .field(
                 "agent_workspace_configured",
@@ -154,6 +157,21 @@ pub struct AgentUiCommandDraft {
     pub hint: String,
     /// Write-only in the public contract.
     pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentHookDraft {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_hook_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default)]
+    pub blocking: bool,
+}
+
+const fn default_hook_timeout_secs() -> u64 {
+    30
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -273,6 +291,8 @@ pub struct RedactedAgentDefinition {
     pub memory_store_types: Vec<String>,
     #[serde(default)]
     pub ui_commands: Vec<RedactedAgentUiCommand>,
+    #[serde(default)]
+    pub hooks: Vec<RedactedAgentHook>,
     pub behavior: AgentBehaviorDraft,
     pub agent_workspace_configured: bool,
     #[serde(default)]
@@ -299,6 +319,14 @@ pub struct RedactedAgentUiCommand {
     pub description: String,
     #[serde(default)]
     pub hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RedactedAgentHook {
+    pub name: String,
+    pub timeout_secs: u64,
+    pub blocking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -413,6 +441,7 @@ mod tests {
                 }],
                 memory_stores: Vec::new(),
                 ui_commands: Vec::new(),
+                hooks: Vec::new(),
                 behavior: AgentBehaviorDraft::default(),
                 agent_workspace: None,
                 prompt_profiles: Vec::new(),
@@ -455,6 +484,7 @@ mod tests {
                         }],
                         memory_store_types: vec!["sqlite".into()],
                         ui_commands: Vec::new(),
+                        hooks: Vec::new(),
                         behavior: AgentBehaviorDraft::default(),
                         agent_workspace_configured: true,
                         prompt_profiles: Vec::new(),

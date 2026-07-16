@@ -36,8 +36,12 @@ pub struct TuiConfig {
 
 impl TuiConfig {
     pub fn from_env_and_args() -> Result<Self, String> {
+        Self::from_args(std::env::args().skip(1))
+    }
+
+    pub(crate) fn from_args(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let launch = parse_launch_options(
-            std::env::args().skip(1),
+            args,
             std::env::var("SYLVANDER_SOCKET").ok(),
             std::env::var("SYLVANDER_SESSION").ok(),
             std::env::var("SYLVANDER_WORKSPACE").ok(),
