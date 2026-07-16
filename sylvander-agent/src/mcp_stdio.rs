@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -554,6 +555,7 @@ async fn stop_child(server: &str, child: &mut Child) -> Result<(), McpError> {
 pub struct McpTool {
     client: McpStdioClient,
     name: String,
+    remote_name: String,
     description: String,
     input_schema: InputSchema,
 }
@@ -561,7 +563,7 @@ pub struct McpTool {
 impl McpTool {
     fn from_definition(client: McpStdioClient, definition: &JsonValue) -> Result<Self, McpError> {
         let server = client.inner.server_name.clone();
-        let name = definition
+        let remote_name = definition
             .get("name")
             .and_then(JsonValue::as_str)
             .filter(|name| !name.is_empty())
@@ -571,6 +573,7 @@ impl McpTool {
                 message: "tool is missing a name".into(),
             })?
             .to_owned();
+        let name = namespaced_tool_name(&server, &remote_name);
         let description = definition
             .get("description")
             .and_then(JsonValue::as_str)
@@ -590,6 +593,7 @@ impl McpTool {
         Ok(Self {
             client,
             name,
+            remote_name,
             description,
             input_schema: InputSchema::from_json_value(input_schema),
         })
@@ -612,13 +616,51 @@ impl Tool for McpTool {
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.client
-            .call_tool(&self.name, input, &ctx.session_id().0)
+            .call_tool(&self.remote_name, input, &ctx.session_id().0)
             .await
             .map_err(|error| match error {
                 McpError::Timeout { duration, .. } => ToolError::Timeout(duration),
                 other => ToolError::Other(other.to_string()),
             })
     }
+}
+
+fn namespaced_tool_name(server: &str, remote_name: &str) -> String {
+    format!(
+        "mcp__{}__{}",
+        bounded_name_component(server, 20),
+        bounded_name_component(remote_name, 34)
+    )
+}
+
+fn bounded_name_component(value: &str, max_len: usize) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let sanitized = if sanitized.is_empty() {
+        "unnamed".to_owned()
+    } else {
+        sanitized
+    };
+    if sanitized == value && sanitized.len() <= max_len {
+        return sanitized;
+    }
+
+    let digest = Sha256::digest(value.as_bytes());
+    let suffix = format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    );
+    let head_len = max_len.saturating_sub(suffix.len() + 1);
+    let head = sanitized.chars().take(head_len).collect::<String>();
+    format!("{head}_{suffix}")
 }
 
 async fn write_frame(writer: &mut ChildStdin, value: &JsonValue) -> std::io::Result<()> {
@@ -902,7 +944,7 @@ while True:
 
         let tools = client.list_tools().await.expect("list tools");
         assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name(), "echo");
+        assert_eq!(tools[0].name(), "mcp__fake__echo");
         assert_eq!(tools[0].description(), "Echo an input value");
         assert_eq!(tools[0].input_schema().schema["type"], "object");
         let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
@@ -1014,23 +1056,23 @@ while True:
             .expect("connect");
         client.list_tools().await.expect("initial discovery");
         let registry = crate::tool::ToolRegistry::new().register_dynamic_source(client.clone());
-        assert!(registry.get("echo").is_some());
-        assert!(registry.get("echo_v2").is_none());
+        assert!(registry.get("mcp__fake__echo").is_some());
+        assert!(registry.get("mcp__fake__echo_v2").is_none());
 
-        let tool = registry.get("echo").expect("initial tool");
+        let tool = registry.get("mcp__fake__echo").expect("initial tool");
         let context = crate::tool_context::defaults::system_tool_context();
         tool.execute(&context, json!({ "crash": true }))
             .await
             .expect_err("crashed call triggers reconnect");
 
-        assert!(registry.get("echo").is_none());
-        assert!(registry.get("echo_v2").is_some());
+        assert!(registry.get("mcp__fake__echo").is_none());
+        assert!(registry.get("mcp__fake__echo_v2").is_some());
         let names = registry
             .definitions()
             .into_iter()
             .map(|definition| definition.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["echo_v2"]);
+        assert_eq!(names, ["mcp__fake__echo_v2"]);
         let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
         assert_eq!(
             feature.status,
@@ -1063,6 +1105,27 @@ while True:
         assert!(output.content.starts_with('前'));
         assert!(output.content.contains("MCP result truncated"));
         assert!(output.content.ends_with("TAIL-蟹"));
+    }
+
+    #[test]
+    fn public_tool_names_are_stable_bounded_and_mcp_namespaced() {
+        assert_eq!(
+            namespaced_tool_name("filesystem", "read_resource"),
+            "mcp__filesystem__read_resource"
+        );
+        let transformed = namespaced_tool_name("本地 文件", "读取/资源");
+        assert!(transformed.starts_with("mcp__"));
+        assert!(transformed.len() <= 63);
+        assert!(
+            transformed.chars().all(
+                |character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+            )
+        );
+        assert_eq!(transformed, namespaced_tool_name("本地 文件", "读取/资源"));
+        assert_ne!(
+            namespaced_tool_name("server a", "read"),
+            namespaced_tool_name("server/a", "read")
+        );
     }
 
     #[tokio::test]
