@@ -13,8 +13,8 @@ use sylvander_agent::spec::{AgentSpec, ToolRef};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_agent::tools::memory::MemoryStore;
 use sylvander_agent::tools::{
-    AskUserTool, CommandTool, EditTool, MemoryReadTool, PresentPlanTool, ReadTool,
-    StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
+    AskUserTool, CommandTool, EditTool, GitTool, ListTool, MemoryReadTool, PresentPlanTool,
+    ReadTool, SearchTool, StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
@@ -679,9 +679,12 @@ fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> Sessi
 pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
     ToolRegistry::new()
         .register(ReadTool::new("/"))
+        .register(ListTool::new("/"))
+        .register(SearchTool::new("/"))
         .register(WriteTool::new("/"))
         .register(EditTool::new("/"))
         .register(CommandTool::new("/"))
+        .register(GitTool::new("/"))
         .register(MemoryReadTool::new(memory))
         .register(AskUserTool::new())
         .register(PresentPlanTool::new())

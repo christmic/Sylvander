@@ -2850,7 +2850,7 @@ fn tool_context_for_permissions(
     match permissions.file_access {
         sylvander_protocol::FileAccess::None => {}
         sylvander_protocol::FileAccess::ReadOnly => {
-            context = context.with_capability(Cap::Read);
+            context = context.with_capability(Cap::Read).with_capability(Cap::Git);
         }
         sylvander_protocol::FileAccess::WorkspaceWrite => {
             context = context
@@ -4559,6 +4559,7 @@ mod tests {
             Some(metadata.workspace.as_path())
         );
         assert!(context.has_cap(Cap::Read));
+        assert!(context.has_cap(Cap::Git));
         assert!(!context.has_cap(Cap::Write));
         assert!(context.has_cap(Cap::Network));
         assert!(context.host_allowed("example.com"));

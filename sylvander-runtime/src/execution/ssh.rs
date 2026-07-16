@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use sylvander_agent::workspace_executor::{
-    WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceTarget,
+    WorkspaceCommandOutput, WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError,
+    WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult, WorkspaceQueryLimits,
+    WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult, WorkspaceTarget,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -21,6 +23,65 @@ use tokio::process::Command;
 const READ_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec cat -- \"$2\"";
 const WRITE_SCRIPT: &str = "cd -P \"$1\" || exit 125\ntarget=$2\ncase $target in */*) mkdir -p -- \"${target%/*}\" || exit 125;; esac\nexec cat > \"$target\"";
 const COMMAND_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec sh -s";
+const LIST_SCRIPT: &str = r#"cd -P "$1" || exit 125
+root=$(pwd -P) || exit 125
+start=./$2
+if [ -d "$start" ]; then
+  resolved=$(cd -P -- "$start" 2>/dev/null && pwd -P) || exit 125
+else
+  parent=${start%/*}
+  resolved_parent=$(cd -P -- "$parent" 2>/dev/null && pwd -P) || exit 125
+  resolved=$resolved_parent/${start##*/}
+fi
+if [ "$root" != / ]; then
+  case $resolved in "$root"|"$root"/*) ;; *) exit 126;; esac
+fi
+if [ "$3" = 1 ]; then
+  find "$start" -name .git -prune -o -mindepth 1 -exec sh -c '
+    for path do
+      if [ -L "$path" ]; then kind=l; size=0
+      elif [ -f "$path" ]; then kind=f; size=$(wc -c < "$path")
+      elif [ -d "$path" ]; then kind=d; size=0
+      else kind=o; size=0
+      fi
+      printf "%s\0%s\0%s\0" "$path" "$kind" "$size"
+    done
+  ' sh {} +
+else
+  find "$start" -mindepth 1 -maxdepth 1 ! -name .git -exec sh -c '
+    for path do
+      if [ -L "$path" ]; then kind=l; size=0
+      elif [ -f "$path" ]; then kind=f; size=$(wc -c < "$path")
+      elif [ -d "$path" ]; then kind=d; size=0
+      else kind=o; size=0
+      fi
+      printf "%s\0%s\0%s\0" "$path" "$kind" "$size"
+    done
+  ' sh {} +
+fi | head -c "$4""#;
+const SEARCH_SCRIPT: &str = r#"cd -P "$1" || exit 125
+root=$(pwd -P) || exit 125
+start=./$2
+if [ -d "$start" ]; then
+  resolved=$(cd -P -- "$start" 2>/dev/null && pwd -P) || exit 125
+else
+  parent=${start%/*}
+  resolved_parent=$(cd -P -- "$parent" 2>/dev/null && pwd -P) || exit 125
+  resolved=$resolved_parent/${start##*/}
+fi
+if [ "$root" != / ]; then
+  case $resolved in "$root"|"$root"/*) ;; *) exit 126;; esac
+fi
+query=$3
+find "$start" -name .git -prune -o -type f -exec sh -c '
+  query=$1
+  shift
+  for path do
+    LC_ALL=C grep -n -F -- "$query" "$path" 2>/dev/null | while IFS=: read -r number line; do
+      printf "%s\0%s\0%s\0" "$path" "$number" "$line"
+    done
+  done
+' sh "$query" {} + | head -c "$4""#;
 const DEFAULT_FILE_OPERATION_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// A workspace executor backed by the system `ssh` program.
@@ -140,6 +201,33 @@ impl SshExecutor {
         Ok(command.into())
     }
 
+    fn remote_query_command(
+        script: &str,
+        target: &WorkspaceTarget,
+        arguments: &[String],
+    ) -> Result<OsString, WorkspaceExecutorError> {
+        let workspace = target
+            .workspace_path
+            .to_str()
+            .ok_or_else(|| invalid("remote workspace path must be valid UTF-8"))?;
+        if !target.workspace_path.is_absolute() || workspace.contains('\0') {
+            return Err(invalid(format!(
+                "remote workspace must be an absolute path: {}",
+                target.workspace_path.display()
+            )));
+        }
+        let mut command = format!(
+            "sh -c {} -- {}",
+            shell_quote(script),
+            shell_quote(workspace)
+        );
+        for argument in arguments {
+            command.push(' ');
+            command.push_str(&shell_quote(argument));
+        }
+        Ok(command.into())
+    }
+
     async fn invoke(
         &self,
         remote_command: OsString,
@@ -227,6 +315,15 @@ impl WorkspaceExecutor for SshExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
+        self.run_read_only_command(target, command, timeout).await
+    }
+
+    async fn run_read_only_command(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
         let output = self
             .invoke(remote, command.as_bytes(), Some(timeout))
@@ -238,6 +335,124 @@ impl WorkspaceExecutor for SshExecutor {
             stderr: output.stderr,
         })
     }
+
+    async fn list(
+        &self,
+        target: &WorkspaceTarget,
+        request: WorkspaceListRequest,
+    ) -> Result<WorkspaceListResult, WorkspaceExecutorError> {
+        validate_relative(&request.relative_path)?;
+        let limits = request.limits.bounded()?;
+        let cap = limits.max_output_bytes.saturating_add(1);
+        let arguments = [
+            request.relative_path,
+            u8::from(request.recursive).to_string(),
+            cap.to_string(),
+        ];
+        let remote = Self::remote_query_command(LIST_SCRIPT, target, &arguments)?;
+        let output = self.invoke(remote, &[], Some(limits.timeout)).await?;
+        if !output.status.success() {
+            return Err(remote_failure("list", &output));
+        }
+        Ok(parse_list_output(&output.stdout, limits))
+    }
+
+    async fn search(
+        &self,
+        target: &WorkspaceTarget,
+        request: WorkspaceSearchRequest,
+    ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
+        validate_relative(&request.relative_path)?;
+        if request.query.is_empty() || request.query.contains('\0') {
+            return Err(WorkspaceExecutorError::InvalidRequest(
+                "search query must not be empty or contain NUL".into(),
+            ));
+        }
+        let limits = request.limits.bounded()?;
+        let cap = limits.max_output_bytes.saturating_add(1);
+        let arguments = [request.relative_path, request.query, cap.to_string()];
+        let remote = Self::remote_query_command(SEARCH_SCRIPT, target, &arguments)?;
+        let output = self.invoke(remote, &[], Some(limits.timeout)).await?;
+        if !output.status.success() {
+            return Err(remote_failure("search", &output));
+        }
+        Ok(parse_search_output(&output.stdout, limits))
+    }
+}
+
+fn parse_list_output(raw: &[u8], limits: WorkspaceQueryLimits) -> WorkspaceListResult {
+    let truncated_by_bytes = raw.len() > limits.max_output_bytes;
+    let bounded = &raw[..raw.len().min(limits.max_output_bytes)];
+    let fields: Vec<_> = bounded.split(|byte| *byte == 0).collect();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    let mut truncated = truncated_by_bytes;
+    while index + 2 < fields.len() && entries.len() < limits.max_results {
+        let path = String::from_utf8_lossy(fields[index]);
+        let kind = match fields[index + 1] {
+            b"f" => WorkspaceEntryKind::File,
+            b"d" => WorkspaceEntryKind::Directory,
+            b"l" => WorkspaceEntryKind::Symlink,
+            _ => WorkspaceEntryKind::Other,
+        };
+        let size = String::from_utf8_lossy(fields[index + 2])
+            .parse()
+            .unwrap_or(0);
+        let relative_path = path.strip_prefix("./").unwrap_or(&path);
+        if relative_path.chars().count() > limits.max_line_chars {
+            truncated = true;
+            break;
+        }
+        entries.push(WorkspaceListEntry {
+            relative_path: relative_path.into(),
+            kind,
+            size,
+        });
+        index += 3;
+    }
+    if index + 2 < fields.len() || (!bounded.is_empty() && !bounded.ends_with(b"\0")) {
+        truncated = true;
+    }
+    WorkspaceListResult { entries, truncated }
+}
+
+fn parse_search_output(raw: &[u8], limits: WorkspaceQueryLimits) -> WorkspaceSearchResult {
+    let truncated_by_bytes = raw.len() > limits.max_output_bytes;
+    let bounded = &raw[..raw.len().min(limits.max_output_bytes)];
+    let fields: Vec<_> = bounded.split(|byte| *byte == 0).collect();
+    let mut matches = Vec::new();
+    let mut index = 0;
+    let mut truncated = truncated_by_bytes;
+    while index + 2 < fields.len() && matches.len() < limits.max_results {
+        let path = String::from_utf8_lossy(fields[index]);
+        let relative_path = path.strip_prefix("./").unwrap_or(&path);
+        let line_number = String::from_utf8_lossy(fields[index + 1])
+            .parse()
+            .unwrap_or(0);
+        let line = truncate_chars(
+            &String::from_utf8_lossy(fields[index + 2]),
+            limits.max_line_chars,
+        );
+        matches.push(WorkspaceSearchMatch {
+            relative_path: relative_path.into(),
+            line_number,
+            line,
+        });
+        index += 3;
+    }
+    if index + 2 < fields.len() || (!bounded.is_empty() && !bounded.ends_with(b"\0")) {
+        truncated = true;
+    }
+    WorkspaceSearchResult { matches, truncated }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut characters = value.chars();
+    let mut result: String = characters.by_ref().take(max_chars).collect();
+    if characters.next().is_some() {
+        result.push('…');
+    }
+    result
 }
 
 fn validate_endpoint(
@@ -410,6 +625,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn structured_list_and_search_parse_bounded_unicode_results() {
+        let list_fake = FakeSsh::new(
+            "printf '%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0' './src' d 0 './src/螃蟹.rs' f 12",
+        );
+        let list = list_fake
+            .executor()
+            .list(
+                &target(true),
+                WorkspaceListRequest {
+                    relative_path: ".".into(),
+                    recursive: true,
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .expect("list succeeds on a read-only target");
+        assert_eq!(list.entries.len(), 2);
+        assert_eq!(list.entries[0].kind, WorkspaceEntryKind::Directory);
+        assert_eq!(list.entries[1].relative_path, "src/螃蟹.rs");
+        assert_eq!(list.entries[1].size, 12);
+        assert!(!list.truncated);
+
+        let search_fake = FakeSsh::new(
+            "printf '%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0' './src/螃蟹.rs' 7 '匹配：可靠伙伴' './src/螃蟹.rs' 9 '匹配：再次'",
+        );
+        let search = search_fake
+            .executor()
+            .search(
+                &target(true),
+                WorkspaceSearchRequest {
+                    relative_path: "src".into(),
+                    query: "匹配".into(),
+                    limits: WorkspaceQueryLimits {
+                        max_results: 1,
+                        max_line_chars: 5,
+                        ..WorkspaceQueryLimits::default()
+                    },
+                },
+            )
+            .await
+            .expect("search succeeds on a read-only target");
+        assert_eq!(search.matches.len(), 1);
+        assert_eq!(search.matches[0].line_number, 7);
+        assert_eq!(search.matches[0].line, "匹配：可靠…");
+        assert!(search.truncated);
+        let argv = fs::read_to_string(&search_fake.argv_log).expect("argv log");
+        assert!(argv.contains("'src'"));
+        assert!(argv.contains("'匹配'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn structured_queries_reject_symlink_paths_outside_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("secret.txt"), "outside-secret\n").expect("outside file");
+        symlink(outside.path(), workspace.path().join("escape")).expect("workspace symlink");
+
+        let list = std::process::Command::new("sh")
+            .args([
+                "-c",
+                LIST_SCRIPT,
+                "--",
+                workspace.path().to_str().expect("UTF-8 workspace"),
+                "escape",
+                "1",
+                "4096",
+            ])
+            .output()
+            .expect("run list script");
+        assert_eq!(list.status.code(), Some(126));
+        assert!(list.stdout.is_empty());
+
+        let search = std::process::Command::new("sh")
+            .args([
+                "-c",
+                SEARCH_SCRIPT,
+                "--",
+                workspace.path().to_str().expect("UTF-8 workspace"),
+                "escape/secret.txt",
+                "outside-secret",
+                "4096",
+            ])
+            .output()
+            .expect("run search script");
+        assert_eq!(search.status.code(), Some(126));
+        assert!(search.stdout.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_only_command_uses_ssh_while_mutating_command_is_rejected() {
+        let fake = FakeSsh::new("cat > \"$0.stdin\"\nprintf inspected");
+        let executor = fake.executor();
+        let output = executor
+            .run_read_only_command(&target(true), "git status --short", Duration::from_secs(5))
+            .await
+            .expect("trusted read-only command runs");
+        assert_eq!(output.stdout, b"inspected");
+        assert_eq!(
+            fs::read_to_string(&fake.stdin_log).expect("stdin log"),
+            "git status --short"
+        );
+        assert!(matches!(
+            executor
+                .run_command(&target(true), "git clean -fd", Duration::from_secs(5))
+                .await,
+            Err(WorkspaceExecutorError::ReadOnly(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn read_only_rejects_mutations_before_spawning_ssh() {
         let fake = FakeSsh::new("exit 99");
         let executor = fake.executor();
@@ -445,6 +773,27 @@ mod tests {
             .executor()
             .with_file_operation_timeout(timeout)
             .read_file(&target(false), "slow.txt")
+            .await;
+        assert!(matches!(result, Err(WorkspaceExecutorError::Timeout(value)) if value == timeout));
+    }
+
+    #[tokio::test]
+    async fn structured_query_timeout_terminates_the_ssh_process() {
+        let fake = FakeSsh::new("exec sleep 5");
+        let timeout = Duration::from_millis(30);
+        let result = fake
+            .executor()
+            .list(
+                &target(true),
+                WorkspaceListRequest {
+                    relative_path: ".".into(),
+                    recursive: false,
+                    limits: WorkspaceQueryLimits {
+                        timeout,
+                        ..WorkspaceQueryLimits::default()
+                    },
+                },
+            )
             .await;
         assert!(matches!(result, Err(WorkspaceExecutorError::Timeout(value)) if value == timeout));
     }

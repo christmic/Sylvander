@@ -134,17 +134,19 @@ pub mod prelude {
     pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
-        EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryBackupArtifact,
-        MemoryBackupManifest, MemoryClock, MemoryEntry, MemoryEvidenceCheckpoint,
-        MemoryEvidenceCompactionReport, MemoryExecutionContext, MemoryExpiryPatch,
-        MemoryIntegrityConfig, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
-        MemoryPurgeReport, MemoryReadTool, MemoryRestoreError, MemoryScope, MemoryStore,
-        MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,
-        RelationshipMemoryRetentionPolicy, SqliteMemoryAdmin, SqliteMemoryMaintenance,
+        EditTool, InMemoryMemoryStore, ListTool, MemoryActorKind, MemoryAppend,
+        MemoryBackupArtifact, MemoryBackupManifest, MemoryClock, MemoryEntry,
+        MemoryEvidenceCheckpoint, MemoryEvidenceCompactionReport, MemoryExecutionContext,
+        MemoryExpiryPatch, MemoryIntegrityConfig, MemoryOwner, MemoryPatch, MemoryProvenance,
+        MemoryProvenanceSource, MemoryPurgeReport, MemoryReadTool, MemoryRestoreError, MemoryScope,
+        MemoryStore, MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,
+        RelationshipMemoryRetentionPolicy, SearchTool, SqliteMemoryAdmin, SqliteMemoryMaintenance,
         SqliteMemoryStore, StartBackgroundTaskTool, SystemMemoryClock, UpdatePlanTool, WriteTool,
     };
     pub use crate::workspace_executor::{
-        LocalExecutor, WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError,
+        LocalExecutor, WorkspaceCommandOutput, WorkspaceEntryKind, WorkspaceExecutor,
+        WorkspaceExecutorError, WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult,
+        WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
         WorkspaceTarget,
     };
     pub use sylvander_llm_anthropic::prelude::*;

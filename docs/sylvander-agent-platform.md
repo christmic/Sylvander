@@ -237,8 +237,8 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
-| A09 | File tools | partial | Read/Write/Edit/Command use one location-neutral executor contract. Local and OpenSSH adapters enforce workspace-relative paths, bounded operations, and read-only bindings; unavailable targets fail explicitly instead of falling back to host paths. Container/sandbox adapters remain. |
-| A10 | Command/Git tools | partial | Command is executor-backed with bounded output and timeout. Local Git worktree inspection/accept/discard is operational; dedicated structured Git operations and remote review remain. |
+| A09 | File tools | partial | Read/Write/Edit/List/Search/Command use one location-neutral executor contract. Local and OpenSSH adapters enforce workspace-relative paths, bounded structured queries, and read-only bindings; unavailable targets fail explicitly instead of falling back to host paths. Container/sandbox adapters remain. |
+| A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout, and structured read-only Git status/diff/log works through local and SSH targets. Local Git worktree inspection/accept/discard is operational; streaming output, cancellation, and remote worktree review remain. |
 | A11 | Worktree isolation | partial | Writable local Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Lease garbage collection and remote worktrees remain. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
 | A13 | Skills | partial | Local workspace Skills are discovered and injected with deterministic precedence. Package trust, activation, resources, health, and remote discovery remain. |
@@ -540,9 +540,11 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   local roots bound accepted workspaces, and unknown adapters never execute
   against a same-named host path. The OpenSSH adapter uses fixed batch-mode
   arguments, bounded operations, remote workspace-relative file access, and
-  stdin-separated file/command payloads. List/Search/Git, environment and
-  streaming contracts, container/sandbox adapters, SSH pooling, and explicit
-  host-key policy keep P3.1/P3.2/P3.3 open.
+  stdin-separated file/command payloads. Structured List/Search and read-only
+  Git status/diff/log now use the same executor boundary and return explicitly
+  bounded results. Environment and streaming contracts, container/sandbox
+  adapters, SSH pooling, explicit host-key policy, and remote worktree review
+  keep P3.1/P3.2/P3.3 open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, cancellation, upload/download semantics, and conformance tests.
 - [ ] **P3.4 Container and sandbox executors:** lifecycle, mounts, resource and
