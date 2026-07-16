@@ -28,6 +28,30 @@ const MAX_CHALLENGE_ID_BYTES: usize = 512;
 const MIN_SECRET_BYTES: usize = 16;
 const MAX_SECRET_BYTES: usize = 512;
 
+/// Runtime service versions available to a trusted Channel adapter.
+///
+/// Empty is the default and means every identity operation is denied.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityBindingCapabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<u16>,
+}
+
+impl IdentityBindingCapabilities {
+    #[must_use]
+    pub fn current() -> Self {
+        Self {
+            versions: vec![IDENTITY_BINDING_PROTOCOL_VERSION],
+        }
+    }
+
+    #[must_use]
+    pub fn supports(&self, version: u16) -> bool {
+        self.versions.contains(&version)
+    }
+}
+
 /// One versioned identity-binding request.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

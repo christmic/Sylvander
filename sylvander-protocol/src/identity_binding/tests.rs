@@ -136,6 +136,8 @@ fn ordinary_responses_and_errors_have_no_secret_slot() {
 
 #[test]
 fn capability_negotiation_requires_explicit_mutual_opt_in() {
+    assert!(!IdentityBindingCapabilities::default().supports(1));
+    assert!(IdentityBindingCapabilities::current().supports(1));
     assert!(!identity_binding_is_negotiated(&hello(&[]), &welcome(&[])));
     assert!(!identity_binding_is_negotiated(
         &hello(&[IDENTITY_BINDING_CAPABILITY]),
