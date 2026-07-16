@@ -406,6 +406,13 @@ impl ConfiguredAgent {
         self.run.attach_authenticated_session(lease).await
     }
 
+    pub(crate) async fn detach_authenticated_session(
+        &self,
+        session_id: &sylvander_protocol::SessionId,
+    ) {
+        self.run.leave_session(session_id).await;
+    }
+
     #[cfg(test)]
     pub(crate) fn uses_memory_store(&self, store: &Arc<dyn MemoryStore>) -> bool {
         Arc::ptr_eq(&self.memory_store, store)
