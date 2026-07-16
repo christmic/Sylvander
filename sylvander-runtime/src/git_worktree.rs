@@ -35,6 +35,12 @@ pub struct ReviewedMerge {
     pub merge_commit: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedChange {
+    pub previous_commit: String,
+    pub candidate_commit: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorktreeReconciliation {
     pub retained: usize,
@@ -231,6 +237,14 @@ impl GitWorktreeManager {
         })
     }
 
+    pub fn source_commit(&self, lease: &WorkspaceLease) -> Result<String, String> {
+        git_text(&lease.source_root, &["rev-parse", "HEAD"])
+    }
+
+    pub fn worktree_commit(&self, lease: &WorkspaceLease) -> Result<String, String> {
+        git_text(&lease.worktree_root, &["rev-parse", "HEAD"])
+    }
+
     /// Commit the reviewed worktree contents and merge them into the source
     /// checkout. The lease remains active so the coding session can continue.
     pub fn accept(&self, lease: &WorkspaceLease) -> Result<(), String> {
@@ -240,6 +254,18 @@ impl GitWorktreeManager {
     /// Merge reviewed work with an explicit merge commit so a later observed
     /// regression can be reverted without rewriting source history.
     pub fn accept_reviewed(&self, lease: &WorkspaceLease) -> Result<Option<ReviewedMerge>, String> {
+        let Some(prepared) = self.prepare_reviewed(lease)? else {
+            return Ok(None);
+        };
+        self.merge_prepared(lease, &prepared).map(Some)
+    }
+
+    /// Commit the isolated candidate without changing the source checkout.
+    /// This creates the exact commit evaluated before human merge approval.
+    pub fn prepare_reviewed(
+        &self,
+        lease: &WorkspaceLease,
+    ) -> Result<Option<PreparedChange>, String> {
         git_ok(&lease.worktree_root, &["add", "-A"])?;
         let staged = git_output(&lease.worktree_root, &["diff", "--cached", "--quiet"])?;
         if staged.status.success() {
@@ -259,16 +285,37 @@ impl GitWorktreeManager {
             ],
         )?;
         let candidate_commit = git_text(&lease.worktree_root, &["rev-parse", "HEAD"])?;
+        Ok(Some(PreparedChange {
+            previous_commit,
+            candidate_commit,
+        }))
+    }
+
+    /// Merge only the exact candidate commit that was previously evaluated.
+    pub fn merge_prepared(
+        &self,
+        lease: &WorkspaceLease,
+        prepared: &PreparedChange,
+    ) -> Result<ReviewedMerge, String> {
+        if self.source_commit(lease)? != prepared.previous_commit {
+            return Err("source workspace advanced after candidate evaluation".into());
+        }
+        if self.worktree_commit(lease)? != prepared.candidate_commit {
+            return Err("worktree candidate changed after evaluation".into());
+        }
+        if !git_text(&lease.worktree_root, &["status", "--porcelain"])?.is_empty() {
+            return Err("worktree changed after candidate evaluation".into());
+        }
         git_ok(
             &lease.source_root,
             &["merge", "--no-ff", "--no-edit", &lease.branch],
         )?;
         let merge_commit = git_text(&lease.source_root, &["rev-parse", "HEAD"])?;
-        Ok(Some(ReviewedMerge {
-            previous_commit,
-            candidate_commit,
+        Ok(ReviewedMerge {
+            previous_commit: prepared.previous_commit.clone(),
+            candidate_commit: prepared.candidate_commit.clone(),
             merge_commit,
-        }))
+        })
     }
 
     /// Revert only the still-current reviewed merge. If source has advanced,
