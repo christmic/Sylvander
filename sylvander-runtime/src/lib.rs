@@ -2353,7 +2353,6 @@ impl Runtime {
         .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
         .map_err(|error| RuntimeError::Store(error.to_string()))?;
         let memory_maintenance_handle = sqlite_memory.maintenance();
-        memory_maintenance_catch_up(&memory_maintenance_handle, &memory_policy).await?;
         let memory_store: Arc<dyn MemoryStore> = Arc::new(sqlite_memory);
         let bus = Arc::new(InProcessMessageBus::new());
         let engine = Arc::new(AgentRunEngine::new(bus.clone()));
@@ -2491,6 +2490,17 @@ impl Runtime {
                 .await
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         }
+
+        // The protected store stages the configured policy at open but keeps
+        // the prior active policy authoritative. Complete every fallible
+        // Agent, session, evidence, and maintenance readiness check first.
+        // Only then may this rollout advance the durable policy revision.
+        memory_maintenance_catch_up(&memory_maintenance_handle, &memory_policy).await?;
+        let activation = memory_maintenance_handle.clone();
+        tokio::task::spawn_blocking(move || activation.activate_staged_retention_policy())
+            .await
+            .map_err(|_| RuntimeError::Store("memory retention activation failed".into()))?
+            .map_err(|_| RuntimeError::Store("memory retention activation failed".into()))?;
 
         info!(
             name = %config.server.name,
@@ -4065,6 +4075,73 @@ model_name = "shared"
         restarted.shutdown().await.unwrap();
         drop(restarted);
         assert_eq!(counts(), (0, 3));
+    }
+
+    #[tokio::test]
+    async fn startup_failure_leaves_policy_staged_and_previous_revision_restartable() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured_memory_test_config(&directory, &["assistant"]);
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        runtime.shutdown().await.unwrap();
+        drop(runtime);
+
+        let mut failed_rollout = config.clone();
+        failed_rollout.server.memory_maintenance.retention.revision = 2;
+        let invalid_evidence_path = directory.path().join("evidence-is-a-directory");
+        std::fs::create_dir_all(&invalid_evidence_path).unwrap();
+        failed_rollout.server.evidence.path = Some(invalid_evidence_path);
+        let error = match Runtime::boot_config(failed_rollout).await {
+            Ok(runtime) => {
+                runtime.shutdown().await.unwrap();
+                panic!("failed rollout must not complete startup")
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(error, RuntimeError::Evidence(_)));
+
+        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
+        let revisions = || {
+            rusqlite::Connection::open(&memory_db)
+                .unwrap()
+                .query_row(
+                    "SELECT (SELECT policy_revision FROM relationship_memory_retention_state WHERE singleton = 1), (SELECT policy_revision FROM relationship_memory_retention_policy_stage WHERE singleton = 1)",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap()
+        };
+        assert_eq!(revisions(), (1, 2));
+
+        let previous = Runtime::boot_config(config.clone()).await.unwrap();
+        previous.shutdown().await.unwrap();
+        drop(previous);
+
+        let mut retry = config;
+        retry.server.memory_maintenance.retention.revision = 2;
+        let activated = Runtime::boot_config(retry).await.unwrap();
+        activated.shutdown().await.unwrap();
+        drop(activated);
+        let connection = rusqlite::Connection::open(memory_db).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT policy_revision FROM relationship_memory_retention_state WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM relationship_memory_retention_policy_stage",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
