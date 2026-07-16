@@ -45,7 +45,9 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{MessageKind, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
+};
 use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, BoundaryContext};
 
 use protocol::Client;
@@ -59,6 +61,7 @@ struct ChannelMessageHandler {
     instance_id: String,
     agent_id: AgentId,
     replay: Arc<ReplayCache>,
+    client: Client,
 }
 
 #[async_trait]
@@ -90,6 +93,22 @@ impl MessageHandler for ChannelMessageHandler {
             "dingtalk",
             format!("dingtalk-message-{}", msg.msg_id),
         );
+        if let Some(control) = parse_external_control(text, existing.as_ref()) {
+            let response = match control {
+                Ok(control) => match self.ctx.submit_control(&boundary, control).await {
+                    Ok(()) => "control accepted".to_string(),
+                    Err(error) => {
+                        warn!(code = ?error.code, request_id = %error.request_id, "dingtalk: control denied");
+                        "control rejected".to_string()
+                    }
+                },
+                Err(message) => message.to_string(),
+            };
+            self.client
+                .reply_text(&msg.session_webhook, &response)
+                .await;
+            return;
+        }
         let external_meta = BTreeMap::from([
             ("channel_instance_id".into(), self.instance_id.clone()),
             ("conversation_id".into(), msg.conversation_id.clone()),
@@ -233,13 +252,40 @@ async fn run_outgoing(
                     .reply_text(url, &format!("🔧 calling: {tool_name}"))
                     .await;
             }
-            sylvander_agent::bus::StreamEvent::ToolApprovalRequired { tools, .. } => {
+            sylvander_agent::bus::StreamEvent::ToolApprovalRequired {
+                batch_id, tools, ..
+            } => {
                 let list: Vec<String> = tools
                     .iter()
                     .map(|t| format!("- `{}`", t.tool_name))
                     .collect();
                 client
-                    .reply_text(url, &format!("⚠️ approval needed:\n{}", list.join("\n")))
+                    .reply_text(
+                        url,
+                        &format!(
+                            "⚠️ approval needed:\n{}\n/approve {batch_id}\n/deny {batch_id} [reason]",
+                            list.join("\n")
+                        ),
+                    )
+                    .await;
+            }
+            sylvander_agent::bus::StreamEvent::AskUser {
+                call_id,
+                question,
+                options,
+                ..
+            } => {
+                let options = options
+                    .iter()
+                    .enumerate()
+                    .map(|(index, option)| format!("{}. {option}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                client
+                    .reply_text(
+                        url,
+                        &format!("{question}\n{options}\n/answer {call_id} <answer>"),
+                    )
                     .await;
             }
             sylvander_agent::bus::StreamEvent::IterationStart { iteration } => {
@@ -336,6 +382,7 @@ impl Channel for DingTalkChannel {
             instance_id: self.instance_id.clone(),
             agent_id: self.agent_id.clone(),
             replay: Arc::new(ReplayCache::default()),
+            client: self.client.clone(),
         });
         handler.ctx.mark_ready();
         tokio::select! {

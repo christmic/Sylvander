@@ -2918,6 +2918,7 @@ name = "sylvander-channel-dingtalk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "futures-util",
  "reqwest",
  "serde",

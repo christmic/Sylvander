@@ -677,6 +677,90 @@ pub async fn submit_external_chat(
     ui.submit_chat(boundary, request).await
 }
 
+/// Parse a small transport-neutral command surface for chat-only adapters.
+///
+/// Unknown slash commands remain ordinary chat. Recognized controls require
+/// an existing owned session and are still authorized by `UiService`.
+pub fn parse_external_control(
+    text: &str,
+    session_id: Option<&SessionId>,
+) -> Option<Result<UiClientMessage, &'static str>> {
+    let text = text.trim();
+    let command = text.split_whitespace().next()?;
+    if !matches!(command, "/approve" | "/deny" | "/answer" | "/interrupt") {
+        return None;
+    }
+    let Some(session_id) = session_id else {
+        return Some(Err("no active session for this control"));
+    };
+    let session_id = session_id.0.clone();
+    match command {
+        "/approve" => {
+            let mut parts = text.split_whitespace();
+            let _ = parts.next();
+            let Some(call_id) = parts.next().filter(|value| !value.is_empty()) else {
+                return Some(Err(
+                    "usage: /approve <request-id> [once|session|persistent]",
+                ));
+            };
+            let scope = match parts.next().unwrap_or("once") {
+                "once" => sylvander_protocol::ApprovalScope::Once,
+                "session" => sylvander_protocol::ApprovalScope::Session,
+                "persistent" => sylvander_protocol::ApprovalScope::Persistent,
+                _ => {
+                    return Some(Err("approval scope must be once, session, or persistent"));
+                }
+            };
+            Some(Ok(UiClientMessage::Approve {
+                session_id,
+                call_id: call_id.into(),
+                approved: true,
+                scope,
+                reason: None,
+            }))
+        }
+        "/deny" => {
+            let mut parts = text.splitn(3, char::is_whitespace);
+            let _ = parts.next();
+            let Some(call_id) = parts.next().filter(|value| !value.trim().is_empty()) else {
+                return Some(Err("usage: /deny <request-id> [reason]"));
+            };
+            Some(Ok(UiClientMessage::Approve {
+                session_id,
+                call_id: call_id.trim().into(),
+                approved: false,
+                scope: sylvander_protocol::ApprovalScope::Once,
+                reason: parts
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            }))
+        }
+        "/answer" => {
+            let mut parts = text.splitn(3, char::is_whitespace);
+            let _ = parts.next();
+            let Some(call_id) = parts.next().filter(|value| !value.trim().is_empty()) else {
+                return Some(Err("usage: /answer <request-id> <answer>"));
+            };
+            let Some(answer) = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                return Some(Err("usage: /answer <request-id> <answer>"));
+            };
+            Some(Ok(UiClientMessage::Answer {
+                session_id,
+                call_id: call_id.trim().into(),
+                answer: answer.into(),
+            }))
+        }
+        "/interrupt" => Some(Ok(UiClientMessage::Interrupt { session_id })),
+        _ => None,
+    }
+}
+
 fn inherit_session_defaults(
     overrides: &mut SessionConfigOverrides,
     defaults: &SessionConfigOverrides,
@@ -1061,6 +1145,36 @@ mod tests {
             overrides.execution_target.as_deref(),
             Some("explicit-target")
         );
+    }
+
+    #[test]
+    fn external_controls_are_typed_and_require_an_existing_session() {
+        let session = SessionId::new("session-1");
+        assert!(matches!(
+            parse_external_control("/approve batch-1 session", Some(&session)),
+            Some(Ok(UiClientMessage::Approve {
+                approved: true,
+                scope: sylvander_protocol::ApprovalScope::Session,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            parse_external_control("/deny batch-1 unsafe path", Some(&session)),
+            Some(Ok(UiClientMessage::Approve {
+                approved: false,
+                reason: Some(reason),
+                ..
+            })) if reason == "unsafe path"
+        ));
+        assert!(matches!(
+            parse_external_control("/answer ask-1 use option two", Some(&session)),
+            Some(Ok(UiClientMessage::Answer { answer, .. })) if answer == "use option two"
+        ));
+        assert!(matches!(
+            parse_external_control("/interrupt", None),
+            Some(Err("no active session for this control"))
+        ));
+        assert!(parse_external_control("/new", Some(&session)).is_none());
     }
 
     #[tokio::test]

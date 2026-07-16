@@ -279,45 +279,72 @@ impl Client {
     /// Reply to a conversation with plain text.
     pub async fn reply_text(&self, webhook_url: &str, text: &str) {
         let token = self.get_access_token().await;
-        let _ = self
-            .http
-            .post(webhook_url)
-            .header(
-                "x-acs-dingtalk-access-token",
-                token.as_deref().unwrap_or(""),
-            )
-            .json(&WebhookText {
+        self.send_webhook(
+            webhook_url,
+            token.as_deref().unwrap_or(""),
+            &WebhookText {
                 msgtype: "text".into(),
                 text: WebhookTextContent {
                     content: text.to_string(),
                 },
-            })
-            .send()
-            .await;
+            },
+        )
+        .await;
     }
 
     /// Reply to a conversation with markdown.
     pub async fn reply_markdown(&self, webhook_url: &str, title: &str, text: &str) {
         let token = self.get_access_token().await;
-        let _ = self
-            .http
-            .post(webhook_url)
-            .header(
-                "x-acs-dingtalk-access-token",
-                token.as_deref().unwrap_or(""),
-            )
-            .json(&WebhookMarkdown {
+        self.send_webhook(
+            webhook_url,
+            token.as_deref().unwrap_or(""),
+            &WebhookMarkdown {
                 msgtype: "markdown".into(),
                 markdown: WebhookMarkdownContent {
                     title: title.to_string(),
                     text: text.to_string(),
                 },
-            })
-            .send()
-            .await;
+            },
+        )
+        .await;
     }
 
     // -- internal --
+
+    async fn send_webhook<T: Serialize + ?Sized>(&self, webhook_url: &str, token: &str, body: &T) {
+        for attempt in 0..3_u32 {
+            match self
+                .http
+                .post(webhook_url)
+                .header("x-acs-dingtalk-access-token", token)
+                .json(body)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => return,
+                Ok(response)
+                    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                        && !response.status().is_server_error() =>
+                {
+                    tracing::warn!(status = %response.status(), "dingtalk: delivery rejected");
+                    return;
+                }
+                Ok(response) => {
+                    tracing::warn!(status = %response.status(), attempt, "dingtalk: delivery retryable");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, attempt, "dingtalk: delivery transport failed");
+                }
+            }
+            if attempt < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    100 * u64::from(attempt + 1),
+                ))
+                .await;
+            }
+        }
+        tracing::warn!("dingtalk: delivery retry budget exhausted");
+    }
 
     async fn get_endpoint(&self) -> Result<GatewayResponse, reqwest::Error> {
         self.http
@@ -371,4 +398,49 @@ fn unix_timestamp() -> i64 {
         .as_secs()
         .try_into()
         .unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{Router, http::StatusCode, routing::post};
+
+    #[tokio::test]
+    async fn webhook_delivery_retries_retryable_status() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let state = attempts.clone();
+        let app = Router::new().route(
+            "/webhook",
+            post(move || {
+                let state = state.clone();
+                async move {
+                    if state.fetch_add(1, Ordering::SeqCst) == 0 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = Client::new("key", "secret");
+        client
+            .token_cache
+            .lock()
+            .await
+            .replace(("token".into(), i64::MAX));
+
+        client
+            .reply_text(&format!("http://{address}/webhook"), "hello")
+            .await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
+    }
 }

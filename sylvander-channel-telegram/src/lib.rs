@@ -29,7 +29,9 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
+use sylvander_channel::{
+    Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
+};
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
     BoundaryErrorCode,
@@ -86,6 +88,7 @@ pub struct TelegramChannel {
     /// `chat_id` → bot `message_id` (for `editMessageText` during streaming)
     last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
     http: reqwest::Client,
+    api_base_url: String,
     webhook_secret: Option<String>,
     instance_id: String,
     max_request_bytes: usize,
@@ -103,6 +106,7 @@ impl TelegramChannel {
             agent_id: agent_id.into(),
             last_bot_msg: Arc::new(RwLock::new(HashMap::new())),
             http: reqwest::Client::new(),
+            api_base_url: "https://api.telegram.org".into(),
             webhook_secret: None,
             instance_id: "telegram".into(),
             max_request_bytes: 1024 * 1024,
@@ -130,7 +134,13 @@ impl TelegramChannel {
     }
 
     fn api(&self, method: &str) -> String {
-        format!("https://api.telegram.org/bot{}/{}", self.token, method)
+        format!("{}/bot{}/{}", self.api_base_url, self.token, method)
+    }
+
+    #[cfg(test)]
+    fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
+        self.api_base_url = api_base_url.into();
+        self
     }
 }
 
@@ -152,6 +162,7 @@ impl Channel for TelegramChannel {
         let state = Arc::new(AppState {
             sessions: ctx.sessions.clone(),
             ctx,
+            channel: self.clone(),
             agent_id: self.agent_id.clone(),
             webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
@@ -195,6 +206,7 @@ impl Clone for TelegramChannel {
             agent_id: self.agent_id.clone(),
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
+            api_base_url: self.api_base_url.clone(),
             webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
             max_request_bytes: self.max_request_bytes,
@@ -208,6 +220,7 @@ impl Clone for TelegramChannel {
 
 struct AppState {
     ctx: Arc<ChannelContext>,
+    channel: Arc<TelegramChannel>,
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
     webhook_secret: Option<String>,
@@ -284,6 +297,20 @@ async fn handle_webhook(
         "telegram",
         format!("telegram-update-{}", update.update_id),
     );
+    if let Some(control) = parse_external_control(&text, existing.as_ref()) {
+        let response = match control {
+            Ok(control) => match state.ctx.submit_control(&boundary, control).await {
+                Ok(()) => "control accepted".to_string(),
+                Err(error) => {
+                    warn!(code = ?error.code, request_id = %error.request_id, "telegram: control denied");
+                    "control rejected".to_string()
+                }
+            },
+            Err(message) => message.to_string(),
+        };
+        send_message(&state.channel, chat_id, &response).await;
+        return Ok("ok");
+    }
     let external_meta = BTreeMap::from([
         ("channel_instance_id".into(), state.instance_id.clone()),
         ("chat_id".into(), chat_id_str.clone()),
@@ -421,10 +448,29 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
                 };
                 format!("{icon} {tool_name}: {summary}")
             }
-            StreamEvent::ToolApprovalRequired { tools, .. } => {
+            StreamEvent::ToolApprovalRequired {
+                batch_id, tools, ..
+            } => {
                 let list: Vec<String> =
                     tools.iter().map(|t| format!("- {}", t.tool_name)).collect();
-                format!("⚠️ approval needed:\n{}", list.join("\n"))
+                format!(
+                    "⚠️ approval needed:\n{}\n/approve {batch_id}\n/deny {batch_id} [reason]",
+                    list.join("\n")
+                )
+            }
+            StreamEvent::AskUser {
+                call_id,
+                question,
+                options,
+                ..
+            } => {
+                let options = options
+                    .iter()
+                    .enumerate()
+                    .map(|(index, option)| format!("{}. {option}", index + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("{question}\n{options}\n/answer {call_id} <answer>")
             }
             StreamEvent::IterationStart { iteration } => {
                 format!("💭 thinking... (round {iteration})")
@@ -461,7 +507,35 @@ async fn send_message(ch: &TelegramChannel, chat_id: i64, text: &str) {
             chat_id,
             text: chunk.to_string(),
         };
-        let _ = ch.http.post(ch.api("sendMessage")).json(&body).send().await;
+        let mut delivered = false;
+        for attempt in 0..3_u32 {
+            match ch.http.post(ch.api("sendMessage")).json(&body).send().await {
+                Ok(response) if response.status().is_success() => {
+                    delivered = true;
+                    break;
+                }
+                Ok(response)
+                    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS
+                        && !response.status().is_server_error() =>
+                {
+                    warn!(status = %response.status(), "telegram: delivery rejected");
+                    return;
+                }
+                Ok(response) => {
+                    warn!(status = %response.status(), attempt, "telegram: delivery retryable");
+                }
+                Err(error) => {
+                    warn!(%error, attempt, "telegram: delivery transport failed");
+                }
+            }
+            if attempt < 2 {
+                tokio::time::sleep(Duration::from_millis(100 * u64::from(attempt + 1))).await;
+            }
+        }
+        if !delivered {
+            warn!("telegram: delivery retry budget exhausted");
+            return;
+        }
     }
 }
 
@@ -579,6 +653,11 @@ mod tests {
         context.ui = Some(ui.clone());
         let state = AppState {
             ctx: Arc::new(context),
+            channel: Arc::new(TelegramChannel::new(
+                "token",
+                "127.0.0.1:0".parse().unwrap(),
+                "agent",
+            )),
             agent_id: AgentId::new("agent"),
             sessions,
             webhook_secret: Some("secret".into()),
@@ -607,6 +686,37 @@ mod tests {
     #[test]
     fn message_split_respects_unicode_character_boundaries() {
         assert_eq!(split_message("中文消息", 2), vec!["中文", "消息"]);
+    }
+
+    #[tokio::test]
+    async fn delivery_retries_retryable_status_and_then_succeeds() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let state = attempts.clone();
+        let app = Router::new().route(
+            "/bottoken/sendMessage",
+            post(move || {
+                let state = state.clone();
+                async move {
+                    if state.fetch_add(1, Ordering::SeqCst) == 0 {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    } else {
+                        StatusCode::OK
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let channel = TelegramChannel::new("token", "127.0.0.1:0".parse().unwrap(), "agent")
+            .with_api_base_url(format!("http://{address}"));
+
+        send_message(&channel, 42, "hello").await;
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        server.abort();
     }
 
     #[test]
