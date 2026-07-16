@@ -582,6 +582,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
         | ServerMsg::UserProfile { .. }
+        | ServerMsg::IdentityBinding { .. }
         | ServerMsg::Pong => return None,
     })
 }

@@ -364,6 +364,7 @@ async fn handle_protocol_message(
 fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
     let mut capabilities = vec![
         "agent_discovery".into(),
+        sylvander_protocol::IDENTITY_BINDING_CAPABILITY.into(),
         "session_config".into(),
         "feedback".into(),
         sylvander_protocol::USER_PROFILE_CAPABILITY.into(),
@@ -697,6 +698,19 @@ async fn handle_client_msg(
             };
             let _ = tx.send(ServerMsg::UserProfile { response });
         }
+        ClientMsg::IdentityBinding { request } => {
+            let operation = request.operation();
+            let response = match Arc::into_inner(request) {
+                Some(request) => ctx.submit_identity_binding(&boundary, request).await,
+                None => sylvander_protocol::IdentityBindingResponse::Error {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    error: sylvander_protocol::IdentityBindingError::service_unavailable(operation),
+                },
+            };
+            let _ = tx.send(ServerMsg::IdentityBinding {
+                response: Arc::new(response),
+            });
+        }
         ClientMsg::SelectModel {
             session_id,
             model,
@@ -871,6 +885,9 @@ mod tests {
             boundary: &sylvander_protocol::BoundaryContext,
             message: &ClientMsg,
         ) -> Result<(), sylvander_protocol::BoundaryError> {
+            if matches!(message, ClientMsg::IdentityBinding { .. }) {
+                return Ok(());
+            }
             if matches!(message, ClientMsg::RegistryAdmin { .. })
                 && boundary
                     .principal
@@ -927,6 +944,33 @@ mod tests {
             _: sylvander_protocol::RunFeedback,
         ) -> Result<String, sylvander_protocol::BoundaryError> {
             unreachable!()
+        }
+
+        fn identity_binding_capabilities(&self) -> sylvander_protocol::IdentityBindingCapabilities {
+            sylvander_protocol::IdentityBindingCapabilities::current()
+        }
+
+        async fn identity_binding(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            identity: sylvander_channel::AuthenticatedTransportIdentity,
+            _request: sylvander_protocol::IdentityBindingRequest,
+        ) -> sylvander_protocol::IdentityBindingResponse {
+            let (transport, instance, principal) = identity.into_parts();
+            assert_eq!(transport, boundary.transport);
+            assert_eq!(instance, boundary.channel_instance_id);
+            assert_eq!(
+                principal,
+                boundary.principal.as_ref().expect("principal").id.0
+            );
+            sylvander_protocol::IdentityBindingResponse::Resolved {
+                version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                binding: sylvander_protocol::IdentityBindingView {
+                    user_id: sylvander_protocol::UserId::new("stable-ws-user"),
+                    revision: 3,
+                    linked_at_unix_secs: 5,
+                },
+            }
         }
 
         async fn registry_admin(
@@ -1205,6 +1249,7 @@ mod tests {
             "registry_administration",
             "credential_registry_lifecycle",
             "provider_model_registry_lifecycle",
+            sylvander_protocol::IDENTITY_BINDING_CAPABILITY,
         ] {
             assert!(
                 protocol.capabilities.iter().any(|item| item == capability),
@@ -1484,6 +1529,54 @@ mod tests {
                     active_revision: 5,
                 } if agent_id == &AgentId::new("oraculo")
             )
+        ));
+    }
+
+    #[tokio::test]
+    async fn identity_binding_round_trip_uses_authenticated_websocket_ingress() {
+        let context = ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+            Some(Arc::new(CredentialRegistryUi {
+                received: Mutex::new(None),
+            })),
+            None,
+        );
+        let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+            "websocket-user",
+            sylvander_protocol::AuthenticationMethod::BearerToken,
+        );
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        handle_client_msg(
+            ClientMsg::IdentityBinding {
+                request: Arc::new(sylvander_protocol::IdentityBindingRequest {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    action: sylvander_protocol::IdentityBindingAction::Resolve {},
+                }),
+            },
+            &context,
+            &AgentId::new("agent-1"),
+            &tx,
+            &principal,
+            "websocket-test",
+        )
+        .await;
+
+        let response = rx.recv().await.expect("identity response");
+        let wire = serde_json::to_string(&response).expect("serialize response");
+        let decoded: ServerMsg = serde_json::from_str(&wire).expect("decode response");
+        assert!(matches!(
+            decoded,
+            ServerMsg::IdentityBinding { response }
+                if matches!(
+                    response.as_ref(),
+                    sylvander_protocol::IdentityBindingResponse::Resolved {
+                        binding,
+                        ..
+                    } if binding.user_id == sylvander_protocol::UserId::new("stable-ws-user")
+                        && binding.revision == 3
+                )
         ));
     }
 
