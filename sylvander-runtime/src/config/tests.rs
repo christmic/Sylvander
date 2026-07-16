@@ -9,11 +9,14 @@ name = "test-sylvander"
 data_dir = "/var/lib/sylvander"
 
 [server.memory_maintenance.integrity]
-anchor_path = "/var/lib/sylvander-integrity/anchor.json"
 
 [server.memory_maintenance.integrity.key]
 source = "env"
 name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
 
 [[model_providers]]
 id = "primary"
@@ -91,14 +94,117 @@ fn valid_configuration_parses_and_resolves_references() {
         config.model_providers[0].api_key,
         SecretRef::Env { ref name } if name == "MODEL_API_KEY"
     ));
-    assert_eq!(
-        config
-            .server
-            .memory_maintenance
-            .integrity
-            .anchor_path
-            .as_deref(),
-        Some(Path::new("/var/lib/sylvander-integrity/anchor.json"))
+    assert!(matches!(
+        config.server.memory_maintenance.integrity.backend,
+        Some(MemoryIntegrityBackend::File { ref anchor_path })
+            if anchor_path == Path::new("/var/lib/sylvander-integrity/anchor.json")
+    ));
+}
+
+#[test]
+fn remote_memory_integrity_backend_is_typed_bounded_and_redacted() {
+    let input = valid_toml().replace(
+        r#"[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json""#,
+        r#"[server.memory_maintenance.integrity.backend]
+kind = "http"
+endpoint = "https://anchor.example.test/v1/memory/cas"
+timeout_millis = 2500
+read_retries = 4
+
+[server.memory_maintenance.integrity.backend.bearer_token]
+source = "env"
+name = "ANCHOR_TOKEN_DO_NOT_RENDER"
+
+[server.memory_maintenance.integrity.backend.ca_certificate]
+source = "file"
+path = "/run/secrets/anchor-ca-do-not-render.pem"
+
+[server.memory_maintenance.integrity.backend.client_identity]
+source = "file"
+path = "/run/secrets/anchor-client-do-not-render.pem""#,
+    );
+    let config = ServerConfig::from_toml(&input).expect("valid remote anchor configuration");
+    let backend = config
+        .server
+        .memory_maintenance
+        .integrity
+        .backend
+        .as_ref()
+        .unwrap();
+    assert!(matches!(
+        backend,
+        MemoryIntegrityBackend::Http {
+            endpoint,
+            timeout_millis: 2_500,
+            read_retries: 4,
+            ..
+        } if endpoint == "https://anchor.example.test/v1/memory/cas"
+    ));
+    let debug = format!("{:?}", config.server.memory_maintenance.integrity);
+    assert!(!debug.contains("ANCHOR_TOKEN_DO_NOT_RENDER"));
+    assert!(!debug.contains("anchor-ca-do-not-render"));
+    assert!(!debug.contains("anchor-client-do-not-render"));
+    assert!(!debug.contains("anchor.example.test"));
+}
+
+#[test]
+fn remote_memory_integrity_backend_rejects_unsafe_endpoint_and_limits() {
+    let file_backend = r#"[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json""#;
+    for (replacement, expected) in [
+        (
+            r#"[server.memory_maintenance.integrity.backend]
+kind = "http"
+endpoint = "http://anchor.example.test/v1/cas?token=leak"
+timeout_millis = 5000
+read_retries = 3
+
+[server.memory_maintenance.integrity.backend.bearer_token]
+source = "env"
+name = "ANCHOR_TOKEN""#,
+            "must be an HTTPS URL",
+        ),
+        (
+            r#"[server.memory_maintenance.integrity.backend]
+kind = "http"
+endpoint = "https://anchor.example.test/v1/cas"
+timeout_millis = 99
+read_retries = 11
+
+[server.memory_maintenance.integrity.backend.bearer_token]
+source = "env"
+name = "ANCHOR_TOKEN""#,
+            "timeout_millis",
+        ),
+    ] {
+        let error =
+            ServerConfig::from_toml(&valid_toml().replace(file_backend, replacement)).unwrap_err();
+        let rendered = error.errors.join("\n");
+        assert!(rendered.contains(expected));
+        assert!(!rendered.contains("token=leak"));
+        if expected == "timeout_millis" {
+            assert!(rendered.contains("read_retries"));
+        }
+    }
+}
+
+#[test]
+fn legacy_flat_memory_anchor_shape_is_rejected() {
+    let input = valid_toml().replace(
+        r#"[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json""#,
+        "anchor_path = \"/var/lib/sylvander-integrity/anchor.json\"",
+    );
+    let error = ServerConfig::from_toml(&input).unwrap_err();
+    assert!(
+        error
+            .errors
+            .join("\n")
+            .contains("unknown field `anchor_path`")
     );
 }
 

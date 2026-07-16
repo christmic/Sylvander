@@ -430,20 +430,28 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
   Production integrity boundary:
 
-  - `server.memory_maintenance.integrity.anchor_path` and `key` are mandatory.
-    The path must be absolute, its parent must already exist, and Runtime
-    rejects paths that resolve inside `server.data_dir`.
-  - The anchor directory must be mounted or permissioned so the identity that
-    can write `memory.db` cannot write, delete, or roll back the anchor. The
-    key is resolved from an environment/file secret reference and is never
-    stored in SQLite, the anchor, a backup manifest, logs, or errors.
+  - `server.memory_maintenance.integrity.key` and the tagged `backend` are
+    mandatory. `key` is common to every backend and is resolved from an
+    environment/file secret reference; it is never stored in SQLite, an
+    anchor, a backup manifest, logs, Debug output, or errors.
+  - `backend.kind = "file"` requires an absolute `anchor_path`. Its parent must
+    already exist, and Runtime rejects paths that resolve inside
+    `server.data_dir`. The anchor directory must be mounted or permissioned so
+    the identity that can write `memory.db` cannot write, delete, or roll back
+    the anchor.
   - The file backend uses authenticated epoch/root records and atomic initial
     creation. It detects a restricted database writer changing/deleting rows,
     deleting audit history, replaying an older database, forging a manifest,
     or restoring an older backup epoch. It does **not** defeat a host
     administrator who can replay both the database and an older valid anchor.
-    That threat requires replacing the file path with a remote monotonic-CAS
-    secret/HSM service; no local-file implementation may claim that property.
+  - `backend.kind = "http"` delegates the monotonic ledger to a separately
+    administered HTTPS CAS service. The endpoint cannot contain credentials,
+    a query, or a fragment. Bearer credentials are mandatory secret
+    references; private CA and client-identity references are optional.
+    Timeouts are bounded to 100–60000 ms and read retries to at most 10. CAS
+    conflicts and ambiguous writes fail closed rather than being converted
+    into blind retries. This backend is the required deployment shape when the
+    threat model includes whole-host historical replay.
   - Mutations use a two-phase anchor transition: a signed
     `Pending{from_epoch/root,to_epoch/root}` is fsynced before SQLite commit,
     then finalized after commit. Restart accepts only the authenticated

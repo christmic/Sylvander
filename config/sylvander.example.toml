@@ -14,14 +14,37 @@ interval_seconds = 3600
 batch_size = 500
 max_batches_per_run = 20
 
-# Must be outside server.data_dir on storage the memory database writer cannot
-# modify. Pre-create this parent directory with restricted permissions.
 [server.memory_maintenance.integrity]
-anchor_path = "/var/lib/sylvander-integrity/anchor.json"
 
 [server.memory_maintenance.integrity.key]
 source = "env"
 name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+# File anchors must be outside server.data_dir on storage the memory database
+# writer cannot modify. Pre-create the parent with restricted permissions.
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+
+# Whole-host replay resistance instead uses a remote monotonic CAS service:
+# [server.memory_maintenance.integrity.backend]
+# kind = "http"
+# endpoint = "https://memory-anchor.example.test/v1/cas"
+# timeout_millis = 5000
+# read_retries = 3
+#
+# [server.memory_maintenance.integrity.backend.bearer_token]
+# source = "env"
+# name = "SYLVANDER_MEMORY_ANCHOR_TOKEN"
+#
+# Optional private PKI and mTLS material are also secret references:
+# [server.memory_maintenance.integrity.backend.ca_certificate]
+# source = "file"
+# path = "/run/secrets/memory-anchor-ca.pem"
+#
+# [server.memory_maintenance.integrity.backend.client_identity]
+# source = "file"
+# path = "/run/secrets/memory-anchor-client.pem"
 
 [server.memory_maintenance.retention]
 revision = 1

@@ -134,6 +134,60 @@ redacted from formatting and cleared from their temporary owned buffer after
 client construction. Do not put credentials in command-line arguments,
 committed examples, logs, or Agent prompts.
 
+## Relationship-memory integrity anchor
+
+Production relationship memory requires one common integrity `key` secret
+reference and exactly one typed backend. Existing flat `anchor_path`
+configuration is not accepted; Sylvander is pre-release and reads only the
+latest configuration shape.
+
+The file backend protects against a database writer that cannot modify the
+external anchor:
+
+```toml
+[server.memory_maintenance.integrity]
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+```
+
+The path must be absolute, outside `server.data_dir`, and beneath an existing
+directory with a separately administered write boundary. It does not resist a
+host administrator replaying the database, anchor, and key together.
+
+Use the remote monotonic CAS backend for that stronger threat model:
+
+```toml
+[server.memory_maintenance.integrity]
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+[server.memory_maintenance.integrity.backend]
+kind = "http"
+endpoint = "https://memory-anchor.example.test/v1/cas"
+timeout_millis = 5000
+read_retries = 3
+
+[server.memory_maintenance.integrity.backend.bearer_token]
+source = "env"
+name = "SYLVANDER_MEMORY_ANCHOR_TOKEN"
+```
+
+Only HTTPS endpoints are accepted. Credentials, query parameters, and
+fragments are forbidden in the URL. `timeout_millis` is bounded to 100–60000;
+`read_retries` is bounded to 0–10. Private-PKI deployments may add
+`backend.ca_certificate` and `backend.client_identity`, each as a `SecretRef`.
+The endpoint credentials and TLS references are not rendered in Debug output
+or validation errors. Read retries are bounded; compare-and-swap conflicts and
+ambiguous mutations fail closed instead of being blindly replayed.
+
 ## Storage
 
 If `server.data_dir` is omitted, it resolves to
