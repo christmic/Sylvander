@@ -9,6 +9,8 @@ use super::proposal::parse_status as parse_proposal_status;
 use super::proposal_types::ImprovementProposalStatus;
 use super::{EvidenceError, EvidenceStore, as_i64};
 
+mod evidence;
+
 impl EvidenceStore {
     /// Atomically bind one approved proposal to one isolated worktree lease.
     pub async fn register_self_change_experiment(
@@ -213,5 +215,19 @@ pub(super) fn parse_experiment_status(
         "rolled_back" => Ok(SelfChangeExperimentStatus::RolledBack),
         "failed" => Ok(SelfChangeExperimentStatus::Failed),
         _ => Err(EvidenceError::InvalidExperimentData),
+    }
+}
+
+pub(super) fn experiment_status_name(status: SelfChangeExperimentStatus) -> &'static str {
+    match status {
+        SelfChangeExperimentStatus::Prepared => "prepared",
+        SelfChangeExperimentStatus::CandidateEvaluated => "candidate_evaluated",
+        SelfChangeExperimentStatus::MergeApproved => "merge_approved",
+        SelfChangeExperimentStatus::Merged => "merged",
+        SelfChangeExperimentStatus::Observing => "observing",
+        SelfChangeExperimentStatus::Completed => "completed",
+        SelfChangeExperimentStatus::RollbackRequired => "rollback_required",
+        SelfChangeExperimentStatus::RolledBack => "rolled_back",
+        SelfChangeExperimentStatus::Failed => "failed",
     }
 }

@@ -34,10 +34,11 @@ pub use evaluation_types::{
 };
 pub use experiment_signer::{
     ExperimentEvidenceSigner, HmacSha256EvidenceSigner, sign_experiment_evidence,
+    verify_experiment_evidence,
 };
 pub use experiment_types::{
-    ExperimentPhase, SelfChangeExperiment, SelfChangeExperimentStatus, SignedExperimentEvidence,
-    StoredSelfChangeExperiment, UnsignedExperimentEvidence,
+    ExperimentPhase, RecordExperimentEvidence, SelfChangeExperiment, SelfChangeExperimentStatus,
+    SignedExperimentEvidence, StoredSelfChangeExperiment, UnsignedExperimentEvidence,
 };
 pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
