@@ -42,6 +42,7 @@ mod credential_registry;
 #[cfg(test)]
 mod credential_registry_tests;
 pub mod evidence;
+pub mod git_worktree;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
 mod identity_binding_service;
 #[cfg(test)]
@@ -203,6 +204,7 @@ struct RuntimeUiService {
     evidence: Option<EvidenceStore>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
     user_profiles: Option<UserProfileStore>,
+    worktrees: Option<Arc<git_worktree::GitWorktreeManager>>,
     boundary: BoundaryGuard,
 }
 
@@ -212,6 +214,7 @@ struct RuntimeRevisionProvider {
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
+    user_profiles: Arc<dyn sylvander_agent::user_profile_provider::UserProfileProvider>,
     ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     credential_resolver: Arc<dyn CredentialSecretResolver>,
     configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
@@ -235,8 +238,10 @@ impl RuntimeRevisionProvider {
             self.bus.clone(),
             self.sessions.clone(),
             self.memory.clone(),
+            Some(self.user_profiles.clone()),
             self.credential_resolver.clone(),
         )
+        .await
         .map_err(|error| RuntimeError::Composition(error.to_string()))
     }
 
@@ -1521,15 +1526,35 @@ impl RuntimeUiService {
         }
         let effective = resolve_session_config(&agent, &request.overrides, None, None)
             .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
-        let workspace = effective
+        let workspace_binding = effective
             .user_workspace
             .as_ref()
-            .or(effective.agent_workspace.as_ref())
-            .map_or_else(
-                || std::path::PathBuf::from("."),
-                |binding| binding.path.clone(),
-            );
+            .or(effective.agent_workspace.as_ref());
+        let mut workspace = workspace_binding.map_or_else(
+            || std::path::PathBuf::from("."),
+            |binding| binding.path.clone(),
+        );
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let lease = if workspace_binding.is_some_and(|binding| !binding.read_only)
+            && self
+                .worktrees
+                .as_ref()
+                .is_some_and(|manager| manager.is_git_workspace(&workspace))
+        {
+            let manager = self.worktrees.as_ref().expect("checked above").clone();
+            let requested = workspace.clone();
+            let id = session_id.0.clone();
+            let created = tokio::task::spawn_blocking(move || manager.create(&id, &requested))
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, "create_session", "worktree creation stopped")
+                })?
+                .map_err(|error| boundary_failure(boundary, "create_session", error))?;
+            workspace.clone_from(&created.effective_workspace);
+            Some(created)
+        } else {
+            None
+        };
         let metadata = SessionMetadata {
             workspace,
             name: label.clone(),
@@ -1553,15 +1578,26 @@ impl RuntimeUiService {
             "channel_id".into(),
             serde_json::Value::String(boundary.channel_instance_id.clone()),
         );
-        self.sessions
-            .save(&session)
-            .await
-            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
+        if let Some(lease) = &lease {
+            session.external_meta.insert(
+                "git_worktree".into(),
+                serde_json::Value::String(lease.branch.clone()),
+            );
+        }
+        if let Err(error) = self.sessions.save(&session).await {
+            self.discard_worktree(&session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
         if let Err(error) = agent
             .attach_authenticated_session(session_id.clone(), metadata.clone())
             .await
         {
             let _ = self.sessions.delete(&session_id).await;
+            self.discard_worktree(&session_id).await;
             return Err(boundary_failure(
                 boundary,
                 "create_session",
@@ -1598,6 +1634,22 @@ impl RuntimeUiService {
         agent.detach_authenticated_session(session_id).await;
         if let Err(error) = self.sessions.delete(session_id).await {
             warn!(%error, %session_id, "failed to delete compensated session");
+        }
+        self.discard_worktree(session_id).await;
+    }
+
+    async fn discard_worktree(&self, session_id: &SessionId) {
+        let Some(manager) = self.worktrees.clone() else {
+            return;
+        };
+        let id = session_id.0.clone();
+        let result = tokio::task::spawn_blocking(move || match manager.open(&id) {
+            Ok(lease) => manager.discard(&lease),
+            Err(_) => Ok(()),
+        })
+        .await;
+        if let Ok(Err(error)) = result {
+            warn!(%error, %session_id, "failed to discard session worktree");
         }
     }
 
@@ -2591,6 +2643,7 @@ impl Runtime {
             evidence: None,
             identity_bindings: None,
             user_profiles: None,
+            worktrees: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
         Ok(Self {
@@ -2616,6 +2669,14 @@ impl Runtime {
             .validate()
             .map_err(|error| RuntimeError::Config(error.to_string()))?;
         let mut config = with_resolved_paths(config)?;
+        let worktrees = Arc::new(git_worktree::GitWorktreeManager::new(
+            config
+                .server
+                .data_dir
+                .as_ref()
+                .expect("resolved runtime data directory")
+                .join("coding-sessions"),
+        ));
         let session_db = config
             .server
             .session_db
@@ -2846,8 +2907,10 @@ impl Runtime {
                     bus.clone(),
                     session_store.clone(),
                     memory_store.clone(),
+                    Some(Arc::new(user_profiles.clone())),
                     credential_resolver.clone(),
                 )
+                .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?,
             );
         }
@@ -2862,6 +2925,7 @@ impl Runtime {
             bus: bus.clone(),
             sessions: session_store.clone(),
             memory: memory_store.clone(),
+            user_profiles: Arc::new(user_profiles.clone()),
             ephemeral: ephemeral.clone(),
             credential_resolver: credential_resolver.clone(),
             configured: RwLock::new(
@@ -2962,6 +3026,7 @@ impl Runtime {
             evidence: Some(security_audit),
             identity_bindings,
             user_profiles: Some(user_profiles),
+            worktrees: Some(worktrees),
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
@@ -2997,6 +3062,76 @@ impl Runtime {
         self.configured_agents
             .get(id)
             .map(ConfiguredAgent::descriptor)
+    }
+
+    /// Inspect all tracked and untracked changes in an isolated coding session.
+    pub async fn inspect_coding_session(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<git_worktree::WorkspaceDiff, RuntimeError> {
+        let manager = self
+            .ui_service
+            .worktrees
+            .clone()
+            .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
+        let id = session_id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.inspect(&lease)
+        })
+        .await
+        .map_err(|_| RuntimeError::Engine("worktree inspection stopped".into()))?
+        .map_err(RuntimeError::Engine)
+    }
+
+    /// Merge the reviewed coding-session changes while keeping the session open.
+    pub async fn accept_coding_session(&self, session_id: &SessionId) -> Result<(), RuntimeError> {
+        let manager = self
+            .ui_service
+            .worktrees
+            .clone()
+            .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
+        let id = session_id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.accept(&lease)
+        })
+        .await
+        .map_err(|_| RuntimeError::Engine("worktree merge stopped".into()))?
+        .map_err(RuntimeError::Engine)
+    }
+
+    /// Abandon an isolated coding session and remove its worktree.
+    pub async fn discard_coding_session(&self, session_id: &SessionId) -> Result<(), RuntimeError> {
+        let session = self
+            .session_store
+            .get(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
+        self.engine.detach_session(session_id).await;
+        for agent_id in &session.agents {
+            if let Some(agent) = self.configured_agents.get(agent_id) {
+                agent.detach_authenticated_session(session_id).await;
+            }
+        }
+        self.session_store
+            .delete(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let manager = self
+            .ui_service
+            .worktrees
+            .clone()
+            .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
+        let id = session_id.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = manager.open(&id)?;
+            manager.discard(&lease)
+        })
+        .await
+        .map_err(|_| RuntimeError::Engine("worktree discard stopped".into()))?
+        .map_err(RuntimeError::Engine)
     }
 
     #[cfg(test)]
@@ -3764,6 +3899,7 @@ id = "model-a"
             evidence: runtime.ui_service.evidence.clone(),
             identity_bindings: runtime.ui_service.identity_bindings.clone(),
             user_profiles: runtime.ui_service.user_profiles.clone(),
+            worktrees: runtime.ui_service.worktrees.clone(),
             boundary: runtime.ui_service.boundary.clone(),
         }
     }
@@ -6253,22 +6389,18 @@ model_name = "model-a"
         })
         .await
         .expect("both revision-bound requests must reach the model provider");
-        assert!(revision_requests.contains(&(
-            "revision-one-probe".into(),
-            "model-a".into(),
-            format!(
-                "{}\n\nrevision one prompt",
+        for (probe, model, configured_prompt) in [
+            ("revision-one-probe", "model-a", "revision one prompt"),
+            ("revision-two-probe", "model-b", "revision two prompt"),
+        ] {
+            let expected_prefix = format!(
+                "{}\n\n{configured_prompt}",
                 sylvander_agent::prompt::SHARED_SAFETY_PROMPT
-            ),
-        )));
-        assert!(revision_requests.contains(&(
-            "revision-two-probe".into(),
-            "model-b".into(),
-            format!(
-                "{}\n\nrevision two prompt",
-                sylvander_agent::prompt::SHARED_SAFETY_PROMPT
-            ),
-        )));
+            );
+            assert!(revision_requests.iter().any(|request| {
+                request.0 == probe && request.1 == model && request.2.starts_with(&expected_prefix)
+            }));
+        }
 
         let stale_activation = sylvander_channel::UiService::agent_admin(
             runtime.ui_service.as_ref(),

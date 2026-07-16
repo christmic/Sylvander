@@ -11,6 +11,10 @@ use sylvander_protocol::{
 };
 use tokio::{sync::Mutex, task};
 
+use sylvander_agent::user_profile_provider::{
+    UserProfileProvider, UserProfileProviderError, UserProfileSubject,
+};
+
 const APPLICATION_ID: i64 = 1_398_362_182;
 const SCHEMA_VERSION: i64 = 1;
 const MAX_USER_ID_BYTES: usize = 512;
@@ -304,6 +308,19 @@ impl UserProfileStore {
             Ok(stored)
         })
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl UserProfileProvider for UserProfileStore {
+    async fn current_profile(
+        &self,
+        subject: &UserProfileSubject,
+    ) -> Result<Option<UserProfileView>, UserProfileProviderError> {
+        self.read(subject.user_id().clone())
+            .await
+            .map(|profile| profile.map(StoredUserProfile::into_view))
+            .map_err(|_| UserProfileProviderError::Unavailable)
     }
 }
 

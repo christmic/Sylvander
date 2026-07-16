@@ -2,18 +2,21 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use sylvander_agent::bus::MessageBus;
+use sylvander_agent::mcp_stdio::McpStdioClient;
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
 use sylvander_agent::session_store::SessionStore;
-use sylvander_agent::spec::AgentSpec;
+use sylvander_agent::spec::{AgentSpec, ToolRef};
 use sylvander_agent::tool::ToolRegistry;
 use sylvander_agent::tools::memory::MemoryStore;
 use sylvander_agent::tools::{
-    AskUserTool, EditTool, MemoryReadTool, PresentPlanTool, ReadTool, StartBackgroundTaskTool,
-    UpdatePlanTool, WriteTool,
+    AskUserTool, CommandTool, EditTool, MemoryReadTool, PresentPlanTool, ReadTool,
+    StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
 };
+use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_core::{
@@ -21,9 +24,10 @@ use sylvander_llm_core::{
     ModelRef,
 };
 use sylvander_protocol::{
-    ApprovalPolicy, FileAccess, ModelSelection, ModelSelectionResolutionError, NetworkAccess,
-    PermissionProfile, ReasoningEffort, SessionConfigOverrides, SessionConfigProvenance,
-    SessionConfigSource, SessionConfigSourceKind, SessionEffectiveConfig, SessionWorkspaceBinding,
+    AgentSecretReference, ApprovalPolicy, FileAccess, ModelSelection,
+    ModelSelectionResolutionError, NetworkAccess, PermissionProfile, ReasoningEffort,
+    SessionConfigOverrides, SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind,
+    SessionEffectiveConfig, SessionWorkspaceBinding,
 };
 
 #[cfg(test)]
@@ -101,6 +105,7 @@ pub fn build_agents(
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
+    user_profiles: Option<Arc<dyn UserProfileProvider>>,
     secrets: &dyn SecretResolver,
 ) -> Result<Vec<ConfiguredAgent>, CompositionError> {
     config
@@ -113,6 +118,7 @@ pub fn build_agents(
                 bus.clone(),
                 sessions.clone(),
                 memory.clone(),
+                user_profiles.clone(),
                 secrets,
             )
         })
@@ -125,6 +131,7 @@ pub(crate) fn build_agent(
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
+    user_profiles: Option<Arc<dyn UserProfileProvider>>,
     secrets: &dyn SecretResolver,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let provider = config
@@ -174,7 +181,7 @@ pub(crate) fn build_agent(
 
     let tools = default_tools(memory.clone());
 
-    let builder = AgentRun::builder(spec.clone(), client)
+    let mut builder = AgentRun::builder(spec.clone(), client)
         .bus(bus)
         .session_store(sessions)
         .memory(memory.clone())
@@ -182,6 +189,9 @@ pub(crate) fn build_agent(
         .available_models(model_list)
         .prompt_resolver(prompt_resolver.clone())
         .model_capabilities(primary.capabilities);
+    if let Some(provider) = user_profiles {
+        builder = builder.user_profile_provider(provider);
+    }
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -218,11 +228,13 @@ pub(crate) fn build_registry_agent(
         bus,
         sessions,
         memory,
+        None,
         Arc::new(SystemSecretResolver),
     )
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)] // explicit composition dependencies stay type-visible
 pub(crate) fn build_registry_agent_with_resolver(
     config: &ServerConfig,
     snapshot: RegistryCompositionSnapshot,
@@ -230,6 +242,7 @@ pub(crate) fn build_registry_agent_with_resolver(
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
+    user_profiles: Option<Arc<dyn UserProfileProvider>>,
     resolver: Arc<dyn CredentialSecretResolver>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let RegistryCompositionSnapshot {
@@ -287,6 +300,9 @@ pub(crate) fn build_registry_agent_with_resolver(
         .model_lifecycles(lifecycles)
         .model_pricing(pricing)
         .prompt_resolver(prompt_resolver.clone());
+    if let Some(provider) = user_profiles {
+        builder = builder.user_profile_provider(provider);
+    }
     builder = apply_server_run_settings(config, builder);
     let (run, session_issuer) = builder
         .build_with_session_issuer()
@@ -309,13 +325,15 @@ pub(crate) fn build_registry_agent_with_resolver(
 
 /// Build one complete versioned registry closure around an immutable router.
 #[allow(dead_code)] // wired into revision composition after the staged router batches
-pub(crate) fn build_registry_agent_versioned_with_resolver(
+#[allow(clippy::too_many_arguments)] // explicit composition dependencies stay type-visible
+pub(crate) async fn build_registry_agent_versioned_with_resolver(
     config: &ServerConfig,
     snapshot: VersionedRegistryCompositionSnapshot,
     registry: crate::agent_registry::AgentRegistry,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
+    user_profiles: Option<Arc<dyn UserProfileProvider>>,
     resolver: Arc<dyn CredentialSecretResolver>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let VersionedRegistryCompositionSnapshot {
@@ -369,7 +387,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
-    let tools = default_tools(memory.clone());
+    let tools = configured_tools(&spec, memory.clone()).await?;
     let lifecycles = definitions
         .iter()
         .map(|model| {
@@ -396,7 +414,7 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
             })
         })
         .collect::<HashMap<_, _>>();
-    let builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
+    let mut builder = AgentRun::qualified_router_builder(spec.clone(), Arc::new(router), primary)
         .bus(bus)
         .session_store(sessions)
         .memory(memory.clone())
@@ -405,6 +423,9 @@ pub(crate) fn build_registry_agent_versioned_with_resolver(
         .qualified_model_lifecycles(lifecycles)
         .qualified_model_pricing(pricing)
         .prompt_resolver(prompt_resolver.clone());
+    if let Some(provider) = user_profiles {
+        builder = builder.user_profile_provider(provider);
+    }
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -639,11 +660,58 @@ pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
         .register(ReadTool::new("/"))
         .register(WriteTool::new("/"))
         .register(EditTool::new("/"))
+        .register(CommandTool::new("/"))
         .register(MemoryReadTool::new(memory))
         .register(AskUserTool::new())
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new())
         .register(StartBackgroundTaskTool::new())
+}
+
+async fn configured_tools(
+    spec: &AgentSpec,
+    memory: Arc<dyn MemoryStore>,
+) -> Result<ToolRegistry, CompositionError> {
+    let mut registry = default_tools(memory);
+    for reference in &spec.tools {
+        let ToolRef::McpServer(config) = reference else {
+            continue;
+        };
+        let resolved = resolve_mcp_config(config)?;
+        let client = McpStdioClient::connect(&resolved, Duration::from_secs(30))
+            .await
+            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
+        for tool in client
+            .list_tools()
+            .await
+            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?
+        {
+            registry = registry.register(tool);
+        }
+    }
+    Ok(registry)
+}
+
+fn resolve_mcp_config(
+    config: &sylvander_agent::spec::McpServerConfig,
+) -> Result<sylvander_agent::spec::McpServerConfig, CompositionError> {
+    const PREFIX: &str = "sylvander-secret-ref:v1:";
+    let mut resolved = config.clone();
+    for (name, value) in &mut resolved.envs {
+        let Some(encoded) = value.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let reference: AgentSecretReference = serde_json::from_str(encoded)
+            .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?;
+        *value = match reference {
+            AgentSecretReference::Environment { name: source } => std::env::var(source)
+                .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?,
+            AgentSecretReference::File { path } => std::fs::read_to_string(path)
+                .map(|secret| secret.trim_end_matches(['\r', '\n']).to_string())
+                .map_err(|_| CompositionError::McpSecret(config.name.clone(), name.clone()))?,
+        };
+    }
+    Ok(resolved)
 }
 
 fn configured_prompt_resolver(
@@ -995,6 +1063,10 @@ pub enum CompositionError {
     ProviderFactory(String),
     #[error("failed to create pinned Provider router: {0}")]
     ProviderRouter(String),
+    #[error("failed to start MCP server `{0}`: {1}")]
+    Mcp(String, String),
+    #[error("failed to resolve MCP server `{0}` environment `{1}`")]
+    McpSecret(String, String),
     #[error("model `{0}` has invalid metadata")]
     InvalidModel(String),
     #[error("model `{model}` has invalid capability metadata: {issue}")]
@@ -1200,8 +1272,10 @@ model_name = "shared"
             bus,
             sessions,
             Arc::new(InMemoryMemoryStore::new()),
+            None,
             Arc::new(crate::config::SystemSecretResolver),
         )
+        .await
         .unwrap();
         let info = configured.run.runtime_model_info().await;
 
@@ -1290,8 +1364,10 @@ model_name = "shared"
             bus,
             sessions,
             Arc::new(InMemoryMemoryStore::new()),
+            None,
             Arc::new(crate::config::SystemSecretResolver),
-        );
+        )
+        .await;
         let Err(error) = result else {
             panic!("unsupported model capability must fail before router construction");
         };
@@ -1381,6 +1457,7 @@ path = "/tmp/sylvander-test.sock"
             bus,
             sessions,
             Arc::new(InMemoryMemoryStore::new()),
+            None,
             &crate::config::SystemSecretResolver,
         )
         .unwrap();

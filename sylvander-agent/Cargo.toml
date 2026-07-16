@@ -10,7 +10,7 @@ license.workspace = true
 sylvander-llm-core = { path = "../sylvander-llm-core" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-protocol = { path = "../sylvander-protocol" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "process"] }
 futures = { workspace = true }
 futures-util = { workspace = true }
 async-stream = { workspace = true }

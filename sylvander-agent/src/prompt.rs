@@ -6,6 +6,8 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{ModelSelection, PromptLayerDigest, PromptLayerKind, PromptManifest};
 
+use crate::user_profile_prompt::UserProfilePromptLayer;
+
 pub const MAX_PROMPT_PROFILES: usize = 32;
 pub const MAX_PROMPT_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION_PROMPT_BYTES: usize = 16 * 1024;
@@ -276,6 +278,35 @@ impl PromptResolver {
             },
             system_prompt,
         })
+    }
+
+    /// Resolve the live turn prompt while keeping dynamic profile data out of
+    /// the durable static-configuration manifest. The profile is deliberately
+    /// placed after Agent instructions and before the session override.
+    pub fn resolve_turn_system_prompt(
+        &self,
+        selection: &ModelSelection,
+        requested_profile: Option<&str>,
+        session_prompt: Option<&str>,
+        user_profile: Option<&UserProfilePromptLayer>,
+    ) -> Result<String, PromptResolveError> {
+        let mut prompt = self
+            .resolve(selection, requested_profile, None)?
+            .system_prompt;
+        if let Some(profile) = user_profile {
+            prompt.push_str("\n\n");
+            prompt.push_str(profile.content());
+        }
+        if let Some(session_prompt) = session_prompt {
+            validate_session_prompt(session_prompt).map_err(|_| PromptResolveError::Invalid)?;
+            if !self.allow_session_prompt {
+                return Err(PromptResolveError::SessionPromptDisabled);
+            }
+            prompt.push_str("\n\n");
+            prompt.push_str(session_prompt);
+        }
+        validate_resolved_prompt(&prompt).map_err(|_| PromptResolveError::Invalid)?;
+        Ok(prompt)
     }
 }
 
