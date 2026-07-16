@@ -83,6 +83,7 @@ pub mod engine;
 pub mod error;
 pub mod event;
 pub mod loop_;
+pub mod mcp_stdio;
 pub mod plan_gate;
 pub mod prompt;
 pub mod provider_compat;
@@ -95,6 +96,7 @@ pub mod tool;
 pub mod tool_context;
 pub mod tools;
 pub mod user_profile_prompt;
+pub mod user_profile_provider;
 pub mod workspace_journal;
 
 /// Convenient re-exports for the most commonly used types.
@@ -118,6 +120,7 @@ pub mod prelude {
     pub use crate::loop_::{
         AgentLoop, AgentLoopBuilder, AgentLoopResult, run, run_stream, run_with_events,
     };
+    pub use crate::mcp_stdio::{McpError, McpStdioClient, McpTool};
     pub use crate::run::{
         AgentRun, AgentRunBuilder, AgentRunError, AgentSessionIssuer, AuthenticatedSession,
         AuthenticatedSessionLease,

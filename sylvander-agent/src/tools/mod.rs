@@ -4,6 +4,7 @@
 
 pub mod ask_user;
 pub mod background_task;
+pub mod command;
 pub mod edit;
 pub mod memory;
 pub mod memory_read;
@@ -16,6 +17,7 @@ pub mod write;
 
 pub use ask_user::AskUserTool;
 pub use background_task::StartBackgroundTaskTool;
+pub use command::CommandTool;
 pub use edit::EditTool;
 pub use memory::{
     InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryEntry, MemoryExecutionContext,

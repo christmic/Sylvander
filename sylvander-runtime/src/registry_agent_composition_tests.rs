@@ -457,8 +457,10 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         bus,
         sessions,
         Arc::new(InMemoryMemoryStore::new()),
+        None,
         Arc::new(SystemSecretResolver),
     )
+    .await
     .unwrap();
     let runtime = agent.run.runtime_model_info().await;
     assert_eq!(
@@ -698,10 +700,14 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let beta_body: serde_json::Value =
         serde_json::from_slice(&beta_requests[0].body).expect("provider request must be JSON");
     assert_eq!(beta_body["model"], "shared");
-    assert_eq!(
-        beta_body["system"][0]["text"], expected_prompt,
-        "the restarted provider call must use the exact persisted prompt composition"
+    let actual_prompt = beta_body["system"][0]["text"]
+        .as_str()
+        .expect("system prompt must be text");
+    assert!(
+        actual_prompt.starts_with(&expected_prompt),
+        "the restarted provider call must preserve the persisted prompt prefix"
     );
+    assert!(actual_prompt.contains("# Workspace instructions and activated Skills"));
 
     let alpha_session = sylvander_channel::UiService::create_session(
         restarted.ui_service.as_ref(),

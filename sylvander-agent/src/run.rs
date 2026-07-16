@@ -59,6 +59,11 @@ use crate::tools::memory::{
     MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
 
+#[path = "workspace_context.rs"]
+mod workspace_context;
+use crate::user_profile_prompt::{UserProfilePromptLayer, compose_user_profile_prompt};
+use crate::user_profile_provider::{UserProfileProvider, UserProfileSubject};
+
 // ---------------------------------------------------------------------------
 // AgentRun (Arc-based, cheap clone)
 // ---------------------------------------------------------------------------
@@ -77,6 +82,7 @@ pub(crate) struct AgentRunInner {
     runtime_models: RwLock<RuntimeModels>,
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
     prompt_resolver: Option<Arc<PromptResolver>>,
+    user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
@@ -1790,6 +1796,40 @@ impl AgentRunInner {
             .ok_or_else(prompt_integrity_error)
     }
 
+    async fn load_user_profile(
+        &self,
+        session_id: &SessionId,
+        metadata: &SessionMetadata,
+    ) -> Result<Option<UserProfilePromptLayer>, AgentRunError> {
+        let Some(provider) = &self.user_profile_provider else {
+            return Ok(None);
+        };
+        if !self
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(session_id)
+        {
+            return Err(AgentRunError::Authentication(
+                "session is not authenticated".into(),
+            ));
+        }
+        let subject = UserProfileSubject::authenticated(
+            sylvander_protocol::UserId::new(metadata.user_id.clone()),
+            self.id.clone(),
+            session_id.clone(),
+        );
+        provider
+            .current_profile(&subject)
+            .await
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?
+            .map(|view| {
+                compose_user_profile_prompt(&view)
+                    .map_err(|error| AgentRunError::Configuration(error.to_string()))
+            })
+            .transpose()
+    }
+
     fn prepare_loop_snapshot(
         &self,
         model: &RuntimeModel,
@@ -2176,6 +2216,16 @@ impl AgentRunInner {
         };
         let mut loop_config = self.prepare_loop_snapshot(&selected_model, selected_effort)?;
         let selected_pricing = selected_model.pricing;
+        let session_metadata = {
+            let sessions = self.sessions.read().await;
+            let ctx = sessions
+                .get(&session_id)
+                .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
+            ctx.metadata.clone()
+        };
+        let user_profile = self
+            .load_user_profile(&session_id, &session_metadata)
+            .await?;
 
         if let (Some(stored), Some(effective)) = (&stored_session, &effective_config) {
             let prompt_policy = self.inner_prompt_resolver()?;
@@ -2191,17 +2241,41 @@ impl AgentRunInner {
             {
                 return Err(prompt_integrity_error());
             }
-            loop_config.system_prompt = Some(resolved_prompt.system_prompt);
+            let turn_prompt = prompt_policy
+                .resolve_turn_system_prompt(
+                    &selected_model.selection,
+                    stored.config_overrides.prompt_profile.as_deref(),
+                    stored.config_overrides.system_prompt.as_deref(),
+                    user_profile.as_ref(),
+                )
+                .map_err(|_| prompt_integrity_error())?;
+            loop_config.system_prompt = Some(with_workspace_context(
+                turn_prompt,
+                effective
+                    .agent_workspace
+                    .as_ref()
+                    .map(|binding| binding.path.as_path()),
+                effective
+                    .user_workspace
+                    .as_ref()
+                    .map(|binding| binding.path.as_path()),
+            ));
+        } else if loop_config.system_prompt.is_some() || user_profile.is_some() {
+            let mut prompt = loop_config.system_prompt.take().unwrap_or_default();
+            if let Some(profile) = &user_profile {
+                if !prompt.is_empty() {
+                    prompt.push_str("\n\n");
+                }
+                prompt.push_str(profile.content());
+            }
+            loop_config.system_prompt = Some(with_workspace_context(
+                prompt,
+                None,
+                Some(session_metadata.workspace.as_path()),
+            ));
         }
 
         // 1. Persist the immutable turn boundary before provider or tool work.
-        let session_metadata = {
-            let sessions = self.sessions.read().await;
-            let ctx = sessions
-                .get(&session_id)
-                .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
-            ctx.metadata.clone()
-        };
         let permissions = if let Some(effective) = &effective_config {
             effective.permissions.clone()
         } else {
@@ -2678,6 +2752,15 @@ impl AgentRunInner {
     }
 }
 
+fn with_workspace_context(
+    prompt: String,
+    agent_home: Option<&Path>,
+    task_workspace: Option<&Path>,
+) -> String {
+    workspace_context::discover(agent_home, task_workspace)
+        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TurnCorrelation {
     turn: String,
@@ -2730,7 +2813,9 @@ fn tool_context_for_permissions(
         sylvander_protocol::FileAccess::WorkspaceWrite => {
             context = context
                 .with_capability(Cap::Read)
-                .with_capability(Cap::Write);
+                .with_capability(Cap::Write)
+                .with_capability(Cap::Spawn)
+                .with_capability(Cap::Git);
         }
     }
     if permissions.network_access == sylvander_protocol::NetworkAccess::Allowed {
@@ -2768,6 +2853,7 @@ pub struct AgentRunBuilder {
     qualified_model_pricing:
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
     prompt_resolver: Option<Arc<PromptResolver>>,
+    user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -2830,6 +2916,7 @@ impl AgentRunBuilder {
             qualified_model_lifecycles: HashMap::new(),
             qualified_model_pricing: HashMap::new(),
             prompt_resolver: None,
+            user_profile_provider: None,
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -2930,6 +3017,13 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn prompt_resolver(mut self, resolver: Arc<PromptResolver>) -> Self {
         self.prompt_resolver = Some(resolver);
+        self
+    }
+
+    /// Inject Runtime-owned live profile lookup for each authenticated turn.
+    #[must_use]
+    pub fn user_profile_provider(mut self, provider: Arc<dyn UserProfileProvider>) -> Self {
+        self.user_profile_provider = Some(provider);
         self
     }
 
@@ -3149,6 +3243,7 @@ impl AgentRunBuilder {
                 runtime_models: RwLock::new(runtime_models),
                 runtime_permissions: RwLock::new(runtime_permissions),
                 prompt_resolver: self.prompt_resolver,
+                user_profile_provider: self.user_profile_provider,
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 bus,
@@ -3254,6 +3349,31 @@ mod tests {
             .build()
             .expect("client");
         (spec, client)
+    }
+
+    #[test]
+    fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
+        let agent_home = tempfile::TempDir::new().unwrap();
+        let task = tempfile::TempDir::new().unwrap();
+        std::fs::write(agent_home.path().join("AGENTS.md"), "agent-home-guide").unwrap();
+        std::fs::write(task.path().join("agent.md"), "task-guide").unwrap();
+        std::fs::create_dir_all(task.path().join(".agents/skills/test")).unwrap();
+        std::fs::write(
+            task.path().join(".agents/skills/test/SKILL.md"),
+            "skill-guide",
+        )
+        .unwrap();
+
+        let prompt = with_workspace_context(
+            "base-prompt".into(),
+            Some(agent_home.path()),
+            Some(task.path()),
+        );
+        let base = prompt.find("base-prompt").unwrap();
+        let agent = prompt.find("agent-home-guide").unwrap();
+        let task = prompt.find("task-guide").unwrap();
+        let skill = prompt.find("skill-guide").unwrap();
+        assert!(base < agent && agent < task && task < skill);
     }
 
     #[derive(Default)]
