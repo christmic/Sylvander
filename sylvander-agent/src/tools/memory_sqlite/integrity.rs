@@ -1,17 +1,17 @@
 use std::fmt::Write as _;
-use std::fs::{File, OpenOptions};
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::integrity_anchor::{
+    FileMemoryIntegrityAnchor, MemoryAnchorObservation, MonotonicMemoryAnchor,
+};
 use super::{MemoryStoreError, SCHEMA_VERSION};
 
 const ANCHOR_VERSION: u32 = 1;
-const MAX_ANCHOR_BYTES: u64 = 8 * 1024;
 const INTEGRITY_ERROR: &str = "memory integrity verification failed";
 const TABLE_QUERIES: &[&str] = &[
     "SELECT record_key,owner_user,owner_agent,id,kind_json,content,references_json,tags_json,importance,created_at,last_accessed,access_count,metadata_json,revision,updated_at,expires_at,superseded_by_record_key,origin_actor_kind,origin_user_id,origin_agent_id,origin_session_id,origin_trace_id,origin_source,provenance_trusted,retention_policy_revision,integrity_epoch,integrity_mac FROM relationship_memories ORDER BY record_key",
@@ -23,7 +23,7 @@ const TABLE_QUERIES: &[&str] = &[
 ];
 
 pub struct MemoryIntegrityConfig {
-    pub anchor: FileMemoryIntegrityAnchor,
+    anchor: Arc<dyn MonotonicMemoryAnchor>,
     key: Vec<u8>,
 }
 
@@ -33,7 +33,20 @@ impl MemoryIntegrityConfig {
             return Err(integrity_error());
         }
         Ok(Self {
-            anchor: FileMemoryIntegrityAnchor::new(anchor_path),
+            anchor: Arc::new(FileMemoryIntegrityAnchor::new(anchor_path)),
+            key: key.to_vec(),
+        })
+    }
+
+    pub fn with_anchor(
+        anchor: Arc<dyn MonotonicMemoryAnchor>,
+        key: &[u8],
+    ) -> Result<Self, MemoryStoreError> {
+        if key.len() < 32 || key.len() > 4096 {
+            return Err(integrity_error());
+        }
+        Ok(Self {
+            anchor,
             key: key.to_vec(),
         })
     }
@@ -42,17 +55,6 @@ impl MemoryIntegrityConfig {
 impl Drop for MemoryIntegrityConfig {
     fn drop(&mut self) {
         self.key.fill(0);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FileMemoryIntegrityAnchor {
-    path: PathBuf,
-}
-
-impl FileMemoryIntegrityAnchor {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
     }
 }
 
@@ -78,7 +80,7 @@ pub(super) enum AnchorRecord {
 }
 
 pub(super) struct IntegrityState {
-    anchor: FileMemoryIntegrityAnchor,
+    anchor: Arc<dyn MonotonicMemoryAnchor>,
     key: Mutex<Vec<u8>>,
 }
 
@@ -94,13 +96,13 @@ impl IntegrityState {
     pub(super) fn new(mut config: MemoryIntegrityConfig) -> Self {
         let key = std::mem::take(&mut config.key);
         Self {
-            anchor: config.anchor.clone(),
+            anchor: Arc::clone(&config.anchor),
             key: Mutex::new(key),
         }
     }
 
     pub(super) fn establish(&self, connection: &Connection) -> Result<(), MemoryStoreError> {
-        if self.anchor.path.exists() {
+        if self.anchor.load().map_err(|_| integrity_error())?.is_some() {
             return Err(integrity_error());
         }
         let root = database_root(connection)?;
@@ -108,7 +110,8 @@ impl IntegrityState {
     }
 
     pub(super) fn verify(&self, connection: &Connection) -> Result<String, MemoryStoreError> {
-        let record = self.read_record()?;
+        let observed = self.read_record()?;
+        let record = &observed.record;
         self.verify_record(&record)?;
         let actual = database_root(connection)?;
         match record {
@@ -131,20 +134,23 @@ impl IntegrityState {
                 } else {
                     return Err(integrity_error());
                 };
-                self.write_record(AnchorRecord::committed(epoch, root, self)?)?;
+                self.write_record(
+                    &observed.observation,
+                    AnchorRecord::committed(*epoch, root.clone(), self)?,
+                )?;
             }
         }
         Ok(actual)
     }
 
     pub(super) fn prepare(&self, before: &str, after: &str) -> Result<(), MemoryStoreError> {
-        let current = self.read_record()?;
-        self.verify_record(&current)?;
+        let observed = self.read_record()?;
+        self.verify_record(&observed.record)?;
         let AnchorRecord::Committed {
             epoch,
             database_root,
             ..
-        } = current
+        } = &observed.record
         else {
             return Err(integrity_error());
         };
@@ -152,27 +158,31 @@ impl IntegrityState {
             return Err(integrity_error());
         }
         let to_epoch = epoch.checked_add(1).ok_or_else(integrity_error)?;
-        let pending = AnchorRecord::pending(epoch, before, to_epoch, after, self)?;
-        self.write_record(pending)
+        let pending = AnchorRecord::pending(*epoch, before, to_epoch, after, self)?;
+        self.write_record(&observed.observation, pending)
     }
 
     pub(super) fn finalize(&self, after: &str) -> Result<(), MemoryStoreError> {
-        let current = self.read_record()?;
-        self.verify_record(&current)?;
+        let observed = self.read_record()?;
+        self.verify_record(&observed.record)?;
         let AnchorRecord::Pending {
             to_epoch, to_root, ..
-        } = current
+        } = &observed.record
         else {
             return Err(integrity_error());
         };
         if !constant_time_eq(after.as_bytes(), to_root.as_bytes()) {
             return Err(integrity_error());
         }
-        self.write_record(AnchorRecord::committed(to_epoch, to_root, self)?)
+        self.write_record(
+            &observed.observation,
+            AnchorRecord::committed(*to_epoch, to_root.clone(), self)?,
+        )
     }
 
     pub(super) fn snapshot(&self) -> Result<(u64, String), MemoryStoreError> {
-        let record = self.read_record()?;
+        let observed = self.read_record()?;
+        let record = observed.record;
         self.verify_record(&record)?;
         let AnchorRecord::Committed {
             epoch,
@@ -186,9 +196,9 @@ impl IntegrityState {
     }
 
     pub(super) fn read_epoch(&self, connection: &Connection) -> Result<u64, MemoryStoreError> {
-        let record = self.read_record()?;
-        self.verify_record(&record)?;
-        if let AnchorRecord::Committed { epoch, .. } = record {
+        let observed = self.read_record()?;
+        self.verify_record(&observed.record)?;
+        if let AnchorRecord::Committed { epoch, .. } = observed.record {
             return Ok(epoch);
         }
         self.verify(connection)?;
@@ -268,62 +278,44 @@ impl IntegrityState {
         self.verify_signature(&record_payload(record), record.mac())
     }
 
-    fn read_record(&self) -> Result<AnchorRecord, MemoryStoreError> {
-        let metadata = std::fs::metadata(&self.anchor.path).map_err(|_| integrity_error())?;
-        if !metadata.is_file() || metadata.len() > MAX_ANCHOR_BYTES {
-            return Err(integrity_error());
-        }
-        serde_json::from_slice(&std::fs::read(&self.anchor.path).map_err(|_| integrity_error())?)
-            .map_err(|_| integrity_error())
+    fn read_record(&self) -> Result<ObservedAnchorRecord, MemoryStoreError> {
+        let observation = self
+            .anchor
+            .load()
+            .map_err(|_| integrity_error())?
+            .ok_or_else(integrity_error)?;
+        let record = serde_json::from_slice(&observation.value).map_err(|_| integrity_error())?;
+        Ok(ObservedAnchorRecord {
+            observation,
+            record,
+        })
     }
 
-    fn write_record(&self, record: AnchorRecord) -> Result<(), MemoryStoreError> {
-        self.write_record_impl(record, false)
+    fn write_record(
+        &self,
+        current: &MemoryAnchorObservation,
+        record: AnchorRecord,
+    ) -> Result<(), MemoryStoreError> {
+        let bytes = serde_json::to_vec(&record).map_err(|_| integrity_error())?;
+        self.anchor
+            .compare_and_swap(&current.revision, &bytes)
+            .map(|_| ())
+            .map_err(|_| integrity_error())
     }
 
     fn write_new_record(&self, epoch: u64, database_root: String) -> Result<(), MemoryStoreError> {
         let record = AnchorRecord::committed(epoch, database_root, self)?;
-        self.write_record_impl(record, true)
+        let bytes = serde_json::to_vec(&record).map_err(|_| integrity_error())?;
+        self.anchor
+            .create(&bytes)
+            .map(|_| ())
+            .map_err(|_| integrity_error())
     }
+}
 
-    fn write_record_impl(
-        &self,
-        record: AnchorRecord,
-        create_new: bool,
-    ) -> Result<(), MemoryStoreError> {
-        let parent = self
-            .anchor
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .ok_or_else(integrity_error)?;
-        std::fs::create_dir_all(parent).map_err(|_| integrity_error())?;
-        let temp = parent.join(format!(".memory-anchor-{}.tmp", uuid::Uuid::new_v4()));
-        let result = (|| {
-            let bytes = serde_json::to_vec(&record).map_err(|_| integrity_error())?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .map_err(|_| integrity_error())?;
-            file.write_all(&bytes).map_err(|_| integrity_error())?;
-            file.sync_all().map_err(|_| integrity_error())?;
-            secure_file(&temp)?;
-            if create_new {
-                std::fs::hard_link(&temp, &self.anchor.path).map_err(|_| integrity_error())?;
-                std::fs::remove_file(&temp).map_err(|_| integrity_error())?;
-            } else {
-                std::fs::rename(&temp, &self.anchor.path).map_err(|_| integrity_error())?;
-            }
-            File::open(parent)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| integrity_error())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(temp);
-        }
-        result
-    }
+struct ObservedAnchorRecord {
+    observation: MemoryAnchorObservation,
+    record: AnchorRecord,
 }
 
 fn row_payload(
@@ -553,18 +545,6 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
-#[cfg(unix)]
-fn secure_file(path: &Path) -> Result<(), MemoryStoreError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|_| integrity_error())
-}
-
-#[cfg(not(unix))]
-fn secure_file(_: &Path) -> Result<(), MemoryStoreError> {
-    Ok(())
-}
-
 fn integrity_error() -> MemoryStoreError {
     MemoryStoreError::Store(INTEGRITY_ERROR.into())
 }
@@ -574,6 +554,7 @@ mod tests {
     use super::*;
     use crate::tools::memory::{MemoryAppend, MemoryExecutionContext, MemoryFilter, MemoryStore};
     use crate::tools::memory_sqlite::{RelationshipMemoryRetentionPolicy, SqliteMemoryStore};
+    use std::path::Path;
     use sylvander_protocol::SessionContext;
 
     const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
