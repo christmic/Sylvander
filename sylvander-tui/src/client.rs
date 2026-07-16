@@ -268,6 +268,7 @@ fn tui_protocol_capabilities() -> Vec<String> {
         "session_replay",
         "sessions",
         "tasks",
+        sylvander_protocol::USER_PROFILE_CAPABILITY,
         "workspace_rollback",
     ]
     .into_iter()
@@ -569,6 +570,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
+        | ServerMsg::UserProfile { .. }
         | ServerMsg::Pong => return None,
     })
 }

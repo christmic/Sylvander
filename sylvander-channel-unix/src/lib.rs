@@ -360,6 +360,7 @@ fn ui_protocol_capabilities(version: u16) -> Vec<String> {
         ("session_replay", 1),
         ("sessions", 1),
         ("tasks", 1),
+        (sylvander_protocol::USER_PROFILE_CAPABILITY, 1),
         ("workspace_rollback", 1),
     ]
     .into_iter()
@@ -1000,6 +1001,19 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 unavailable_registry_admin_response()
             };
             let _ = tx.send(ServerMsg::RegistryAdmin { response });
+        }
+        ClientMsg::UserProfile { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.user_profile(boundary, request).await
+            } else {
+                sylvander_protocol::UserProfileResponse::Error {
+                    version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+                    error: sylvander_protocol::UserProfileError::service_unavailable(
+                        request.operation(),
+                    ),
+                }
+            };
+            let _ = tx.send(ServerMsg::UserProfile { response });
         }
         ClientMsg::ListSessions => {
             let caller = sylvander_protocol::SessionContext::new(

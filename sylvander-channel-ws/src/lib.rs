@@ -366,6 +366,7 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
         "agent_discovery".into(),
         "session_config".into(),
         "feedback".into(),
+        sylvander_protocol::USER_PROFILE_CAPABILITY.into(),
     ];
     if version >= 2 {
         capabilities.extend([
@@ -682,6 +683,19 @@ async fn handle_client_msg(
                 unavailable_registry_admin_response()
             };
             let _ = tx.send(ServerMsg::RegistryAdmin { response });
+        }
+        ClientMsg::UserProfile { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.user_profile(&boundary, request).await
+            } else {
+                sylvander_protocol::UserProfileResponse::Error {
+                    version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+                    error: sylvander_protocol::UserProfileError::service_unavailable(
+                        request.operation(),
+                    ),
+                }
+            };
+            let _ = tx.send(ServerMsg::UserProfile { response });
         }
         ClientMsg::SelectModel {
             session_id,

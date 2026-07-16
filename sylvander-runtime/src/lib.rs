@@ -113,7 +113,9 @@ use sylvander_protocol::{
     IdentityBindingRequest, IdentityBindingResponse, ModelSelection, RegistryAdminError,
     RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
     SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionEffectiveConfig, SessionRevisionPinError, UserId,
+    SessionEffectiveConfig, SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UserId,
+    UserProfileAction, UserProfileCapabilities, UserProfileError, UserProfileErrorCode,
+    UserProfileOperation, UserProfileRequest, UserProfileResponse,
 };
 
 use crate::agent_admin::{
@@ -136,7 +138,7 @@ use crate::memory_maintenance::{
 };
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
-use crate::user_profile_store::UserProfileStore;
+use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
@@ -200,7 +202,6 @@ struct RuntimeUiService {
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     evidence: Option<EvidenceStore>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
-    #[allow(dead_code)] // consumed by UserProfile dispatch in the next bounded batch
     user_profiles: Option<UserProfileStore>,
     boundary: BoundaryGuard,
 }
@@ -753,6 +754,144 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .map_or_else(IdentityBindingCapabilities::default, |_| {
                 IdentityBindingCapabilities::current()
             })
+    }
+
+    fn user_profile_capabilities(&self) -> UserProfileCapabilities {
+        self.user_profiles
+            .as_ref()
+            .map_or_else(UserProfileCapabilities::default, |_| {
+                UserProfileCapabilities::current()
+            })
+    }
+
+    async fn user_profile(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: UserProfileRequest,
+    ) -> UserProfileResponse {
+        let message = sylvander_protocol::UiClientMessage::UserProfile { request };
+        if let Err(error) = self
+            .boundary
+            .check(boundary, &message, "user_profile")
+            .await
+        {
+            let code = match error.code {
+                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                    UserProfileErrorCode::Unauthenticated
+                }
+                sylvander_protocol::BoundaryErrorCode::RateLimited => {
+                    UserProfileErrorCode::RateLimited
+                }
+                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                    UserProfileErrorCode::InvalidRequest
+                }
+                _ => UserProfileErrorCode::Forbidden,
+            };
+            let operation = match &message {
+                sylvander_protocol::UiClientMessage::UserProfile { request } => request.operation(),
+                _ => unreachable!(),
+            };
+            return user_profile_error(operation, code, None);
+        }
+        let sylvander_protocol::UiClientMessage::UserProfile { request } = message else {
+            unreachable!()
+        };
+        let operation = request.operation();
+        if let Err(error) = request.validate() {
+            let code = if matches!(
+                error,
+                sylvander_protocol::UserProfileValidationError::UnsupportedVersion
+            ) {
+                UserProfileErrorCode::UnsupportedVersion
+            } else {
+                UserProfileErrorCode::InvalidRequest
+            };
+            return user_profile_error(operation, code, None);
+        }
+        let Some(store) = &self.user_profiles else {
+            return user_profile_error(operation, UserProfileErrorCode::ServiceUnavailable, None);
+        };
+        let owner = match self.effective_user_id(boundary, "user_profile").await {
+            Ok(owner) => owner,
+            Err(error) => {
+                let code = match error.code {
+                    sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                        UserProfileErrorCode::Unauthenticated
+                    }
+                    _ => UserProfileErrorCode::Forbidden,
+                };
+                return user_profile_error(operation, code, None);
+            }
+        };
+        let result = match request.action {
+            UserProfileAction::Create { profile } => {
+                store
+                    .create(owner, profile)
+                    .await
+                    .map(|profile| UserProfileResponse::Created {
+                        version: USER_PROFILE_PROTOCOL_VERSION,
+                        profile: profile.into_view(),
+                    })
+            }
+            UserProfileAction::Read {} => match store.read(owner).await {
+                Ok(Some(profile)) => Ok(UserProfileResponse::Read {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    profile: profile.into_view(),
+                }),
+                Ok(None) => Ok(UserProfileResponse::NotFound {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                }),
+                Err(error) => Err(error),
+            },
+            UserProfileAction::Update {
+                expected_revision,
+                profile,
+            } => store
+                .update(owner, expected_revision, profile)
+                .await
+                .map(|profile| UserProfileResponse::Updated {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    profile: profile.into_view(),
+                }),
+            UserProfileAction::Correct {
+                expected_revision,
+                profile,
+            } => store
+                .correct(owner, expected_revision, profile)
+                .await
+                .map(|profile| UserProfileResponse::Corrected {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    profile: profile.into_view(),
+                }),
+            UserProfileAction::Export { .. } => {
+                store
+                    .export(owner)
+                    .await
+                    .map(|export| UserProfileResponse::Exported {
+                        version: USER_PROFILE_PROTOCOL_VERSION,
+                        export,
+                    })
+            }
+            UserProfileAction::Delete { expected_revision } => store
+                .delete(owner, expected_revision)
+                .await
+                .map(|deleted_revision| UserProfileResponse::Deleted {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    deleted_revision,
+                    do_not_learn_preserved: true,
+                }),
+            UserProfileAction::SetDoNotLearn {
+                expected_revision,
+                enabled,
+            } => store
+                .set_do_not_learn(owner, expected_revision, enabled)
+                .await
+                .map(|profile| UserProfileResponse::DoNotLearnUpdated {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    profile: profile.into_view(),
+                }),
+        };
+        result.unwrap_or_else(|error| map_user_profile_error(operation, error))
     }
 
     async fn identity_binding(
@@ -1795,6 +1934,41 @@ fn boundary_failure(
     }
 }
 
+fn map_user_profile_error(
+    operation: UserProfileOperation,
+    error: UserProfileStoreError,
+) -> UserProfileResponse {
+    let (code, current_revision) = match error {
+        UserProfileStoreError::Invalid(_) => (UserProfileErrorCode::InvalidRequest, None),
+        UserProfileStoreError::AlreadyExists => (UserProfileErrorCode::AlreadyExists, None),
+        UserProfileStoreError::NotFound => (UserProfileErrorCode::NotFound, None),
+        UserProfileStoreError::Conflict { actual, .. } => {
+            (UserProfileErrorCode::Conflict, Some(actual))
+        }
+        UserProfileStoreError::IncompatibleSchema
+        | UserProfileStoreError::Corrupt
+        | UserProfileStoreError::Storage
+        | UserProfileStoreError::Task => (UserProfileErrorCode::Internal, None),
+    };
+    user_profile_error(operation, code, current_revision)
+}
+
+fn user_profile_error(
+    operation: UserProfileOperation,
+    code: UserProfileErrorCode,
+    current_revision: Option<u64>,
+) -> UserProfileResponse {
+    UserProfileResponse::Error {
+        version: USER_PROFILE_PROTOCOL_VERSION,
+        error: UserProfileError {
+            code,
+            operation,
+            current_revision,
+            retry_after_ms: None,
+        },
+    }
+}
+
 fn validate_external_metadata(
     boundary: &sylvander_protocol::BoundaryContext,
     metadata: &BTreeMap<String, String>,
@@ -2164,6 +2338,7 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::SubmitFeedback { .. } => "submit_feedback",
         Message::AgentAdmin { .. } => "agent_admin",
         Message::RegistryAdmin { .. } => "registry_admin",
+        Message::UserProfile { .. } => "user_profile",
         Message::ListSessions => "list_sessions",
         Message::LoadSession { .. } => "load_session",
         Message::ReattachSession { .. } => "reattach_session",
@@ -3880,6 +4055,34 @@ id = "model-a"
             confirmed,
             IdentityBindingResponse::Resolved { binding, .. }
                 if binding.user_id == UserId::new("alice") && binding.revision == 1
+        ));
+        let profile_created = sylvander_channel::UiService::user_profile(
+            runtime.ui_service.as_ref(),
+            &local,
+            UserProfileRequest {
+                version: USER_PROFILE_PROTOCOL_VERSION,
+                action: UserProfileAction::Create {
+                    profile: sylvander_protocol::UserProfileData::default(),
+                },
+            },
+        )
+        .await;
+        assert!(matches!(
+            profile_created,
+            UserProfileResponse::Created { profile, .. } if profile.revision == 1
+        ));
+        let profile_from_external = sylvander_channel::UiService::user_profile(
+            runtime.ui_service.as_ref(),
+            &external,
+            UserProfileRequest {
+                version: USER_PROFILE_PROTOCOL_VERSION,
+                action: UserProfileAction::Read {},
+            },
+        )
+        .await;
+        assert!(matches!(
+            profile_from_external,
+            UserProfileResponse::Read { profile, .. } if profile.revision == 1
         ));
         let created = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
