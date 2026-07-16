@@ -246,7 +246,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`; only a Runtime-issued, run-bound authenticated session can obtain memory authority, while raw bus joins remain untrusted. Revision, immutable provenance, bounded trace digest, policy revision, and effective expiry survive restart. The exact latest schema fails closed and never falls back to InMemory. CAS update/delete, atomic non-dangling supersession, finite default/max TTL, and bounded physical purge are transaction-coupled to content-safe per-record and run audit. A persistent monotonic watermark prevents rollback from reviving expired data; dangerous forward jumps enter a durable quarantine that blocks purge until maintenance explicitly confirms the clock. Runtime owns startup catch-up, periodic retention, authenticated scheduled backup rotation, and bounded shutdown. Every production mutation advances a keyed, external epoch/root anchor; startup detects row, audit, deletion, and database rollback tampering. Offline restore accepts only a signed backup at the currently anchored epoch. Host-administrator rollback still requires a remote monotonic CAS anchor backend; the file backend proves the restricted database-writer boundary only. |
 | A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. External Channels receive subscribe-only bus access; authenticated chat and interactive controls enter through Runtime-owned UI operations. A new chat subscribes before exactly one publish, and any creation, metadata, Engine, subscription, or dispatch failure compensates durable session, Engine attachment, and AgentRun authority without deleting an existing session. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
-| A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
+| A18 | Identity and authorization | partial | Protocol-owned authenticated transport principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced. A latest-only stable `UserId`/`PrincipalBinding` store now provides HMAC-keyed channel-instance isolation, explicit single-use link challenges, and monotonic unlink/relink CAS. Runtime ownership and authenticated Channel protocol wiring remain open; transport principal strings are not yet replaced by stable user identity at ingress. |
 | A19 | DingTalk instances | partial | Configuration supports multiple credential-isolated bots; sender/conversation mappings, ownership, authorization, and outbound webhooks are instance-scoped. Interactive decisions, retry policy, and operational health remain in P4.2. |
 | A20 | Telegram instances | partial | The server constructs configured bots using the shared durable store, required webhook authentication, instance-scoped principals/chat mappings, authorization, and Unicode-safe chunking. Interactive decisions, retries, and operational health remain in P4.3. |
 | A21 | Other channels | partial | The production server constructs configured Unix, HTTP, WebSocket, DingTalk, Telegram, and WeChat instances. Uniform supervision, interactive operations, retries, and health remain in P4. |
@@ -415,11 +415,18 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Add an atomic supersede transition that links old and replacement
     records, hides the old record from ordinary recall, and records both sides
     without a visibility gap.
-  - [ ] Implement configured retention and physical purge/deletion governance,
+  - [x] Implement configured retention and physical purge/deletion governance,
     including bounded batches, authorization, crash recovery, and exact audit
     assertions for update, supersede, expiry, purge, and delete transitions.
-  - [ ] Add backup/restore verification and only those schema/data migrations
+  - [x] Add backup/restore verification and only those schema/data migrations
     that receive explicit approval under section 2.1.
+  - [ ] Activate a changed retention-policy revision only after full Runtime
+    readiness; a failed rollout must leave the previous revision reusable.
+  - [ ] Bound audit and retention-ledger growth only after a verified external
+    checkpoint preserves the evidence required for recovery and inspection.
+  - [ ] Add a remote monotonic CAS anchor backend for deployments whose threat
+    model includes a host administrator replaying database, file anchor, and
+    key together.
 
   Production integrity boundary:
 
@@ -449,15 +456,30 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     against the committed anchor epoch, so an online database writer cannot
     feed forged or replayed row content to the model between checkpoints.
 
+  Generated memory IDs, internal record keys, audit event IDs, retention run
+  IDs, and retention batch IDs are allocated inside their mutation transaction
+  with bounded collision retries. Exhaustion returns one content-safe storage
+  failure and commits no partial mutation.
+
   Current evidence: `acd5ab661` (runtime-derived ownership), `73316754f` and
   `e0ebfaae5` (SQLite persistence and contract tests), `1d11d8fc9` (one store
   across revisions), `0977357ec` (truthful activation reporting), `75d280b15`
   and `c5c4efc73` (latest schema, append/delete audit, and fail-closed schema
   tests), `ccc8b75ab` (production boot, owner isolation, and restart field
   fidelity), and `6b245d052` plus `7251f8336` (CAS update, atomic supersession,
-  audit rollback, and inactive-record isolation). G0 must not be marked complete until every remaining P1.4 gate
+  audit rollback, and inactive-record isolation), `fd95f67c6` (schema-v5
+  authenticated external anchor and signed backup epochs), and `7758a1b`
+  (transactional generated-identifier collision handling). G0 must not be marked complete until every remaining P1.4 gate
   above has implementation and acceptance evidence.
-- [ ] **P1.5 Optional Provider catalog synchronization:** let adapters that
+- [ ] **P1.5 Stable user identity and account binding:** make Runtime own the
+  latest-only stable user/principal store and its external HMAC key. Channel
+  ingress derives typed external principals only after platform
+  authentication; public clients and models cannot self-assert one or access
+  the store. Expose explicit, expiring, single-use begin/confirm and
+  owner-authorized CAS unlink operations through the versioned UI service.
+  Storage-domain evidence: `367214999` through `e86abd1a2`; Runtime/Channel
+  composition and end-to-end transport tests remain.
+- [ ] **P1.6 Optional Provider catalog synchronization:** let adapters that
   expose a remote model catalog enumerate it, reconcile discovered metadata
   against the Registry SSOT, report drift and health, and never silently
   rewrite an active Agent snapshot. Providers without a reliable enumeration
