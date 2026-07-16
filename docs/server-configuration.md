@@ -113,6 +113,42 @@ sessions keep their historical model, prompt, tools, and runtime worker across
 activation and restart. The current active safety/access policy remains a live
 server floor and may revoke access to an older session immediately.
 
+## Stable user identity binding
+
+Stable identity binding is optional and fail-closed. It is enabled only when
+`server.identity.digest_key` is configured as an environment/file secret
+reference. Runtime then owns a latest-schema SQLite store at
+`server.identity.database` (default: `<data_dir>/identity.db`) and advertises
+`identity_binding_v1`. Without the key, it advertises no identity capability.
+
+```toml
+[server.identity]
+challenge_ttl_seconds = 300
+# database = "/var/lib/sylvander/identity.db"
+
+[server.identity.digest_key]
+source = "env"
+name = "SYLVANDER_IDENTITY_DIGEST_KEY"
+
+[[server.identity.trusted_issuers]]
+transport = "unix"
+channel_instance_id = "terminal"
+principal_id = "local-alice"
+user_id = "alice"
+```
+
+Each trusted issuer is one exact authenticated ingress permitted to issue a
+link code for its configured stable user. Multiple issuers may map to the same
+user, but duplicate ingress triples are rejected. Link requests cannot carry a
+user, transport, channel, or external principal. TTL is bounded to 30–900
+seconds. The digest key must contain 32–4096 bytes; its value, raw external
+principal IDs, and one-time secrets are never persisted or emitted by Debug.
+
+The user requests a code through a trusted issuer and confirms it through the
+external channel being linked. Resolve and CAS unlink always apply to the
+authenticated ingress-derived external identity. See
+[`identity-binding-protocol.md`](identity-binding-protocol.md).
+
 ## Secret references
 
 Credentials cannot be embedded as TOML literals. A secret is either:
