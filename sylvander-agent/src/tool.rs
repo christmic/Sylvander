@@ -159,10 +159,19 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// A runtime-owned source whose tool catalog may change between turns.
+///
+/// Snapshots are synchronous and must be cheap. Transport work such as MCP
+/// discovery happens before publishing a replacement snapshot.
+pub trait DynamicToolSource: Send + Sync {
+    fn snapshot(&self) -> Vec<Arc<dyn Tool>>;
+}
+
 /// Registry of tools available to the agent. Builder-style.
 #[derive(Default, Clone)]
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
+    dynamic_sources: Vec<Arc<dyn DynamicToolSource>>,
 }
 
 impl ToolRegistry {
@@ -179,22 +188,44 @@ impl ToolRegistry {
         self
     }
 
+    /// Register a runtime-owned catalog that can atomically replace its tools.
+    pub fn register_dynamic_source<S: DynamicToolSource + 'static>(mut self, source: S) -> Self {
+        self.dynamic_sources.push(Arc::new(source));
+        self
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+        let mut tools = self.tools.clone();
+        for source in &self.dynamic_sources {
+            for tool in source.snapshot() {
+                tools.insert(tool.name().to_string(), tool);
+            }
+        }
+        tools
+    }
+
     /// Number of registered tools.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.tools.len()
+        self.snapshot().len()
     }
 
     /// `true` if no tools are registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
+        self.snapshot().is_empty()
     }
 
     /// Look up a tool by name.
     #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
-        self.tools.get(name)
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(tool) = self.tools.get(name) {
+            return Some(tool.clone());
+        }
+        self.dynamic_sources
+            .iter()
+            .flat_map(|source| source.snapshot())
+            .find(|tool| tool.name() == name)
     }
 
     /// Iterate over all registered tools as (name, &Arc<dyn Tool>) pairs.
@@ -208,11 +239,11 @@ impl ToolRegistry {
     pub fn retain_named(&self, allowed: &[&str]) -> Self {
         Self {
             tools: self
-                .tools
-                .iter()
+                .snapshot()
+                .into_iter()
                 .filter(|(name, _)| allowed.contains(&name.as_str()))
-                .map(|(name, tool)| (name.clone(), tool.clone()))
                 .collect(),
+            dynamic_sources: Vec::new(),
         }
     }
 }
@@ -222,9 +253,11 @@ impl ToolRegistry {
 /// `ephemeral` `cache_control` breakpoint so the entire tools
 /// block is cached across iterations.
 pub fn build_definitions(tools: &ToolRegistry) -> Vec<sylvander_llm_anthropic::api::types::Tool> {
+    let mut tools = tools.snapshot().into_values().collect::<Vec<_>>();
+    tools.sort_by(|left, right| left.name().cmp(right.name()));
     let mut defs: Vec<_> = tools
-        .iter()
-        .map(|(_, t)| {
+        .into_iter()
+        .map(|t| {
             sylvander_llm_anthropic::api::types::Tool::new(
                 t.name(),
                 t.description(),
@@ -250,8 +283,10 @@ impl ToolRegistry {
 
 impl std::fmt::Debug for ToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut names = self.snapshot().into_keys().collect::<Vec<_>>();
+        names.sort();
         f.debug_struct("ToolRegistry")
-            .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("tools", &names)
             .finish()
     }
 }

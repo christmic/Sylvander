@@ -720,13 +720,11 @@ async fn configured_tools(
             None => McpStdioClient::connect(&resolved, Duration::from_secs(30)).await,
         }
         .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
-        for tool in client
+        client
             .list_tools()
             .await
-            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?
-        {
-            registry = registry.register(tool);
-        }
+            .map_err(|error| CompositionError::Mcp(config.name.clone(), error.to_string()))?;
+        registry = registry.register_dynamic_source(client);
     }
     Ok(registry)
 }
