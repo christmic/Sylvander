@@ -12,7 +12,7 @@
 //! 1. Receiving messages in its native protocol
 //! 2. Extracting protocol metadata → storing in session
 //! 3. Mapping external identifiers → internal [`SessionId`]
-//! 4. Publishing normalized [`BusMessage`]s to the bus
+//! 4. Submitting authenticated operations to the runtime-owned [`UiService`]
 //! 5. Rendering bus events (streaming text, tool calls, approvals)
 //!    in channel-native format
 //!
@@ -142,6 +142,46 @@ pub trait UiService: Send + Sync {
         })
     }
 
+    /// Return a session-scoped context report after verifying ownership.
+    async fn context_report(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<sylvander_protocol::ContextReport, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "context_report"))
+    }
+
+    /// Compact an idle session after verifying ownership.
+    async fn compact_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CompactionReport, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "compact_session"))
+    }
+
+    /// Preview the latest workspace rollback after verifying ownership.
+    async fn preview_workspace_rollback(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, BoundaryError> {
+        Err(unavailable_ui_control(
+            boundary,
+            "preview_workspace_rollback",
+        ))
+    }
+
+    /// Apply the latest workspace rollback after verifying ownership.
+    async fn rollback_workspace(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+        _expected_turn_id: &str,
+    ) -> Result<sylvander_protocol::WorkspaceRollbackReport, BoundaryError> {
+        Err(unavailable_ui_control(boundary, "rollback_workspace"))
+    }
+
     /// Apply one privileged Agent registry operation.
     ///
     /// Runtimes that have not installed an administration service fail closed.
@@ -162,6 +202,16 @@ pub trait UiService: Send + Sync {
         _request: RegistryAdminRequest,
     ) -> RegistryAdminResponse {
         unavailable_registry_admin_response()
+    }
+}
+
+fn unavailable_ui_control(boundary: &BoundaryContext, operation: &str) -> BoundaryError {
+    BoundaryError {
+        code: BoundaryErrorCode::InvalidScope,
+        operation: operation.into(),
+        request_id: boundary.request_id.clone(),
+        message: "authenticated runtime control is unavailable".into(),
+        retry_after_ms: None,
     }
 }
 
@@ -210,15 +260,15 @@ pub fn unavailable_registry_admin_response() -> RegistryAdminResponse {
 ///
 /// 1. The runtime creates the channel (e.g. `TelegramChannel::new(token)`)
 /// 2. Calls [`Channel::run`] with a [`ChannelContext`]
-/// 3. The channel starts its event loop, communicating exclusively
-///    through the bus and session store
+/// 3. The channel starts its event loop, submitting mutations exclusively
+///    through the runtime-owned [`UiService`]
 /// 4. On shutdown, the runtime requests a cooperative drain and waits for the
 ///    channel to stop
 ///
 /// # Contract
 ///
 /// - The channel MUST NOT call engine or agent methods directly
-/// - All communication flows through the bus
+/// - Mutations and controls flow through [`UiService`]
 /// - Session mapping (external ID → `SessionId`) is the channel's
 ///   responsibility, using the session store's metadata
 #[async_trait]

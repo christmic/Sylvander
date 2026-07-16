@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::{
-    AgentRun, AgentSpec, InProcessMessageBus, MessageBus, MessageKind, ModelCapabilities,
-    StreamEvent, SubscriptionFilter, ToolRegistry,
+    AgentRun, AgentRunEngine, AgentSessionIssuer, AgentSpec, InProcessMessageBus, MessageBus,
+    MessageKind, ModelCapabilities, StreamEvent, SubscriptionFilter, ToolRegistry,
 };
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
@@ -128,7 +128,8 @@ impl Respond for ApprovalScenario {
 
 struct RuntimeHarness {
     bus: Arc<InProcessMessageBus>,
-    agent_task: tokio::task::JoinHandle<()>,
+    engine: Arc<AgentRunEngine>,
+    agent_id: AgentId,
     channel_task: tokio::task::JoinHandle<()>,
 }
 
@@ -139,7 +140,12 @@ struct RuntimeHarness {
 struct HarnessUiService {
     bus: Arc<InProcessMessageBus>,
     sessions: Arc<dyn SessionStore>,
+    run: AgentRun,
+    session_issuer: AgentSessionIssuer,
     agent_id: AgentId,
+    provider_id: String,
+    prompt_sha256: String,
+    prompt_manifest: sylvander_protocol::PromptManifest,
     approval_enabled: bool,
     next_session: AtomicUsize,
 }
@@ -205,7 +211,7 @@ impl HarnessUiService {
         SessionEffectiveConfig {
             agent_id: request.agent_id.clone(),
             agent_revision: 0,
-            provider_id: "test-provider".into(),
+            provider_id: self.provider_id.clone(),
             provider_revision: None,
             model_id: request
                 .overrides
@@ -231,8 +237,8 @@ impl HarnessUiService {
                     },
                 }),
             prompt_profile: request.overrides.prompt_profile.clone(),
-            system_prompt_sha256: "0".repeat(64),
-            prompt_manifest: None,
+            system_prompt_sha256: self.prompt_sha256.clone(),
+            prompt_manifest: Some(self.prompt_manifest.clone()),
             agent_workspace: None,
             user_workspace: request.overrides.user_workspace.clone(),
             execution_target: request
@@ -351,12 +357,19 @@ impl UiService for HarnessUiService {
                 &error.to_string(),
             )
         })?;
-        self.bus
-            .publish(BusMessage::system_join_session(
-                request.agent_id,
-                session_id.clone(),
-                metadata,
-            ))
+        self.run
+            .attach_authenticated_session(
+                self.session_issuer
+                    .issue(session_id.clone(), metadata)
+                    .map_err(|error| {
+                        Self::denial(
+                            boundary,
+                            BoundaryErrorCode::InvalidScope,
+                            "create_session",
+                            &error.to_string(),
+                        )
+                    })?,
+            )
             .await
             .map_err(|error| {
                 Self::denial(
@@ -432,6 +445,123 @@ impl UiService for HarnessUiService {
             "the test harness does not persist feedback",
         ))
     }
+
+    async fn submit_chat(
+        &self,
+        boundary: &BoundaryContext,
+        request: sylvander_channel::ExternalChatRequest,
+    ) -> Result<sylvander_channel::SubmittedChat, BoundaryError> {
+        let principal = Self::principal(boundary, "submit_chat")?;
+        let session_id = if let Some(session_id) = request.existing_session {
+            self.require_owner(boundary, &session_id.0, "submit_chat")
+                .await?;
+            session_id
+        } else {
+            self.create_session(
+                boundary,
+                SessionCreateRequest {
+                    agent_id: request.agent_id.clone(),
+                    label: request.label,
+                    channel_id: Some(boundary.channel_instance_id.clone()),
+                    overrides: request.overrides,
+                },
+            )
+            .await?
+            .session_id
+        };
+        let events = self
+            .bus
+            .subscribe(SubscriptionFilter {
+                session_ids: Some(vec![session_id.clone()]),
+                recipients: None,
+                kinds: None,
+            })
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "submit_chat",
+                    &error.to_string(),
+                )
+            })?;
+        self.bus
+            .publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: sylvander_agent::bus::Sender::User(principal.into()),
+                recipient: sylvander_agent::bus::Recipient::Agent(request.agent_id),
+                kind: MessageKind::Chat,
+                payload: request.text,
+                attachments: request.attachments,
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "submit_chat",
+                    &error.to_string(),
+                )
+            })?;
+        Ok(sylvander_channel::SubmittedChat { session_id, events })
+    }
+
+    async fn submit_control(
+        &self,
+        boundary: &BoundaryContext,
+        message: UiClientMessage,
+    ) -> Result<(), BoundaryError> {
+        let session_id = ui_message_session_id(&message)
+            .ok_or_else(|| BoundaryError::forbidden(boundary, "submit_control"))?
+            .to_string();
+        self.require_owner(boundary, &session_id, "submit_control")
+            .await?;
+        let system = match message {
+            UiClientMessage::Approve {
+                call_id,
+                approved,
+                scope,
+                reason,
+                ..
+            } => sylvander_agent::bus::SystemMessage::ApproveTool {
+                call_id,
+                approved,
+                scope,
+                reason,
+            },
+            UiClientMessage::Answer {
+                call_id, answer, ..
+            } => sylvander_agent::bus::SystemMessage::AnswerQuestion { call_id, answer },
+            UiClientMessage::Interrupt { .. } => {
+                sylvander_agent::bus::SystemMessage::InterruptTurn {
+                    session_id: SessionId::new(&session_id),
+                }
+            }
+            _ => return Err(BoundaryError::forbidden(boundary, "submit_control")),
+        };
+        self.bus
+            .publish(BusMessage {
+                session_id: SessionId::new(session_id),
+                sender: sylvander_agent::bus::Sender::System,
+                recipient: sylvander_agent::bus::Recipient::Agent(self.agent_id.clone()),
+                kind: MessageKind::System(system),
+                payload: String::new(),
+                attachments: Vec::new(),
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|error| {
+                Self::denial(
+                    boundary,
+                    BoundaryErrorCode::InvalidScope,
+                    "submit_control",
+                    &error.to_string(),
+                )
+            })
+    }
 }
 
 fn ui_message_session_id(message: &UiClientMessage) -> Option<&str> {
@@ -465,9 +595,12 @@ fn ui_message_session_id(message: &UiClientMessage) -> Option<&str> {
 }
 
 impl RuntimeHarness {
-    fn shutdown(self) {
+    async fn shutdown(self) {
         self.channel_task.abort();
-        self.agent_task.abort();
+        self.engine
+            .despawn(&self.agent_id)
+            .await
+            .expect("despawn test Agent");
     }
 }
 
@@ -485,52 +618,75 @@ async fn start_runtime(
         .model_name("sylvander-test-model")
         .build()
         .expect("build agent spec");
-    let builder = AgentRun::builder(spec, client)
+    let provider_id = spec.model.provider.clone();
+    let selection = sylvander_protocol::ModelSelection {
+        provider_id: provider_id.clone(),
+        model_id: spec.model.model_name.clone(),
+    };
+    let prompt_resolver = Arc::new(
+        sylvander_agent::prompt::PromptResolver::new(
+            "agent:real-runtime-test@0".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .expect("test prompt resolver"),
+    );
+    let prompt = prompt_resolver
+        .resolve(&selection, None, None)
+        .expect("test prompt snapshot");
+    let builder = AgentRun::builder(spec.clone(), client)
         .bus(bus.clone())
         .session_store(store.clone())
         .override_tools(tools)
+        .prompt_resolver(prompt_resolver)
         .model_capabilities(ModelCapabilities::TOOL_USE);
     let run = if approval_enabled {
         builder.enable_approval()
     } else {
         builder
     }
-    .build()
+    .build_with_session_issuer()
     .expect("build AgentRun");
-    let runtime_control = run.clone();
+    let (run, session_issuer) = run;
+    let test_run = run.clone();
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
+    let engine = Arc::new(AgentRunEngine::new(bus.clone()));
+    engine
+        .spawn_run(spec, run)
         .await
-        .expect("subscribe AgentRun");
-    let agent_task = tokio::spawn(run.run(inbox));
+        .expect("spawn AgentRun through Engine");
     let approval_policy = if approval_enabled {
         sylvander_protocol::ApprovalPolicy::Ask
     } else {
         sylvander_protocol::ApprovalPolicy::Allow
     };
     let channel = Arc::new(
-        UnixChannel::new(socket_path, agent_id.clone())
-            .with_runtime_info(RuntimeInfo {
-                model: "sylvander-test-model".into(),
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-                models: Vec::new(),
-                permissions: sylvander_protocol::PermissionProfile {
-                    file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
-                    network_access: sylvander_protocol::NetworkAccess::Denied,
-                    approval_policy,
-                },
-                capabilities: ModelCapabilities::TOOL_USE.bits(),
-                approval_enabled,
-                max_attachment_bytes: 512 * 1024,
-                platform: sylvander_protocol::PlatformSnapshot::default(),
-            })
-            .with_runtime_control(runtime_control),
+        UnixChannel::new(socket_path, agent_id.clone()).with_runtime_info(RuntimeInfo {
+            model: "sylvander-test-model".into(),
+            reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
+            models: Vec::new(),
+            permissions: sylvander_protocol::PermissionProfile {
+                file_access: sylvander_protocol::FileAccess::WorkspaceWrite,
+                network_access: sylvander_protocol::NetworkAccess::Denied,
+                approval_policy,
+            },
+            capabilities: ModelCapabilities::TOOL_USE.bits(),
+            approval_enabled,
+            max_attachment_bytes: 512 * 1024,
+            platform: sylvander_protocol::PlatformSnapshot::default(),
+        }),
     );
     let ui: Arc<dyn UiService> = Arc::new(HarnessUiService {
         bus: bus.clone(),
         sessions: store.clone(),
+        run: test_run,
+        session_issuer,
         agent_id: agent_id.clone(),
+        provider_id,
+        prompt_sha256: prompt.system_prompt_sha256,
+        prompt_manifest: prompt.manifest,
         approval_enabled,
         next_session: AtomicUsize::new(1),
     });
@@ -550,7 +706,8 @@ async fn start_runtime(
     }
     RuntimeHarness {
         bus,
-        agent_task,
+        engine,
+        agent_id,
         channel_task,
     }
 }
@@ -820,7 +977,7 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     });
     assert!(second.contains("persist") && second.contains("turn"));
 
-    runtime.shutdown();
+    runtime.shutdown().await;
     observer_task.abort();
 }
 
@@ -883,7 +1040,7 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
         !temp.path().join("blocked.txt").exists(),
         "rejected real Agent tool must not write the file"
     );
-    runtime.shutdown();
+    runtime.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1097,7 +1254,7 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
         audited.iter().all(|(_, _, count, _)| *count == 1),
         "persisted transcripts were not isolated: {audited:#?}"
     );
-    runtime.shutdown();
+    runtime.shutdown().await;
 }
 
 fn submit(writer: &mut dyn Write, bytes: &[u8]) {

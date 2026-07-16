@@ -101,16 +101,13 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         .model_name("claude-sonnet-5-20260601")
         .build()
         .expect("spec");
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("agent inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let session_id = SessionId::new("interrupt-session");
     bus.publish(BusMessage::system_join_session(
@@ -155,10 +152,7 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         "interrupt must not wait for the LLM response"
     );
 
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 /// Collect stream events into a vec of variant names
@@ -268,18 +262,15 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     let tools = ToolRegistry::new()
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new());
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("plan-session");
     bus.publish(BusMessage::system_join_session(
@@ -351,10 +342,7 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     })
     .await
     .expect("done after approval");
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 #[tokio::test]
@@ -423,18 +411,15 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         .build()
         .expect("spec");
     let tools = ToolRegistry::new().register(StartBackgroundTaskTool::new());
-    let run = AgentRun::builder(spec, mock_client(&server))
+    let run = AgentRun::builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
     let agent_id = run.id().clone();
-    let inbox = bus
-        .subscribe(run.subscription_filter())
-        .await
-        .expect("inbox");
-    let task = tokio::spawn(run.run(inbox));
+    let engine = AgentRunEngine::new(bus.clone());
+    engine.spawn_run(spec, run).await.expect("spawn run");
     let mut events = subscribe_stream(&bus).await;
     let sid = SessionId::new("background-session");
     bus.publish(BusMessage::system_join_session(
@@ -492,10 +477,7 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
     })
     .await
     .expect("task cancellation");
-    bus.publish(BusMessage::system_stop(agent_id))
-        .await
-        .expect("stop");
-    task.await.expect("agent task");
+    engine.despawn(&agent_id).await.expect("stop");
 }
 
 // --- tests ---

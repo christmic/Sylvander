@@ -144,7 +144,7 @@ pub struct SystemConfig {
 /// The system runtime — top-level orchestrator.
 pub struct Runtime {
     /// The agent lifecycle engine.
-    pub engine: Arc<AgentRunEngine>,
+    engine: Arc<AgentRunEngine>,
     /// Session persistence backend.
     pub session_store: Arc<dyn SessionStore>,
     /// Runtime-owned long-term memory shared by every Agent revision.
@@ -892,6 +892,73 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .map_err(|_| boundary_failure(boundary, "submit_control", "control dispatch failed"))
     }
 
+    async fn context_report(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::ContextReport, sylvander_protocol::BoundaryError> {
+        let (session, agent) = self
+            .owned_session_agent(boundary, session_id, "context_report")
+            .await?;
+        Ok(agent.run.context_report(Some(&session.id)).await)
+    }
+
+    async fn compact_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::CompactionReport, sylvander_protocol::BoundaryError> {
+        let (_, agent) = self
+            .owned_session_agent(boundary, session_id, "compact_session")
+            .await?;
+        agent
+            .run
+            .compact_session(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "compact_session", error))
+    }
+
+    async fn preview_workspace_rollback(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, sylvander_protocol::BoundaryError>
+    {
+        let (_, agent) = self
+            .owned_session_agent(boundary, session_id, "preview_workspace_rollback")
+            .await?;
+        let preview = agent
+            .run
+            .preview_workspace_rollback(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "preview_workspace_rollback", error))?;
+        Ok(sylvander_protocol::WorkspaceRollbackPreview {
+            turn_id: preview.turn_id,
+            files: preview.files,
+        })
+    }
+
+    async fn rollback_workspace(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        expected_turn_id: &str,
+    ) -> Result<sylvander_protocol::WorkspaceRollbackReport, sylvander_protocol::BoundaryError>
+    {
+        let (_, agent) = self
+            .owned_session_agent(boundary, session_id, "rollback_workspace")
+            .await?;
+        let report = agent
+            .run
+            .rollback_workspace_latest(session_id, expected_turn_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "rollback_workspace", error))?;
+        Ok(sylvander_protocol::WorkspaceRollbackReport {
+            turn_id: report.turn_id,
+            restored: report.restored,
+        })
+    }
+
     async fn agent_admin(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -1536,6 +1603,39 @@ impl RuntimeUiService {
                 })?;
         }
         Ok(session)
+    }
+
+    async fn owned_session_agent(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+        operation: &str,
+    ) -> Result<(StoredSession, ConfiguredAgent), sylvander_protocol::BoundaryError> {
+        let session = self.owned_session(boundary, session_id, operation).await?;
+        let agent_id = session
+            .agents
+            .first()
+            .expect("owned_session rejects empty agent bindings");
+        let agent = if let (Some(provider), Some(effective)) =
+            (&self.revision_provider, &session.effective_config)
+        {
+            if &effective.agent_id != agent_id {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary, operation,
+                ));
+            }
+            provider
+                .configured_revision(agent_id, effective.agent_revision)
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, operation, "session Agent is unavailable")
+                })?
+        } else {
+            self.agents.get(agent_id).cloned().ok_or_else(|| {
+                boundary_failure(boundary, operation, "session Agent is unavailable")
+            })?
+        };
+        Ok((session, agent))
     }
 }
 
@@ -2408,9 +2508,16 @@ impl Runtime {
         })
     }
 
-    /// Return protocol metadata and control for one configured Agent.
+    /// Return redacted transport metadata for one configured Agent.
     #[must_use]
-    pub fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
+    pub fn agent_descriptor(&self, id: &AgentId) -> Option<composition::ConfiguredAgentDescriptor> {
+        self.configured_agents
+            .get(id)
+            .map(ConfiguredAgent::descriptor)
+    }
+
+    #[cfg(test)]
+    fn configured_agent(&self, id: &AgentId) -> Option<&ConfiguredAgent> {
         self.configured_agents.get(id)
     }
 
@@ -3154,6 +3261,100 @@ id = "model-a"
             submitted.events.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_controls_reject_foreign_session_ownership_before_agent_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let owner = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "owner",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "channel-a",
+            "test",
+            "owner-request",
+        );
+        let session = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &owner,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "owned".into(),
+                channel_id: Some("channel-a".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let owner_context = sylvander_channel::UiService::context_report(
+            runtime.ui_service.as_ref(),
+            &owner,
+            &session.session_id,
+        )
+        .await
+        .expect("owner may inspect its context");
+        assert_eq!(owner_context.model, "model-a");
+        let attacker = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "attacker",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "channel-a",
+            "test",
+            "attacker-request",
+        );
+
+        let context = sylvander_channel::UiService::context_report(
+            runtime.ui_service.as_ref(),
+            &attacker,
+            &session.session_id,
+        )
+        .await
+        .expect_err("foreign context inspection must be rejected");
+        assert_eq!(
+            context.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let compact = sylvander_channel::UiService::compact_session(
+            runtime.ui_service.as_ref(),
+            &attacker,
+            &session.session_id,
+        )
+        .await
+        .expect_err("foreign compaction must be rejected");
+        assert_eq!(
+            compact.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let preview = sylvander_channel::UiService::preview_workspace_rollback(
+            runtime.ui_service.as_ref(),
+            &attacker,
+            &session.session_id,
+        )
+        .await
+        .expect_err("foreign rollback preview must be rejected");
+        assert_eq!(
+            preview.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+        let rollback = sylvander_channel::UiService::rollback_workspace(
+            runtime.ui_service.as_ref(),
+            &attacker,
+            &session.session_id,
+            "turn-1",
+        )
+        .await
+        .expect_err("foreign rollback must be rejected");
+        assert_eq!(
+            rollback.code,
+            sylvander_protocol::BoundaryErrorCode::Forbidden
+        );
+
         runtime.shutdown().await.unwrap();
     }
 
