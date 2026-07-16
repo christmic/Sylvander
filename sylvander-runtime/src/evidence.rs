@@ -140,6 +140,16 @@ pub struct TurnSummary {
     pub successful_outcome: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    /// `None` means no priced iteration exists or at least one iteration had
+    /// no pricing truth.
+    pub cost_nano_usd: Option<u64>,
+    pub iteration_count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedbackAttribution {
     pub principal_digest: String,
@@ -607,6 +617,74 @@ impl EvidenceStore {
         .await
     }
 
+    /// Add one model iteration's exact usage to its turn. Missing pricing is
+    /// retained as an explicit completeness failure rather than treated as
+    /// zero cost.
+    pub async fn record_iteration_usage(
+        &self,
+        turn_id: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_nano_usd: Option<u64>,
+    ) -> Result<(), EvidenceError> {
+        self.run(move |connection| {
+            let changed = connection
+                .execute(
+                    "UPDATE evidence_turns
+                     SET input_tokens=input_tokens+?2,
+                         output_tokens=output_tokens+?3,
+                         priced_iteration_count=priced_iteration_count+?4,
+                         unpriced_iteration_count=unpriced_iteration_count+?5,
+                         cost_nano_usd=cost_nano_usd+?6
+                     WHERE id=?1",
+                    params![
+                        turn_id,
+                        as_i64(input_tokens)?,
+                        as_i64(output_tokens)?,
+                        i64::from(cost_nano_usd.is_some()),
+                        i64::from(cost_nano_usd.is_none()),
+                        as_i64(cost_nano_usd.unwrap_or_default())?,
+                    ],
+                )
+                .map_err(EvidenceError::sqlite)?;
+            if changed != 1 {
+                return Err(EvidenceError::UnknownTurn);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn turn_usage(&self, turn_id: String) -> Result<Option<TurnUsage>, EvidenceError> {
+        self.run(move |connection| {
+            connection
+                .query_row(
+                    "SELECT input_tokens, output_tokens, cost_nano_usd,
+                            priced_iteration_count, unpriced_iteration_count
+                     FROM evidence_turns WHERE id=?1",
+                    [turn_id],
+                    |row| {
+                        let input_tokens = sql_nonnegative(row.get(0)?, 0)?;
+                        let output_tokens = sql_nonnegative(row.get(1)?, 1)?;
+                        let cost = sql_nonnegative(row.get(2)?, 2)?;
+                        let priced = sql_nonnegative(row.get(3)?, 3)?;
+                        let unpriced = sql_nonnegative(row.get(4)?, 4)?;
+                        Ok(TurnUsage {
+                            input_tokens,
+                            output_tokens,
+                            cost_nano_usd: (priced > 0 && unpriced == 0).then_some(cost),
+                            // Both values originate as non-negative SQLite
+                            // i64 values, so their sum fits in u64.
+                            iteration_count: priced + unpriced,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(EvidenceError::sqlite)
+        })
+        .await
+    }
+
     /// Persist explicit user feedback only when it can be traced to a real
     /// run and, when supplied, a turn belonging to that run.
     pub async fn record_feedback(
@@ -949,6 +1027,8 @@ pub enum EvidenceError {
     Serialize(String),
     #[error("feedback must reference an existing run and a turn from that run")]
     InvalidFeedbackTarget,
+    #[error("evidence turn does not exist")]
+    UnknownTurn,
     #[error("stored feedback is invalid")]
     InvalidFeedbackData,
     #[error("Agent administration audit is missing or already terminal")]
@@ -971,7 +1051,12 @@ CREATE TABLE IF NOT EXISTS evidence_turns (
   id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES evidence_runs(id),
   session_id TEXT NOT NULL, agent_id TEXT, started_at INTEGER NOT NULL,
   ended_at INTEGER, status TEXT NOT NULL, input_bytes INTEGER NOT NULL,
-  output_bytes INTEGER NOT NULL DEFAULT 0, input_digest TEXT
+  output_bytes INTEGER NOT NULL DEFAULT 0, input_digest TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_nano_usd INTEGER NOT NULL DEFAULT 0,
+  priced_iteration_count INTEGER NOT NULL DEFAULT 0,
+  unpriced_iteration_count INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS evidence_steps (
   id TEXT PRIMARY KEY, turn_id TEXT NOT NULL REFERENCES evidence_turns(id),
@@ -1145,6 +1230,45 @@ mod tests {
         assert_eq!(turns[0].step_count, 1);
         assert_eq!(turns[0].failed_step_count, 0);
         assert_eq!(turns[0].successful_outcome, Some(true));
+    }
+
+    #[tokio::test]
+    async fn turn_usage_never_treats_missing_pricing_as_zero_cost() {
+        let store = EvidenceStore::open_in_memory().await.unwrap();
+        store
+            .start_run("run-usage".into(), "test".into(), 1)
+            .await
+            .unwrap();
+        store
+            .start_turn(TurnStart {
+                id: "turn-usage".into(),
+                run_id: "run-usage".into(),
+                session_id: "session-usage".into(),
+                agent_id: Some("agent-1".into()),
+                started_at: 2,
+                input_bytes: 0,
+                input_digest: None,
+            })
+            .await
+            .unwrap();
+        store
+            .record_iteration_usage("turn-usage".into(), 10, 5, Some(25))
+            .await
+            .unwrap();
+        store
+            .record_iteration_usage("turn-usage".into(), 7, 3, None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.turn_usage("turn-usage".into()).await.unwrap(),
+            Some(TurnUsage {
+                input_tokens: 17,
+                output_tokens: 8,
+                cost_nano_usd: None,
+                iteration_count: 2,
+            })
+        );
     }
 
     #[tokio::test]

@@ -199,6 +199,21 @@ async fn record_stream(
     stream: &StreamEvent,
 ) -> Result<(), EvidenceError> {
     match stream {
+        StreamEvent::IterationEnd {
+            input_tokens,
+            output_tokens,
+            cost_nano_usd,
+            ..
+        } => {
+            store
+                .record_iteration_usage(
+                    turn_id.to_string(),
+                    u64::from(*input_tokens),
+                    u64::from(*output_tokens),
+                    *cost_nano_usd,
+                )
+                .await
+        }
         StreamEvent::ToolCall {
             call_id,
             tool_name,
@@ -349,13 +364,9 @@ mod tests {
         )
         .await
         .unwrap();
-        bus.publish(BusMessage::user_chat(
-            SessionId::new("session-1"),
-            "user",
-            "read it",
-        ))
-        .await
-        .unwrap();
+        let user_message = BusMessage::user_chat(SessionId::new("session-1"), "user", "read it");
+        let user_message_id = user_message.id.0;
+        bus.publish(user_message).await.unwrap();
         bus.publish(stream_message(StreamEvent::ToolCall {
             call_id: "call-1".into(),
             tool_name: "read".into(),
@@ -371,6 +382,14 @@ mod tests {
         }))
         .await
         .unwrap();
+        bus.publish(stream_message(StreamEvent::IterationEnd {
+            iteration: 1,
+            input_tokens: 13,
+            output_tokens: 8,
+            cost_nano_usd: Some(21),
+        }))
+        .await
+        .unwrap();
         bus.publish(stream_message(StreamEvent::Done {
             text: "complete".into(),
         }))
@@ -382,6 +401,16 @@ mod tests {
         assert_eq!(counts.turns, 1);
         assert_eq!(counts.steps, 1);
         assert_eq!(counts.outcomes, 1);
-        assert_eq!(counts.events, 4);
+        assert_eq!(counts.events, 5);
+        let usage = recorder
+            .store()
+            .turn_usage(format!("turn:{user_message_id}"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(usage.input_tokens, 13);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.cost_nano_usd, Some(21));
+        assert_eq!(usage.iteration_count, 1);
     }
 }
