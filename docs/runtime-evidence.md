@@ -27,6 +27,22 @@ correlation without depending on log text. Query APIs return bounded turn
 summaries with step/failure counts and outcome state; raw payloads are not part
 of those summaries.
 
+The cohort analysis API requires an explicit half-open time window and bounded
+result limit. It selects turns in stable `(started_at, id)` order and returns a
+SHA-256 digest over the selected structured facts. Reports expose:
+
+- terminal success rate and a deterministic failure taxonomy;
+- input/output tokens and cost only when every recorded iteration was priced;
+- per-turn latency plus mean, p50, and p95 latency;
+- tool calls/failures, approval requests/decisions, model retries, and
+  interaction timeouts;
+- positive/negative feedback coverage under an explicit privacy scope.
+
+Warnings make mixed Agents, incomplete outcomes or pricing, sparse or
+mixed-privacy feedback, excluded run-level feedback, and limit truncation
+visible. The analyzer never reads prompt, response, correction, tool payload,
+or other raw content.
+
 ## Capture policy
 
 `server.evidence.content` selects one of three policies:
@@ -79,6 +95,7 @@ The durable store, bus recorder, crash recovery, content policies, retention,
 Rust query surface, and evidence-linked feedback API are implemented. Feedback
 attribution is derived at the authenticated Runtime boundary rather than
 accepted from the client, and references are bounded and digest-validated.
-Evaluation datasets, proposal records, worktree experiments, signing, and
-deployment observation remain the P5 backlog and must be completed before
-claiming autonomous self-improvement.
+Deterministic privacy-aware cohort analysis is also implemented. Evaluation
+datasets, proposal records, worktree experiments, signing, and deployment
+observation remain the P5 backlog and must be completed before claiming
+autonomous self-improvement.

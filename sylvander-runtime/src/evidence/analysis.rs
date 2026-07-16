@@ -48,7 +48,8 @@ impl EvidenceStore {
             return Err(EvidenceError::InvalidAnalysisQuery);
         }
         let include_private = matches!(query.privacy_scope, AnalysisPrivacyScope::IncludePrivate);
-        let rows = self
+        let limit = query.limit;
+        let mut rows = self
             .run(move |connection| {
                 let mut statement = connection
                     .prepare(
@@ -108,7 +109,7 @@ impl EvidenceStore {
                             query.started_before_exclusive,
                             query.agent_id,
                             include_private,
-                            i64::from(query.limit)
+                            i64::from(limit) + 1
                         ],
                         |row| {
                             Ok((
@@ -144,12 +145,19 @@ impl EvidenceStore {
                     .map_err(EvidenceError::sqlite)
             })
             .await?;
-        analyze(rows)
+        let truncated = rows.len() > usize::from(limit);
+        if truncated {
+            rows.pop();
+        }
+        analyze(rows, truncated)
     }
 }
 
-fn analyze(rows: Vec<AnalysisRow>) -> Result<CohortAnalysis, EvidenceError> {
+fn analyze(rows: Vec<AnalysisRow>, truncated: bool) -> Result<CohortAnalysis, EvidenceError> {
     let mut warnings = BTreeSet::new();
+    if truncated {
+        warnings.insert(AnalysisWarning::LimitReached);
+    }
     let mut turns = Vec::with_capacity(rows.len());
     let mut digest = Sha256::new();
     let mut totals = Totals::default();
@@ -271,6 +279,8 @@ struct Totals {
     positive: u64,
     negative: u64,
     feedback_turns: u64,
+    failure_breakdown: super::analysis_types::FailureBreakdown,
+    latencies: Vec<u64>,
 }
 
 impl Default for Totals {
@@ -293,6 +303,8 @@ impl Default for Totals {
             positive: 0,
             negative: 0,
             feedback_turns: 0,
+            failure_breakdown: super::analysis_types::FailureBreakdown::default(),
+            latencies: Vec::new(),
         }
     }
 }
@@ -303,6 +315,18 @@ impl Totals {
             Some(true) => self.succeeded += 1,
             Some(false) => self.failed += 1,
             None => self.incomplete += 1,
+        }
+        match turn.failure_class {
+            FailureClass::None => {}
+            FailureClass::UserReported => self.failure_breakdown.user_reported += 1,
+            FailureClass::Tool => self.failure_breakdown.tool += 1,
+            FailureClass::InteractionTimeout => self.failure_breakdown.interaction_timeout += 1,
+            FailureClass::Interrupted => self.failure_breakdown.interrupted += 1,
+            FailureClass::RuntimeOrModel => self.failure_breakdown.runtime_or_model += 1,
+            FailureClass::Incomplete => self.failure_breakdown.incomplete += 1,
+        }
+        if let Some(latency) = turn.latency_secs {
+            self.latencies.push(latency);
         }
         self.input_tokens = checked(self.input_tokens, turn.input_tokens)?;
         self.output_tokens = checked(self.output_tokens, turn.output_tokens)?;
@@ -329,7 +353,7 @@ impl Totals {
     }
 
     fn finish(
-        self,
+        mut self,
         turns: Vec<CohortTurn>,
         digest: Sha256,
         mut warnings: BTreeSet<AnalysisWarning>,
@@ -344,6 +368,9 @@ impl Totals {
             warnings.insert(AnalysisWarning::SparseFeedback);
         }
         let terminal = self.succeeded + self.failed;
+        self.latencies.sort_unstable();
+        let latency_sum = self.latencies.iter().copied().map(u128::from).sum::<u128>();
+        let latency_count = self.latencies.len() as u64;
         CohortAnalysis {
             cohort_digest_sha256: hex_digest(&digest.finalize()),
             success_rate_basis_points: rate(self.succeeded, terminal),
@@ -352,6 +379,12 @@ impl Totals {
             succeeded_turns: self.succeeded,
             failed_turns: self.failed,
             incomplete_turns: self.incomplete,
+            failure_breakdown: self.failure_breakdown,
+            latency_sample_count: latency_count,
+            mean_latency_secs: (latency_count > 0)
+                .then_some((latency_sum / u128::from(latency_count.max(1))) as u64),
+            p50_latency_secs: percentile(&self.latencies, 50),
+            p95_latency_secs: percentile(&self.latencies, 95),
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             fully_priced_cost_nano_usd: (self.has_iterations && self.fully_priced)
@@ -375,6 +408,14 @@ fn checked(left: u64, right: u64) -> Result<u64, EvidenceError> {
 
 fn rate(numerator: u64, denominator: u64) -> Option<u16> {
     (denominator > 0).then(|| ((u128::from(numerator) * 10_000) / u128::from(denominator)) as u16)
+}
+
+fn percentile(sorted: &[u64], percentile: usize) -> Option<u64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = (percentile * sorted.len()).div_ceil(100);
+    sorted.get(rank.saturating_sub(1)).copied()
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
