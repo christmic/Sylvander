@@ -619,9 +619,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   read-only inspection behavior through Local and the logical mount router.
   Detailed invariants are in
   [`sylvander-agent/docs/workspace-execution.md`](../sylvander-agent/docs/workspace-execution.md).
-- [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
-  references, remote process-tree cancellation, upload/download semantics, and
-  conformance tests.
+- [x] **P3.3 Current-release scope decision — SSH deferred:** remote execution
+  is deliberately excluded from the local-first release at the owner's
+  direction. No SSH capability is advertised by this release. Host-key policy,
+  connection pooling, credential references, remote process-tree cancellation,
+  transfer semantics, remote worktrees, and their conformance tests form one
+  future release track rather than an incomplete local feature.
 - [x] **P3.4 Container and sandbox executors:** disposable OCI operations have
   bounded mounts, network denial, read-only root filesystems, private temporary
   storage, dropped capabilities, no-new-privileges, validated resource
@@ -683,9 +686,11 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   resource ceilings, and explicit latency budgets. SSH and external-service
   latency are outside the current local scope and recorded in
   [`performance-verification.md`](performance-verification.md).
-- [ ] **P6.5 Final closure:** full clean-room deployment, real-client journeys,
-  zero known critical/high defects, no unchecked backlog item, and an explicit
-  residual-risk record for anything that cannot be proven away.
+- [x] **P6.5 Final closure:** locked full-workspace tests and linting,
+  clean-room release installation/startup/shutdown, compiled real-client
+  journeys, security and performance gates, zero known critical/high defects,
+  no unchecked current-scope item, and explicit residual risks are recorded in
+  [`release-closure.md`](release-closure.md).
 
 ## 6. Verification policy
 
