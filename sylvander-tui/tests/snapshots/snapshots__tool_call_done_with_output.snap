@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 128
 expression: "render_buf(state, 80, 24)"
 ---
               ⢀⣤⣴⡆               Sylvander                                      
@@ -14,7 +15,7 @@ expression: "render_buf(state, 80, 24)"
                                                                                 
 ❯ list src                                                                      
 ⏺ Run `ls`     00s                                                              
-  ⎿  $ ls src  main.rs                                                          
+  ⎿  $ ls src  lib.rs                                                           
                                                                                 
                                                                                 
                                                                                 

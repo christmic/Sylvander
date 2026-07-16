@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 200
 expression: "render_buf(state, 80, 24)"
 ---
  ⠈⠛⠃⡁⡀  ⣿⡻⢾⡇ ⣶⣶  ⣶⣆ ⢻⣥⣿⣿⡄        branch    — · session new                      
@@ -10,7 +11,7 @@ expression: "render_buf(state, 80, 24)"
                                                                                 
 ❯ rm -rf /                                                                      
 ⏺ Run `rm`     00s                                                              
-  ⎿  $ rm -rf /                                                                 
+  ⎿  $ rm -rf /  running…                                                       
 ────────────────────────────────────────────────────────────────────────────────
 ❯                                                                               
 ────────────────────────────────────────────────────────────────────────────────

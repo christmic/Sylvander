@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 784
 expression: "render_buf(s, 140, 40)"
 ---
               ⢀⣤⣴⡆               Sylvander                                                                                                  
@@ -14,7 +15,7 @@ expression: "render_buf(s, 140, 40)"
                                                                                                                                             
 ❯ Add JWT auth middleware                                                                                                                   
 ⏺ Run `ls`     00s                                                                                                                          
-  ⎿  $ ls src/http  router.rs                                                                                                               
+  ⎿  $ ls src/http  middleware.rs                                                                                                           
   ⎿  Read src/http/middleware.rs                                                                                                            
                                                                                                                                             
 ⏺ Inspecting the existing router to understand the auth surface. I see we have a TokenGuard already — let me                                
