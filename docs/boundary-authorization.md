@@ -83,6 +83,12 @@ Messages do not reveal credentials, allowlists, or sensitive resource data.
 HTTP maps these categories to the corresponding 401, 403, 400, 413, or 429
 status. Unix and WebSocket use the shared UI protocol response.
 
+Stable user linking uses the separate
+[`identity-binding-protocol.md`](identity-binding-protocol.md) contract. Its
+serializable requests never carry a transport principal. A concrete Channel
+derives a non-serializable identity envelope only after ingress authentication,
+and the Runtime re-authorizes it before accessing its private binding store.
+
 ## Audit and data minimization
 
 Authorization denials are persisted even when optional run-content evidence is
