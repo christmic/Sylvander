@@ -328,6 +328,13 @@ impl PrincipalBindingStore {
         principal.digest(&self.digest_key.0)
     }
 
+    /// Opaque, domain-scoped identity for an authenticated principal that has
+    /// not been linked to a stable user. This keeps unrelated channel
+    /// namespaces isolated without persisting or exposing the raw identifier.
+    pub(crate) fn isolated_user_id(&self, principal: &ExternalPrincipal) -> UserId {
+        UserId::new(format!("unlinked:v1:{}", self.principal_digest(principal)))
+    }
+
     /// Register a stable user identity. User ids are never implicitly created
     /// while linking a channel identity.
     pub async fn register_user(&self, user_id: UserId) -> Result<(), PrincipalBindingError> {

@@ -660,6 +660,14 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let agent = restarted
         .configured_agent(&AgentId::new("assistant"))
         .unwrap();
+    let effective_user = restarted
+        .session_store
+        .get(&created.session_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .metadata
+        .user_id;
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         while agent.run.get_session(&created.session_id).await.is_none() {
             tokio::task::yield_now().await;
@@ -671,7 +679,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         .run
         .handle_message(BusMessage::user_chat(
             created.session_id.clone(),
-            "user",
+            effective_user.clone(),
             "beta request",
         ))
         .await
@@ -723,7 +731,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         .run
         .handle_message(BusMessage::user_chat(
             alpha_session.session_id.clone(),
-            "user",
+            effective_user,
             "alpha request",
         ))
         .await
