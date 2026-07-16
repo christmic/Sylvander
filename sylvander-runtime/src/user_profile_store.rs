@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use sylvander_protocol::{UserId, UserProfileData};
 use tokio::{sync::Mutex, task};
 
@@ -130,6 +130,219 @@ impl UserProfileStore {
         self.run(move |connection| load_profile(connection, &owner))
             .await
     }
+
+    pub(crate) async fn create(
+        &self,
+        owner: UserId,
+        profile: UserProfileData,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        validate_owner(&owner)?;
+        let profile_json = encode_profile(&profile)?;
+        let now = self.clock.now();
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let previous = load_head(&transaction, &owner)?;
+            if previous.as_ref().is_some_and(|head| !head.deleted) {
+                return Err(UserProfileStoreError::AlreadyExists);
+            }
+            let previous_revision = previous.map_or(0, |head| head.revision);
+            let revision = next_revision(previous_revision)?;
+            let changed = transaction
+                .execute(
+                    "INSERT INTO user_profiles(user_id,revision,profile_json,do_not_learn,deleted,updated_at) VALUES (?1,?2,?3,0,0,?4) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,profile_json=excluded.profile_json,do_not_learn=0,deleted=0,updated_at=excluded.updated_at WHERE user_profiles.deleted=1 AND user_profiles.revision=?5",
+                    params![owner.0, sql_revision(revision)?, profile_json, now, sql_revision(previous_revision)?],
+                )
+                .map_err(storage)?;
+            if changed != 1 {
+                return Err(UserProfileStoreError::AlreadyExists);
+            }
+            let stored = load_profile(&transaction, &owner)?.ok_or(UserProfileStoreError::Storage)?;
+            transaction.commit().map_err(storage)?;
+            Ok(stored)
+        })
+        .await
+    }
+
+    pub(crate) async fn update(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+        profile: UserProfileData,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        self.replace(owner, expected_revision, profile).await
+    }
+
+    pub(crate) async fn correct(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+        profile: UserProfileData,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        self.replace(owner, expected_revision, profile).await
+    }
+
+    async fn replace(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+        profile: UserProfileData,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        let profile_json = encode_profile(&profile)?;
+        let now = self.clock.now();
+        self.mutate(owner, expected_revision, move |connection, owner, revision| {
+            connection
+                .execute(
+                    "UPDATE user_profiles SET revision=?3,profile_json=?4,updated_at=?5 WHERE user_id=?1 AND revision=?2 AND deleted=0",
+                    params![owner.0, sql_revision(expected_revision)?, sql_revision(revision)?, profile_json, now],
+                )
+                .map_err(storage)
+        })
+        .await
+    }
+
+    pub(crate) async fn set_do_not_learn(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+        enabled: bool,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        let now = self.clock.now();
+        self.mutate(owner, expected_revision, move |connection, owner, revision| {
+            connection
+                .execute(
+                    "UPDATE user_profiles SET revision=?3,do_not_learn=?4,updated_at=?5 WHERE user_id=?1 AND revision=?2 AND deleted=0",
+                    params![owner.0, sql_revision(expected_revision)?, sql_revision(revision)?, enabled, now],
+                )
+                .map_err(storage)
+        })
+        .await
+    }
+
+    pub(crate) async fn delete(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+    ) -> Result<u64, UserProfileStoreError> {
+        validate_owner(&owner)?;
+        validate_expected_revision(expected_revision)?;
+        let now = self.clock.now();
+        let revision = next_revision(expected_revision)?;
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            require_revision(&transaction, &owner, expected_revision)?;
+            transaction
+                .execute(
+                    "UPDATE user_profiles SET revision=?3,profile_json=NULL,do_not_learn=1,deleted=1,updated_at=?4 WHERE user_id=?1 AND revision=?2 AND deleted=0",
+                    params![owner.0, sql_revision(expected_revision)?, sql_revision(revision)?, now],
+                )
+                .map_err(storage)?;
+            transaction.commit().map_err(storage)?;
+            Ok(revision)
+        })
+        .await
+    }
+
+    pub(crate) async fn export(
+        &self,
+        owner: UserId,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        self.read(owner)
+            .await?
+            .ok_or(UserProfileStoreError::NotFound)
+    }
+
+    async fn mutate(
+        &self,
+        owner: UserId,
+        expected_revision: u64,
+        mutation: impl FnOnce(&Connection, &UserId, u64) -> Result<usize, UserProfileStoreError>
+        + Send
+        + 'static,
+    ) -> Result<StoredUserProfile, UserProfileStoreError> {
+        validate_owner(&owner)?;
+        validate_expected_revision(expected_revision)?;
+        self.run(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            require_revision(&transaction, &owner, expected_revision)?;
+            let revision = next_revision(expected_revision)?;
+            if mutation(&transaction, &owner, revision)? != 1 {
+                return Err(UserProfileStoreError::Storage);
+            }
+            let stored =
+                load_profile(&transaction, &owner)?.ok_or(UserProfileStoreError::Storage)?;
+            transaction.commit().map_err(storage)?;
+            Ok(stored)
+        })
+        .await
+    }
+}
+
+struct ProfileHead {
+    revision: u64,
+    deleted: bool,
+}
+
+fn load_head(
+    connection: &Connection,
+    owner: &UserId,
+) -> Result<Option<ProfileHead>, UserProfileStoreError> {
+    connection
+        .query_row(
+            "SELECT revision,deleted FROM user_profiles WHERE user_id=?1",
+            [&owner.0],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()
+        .map_err(storage)?
+        .map(|(revision, deleted)| {
+            Ok(ProfileHead {
+                revision: u64::try_from(revision).map_err(|_| UserProfileStoreError::Corrupt)?,
+                deleted,
+            })
+        })
+        .transpose()
+}
+
+fn require_revision(
+    connection: &Connection,
+    owner: &UserId,
+    expected: u64,
+) -> Result<(), UserProfileStoreError> {
+    let head = load_head(connection, owner)?.ok_or(UserProfileStoreError::NotFound)?;
+    if head.deleted {
+        return Err(UserProfileStoreError::NotFound);
+    }
+    if head.revision != expected {
+        return Err(UserProfileStoreError::Conflict {
+            expected,
+            actual: head.revision,
+        });
+    }
+    Ok(())
+}
+
+fn validate_expected_revision(revision: u64) -> Result<(), UserProfileStoreError> {
+    if revision == 0 {
+        Err(UserProfileStoreError::Invalid("revision"))
+    } else {
+        Ok(())
+    }
+}
+
+fn next_revision(revision: u64) -> Result<u64, UserProfileStoreError> {
+    revision
+        .checked_add(1)
+        .ok_or(UserProfileStoreError::Storage)
+}
+
+fn sql_revision(revision: u64) -> Result<i64, UserProfileStoreError> {
+    i64::try_from(revision).map_err(|_| UserProfileStoreError::Invalid("revision"))
 }
 
 fn validate_owner(owner: &UserId) -> Result<(), UserProfileStoreError> {
