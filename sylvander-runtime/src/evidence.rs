@@ -12,8 +12,13 @@ use sylvander_protocol::{
     EvidenceReference, FeedbackPrivacyClass, FeedbackRating, FeedbackTaskResult, RunFeedback,
 };
 
+mod analysis;
+mod analysis_types;
 mod recorder;
 
+pub use analysis_types::{
+    AnalysisPrivacyScope, AnalysisWarning, CohortAnalysis, CohortQuery, CohortTurn, FailureClass,
+};
 pub use recorder::EvidenceRecorder;
 
 #[derive(Clone)]
@@ -1031,6 +1036,10 @@ pub enum EvidenceError {
     UnknownTurn,
     #[error("stored feedback is invalid")]
     InvalidFeedbackData,
+    #[error("evidence analysis query is invalid")]
+    InvalidAnalysisQuery,
+    #[error("stored evidence cannot be analyzed safely")]
+    InvalidAnalysisData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
 }
