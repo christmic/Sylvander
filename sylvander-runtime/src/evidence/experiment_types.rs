@@ -77,3 +77,12 @@ pub struct RecordExperimentEvidence {
     pub principal_digest: String,
     pub evidence: UnsignedExperimentEvidence,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExperimentTransition {
+    pub experiment_id: String,
+    pub expected_state_revision: u64,
+    pub principal_digest: String,
+    pub reason: Option<String>,
+    pub occurred_at: i64,
+}

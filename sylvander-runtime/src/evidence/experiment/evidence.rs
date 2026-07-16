@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use rusqlite::{OptionalExtension, params};
 
 use super::experiment_status_name;
+use super::transition::finish_proposal_in_transaction;
 use crate::evidence::evaluation::{valid_key, valid_sha256};
 use crate::evidence::{
     EvidenceError, EvidenceStore, ExperimentEvidenceSigner, ExperimentPhase, MetricMeasurement,
@@ -93,12 +94,18 @@ impl EvidenceStore {
             let transaction = connection
                 .unchecked_transaction()
                 .map_err(EvidenceError::sqlite)?;
-            let (current_status, current_revision) = transaction
+            let (proposal_id, current_status, current_revision) = transaction
                 .query_row(
-                    "SELECT status, state_revision
+                    "SELECT proposal_id, status, state_revision
                      FROM evidence_self_change_experiments WHERE id=?1",
                     [&signed_for_store.evidence.experiment_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
                 )
                 .map_err(|error| match error {
                     rusqlite::Error::QueryReturnedNoRows => EvidenceError::ExperimentStateConflict,
@@ -189,6 +196,25 @@ impl EvidenceStore {
                     ],
                 )
                 .map_err(EvidenceError::sqlite)?;
+            let proposal_status = match next_status {
+                SelfChangeExperimentStatus::Completed => Some("completed"),
+                SelfChangeExperimentStatus::Failed => Some("rolled_back"),
+                _ => None,
+            };
+            if let Some(proposal_status) = proposal_status {
+                finish_proposal_in_transaction(
+                    &transaction,
+                    &proposal_id,
+                    proposal_status,
+                    &principal_digest,
+                    Some(if passed {
+                        "experiment completed without registered regressions"
+                    } else {
+                        "experiment stopped before merge after registered regression"
+                    }),
+                    recorded_at,
+                )?;
+            }
             transaction.commit().map_err(EvidenceError::sqlite)
         })
         .await?;
