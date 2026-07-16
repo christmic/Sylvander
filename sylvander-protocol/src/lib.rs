@@ -30,7 +30,7 @@ pub mod user_profile;
 
 pub use agent_admin::*;
 pub use boundary::*;
-pub use bus_trait::{BusError, MessageBus, SubscriptionFilter};
+pub use bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
 pub use identity_binding::*;
 pub use in_process::InProcessMessageBus;
 pub use registry_admin::*;

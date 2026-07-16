@@ -2,11 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
-use crate::bus_trait::{BusError, MessageBus, SubscriptionFilter};
+use crate::bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
 use crate::types::BusMessage;
 
 type SubscriptionId = uuid::Uuid;
@@ -24,6 +25,8 @@ pub struct InProcessMessageBus {
     subscriptions: Arc<RwLock<HashMap<SubscriptionId, Subscription>>>,
     publish_lock: Arc<Mutex<()>>,
     subscription_capacity: usize,
+    published_messages: Arc<AtomicU64>,
+    backpressure_rejections: Arc<AtomicU64>,
 }
 
 impl InProcessMessageBus {
@@ -44,6 +47,8 @@ impl InProcessMessageBus {
             subscriptions: Arc::new(RwLock::new(HashMap::new())),
             publish_lock: Arc::new(Mutex::new(())),
             subscription_capacity,
+            published_messages: Arc::new(AtomicU64::new(0)),
+            backpressure_rejections: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -62,6 +67,7 @@ impl MessageBus for InProcessMessageBus {
         if subs.values().any(|sub| {
             sub.filter.matches(&msg) && !sub.sender.is_closed() && sub.sender.capacity() == 0
         }) {
+            self.backpressure_rejections.fetch_add(1, Ordering::Relaxed);
             return Err(BusError::Backpressure);
         }
         for sub in subs.values() {
@@ -76,6 +82,7 @@ impl MessageBus for InProcessMessageBus {
                     })?;
             }
         }
+        self.published_messages.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -90,6 +97,16 @@ impl MessageBus for InProcessMessageBus {
             .await
             .insert(id, Subscription { filter, sender: tx });
         Ok(rx)
+    }
+
+    async fn diagnostics(&self) -> BusDiagnostics {
+        BusDiagnostics {
+            bounded: true,
+            subscription_capacity: self.subscription_capacity,
+            subscriber_count: self.subscriptions.read().await.len(),
+            published_messages: self.published_messages.load(Ordering::Relaxed),
+            backpressure_rejections: self.backpressure_rejections.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -174,6 +191,16 @@ mod t {
         assert_eq!(
             slow.recv().await.unwrap().session_id,
             SessionId::new("first")
+        );
+        assert_eq!(
+            b.diagnostics().await,
+            BusDiagnostics {
+                bounded: true,
+                subscription_capacity: 1,
+                subscriber_count: 2,
+                published_messages: 1,
+                backpressure_rejections: 1,
+            }
         );
     }
     #[test]
