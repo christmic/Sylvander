@@ -130,7 +130,8 @@ pub mod prelude {
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, MemoryActorKind, MemoryAppend, MemoryBackupArtifact,
-        MemoryBackupManifest, MemoryClock, MemoryEntry, MemoryExecutionContext, MemoryExpiryPatch,
+        MemoryBackupManifest, MemoryClock, MemoryEntry, MemoryEvidenceCheckpoint,
+        MemoryEvidenceCompactionReport, MemoryExecutionContext, MemoryExpiryPatch,
         MemoryIntegrityConfig, MemoryOwner, MemoryPatch, MemoryProvenance, MemoryProvenanceSource,
         MemoryPurgeReport, MemoryReadTool, MemoryRestoreError, MemoryScope, MemoryStore,
         MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,

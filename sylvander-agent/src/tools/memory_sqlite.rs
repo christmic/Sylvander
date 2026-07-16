@@ -382,10 +382,11 @@ impl SqliteMemoryStore {
         if let (Some(integrity), Some(before), Some(current_epoch)) =
             (&self.integrity, before, current_epoch)
         {
-            let to_epoch = current_epoch.checked_add(1).ok_or_else(store_failure)?;
-            integrity.seal_rows(&transaction, to_epoch)?;
-            let after = integrity::database_root(&transaction)?;
-            if before != after {
+            let changed_root = integrity::database_root(&transaction)?;
+            if before != changed_root {
+                let to_epoch = current_epoch.checked_add(1).ok_or_else(store_failure)?;
+                integrity.seal_rows(&transaction, to_epoch)?;
+                let after = integrity::database_root(&transaction)?;
                 integrity.prepare(&before, &after)?;
                 transaction.commit().map_err(store_error)?;
                 integrity.finalize(&after)?;
