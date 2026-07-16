@@ -1,18 +1,22 @@
+use serde::{Deserialize, Serialize};
 use sylvander_protocol::EvidenceReference;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EvaluationSplit {
     Fixture,
     HeldOut,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScoreDirection {
     HigherIsBetter,
     LowerIsBetter,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScoringAdapterKind {
     BooleanValidation,
     NumericMetric,
@@ -79,14 +83,16 @@ pub struct StoredEvaluationBaseline {
     pub digest_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MetricMeasurement {
     pub metric: String,
     pub value: i64,
     pub sample_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegressionDecision {
     pub metric: String,
     pub direction: ScoreDirection,
@@ -97,7 +103,8 @@ pub struct RegressionDecision {
     pub passed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationComparison {
     pub baseline_id: String,
     pub baseline_digest_sha256: String,
