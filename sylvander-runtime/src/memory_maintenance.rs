@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use sylvander_agent::tools::{RelationshipMemoryRetentionPolicy, SqliteMemoryMaintenance};
+use sylvander_agent::tools::{
+    MemoryEvidenceCheckpoint, RelationshipMemoryRetentionPolicy, SqliteMemoryMaintenance,
+};
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -134,13 +136,41 @@ async fn run_backup(
     policy: &RuntimeMemoryMaintenancePolicy,
     data_dir: PathBuf,
 ) -> Result<(), &'static str> {
-    let handle = maintenance.clone();
-    let retained = policy.retained_backups;
-    tokio::task::spawn_blocking(move || handle.backup_and_rotate(data_dir, retained))
+    let mut checkpoint =
+        publish_checkpoint(maintenance, data_dir.clone(), policy.retained_backups).await?;
+    for _ in 0..policy.max_batches_per_run {
+        let handle = maintenance.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            handle.compact_evidence_after_checkpoint(&checkpoint)
+        })
         .await
-        .map_err(|_| "backup_task_join")?
-        .map_err(|_| "backup_store")?;
+        .map_err(|_| "checkpoint_task_join")?
+        .map_err(|_| "checkpoint_store")?;
+        if report.total_deleted_count() == 0 {
+            return Ok(());
+        }
+        // Publish the compacted anchored state before another batch. This is
+        // both the next authorization boundary and a restorable final backup
+        // if the batch budget is exhausted or shutdown follows immediately.
+        checkpoint =
+            publish_checkpoint(maintenance, data_dir.clone(), policy.retained_backups).await?;
+        tokio::task::yield_now().await;
+    }
     Ok(())
+}
+
+async fn publish_checkpoint(
+    maintenance: &SqliteMemoryMaintenance,
+    data_dir: PathBuf,
+    retained: u32,
+) -> Result<MemoryEvidenceCheckpoint, &'static str> {
+    let handle = maintenance.clone();
+    let artifact =
+        tokio::task::spawn_blocking(move || handle.backup_and_rotate(data_dir, retained))
+            .await
+            .map_err(|_| "backup_task_join")?
+            .map_err(|_| "backup_store")?;
+    Ok(MemoryEvidenceCheckpoint::from_verified_backup(artifact))
 }
 
 pub(crate) async fn catch_up(
@@ -186,7 +216,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use sylvander_agent::tools::{
-        MemoryIntegrityConfig, RelationshipMemoryRetentionPolicy, SqliteMemoryStore,
+        MemoryBackupManifest, MemoryIntegrityConfig, RelationshipMemoryRetentionPolicy,
+        SqliteMemoryStore,
     };
 
     fn protected_store(directory: &std::path::Path) -> SqliteMemoryStore {
@@ -308,5 +339,50 @@ mod tests {
             .unwrap();
         wait_for(|| !complete_backup_names(directory.path()).is_empty()).await;
         task.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scheduled_backup_bounds_evidence_and_publishes_the_final_epoch() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("memory.db");
+        let store = protected_store(directory.path());
+        for _ in 0..5 {
+            store.maintenance().purge().unwrap();
+        }
+
+        let policy =
+            RuntimeMemoryMaintenancePolicy::from_settings(&MemoryMaintenanceSettings::default())
+                .unwrap();
+        run_backup(&store.maintenance(), &policy, directory.path().into())
+            .await
+            .unwrap();
+
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let counts: (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM relationship_memory_audit), (SELECT COUNT(*) FROM relationship_memory_retention_runs), (SELECT COUNT(*) FROM relationship_memory_retention_batches), (SELECT COUNT(*) FROM relationship_memory_checkpoint_state)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 1, 1, 1));
+
+        let anchor: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.path().join("memory.anchor")).unwrap())
+                .unwrap();
+        let current_epoch = anchor["epoch"].as_u64().unwrap();
+        let has_current_backup = std::fs::read_dir(directory.path().join("memory-backups"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|value| value == "json")
+            })
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice::<MemoryBackupManifest>(&bytes).ok())
+            .any(|manifest| manifest.integrity_epoch == current_epoch);
+        assert!(has_current_backup);
     }
 }

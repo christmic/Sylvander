@@ -39,6 +39,13 @@ pub struct MemoryEvidenceCompactionReport {
     pub retention_run_deleted_count: u32,
 }
 
+impl MemoryEvidenceCompactionReport {
+    #[must_use]
+    pub const fn total_deleted_count(&self) -> u32 {
+        self.audit_deleted_count + self.retention_run_deleted_count
+    }
+}
+
 #[derive(Debug)]
 struct AuditChunk {
     sequences: Vec<i64>,
@@ -366,6 +373,7 @@ mod tests {
                 .backup_to_data_dir(directory.path())
                 .unwrap(),
         );
+        let final_anchor = std::fs::read(directory.path().join("memory.anchor")).unwrap();
         let final_report = store
             .maintenance()
             .compact_evidence_after_checkpoint(&final_checkpoint)
@@ -373,6 +381,10 @@ mod tests {
         assert_eq!(final_report.audit_deleted_count, 0);
         assert_eq!(final_report.retention_run_deleted_count, 0);
         assert_eq!(counts(&store), (1, 1, 1, 1));
+        assert_eq!(
+            std::fs::read(directory.path().join("memory.anchor")).unwrap(),
+            final_anchor
+        );
     }
 
     #[tokio::test]
