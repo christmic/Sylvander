@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use super::evaluation_types::{ScoringAdapterKind, ScoringAdapterRevision};
 use super::{EvidenceError, EvidenceStore, as_i64};
 
+mod baseline;
 mod dataset;
 
 impl EvidenceStore {
