@@ -44,6 +44,8 @@ mod credential_registry_tests;
 pub mod evidence;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
 mod identity_binding_service;
+#[cfg(test)]
+mod identity_binding_service_tests;
 mod memory_maintenance;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
 mod model_registry;
