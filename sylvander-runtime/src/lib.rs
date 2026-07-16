@@ -3745,6 +3745,88 @@ id = "model-a"
     }
 
     #[tokio::test]
+    async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        let identity_key = directory.path().join("identity.key");
+        std::fs::write(&identity_key, "abcdef0123456789abcdef0123456789").unwrap();
+        config.server.identity.digest_key =
+            Some(crate::config::SecretRef::File { path: identity_key });
+        config.server.identity.trusted_issuers = vec![crate::config::IdentityIssuerSettings {
+            transport: "unix".into(),
+            channel_instance_id: "terminal".into(),
+            principal_id: "local-alice".into(),
+            user_id: "alice".into(),
+        }];
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let context = ChannelContext::with_runtime_services(
+            runtime.bus(),
+            runtime.session_store.clone(),
+            runtime.ui_service.clone(),
+            None,
+        );
+        assert_eq!(
+            context.identity_binding_capabilities(),
+            IdentityBindingCapabilities::current()
+        );
+
+        let local = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "local-alice",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "terminal",
+            "unix",
+            "identity-begin",
+        );
+        let issued = context
+            .submit_identity_binding(
+                &local,
+                IdentityBindingRequest {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    action: sylvander_protocol::IdentityBindingAction::Begin {},
+                },
+            )
+            .await;
+        let IdentityBindingResponse::ChallengeIssued {
+            challenge_id,
+            secret,
+            ..
+        } = issued
+        else {
+            panic!("configured identity service did not issue a challenge: {issued:?}");
+        };
+
+        let external = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "telegram-42",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "bot-primary",
+            "telegram",
+            "identity-confirm",
+        );
+        let confirmed = context
+            .submit_identity_binding(
+                &external,
+                IdentityBindingRequest {
+                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+                    action: sylvander_protocol::IdentityBindingAction::Confirm {
+                        challenge_id,
+                        proof: secret.into_confirmation_proof(),
+                    },
+                },
+            )
+            .await;
+        assert!(matches!(
+            confirmed,
+            IdentityBindingResponse::Resolved { binding, .. }
+                if binding.user_id == UserId::new("alice") && binding.revision == 1
+        ));
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn boot_spawns_agents() {
         let config = SystemConfig {
             name: "test-runtime".into(),
