@@ -2226,6 +2226,7 @@ fn execution_target_supports_host_worktree(
         Some(
             config::ExecutionTransportConfig::Local { .. }
                 | config::ExecutionTransportConfig::Container { .. }
+                | config::ExecutionTransportConfig::Sandbox { .. }
         )
     )
 }
@@ -4196,6 +4197,7 @@ mod tests {
                 config::ExecutionTransportConfig::Container {
                     runtime: "docker".into(),
                     image: "rust:latest".into(),
+                    resources: config::ContainerResourceSettings::default(),
                 },
             ),
             (
@@ -4470,8 +4472,8 @@ shift
 mount=
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --rm|--network=none|--interactive) shift ;;
-    --name) shift 2 ;;
+    --rm|--network=none|--interactive|--read-only) shift ;;
+    --name|--memory|--cpus|--pids-limit|--tmpfs|--security-opt|--cap-drop) shift 2 ;;
     --mount) mount=$2; shift 2 ;;
     --workdir) shift 2 ;;
     *) shift; break ;;
@@ -4806,6 +4808,7 @@ exec "$@"
                 transport: config::ExecutionTransportConfig::Container {
                     runtime: container_runtime.display().to_string(),
                     image: "sylvander/test:latest".into(),
+                    resources: config::ContainerResourceSettings::default(),
                 },
             });
         let boundary = sylvander_protocol::BoundaryContext::authenticated(

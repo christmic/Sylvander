@@ -39,7 +39,7 @@ use crate::config::{
     SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
-use crate::execution::{ContainerExecutor, SshExecutor};
+use crate::execution::{ContainerExecutor, ContainerResourcePolicy, SshExecutor};
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -979,13 +979,37 @@ fn apply_execution_targets(
                         .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
                 )
             }
-            ExecutionTransportConfig::Container { runtime, image } => Arc::new(
+            ExecutionTransportConfig::Container {
+                runtime,
+                image,
+                resources,
+            } => Arc::new(
                 ContainerExecutor::new(runtime, image)
+                    .and_then(|executor| {
+                        executor.with_resource_policy(ContainerResourcePolicy {
+                            memory_mb: resources.memory_mb,
+                            cpu_millis: resources.cpu_millis,
+                            pids_limit: resources.pids_limit,
+                        })
+                    })
                     .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
             ),
-            ExecutionTransportConfig::Local { .. } | ExecutionTransportConfig::Sandbox { .. } => {
-                continue;
-            }
+            ExecutionTransportConfig::Sandbox {
+                driver,
+                profile,
+                resources,
+            } => Arc::new(
+                ContainerExecutor::new(driver, profile)
+                    .and_then(|executor| {
+                        executor.with_resource_policy(ContainerResourcePolicy {
+                            memory_mb: resources.memory_mb,
+                            cpu_millis: resources.cpu_millis,
+                            pids_limit: resources.pids_limit,
+                        })
+                    })
+                    .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+            ),
+            ExecutionTransportConfig::Local { .. } => continue,
         };
         builder = builder.workspace_executor(target.id.clone(), executor);
     }

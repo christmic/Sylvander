@@ -239,8 +239,8 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A06 | Model providers | implemented for current adapters | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. The neutral provider contract optionally enumerates a reliable remote catalog. Runtime reconciliation reports synchronized, drifted, unavailable, or operator-managed state and never mutates Registry metadata or active Agent snapshots. Current Anthropic-compatible adapters intentionally remain operator-managed because their deployment endpoints do not guarantee one authoritative catalog. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
-| A09 | File tools | implemented for local execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. Remote/container/sandbox adapter completion is tracked separately in P3.3/P3.4. |
-| A10 | Command/Git tools | implemented for local execution | Command and structured read-only Git share the executor boundary. Local execution supports validated command-scoped environment, bounded concurrent stdout/stderr capture, Unicode-safe streaming, timeout and dropped-future process-group cancellation, plus isolated worktree review/accept/discard. Remote process-tree and worktree semantics remain P3.3. |
+| A09 | File tools | implemented for local, container, and managed sandbox execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. SSH completion is tracked separately in P3.3. |
+| A10 | Command/Git tools | implemented for local, container, and managed sandbox execution | Command and structured read-only Git share the executor boundary. Local and restricted OCI execution support bounded concurrent stdout/stderr capture, Unicode-safe streaming, deadlines and cancellation, plus host-backed isolated worktree review/accept/discard. Remote process-tree and worktree semantics remain P3.3. |
 | A11 | Worktree isolation | implemented for local/host-backed execution | Writable local and host-backed container Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state, removes leases for deleted sessions, and recovers worktrees left before manifest commit. Remote SSH worktrees remain deferred with P3.3. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
 | A13 | Skills | implemented | Agent-home and task-workspace packages are discovered through the selected executor with deterministic precedence. Strict optional manifests provide versioned metadata, activation, and exact resources; invalid or incomplete packages fail atomically. Redacted active/configured/degraded health, trust, source, capabilities, and per-turn reload truth are protocol-visible. |
@@ -602,8 +602,14 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   edits it through the container executor, inspects and accepts the diff,
   restarts Runtime with the same durable lease, performs another container
   edit, and discards the session without changing the accepted source state.
-  Sandbox adapters, SSH pooling, explicit host-key policy, container resource
-  policy, and remote worktree review remain open.
+  Container and managed-sandbox targets now apply validated memory, CPU, and
+  process ceilings plus a read-only root filesystem, private bounded `/tmp`,
+  dropped capabilities, and `no-new-privileges`. A sandbox profile is an
+  OCI-compatible driver plus an immutable image reference. Environments remain
+  deliberately disposable: durable coding state belongs in the isolated host
+  worktree, while reusing an execution container would leak state across
+  operations. SSH pooling, explicit host-key policy, and remote worktree review
+  remain open.
 
   The local environment contract is now explicit: Command accepts bounded,
   validated per-invocation overrides, Local applies them only to the child
@@ -616,11 +622,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, remote process-tree cancellation, upload/download semantics, and
   conformance tests.
-- [ ] **P3.4 Container and sandbox executors:** the disposable-container
-  baseline has lifecycle, mounts, network denial, cleanup, and conformance
-  tests, including the complete host-backed coding-session journey across a
-  Runtime restart; resource policy, reusable environments, and managed
-  sandboxes remain.
+- [x] **P3.4 Container and sandbox executors:** disposable OCI operations have
+  bounded mounts, network denial, read-only root filesystems, private temporary
+  storage, dropped capabilities, no-new-privileges, validated resource
+  ceilings, cleanup, conformance tests, managed-sandbox composition, and the
+  complete host-backed coding-session journey across a Runtime restart.
+  Reusable environments are intentionally excluded because durable state lives
+  in isolated worktrees and executor reuse would create cross-operation state.
 - [x] **P3.5 Worktree manager (local/host-backed scope):** writable Git coding
   sessions default to collision-free durable leases; review, merge, abandon,
   restart, and compensation paths are public and tested. Runtime boot validates
