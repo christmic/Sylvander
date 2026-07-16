@@ -7,6 +7,9 @@ name = "sylvander"
 # data_dir = "/var/lib/sylvander"
 # session_db = "/var/lib/sylvander/sessions.db"
 # memory_db = "/var/lib/sylvander/memory.db"
+# Durable global User Profile store. Defaults to
+# <data_dir>/user-profiles.db; use a private, backed-up location in production.
+# user_profile_db = "/var/lib/sylvander/user-profiles.db"
 # workspace_journal = "/var/lib/sylvander/workspace-journal"
 
 [server.memory_maintenance]
