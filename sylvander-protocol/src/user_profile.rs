@@ -245,6 +245,156 @@ impl fmt::Debug for UserProfileData {
     }
 }
 
+/// Revisioned profile view for the boundary-derived owner.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UserProfileView {
+    pub revision: u64,
+    pub profile: UserProfileData,
+    pub do_not_learn: bool,
+    pub created_at_unix_secs: i64,
+    pub updated_at_unix_secs: i64,
+}
+
+impl fmt::Debug for UserProfileView {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UserProfileView")
+            .field("revision", &self.revision)
+            .field("profile", &"[REDACTED]")
+            .field("do_not_learn", &self.do_not_learn)
+            .field("created_at_unix_secs", &self.created_at_unix_secs)
+            .field("updated_at_unix_secs", &self.updated_at_unix_secs)
+            .finish()
+    }
+}
+
+/// Portable, self-describing export. The owner is deliberately absent.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UserProfileExport {
+    pub schema_version: u16,
+    pub format: UserProfileExportFormat,
+    pub profile: UserProfileView,
+    pub exported_at_unix_secs: i64,
+}
+
+impl fmt::Debug for UserProfileExport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UserProfileExport")
+            .field("schema_version", &self.schema_version)
+            .field("format", &self.format)
+            .field("profile", &"[REDACTED]")
+            .field("exported_at_unix_secs", &self.exported_at_unix_secs)
+            .finish()
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UserProfileResponse {
+    pub version: u16,
+    pub result: UserProfileResult,
+}
+
+impl fmt::Debug for UserProfileResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UserProfileResponse")
+            .field("version", &self.version)
+            .field("result", &self.result.kind())
+            .field("profile_data", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
+pub enum UserProfileResult {
+    Created {
+        profile: UserProfileView,
+    },
+    Read {
+        profile: UserProfileView,
+    },
+    Updated {
+        profile: UserProfileView,
+    },
+    Exported {
+        export: UserProfileExport,
+    },
+    Corrected {
+        profile: UserProfileView,
+    },
+    Deleted {
+        deleted_revision: u64,
+        do_not_learn_preserved: bool,
+    },
+    DoNotLearnUpdated {
+        profile: UserProfileView,
+    },
+    NotFound {},
+    Error {
+        error: UserProfileError,
+    },
+}
+
+impl UserProfileResult {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Created { .. } => "created",
+            Self::Read { .. } => "read",
+            Self::Updated { .. } => "updated",
+            Self::Exported { .. } => "exported",
+            Self::Corrected { .. } => "corrected",
+            Self::Deleted { .. } => "deleted",
+            Self::DoNotLearnUpdated { .. } => "do_not_learn_updated",
+            Self::NotFound {} => "not_found",
+            Self::Error { .. } => "error",
+        }
+    }
+}
+
+/// Stable, content-free public error. Storage/provider details never cross it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UserProfileError {
+    pub code: UserProfileErrorCode,
+    pub operation: UserProfileOperation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+}
+
+impl UserProfileError {
+    #[must_use]
+    pub const fn service_unavailable(operation: UserProfileOperation) -> Self {
+        Self {
+            code: UserProfileErrorCode::ServiceUnavailable,
+            operation,
+            current_revision: None,
+            retry_after_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UserProfileErrorCode {
+    UnsupportedVersion,
+    InvalidRequest,
+    Unauthenticated,
+    Forbidden,
+    NotFound,
+    AlreadyExists,
+    Conflict,
+    RateLimited,
+    ServiceUnavailable,
+    Internal,
+}
+
 macro_rules! bounded_text {
     ($name:ident, $max:expr, $error:expr) => {
         #[derive(Clone, PartialEq, Eq, Serialize, JsonSchema)]
