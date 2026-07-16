@@ -96,7 +96,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use sylvander_agent::bus::{
-    BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
+    BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
 };
 use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
 use sylvander_agent::run::AgentRun;
@@ -301,6 +301,17 @@ pub struct ChannelHealth {
     pub kind: String,
     pub status: ChannelStatus,
     pub restart_count: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeOperationalSnapshot {
+    pub ready: bool,
+    pub agent_count: usize,
+    pub persistent_session_count: usize,
+    pub ephemeral_session_count: usize,
+    pub channels: Vec<ChannelHealth>,
+    pub bus: BusDiagnostics,
+    pub evidence: Option<evidence::EvidenceCounts>,
 }
 
 struct RuntimeUiService {
@@ -3613,6 +3624,44 @@ impl Runtime {
             .collect()
     }
 
+    /// Return one content-safe operational snapshot for health endpoints,
+    /// diagnostics, metrics exporters, and alerting adapters.
+    pub async fn operational_snapshot(&self) -> Result<RuntimeOperationalSnapshot, RuntimeError> {
+        let agent_count = self.engine.list_agents().await.len();
+        let persistent_session_count = self
+            .session_store
+            .list_persistent()
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .len();
+        let ephemeral_session_count = self.ephemeral.read().await.len();
+        let channels = self.channel_health().await;
+        let evidence = if let Some(recorder) = &self.evidence {
+            Some(
+                recorder
+                    .store()
+                    .counts()
+                    .await
+                    .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let ready = agent_count == self.configured_agents.len()
+            && channels
+                .iter()
+                .all(|channel| channel.status == ChannelStatus::Ready);
+        Ok(RuntimeOperationalSnapshot {
+            ready,
+            agent_count,
+            persistent_session_count,
+            ephemeral_session_count,
+            channels,
+            bus: self.bus.diagnostics().await,
+            evidence,
+        })
+    }
+
     /// Wait until a started channel exits unexpectedly.
     pub async fn wait_for_channel_exit(&self) -> Option<String> {
         self.channel_exits.lock().await.recv().await
@@ -5544,6 +5593,13 @@ exec "$@"
         assert_eq!(health[0].kind, "restart-once-test");
         assert_eq!(health[0].status, ChannelStatus::Ready);
         assert_eq!(health[0].restart_count, 1);
+        let snapshot = runtime.operational_snapshot().await.unwrap();
+        assert!(snapshot.ready);
+        assert_eq!(snapshot.agent_count, 0);
+        assert_eq!(snapshot.persistent_session_count, 0);
+        assert!(snapshot.bus.bounded);
+        assert_eq!(snapshot.bus.subscription_capacity, 256);
+        assert_eq!(snapshot.channels, health);
 
         runtime.shutdown().await.unwrap();
     }

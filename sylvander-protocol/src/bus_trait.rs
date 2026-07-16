@@ -5,6 +5,15 @@ use tokio::sync::mpsc;
 
 use crate::types::{AgentId, BusMessage, MessageKind, Recipient, SessionId};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BusDiagnostics {
+    pub bounded: bool,
+    pub subscription_capacity: usize,
+    pub subscriber_count: usize,
+    pub published_messages: u64,
+    pub backpressure_rejections: u64,
+}
+
 // ===========================================================================
 // SubscriptionFilter
 // ===========================================================================
@@ -76,6 +85,9 @@ pub trait MessageBus: Send + Sync {
         &self,
         filter: SubscriptionFilter,
     ) -> Result<mpsc::Receiver<BusMessage>, BusError>;
+    async fn diagnostics(&self) -> BusDiagnostics {
+        BusDiagnostics::default()
+    }
 }
 
 // ===========================================================================
