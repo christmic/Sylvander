@@ -551,7 +551,8 @@ while True:
     async fn tool_call_timeout_is_reported_and_process_can_be_stopped() {
         let temp = TempDir::new().expect("temp dir");
         let config = fake_config(&temp);
-        let client = McpStdioClient::connect(&config, Duration::from_millis(50))
+        let timeout = Duration::from_millis(200);
+        let client = McpStdioClient::connect(&config, timeout)
             .await
             .expect("connect");
         let tool = client.list_tools().await.expect("list tools").remove(0);
@@ -561,9 +562,7 @@ while True:
             .execute(&context, json!({ "sleep": true }))
             .await
             .expect_err("slow call must time out");
-        assert!(
-            matches!(error, ToolError::Timeout(duration) if duration == Duration::from_millis(50))
-        );
+        assert!(matches!(error, ToolError::Timeout(duration) if duration == timeout));
         client.shutdown().await.expect("shutdown after timeout");
     }
 }
