@@ -7,9 +7,13 @@ use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{MemoryStoreError, SCHEMA_VERSION, SqliteMemoryStore, verify_schema};
+use super::{
+    MemoryIntegrityConfig, MemoryStoreError, SCHEMA_VERSION, SqliteMemoryStore,
+    integrity::{IntegrityState, database_root},
+    verify_schema,
+};
 
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
 const MIN_RETAINED_COPIES: u32 = 2;
 const MAX_RETAINED_COPIES: u32 = 30;
@@ -25,6 +29,9 @@ pub struct MemoryBackupManifest {
     pub created_at: i64,
     pub size_bytes: u64,
     pub sha256: String,
+    pub integrity_epoch: u64,
+    pub database_root: String,
+    pub integrity_mac: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,11 +59,13 @@ impl SqliteMemoryAdmin {
         live_database: impl AsRef<Path>,
         backup_database: impl AsRef<Path>,
         manifest: impl AsRef<Path>,
+        integrity: MemoryIntegrityConfig,
     ) -> Result<(), MemoryRestoreError> {
         restore_offline_impl(
             live_database.as_ref(),
             backup_database.as_ref(),
             manifest.as_ref(),
+            integrity,
             false,
         )
     }
@@ -81,7 +90,7 @@ pub(super) fn create_backup(
             .open(&database_temp)
             .map_err(|_| backup_error())?;
         secure_file(&database_temp)?;
-        store.with_connection(|connection| {
+        store.with_raw_connection(|connection| {
             connection
                 .backup(MAIN_DB, &database_temp, None)
                 .map_err(|_| backup_error())
@@ -89,13 +98,26 @@ pub(super) fn create_backup(
         verify_database(&database_temp)?;
         sync_file(&database_temp)?;
         let (size_bytes, sha256) = digest_file(&database_temp)?;
-        let manifest = MemoryBackupManifest {
+        let integrity = store.integrity.as_ref().ok_or_else(backup_error)?;
+        let (integrity_epoch, anchored_root) = integrity.snapshot()?;
+        let backup_connection =
+            Connection::open_with_flags(&database_temp, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| backup_error())?;
+        let database_root = database_root(&backup_connection)?;
+        if database_root != anchored_root {
+            return Err(backup_error());
+        }
+        let mut manifest = MemoryBackupManifest {
             manifest_version: MANIFEST_VERSION,
             schema_version: SCHEMA_VERSION,
             created_at,
             size_bytes,
             sha256,
+            integrity_epoch,
+            database_root,
+            integrity_mac: String::new(),
         };
+        manifest.integrity_mac = integrity.sign(&manifest_payload(&manifest))?;
         write_manifest(&manifest_temp, &manifest)?;
         std::fs::rename(&database_temp, &database_path).map_err(|_| backup_error())?;
         std::fs::rename(&manifest_temp, &manifest_path).map_err(|_| backup_error())?;
@@ -200,10 +222,21 @@ fn restore_offline_impl(
     live: &Path,
     backup: &Path,
     manifest_path: &Path,
+    integrity: MemoryIntegrityConfig,
     fail_after_replace: bool,
 ) -> Result<(), MemoryRestoreError> {
     reject_live_sidecars(live).map_err(|_| MemoryRestoreError::Rejected)?;
     let manifest = read_manifest(manifest_path).map_err(|_| MemoryRestoreError::Rejected)?;
+    let integrity = IntegrityState::new(integrity).map_err(|_| MemoryRestoreError::Rejected)?;
+    let (anchored_epoch, anchored_root) = integrity
+        .snapshot()
+        .map_err(|_| MemoryRestoreError::Rejected)?;
+    integrity
+        .verify_signature(&manifest_payload(&manifest), &manifest.integrity_mac)
+        .map_err(|_| MemoryRestoreError::Rejected)?;
+    if manifest.integrity_epoch != anchored_epoch || manifest.database_root != anchored_root {
+        return Err(MemoryRestoreError::Rejected);
+    }
     validate_artifact(backup, &manifest).map_err(|_| MemoryRestoreError::Rejected)?;
     verify_database(backup).map_err(|_| MemoryRestoreError::Rejected)?;
     let parent = live
@@ -304,6 +337,9 @@ fn validate_artifact(path: &Path, manifest: &MemoryBackupManifest) -> Result<(),
     if manifest.manifest_version != MANIFEST_VERSION
         || manifest.schema_version != SCHEMA_VERSION
         || manifest.created_at <= 0
+        || manifest.integrity_epoch == 0
+        || manifest.database_root.len() != 64
+        || manifest.integrity_mac.len() != 64
     {
         return Err(backup_error());
     }
@@ -311,7 +347,26 @@ fn validate_artifact(path: &Path, manifest: &MemoryBackupManifest) -> Result<(),
     if size != manifest.size_bytes || digest != manifest.sha256 {
         return Err(backup_error());
     }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|_| backup_error())?;
+    if database_root(&connection)? != manifest.database_root {
+        return Err(backup_error());
+    }
     Ok(())
+}
+
+fn manifest_payload(manifest: &MemoryBackupManifest) -> Vec<u8> {
+    format!(
+        "sylvander-memory-backup-manifest-v2\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+        manifest.manifest_version,
+        manifest.schema_version,
+        manifest.created_at,
+        manifest.size_bytes,
+        manifest.sha256,
+        manifest.integrity_epoch,
+        manifest.database_root
+    )
+    .into_bytes()
 }
 
 fn read_manifest(path: &Path) -> Result<MemoryBackupManifest, MemoryStoreError> {

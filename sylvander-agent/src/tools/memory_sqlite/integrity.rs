@@ -14,9 +14,9 @@ const ANCHOR_VERSION: u32 = 1;
 const MAX_ANCHOR_BYTES: u64 = 8 * 1024;
 const INTEGRITY_ERROR: &str = "memory integrity verification failed";
 const TABLE_QUERIES: &[&str] = &[
-    "SELECT record_key,owner_user,owner_agent,id,kind_json,content,references_json,tags_json,importance,created_at,last_accessed,access_count,metadata_json,revision,updated_at,expires_at,superseded_by_record_key,origin_actor_kind,origin_user_id,origin_agent_id,origin_session_id,origin_trace_id,origin_source,provenance_trusted,retention_policy_revision FROM relationship_memories ORDER BY record_key",
+    "SELECT record_key,owner_user,owner_agent,id,kind_json,content,references_json,tags_json,importance,created_at,last_accessed,access_count,metadata_json,revision,updated_at,expires_at,superseded_by_record_key,origin_actor_kind,origin_user_id,origin_agent_id,origin_session_id,origin_trace_id,origin_source,provenance_trusted,retention_policy_revision,integrity_epoch,integrity_mac FROM relationship_memories ORDER BY record_key",
     "SELECT sequence,event_id,occurred_at,operation,target_record_key,before_revision,after_revision,actor_kind,actor_user_id,actor_agent_id,session_id,trace_id,changed_mask FROM relationship_memory_audit ORDER BY sequence",
-    "SELECT singleton,clock_watermark,quarantined_forward_time,quarantined_observed_at,last_confirmed_forward_time,policy_revision,default_ttl_days,max_ttl_days,expiry_grace_days,superseded_retention_days,batch_limit FROM relationship_memory_retention_state ORDER BY singleton",
+    "SELECT singleton,policy_revision,default_ttl_days,max_ttl_days,expiry_grace_days,superseded_retention_days,batch_limit FROM relationship_memory_retention_state ORDER BY singleton",
     "SELECT run_id,started_at,completed_at,policy_revision,clock_watermark,expired_count,superseded_count FROM relationship_memory_retention_runs ORDER BY run_id",
     "SELECT batch_id,run_id,occurred_at,attempted_limit,expired_count,superseded_count FROM relationship_memory_retention_batches ORDER BY batch_id",
 ];
@@ -56,13 +56,24 @@ impl FileMemoryIntegrityAnchor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct AnchorRecord {
-    version: u32,
-    schema_version: i64,
-    epoch: u64,
-    database_root: String,
-    mac: String,
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum AnchorRecord {
+    Committed {
+        version: u32,
+        schema_version: i64,
+        epoch: u64,
+        database_root: String,
+        mac: String,
+    },
+    Pending {
+        version: u32,
+        schema_version: i64,
+        from_epoch: u64,
+        from_root: String,
+        to_epoch: u64,
+        to_root: String,
+        mac: String,
+    },
 }
 
 pub(super) struct IntegrityState {
@@ -99,34 +110,135 @@ impl IntegrityState {
         let record = self.read_record()?;
         self.verify_record(&record)?;
         let actual = database_root(connection)?;
-        if !constant_time_eq(actual.as_bytes(), record.database_root.as_bytes()) {
-            return Err(integrity_error());
+        match record {
+            AnchorRecord::Committed { database_root, .. } => {
+                if !constant_time_eq(actual.as_bytes(), database_root.as_bytes()) {
+                    return Err(integrity_error());
+                }
+            }
+            AnchorRecord::Pending {
+                from_epoch,
+                from_root,
+                to_epoch,
+                to_root,
+                ..
+            } => {
+                let (epoch, root) = if constant_time_eq(actual.as_bytes(), from_root.as_bytes()) {
+                    (from_epoch, from_root)
+                } else if constant_time_eq(actual.as_bytes(), to_root.as_bytes()) {
+                    (to_epoch, to_root)
+                } else {
+                    return Err(integrity_error());
+                };
+                self.write_record(AnchorRecord::committed(epoch, root, self)?)?;
+            }
         }
         Ok(actual)
     }
 
-    pub(super) fn seal_if_changed(
-        &self,
-        connection: &Connection,
-        before: &str,
-    ) -> Result<(), MemoryStoreError> {
-        let after = database_root(connection)?;
-        if constant_time_eq(before.as_bytes(), after.as_bytes()) {
-            return Ok(());
-        }
+    pub(super) fn prepare(&self, before: &str, after: &str) -> Result<(), MemoryStoreError> {
         let current = self.read_record()?;
         self.verify_record(&current)?;
-        if !constant_time_eq(before.as_bytes(), current.database_root.as_bytes()) {
+        let AnchorRecord::Committed {
+            epoch,
+            database_root,
+            ..
+        } = current
+        else {
+            return Err(integrity_error());
+        };
+        if !constant_time_eq(before.as_bytes(), database_root.as_bytes()) {
             return Err(integrity_error());
         }
-        let epoch = current.epoch.checked_add(1).ok_or_else(integrity_error)?;
-        self.write_record(epoch, after)
+        let to_epoch = epoch.checked_add(1).ok_or_else(integrity_error)?;
+        let pending = AnchorRecord::pending(epoch, before, to_epoch, after, self)?;
+        self.write_record(pending)
+    }
+
+    pub(super) fn finalize(&self, after: &str) -> Result<(), MemoryStoreError> {
+        let current = self.read_record()?;
+        self.verify_record(&current)?;
+        let AnchorRecord::Pending {
+            to_epoch, to_root, ..
+        } = current
+        else {
+            return Err(integrity_error());
+        };
+        if !constant_time_eq(after.as_bytes(), to_root.as_bytes()) {
+            return Err(integrity_error());
+        }
+        self.write_record(AnchorRecord::committed(to_epoch, to_root, self)?)
     }
 
     pub(super) fn snapshot(&self) -> Result<(u64, String), MemoryStoreError> {
         let record = self.read_record()?;
         self.verify_record(&record)?;
-        Ok((record.epoch, record.database_root))
+        let AnchorRecord::Committed {
+            epoch,
+            database_root,
+            ..
+        } = record
+        else {
+            return Err(integrity_error());
+        };
+        Ok((epoch, database_root))
+    }
+
+    pub(super) fn read_epoch(&self, connection: &Connection) -> Result<u64, MemoryStoreError> {
+        let record = self.read_record()?;
+        self.verify_record(&record)?;
+        if let AnchorRecord::Committed { epoch, .. } = record {
+            return Ok(epoch);
+        }
+        self.verify(connection)?;
+        self.snapshot().map(|(epoch, _)| epoch)
+    }
+
+    pub(super) fn seal_rows(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        epoch: u64,
+    ) -> Result<(), MemoryStoreError> {
+        let rows = {
+            let mut statement = transaction
+                .prepare("SELECT record_key,owner_user,owner_agent,id,kind_json,content,references_json,tags_json,importance,created_at,last_accessed,access_count,metadata_json,revision,updated_at,expires_at,superseded_by_record_key,origin_actor_kind,origin_user_id,origin_agent_id,origin_session_id,origin_trace_id,origin_source,provenance_trusted,retention_policy_revision FROM relationship_memories ORDER BY record_key")
+                .map_err(|_| integrity_error())?;
+            statement
+                .query_map([], |row| {
+                    let key: String = row.get(0)?;
+                    let payload = row_payload(row, 0, 25, epoch)?;
+                    Ok((key, payload))
+                })
+                .map_err(|_| integrity_error())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| integrity_error())?
+        };
+        for (record_key, payload) in rows {
+            let mac = self.sign(&payload)?;
+            transaction
+                .execute(
+                    "UPDATE relationship_memories SET integrity_epoch = ?1, integrity_mac = ?2 WHERE record_key = ?3",
+                    rusqlite::params![i64::try_from(epoch).map_err(|_| integrity_error())?, mac, record_key],
+                )
+                .map_err(|_| integrity_error())?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn verify_row(
+        &self,
+        row: &rusqlite::Row<'_>,
+        start: usize,
+        expected_epoch: u64,
+    ) -> rusqlite::Result<()> {
+        let epoch: i64 = row.get(start + 25)?;
+        let signature: String = row.get(start + 26)?;
+        if epoch != i64::try_from(expected_epoch).unwrap_or(-1) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let payload = row_payload(row, start, 25, expected_epoch)?;
+        self.verify_signature(&payload, &signature)
+            .map_err(|_| rusqlite::Error::InvalidQuery)
     }
 
     pub(super) fn sign(&self, payload: &[u8]) -> Result<String, MemoryStoreError> {
@@ -149,14 +261,10 @@ impl IntegrityState {
     }
 
     fn verify_record(&self, record: &AnchorRecord) -> Result<(), MemoryStoreError> {
-        if record.version != ANCHOR_VERSION
-            || record.schema_version != SCHEMA_VERSION
-            || record.epoch == 0
-            || record.database_root.len() != 64
-        {
+        if !record.valid_shape() {
             return Err(integrity_error());
         }
-        self.verify_signature(&record_payload(record), &record.mac)
+        self.verify_signature(&record_payload(record), record.mac())
     }
 
     fn read_record(&self) -> Result<AnchorRecord, MemoryStoreError> {
@@ -168,28 +276,20 @@ impl IntegrityState {
             .map_err(|_| integrity_error())
     }
 
-    fn write_record(&self, epoch: u64, database_root: String) -> Result<(), MemoryStoreError> {
-        self.write_record_impl(epoch, database_root, false)
+    fn write_record(&self, record: AnchorRecord) -> Result<(), MemoryStoreError> {
+        self.write_record_impl(record, false)
     }
 
     fn write_new_record(&self, epoch: u64, database_root: String) -> Result<(), MemoryStoreError> {
-        self.write_record_impl(epoch, database_root, true)
+        let record = AnchorRecord::committed(epoch, database_root, self)?;
+        self.write_record_impl(record, true)
     }
 
     fn write_record_impl(
         &self,
-        epoch: u64,
-        database_root: String,
+        record: AnchorRecord,
         create_new: bool,
     ) -> Result<(), MemoryStoreError> {
-        let mut record = AnchorRecord {
-            version: ANCHOR_VERSION,
-            schema_version: SCHEMA_VERSION,
-            epoch,
-            database_root,
-            mac: String::new(),
-        };
-        record.mac = self.sign(&record_payload(&record))?;
         let parent = self
             .anchor
             .path
@@ -225,11 +325,145 @@ impl IntegrityState {
     }
 }
 
+fn row_payload(
+    row: &rusqlite::Row<'_>,
+    start: usize,
+    count: usize,
+    epoch: u64,
+) -> rusqlite::Result<Vec<u8>> {
+    let mut digest = Sha256::new();
+    digest.update(b"sylvander-memory-row-v1\0");
+    digest.update(epoch.to_be_bytes());
+    for index in start..start + count {
+        match row.get_ref(index)? {
+            ValueRef::Null => digest.update(b"N"),
+            ValueRef::Integer(value) => {
+                digest.update(b"I");
+                digest.update(value.to_be_bytes());
+            }
+            ValueRef::Real(value) => {
+                digest.update(b"F");
+                digest.update(value.to_bits().to_be_bytes());
+            }
+            ValueRef::Text(value) => {
+                digest.update(b"T");
+                hash_field(&mut digest, value);
+            }
+            ValueRef::Blob(value) => {
+                digest.update(b"B");
+                hash_field(&mut digest, value);
+            }
+        }
+    }
+    Ok(digest.finalize().to_vec())
+}
+
+impl AnchorRecord {
+    fn committed(
+        epoch: u64,
+        database_root: String,
+        integrity: &IntegrityState,
+    ) -> Result<Self, MemoryStoreError> {
+        let mut record = Self::Committed {
+            version: ANCHOR_VERSION,
+            schema_version: SCHEMA_VERSION,
+            epoch,
+            database_root,
+            mac: String::new(),
+        };
+        *record.mac_mut() = integrity.sign(&record_payload(&record))?;
+        Ok(record)
+    }
+
+    fn pending(
+        from_epoch: u64,
+        from_root: &str,
+        to_epoch: u64,
+        to_root: &str,
+        integrity: &IntegrityState,
+    ) -> Result<Self, MemoryStoreError> {
+        let mut record = Self::Pending {
+            version: ANCHOR_VERSION,
+            schema_version: SCHEMA_VERSION,
+            from_epoch,
+            from_root: from_root.into(),
+            to_epoch,
+            to_root: to_root.into(),
+            mac: String::new(),
+        };
+        *record.mac_mut() = integrity.sign(&record_payload(&record))?;
+        Ok(record)
+    }
+
+    fn mac(&self) -> &str {
+        match self {
+            Self::Committed { mac, .. } | Self::Pending { mac, .. } => mac,
+        }
+    }
+
+    fn mac_mut(&mut self) -> &mut String {
+        match self {
+            Self::Committed { mac, .. } | Self::Pending { mac, .. } => mac,
+        }
+    }
+
+    fn valid_shape(&self) -> bool {
+        match self {
+            Self::Committed {
+                version,
+                schema_version,
+                epoch,
+                database_root,
+                ..
+            } => {
+                *version == ANCHOR_VERSION
+                    && *schema_version == SCHEMA_VERSION
+                    && *epoch > 0
+                    && database_root.len() == 64
+            }
+            Self::Pending {
+                version,
+                schema_version,
+                from_epoch,
+                from_root,
+                to_epoch,
+                to_root,
+                ..
+            } => {
+                *version == ANCHOR_VERSION
+                    && *schema_version == SCHEMA_VERSION
+                    && *from_epoch > 0
+                    && *to_epoch == from_epoch.saturating_add(1)
+                    && from_root.len() == 64
+                    && to_root.len() == 64
+            }
+        }
+    }
+}
+
 fn record_payload(record: &AnchorRecord) -> Vec<u8> {
-    format!(
-        "sylvander-memory-anchor-v1\n{}\n{}\n{}\n{}",
-        record.version, record.schema_version, record.epoch, record.database_root
-    )
+    match record {
+        AnchorRecord::Committed {
+            version,
+            schema_version,
+            epoch,
+            database_root,
+            ..
+        } => format!(
+            "sylvander-memory-anchor-v1\ncommitted\n{version}\n{schema_version}\n{epoch}\n{database_root}"
+        ),
+        AnchorRecord::Pending {
+            version,
+            schema_version,
+            from_epoch,
+            from_root,
+            to_epoch,
+            to_root,
+            ..
+        } => format!(
+            "sylvander-memory-anchor-v1\npending\n{version}\n{schema_version}\n{from_epoch}\n{from_root}\n{to_epoch}\n{to_root}"
+        ),
+    }
     .into_bytes()
 }
 
