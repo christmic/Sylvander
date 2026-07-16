@@ -975,6 +975,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_command_future_terminates_the_ssh_transport() {
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let survived = directory.path().join("survived");
+        let fake = FakeSsh::new(&format!(
+            "printf ready > {}; sleep 1; printf survived > {}",
+            shell_quote(ready.to_str().unwrap()),
+            shell_quote(survived.to_str().unwrap())
+        ));
+        let executor = fake.executor();
+        let task = tokio::spawn(async move {
+            executor
+                .run_command(&target(false), "ignored", Duration::from_secs(10))
+                .await
+        });
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            ready.exists(),
+            "SSH transport never reached its ready boundary"
+        );
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !survived.exists(),
+            "cancelled SSH transport continued after its future was dropped"
+        );
+    }
+
+    #[tokio::test]
     async fn structured_list_and_search_parse_bounded_unicode_results() {
         let list_fake = FakeSsh::new(
             "printf '%s\\0%s\\0%s\\0%s\\0%s\\0%s\\0' './src' d 0 './src/螃蟹.rs' f 12",

@@ -548,10 +548,14 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   and TUI. Live command progress now crosses the existing tool-delta protocol
   through a bounded Agent queue. The collapsed TUI shows only the latest useful
   line; expanded details remain bounded and favor the error-bearing tail.
+  Dropping an executor operation is the explicit cancellation boundary: local
+  commands and SSH transport processes use kill-on-drop, so a user interrupt
+  does not leave the owned process running detached.
   Environment contracts, container/sandbox adapters, SSH pooling, explicit
   host-key policy, and remote worktree review keep P3.1/P3.2/P3.3 open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
-  references, cancellation, upload/download semantics, and conformance tests.
+  references, remote process-tree cancellation, upload/download semantics, and
+  conformance tests.
 - [ ] **P3.4 Container and sandbox executors:** lifecycle, mounts, resource and
   network policy, cleanup, and the same conformance tests.
 - [ ] **P3.5 Worktree manager:** default lease creation for Git coding,
