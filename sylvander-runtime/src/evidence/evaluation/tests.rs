@@ -1,6 +1,7 @@
 use super::*;
 use crate::evidence::evaluation_types::{
-    EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
+    EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
+    RegressionMetric, ScoreDirection,
 };
 use sylvander_protocol::EvidenceReference;
 
@@ -128,6 +129,77 @@ async fn dataset_requires_registered_scorers_and_both_deterministic_splits() {
     assert!(matches!(
         store
             .register_evaluation_dataset(unknown_scorer)
+            .await
+            .unwrap_err(),
+        EvidenceError::InvalidEvaluationDefinition
+    ));
+}
+
+#[tokio::test]
+async fn baseline_thresholds_must_match_dataset_scorer_metrics() {
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    store
+        .register_scoring_adapter(scorer(1, "passed"))
+        .await
+        .unwrap();
+    store
+        .register_evaluation_dataset(EvaluationDatasetRevision {
+            id: "coding-core".into(),
+            revision: 1,
+            name: "Coding core".into(),
+            cases: vec![
+                case("fixture", EvaluationSplit::Fixture, "validation"),
+                case("held", EvaluationSplit::HeldOut, "validation"),
+            ],
+            created_at: 10,
+        })
+        .await
+        .unwrap();
+    let baseline = EvaluationBaseline {
+        id: "coding-core-main".into(),
+        dataset_id: "coding-core".into(),
+        dataset_revision: 1,
+        metrics: vec![RegressionMetric {
+            metric: "passed".into(),
+            direction: ScoreDirection::HigherIsBetter,
+            baseline_value: 9_000,
+            sample_count: 2,
+            max_regression_basis_points: 100,
+        }],
+        recorded_at: 20,
+    };
+    let digest = store
+        .register_evaluation_baseline(baseline.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.register_evaluation_baseline(baseline).await.unwrap(),
+        digest
+    );
+    let stored = store
+        .evaluation_baseline("coding-core-main".into())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.digest_sha256, digest);
+    assert_eq!(stored.definition.metrics[0].metric, "passed");
+
+    let invalid = EvaluationBaseline {
+        id: "unknown-metric".into(),
+        dataset_id: "coding-core".into(),
+        dataset_revision: 1,
+        metrics: vec![RegressionMetric {
+            metric: "invented".into(),
+            direction: ScoreDirection::LowerIsBetter,
+            baseline_value: 0,
+            sample_count: 2,
+            max_regression_basis_points: 0,
+        }],
+        recorded_at: 21,
+    };
+    assert!(matches!(
+        store
+            .register_evaluation_baseline(invalid)
             .await
             .unwrap_err(),
         EvidenceError::InvalidEvaluationDefinition

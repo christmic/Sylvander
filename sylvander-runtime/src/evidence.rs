@@ -1139,6 +1139,21 @@ CREATE TABLE IF NOT EXISTS evidence_evaluation_cases (
   CHECK (split IN ('fixture', 'held_out')),
   CHECK ((expected_locator IS NULL) = (expected_digest_sha256 IS NULL))
 );
+CREATE TABLE IF NOT EXISTS evidence_evaluation_baselines (
+  id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, dataset_revision INTEGER NOT NULL,
+  definition_digest_sha256 TEXT NOT NULL, recorded_at INTEGER NOT NULL,
+  FOREIGN KEY(dataset_id, dataset_revision)
+    REFERENCES evidence_evaluation_datasets(id, revision)
+);
+CREATE TABLE IF NOT EXISTS evidence_evaluation_baseline_metrics (
+  baseline_id TEXT NOT NULL REFERENCES evidence_evaluation_baselines(id),
+  metric TEXT NOT NULL, direction TEXT NOT NULL, baseline_value INTEGER NOT NULL,
+  sample_count INTEGER NOT NULL, max_regression_basis_points INTEGER NOT NULL,
+  PRIMARY KEY(baseline_id, metric),
+  CHECK (direction IN ('higher_is_better', 'lower_is_better')),
+  CHECK (sample_count > 0),
+  CHECK (max_regression_basis_points BETWEEN 0 AND 10000)
+);
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
   principal_digest TEXT, channel_instance_id TEXT NOT NULL,
