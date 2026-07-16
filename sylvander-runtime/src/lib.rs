@@ -871,7 +871,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 .publish(BusMessage {
                     session_id: session_id.clone(),
                     sender: sylvander_agent::bus::Sender::User(
-                        require_principal(boundary, "submit_chat")?.id.0.clone(),
+                        self.effective_user_id(boundary, "submit_chat").await?.0,
                     ),
                     recipient: Recipient::Agent(agent_id),
                     kind: sylvander_agent::bus::MessageKind::Chat,
@@ -1307,7 +1307,7 @@ impl RuntimeUiService {
         request: SessionCreateRequest,
         external_meta: BTreeMap<String, String>,
     ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
-        let principal = require_principal(boundary, "create_session")?;
+        let user_id = self.effective_user_id(boundary, "create_session").await?;
         let label = request.label.trim().to_string();
         if label.is_empty() || label.len() > 200 {
             return Err(boundary_failure(
@@ -1352,7 +1352,7 @@ impl RuntimeUiService {
         let metadata = SessionMetadata {
             workspace,
             name: label.clone(),
-            user_id: principal.id.0.clone(),
+            user_id: user_id.0,
         };
         let mut session = StoredSession::new(
             session_id.clone(),
@@ -1634,20 +1634,14 @@ impl RuntimeUiService {
         session_id: &SessionId,
         operation: &str,
     ) -> Result<StoredSession, sylvander_protocol::BoundaryError> {
-        let principal = require_principal(boundary, operation)?;
+        let user_id = self.effective_user_id(boundary, operation).await?;
         let session = self
             .sessions
             .get(session_id)
             .await
             .map_err(|error| boundary_failure(boundary, operation, error.to_string()))?
             .ok_or_else(|| sylvander_protocol::BoundaryError::forbidden(boundary, operation))?;
-        let owns_principal = session.metadata.user_id == principal.id.0;
-        let owns_channel = session
-            .external_meta
-            .get("channel_id")
-            .and_then(|value| value.as_str())
-            == Some(boundary.channel_instance_id.as_str());
-        if (!owns_principal || !owns_channel) && !privileged_principal(boundary) {
+        if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
             return Err(sylvander_protocol::BoundaryError::forbidden(
                 boundary, operation,
             ));
@@ -1677,6 +1671,36 @@ impl RuntimeUiService {
                 })?;
         }
         Ok(session)
+    }
+
+    async fn effective_user_id(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        operation: &str,
+    ) -> Result<UserId, sylvander_protocol::BoundaryError> {
+        let principal = require_principal(boundary, operation)?;
+        if principal.kind == sylvander_protocol::PrincipalKind::User
+            && let Some(service) = &self.identity_bindings
+        {
+            return service
+                .resolve_user(
+                    boundary,
+                    IdentityIngress::new(
+                        boundary.transport.clone(),
+                        boundary.channel_instance_id.clone(),
+                        principal.id.0.clone(),
+                    ),
+                )
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, operation, "stable user identity is unavailable")
+                });
+        }
+        let scoped = format!(
+            "sylvander.unlinked-principal.v1\0{}\0{}\0{}",
+            boundary.transport, boundary.channel_instance_id, principal.id.0
+        );
+        Ok(UserId::new(format!("unlinked:v1:{}", sha256_text(&scoped))))
     }
 
     async fn owned_session_agent(
@@ -3748,6 +3772,7 @@ id = "model-a"
     async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
         let directory = tempfile::tempdir().unwrap();
         let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
         let identity_key = directory.path().join("identity.key");
         std::fs::write(&identity_key, "abcdef0123456789abcdef0123456789").unwrap();
         config.server.identity.digest_key =
@@ -3823,6 +3848,33 @@ id = "model-a"
             IdentityBindingResponse::Resolved { binding, .. }
                 if binding.user_id == UserId::new("alice") && binding.revision == 1
         ));
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &local,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "stable user across channels".into(),
+                channel_id: Some("terminal".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let from_external = sylvander_channel::UiService::session_config(
+            runtime.ui_service.as_ref(),
+            &external,
+            &created.session_id,
+        )
+        .await
+        .expect("a linked external principal must resolve to the same stable user");
+        assert_eq!(from_external.session_id, created.session_id);
+        let stored = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.metadata.user_id, "alice");
         runtime.shutdown().await.unwrap();
     }
 
@@ -4293,7 +4345,15 @@ model_name = "shared"
         assert_eq!(restored.expires_at, entry.expires_at);
         assert!(restored.expires_at.is_some());
         assert_eq!(restored.provenance.actor, MemoryActorKind::Worker);
-        assert_eq!(restored.provenance.user_id.as_ref().unwrap().0, "user-a");
+        assert!(
+            restored
+                .provenance
+                .user_id
+                .as_ref()
+                .unwrap()
+                .0
+                .starts_with("unlinked:v1:")
+        );
         assert_eq!(
             restored.provenance.agent_id.as_ref().unwrap().0,
             "assistant"
@@ -4913,7 +4973,7 @@ model_name = "model-a"
             .unwrap()
             .expect("created session must be durable");
         assert_eq!(stored.effective_config, Some(created.effective));
-        assert_eq!(stored.metadata.user_id, "test-user");
+        assert!(stored.metadata.user_id.starts_with("unlinked:v1:"));
         assert_eq!(stored.external_meta["channel_id"], "tui-local");
         let invalid_update = sylvander_channel::UiService::update_session_config(
             runtime.ui_service.as_ref(),
@@ -5075,10 +5135,6 @@ model_name = "model-a"
             .expect("the authenticated user message must be routed");
         assert_eq!(routed.session_id, platform_session);
         assert_eq!(
-            routed.sender,
-            sylvander_agent::bus::Sender::User("telegram:bot-a:42".into())
-        );
-        assert_eq!(
             routed.recipient,
             sylvander_agent::bus::Recipient::Agent(AgentId::new("assistant"))
         );
@@ -5088,7 +5144,11 @@ model_name = "model-a"
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(platform_stored.metadata.user_id, "telegram:bot-a:42");
+        assert_eq!(
+            routed.sender,
+            sylvander_agent::bus::Sender::User(platform_stored.metadata.user_id.clone())
+        );
+        assert!(platform_stored.metadata.user_id.starts_with("unlinked:v1:"));
         assert_eq!(
             platform_stored.external_meta["channel_instance_id"],
             "bot-a"
@@ -5775,9 +5835,25 @@ model_name = "model-a"
                 .is_none(),
             "an existing session must not drift to the activated revision"
         );
+        let original_user = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata
+            .user_id;
+        let activated_user = runtime
+            .session_store
+            .get(&activated_session.session_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata
+            .user_id;
         let mut original_probe = sylvander_protocol::BusMessage::user_chat(
             created.session_id.clone(),
-            "test-user",
+            original_user,
             "revision-one-probe",
         );
         original_probe.recipient =
@@ -5785,7 +5861,7 @@ model_name = "model-a"
         runtime.bus().publish(original_probe).await.unwrap();
         let mut activated_probe = sylvander_protocol::BusMessage::user_chat(
             activated_session.session_id.clone(),
-            "operator",
+            activated_user,
             "revision-two-probe",
         );
         activated_probe.recipient =

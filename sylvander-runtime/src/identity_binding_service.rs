@@ -178,6 +178,29 @@ impl IdentityBindingService {
         }
     }
 
+    /// Resolve one sealed ingress to the Runtime-owned user identity used by
+    /// sessions, memory, and authorization.
+    pub(crate) async fn resolve_user(
+        &self,
+        boundary: &BoundaryContext,
+        ingress: IdentityIngress,
+    ) -> Result<UserId, PrincipalBindingError> {
+        if !ingress.matches_boundary(boundary) {
+            return Err(PrincipalBindingError::Invalid {
+                field: "identity ingress",
+                reason: "does not match the authenticated boundary".into(),
+            });
+        }
+        if let Some(user_id) = self.issuers.get(&ingress.key) {
+            return Ok(user_id.clone());
+        }
+        let principal = ingress.into_external_principal()?;
+        Ok(self.store.resolve(principal.clone()).await?.map_or_else(
+            || self.store.isolated_user_id(&principal),
+            |binding| binding.user_id,
+        ))
+    }
+
     async fn begin(&self, issuer: &IssuerKey) -> IdentityBindingResponse {
         let Some(user_id) = self.issuers.get(issuer).cloned() else {
             return error_response(
