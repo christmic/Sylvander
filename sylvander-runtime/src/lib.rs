@@ -101,14 +101,17 @@ use sylvander_agent::tools::{
     HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, InMemoryMemoryStore,
     MemoryIntegrityConfig, MemoryStore, SqliteMemoryStore,
 };
-use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
+use sylvander_channel::{
+    AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
+};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
-    AgentDescriptor, ModelSelection, RegistryAdminError, RegistryAdminErrorCode,
-    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
-    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
-    SessionRevisionPinError,
+    AgentDescriptor, IdentityBindingCapabilities, IdentityBindingError, IdentityBindingErrorCode,
+    IdentityBindingRequest, IdentityBindingResponse, ModelSelection, RegistryAdminError,
+    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionEffectiveConfig, SessionRevisionPinError, UserId,
 };
 
 use crate::agent_admin::{
@@ -123,9 +126,13 @@ use crate::composition::{
 use crate::config::{MemoryIntegrityBackend, SecretResolver, ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use crate::identity_binding_service::{
+    IdentityBindingService, IdentityIngress, TrustedIdentityIssuer,
+};
 use crate::memory_maintenance::{
     MemoryMaintenanceTask, RuntimeMemoryMaintenancePolicy, catch_up as memory_maintenance_catch_up,
 };
+use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
@@ -189,6 +196,7 @@ struct RuntimeUiService {
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
     evidence: Option<EvidenceStore>,
+    identity_bindings: Option<Arc<IdentityBindingService>>,
     boundary: BoundaryGuard,
 }
 
@@ -732,6 +740,62 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .record_feedback(feedback, sylvander_agent::session::now_secs())
             .await
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
+    }
+
+    fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
+        self.identity_bindings
+            .as_ref()
+            .map_or_else(IdentityBindingCapabilities::default, |_| {
+                IdentityBindingCapabilities::current()
+            })
+    }
+
+    async fn identity_binding(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        identity: AuthenticatedTransportIdentity,
+        request: IdentityBindingRequest,
+    ) -> IdentityBindingResponse {
+        let operation = request.operation();
+        let Some(service) = &self.identity_bindings else {
+            return identity_boundary_error(
+                operation,
+                IdentityBindingErrorCode::ServiceUnavailable,
+                "identity binding service is unavailable",
+                None,
+            );
+        };
+        if let Err(error) = self.boundary.check_identity(boundary, &request).await {
+            let code = match error.code {
+                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                    IdentityBindingErrorCode::Unauthenticated
+                }
+                sylvander_protocol::BoundaryErrorCode::RateLimited => {
+                    IdentityBindingErrorCode::RateLimited
+                }
+                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                    IdentityBindingErrorCode::InvalidRequest
+                }
+                sylvander_protocol::BoundaryErrorCode::Forbidden
+                | sylvander_protocol::BoundaryErrorCode::InvalidScope => {
+                    IdentityBindingErrorCode::Forbidden
+                }
+            };
+            return identity_boundary_error(
+                operation,
+                code,
+                "identity binding request was rejected",
+                error.retry_after_ms,
+            );
+        }
+        let (transport, channel_instance_id, principal_id) = identity.into_parts();
+        service
+            .dispatch(
+                boundary,
+                IdentityIngress::new(transport, channel_instance_id, principal_id),
+                request,
+            )
+            .await
     }
 
     async fn submit_chat(
@@ -2221,6 +2285,7 @@ impl Runtime {
             revision_provider: None,
             credential_resolver: None,
             evidence: None,
+            identity_bindings: None,
             boundary: BoundaryGuard::new(crate::config::BoundarySettings::default()),
         });
         Ok(Self {
@@ -2429,6 +2494,7 @@ impl Runtime {
         let security_audit = EvidenceStore::open(evidence_path)
             .await
             .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        let identity_bindings = open_identity_binding_service(&config).await?;
         let evidence = if config.server.evidence.enabled {
             Some(
                 EvidenceRecorder::start(
@@ -2572,6 +2638,7 @@ impl Runtime {
             revision_provider: Some(revision_provider.clone()),
             credential_resolver: Some(credential_resolver),
             evidence: Some(security_audit),
+            identity_bindings,
             boundary: BoundaryGuard::new(config.server.boundary.clone()),
         });
         let (channel_exit_tx, channel_exits) = tokio::sync::mpsc::unbounded_channel();
@@ -3005,7 +3072,89 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .evidence
         .path
         .get_or_insert_with(|| data_dir.join("evidence.db"));
+    if config.server.identity.digest_key.is_some() {
+        config
+            .server
+            .identity
+            .database
+            .get_or_insert_with(|| data_dir.join("identity.db"));
+    }
     Ok(config)
+}
+
+async fn open_identity_binding_service(
+    config: &ServerConfig,
+) -> Result<Option<Arc<IdentityBindingService>>, RuntimeError> {
+    let Some(key_reference) = &config.server.identity.digest_key else {
+        return Ok(None);
+    };
+    let secret = SystemSecretResolver.resolve(key_reference).map_err(|_| {
+        RuntimeError::Config("identity principal digest key resolution failed".into())
+    })?;
+    let digest_key = PrincipalDigestKey::new(secret.as_bytes()).map_err(|_| {
+        RuntimeError::Config("identity principal digest key configuration failed".into())
+    })?;
+    let path = config
+        .server
+        .identity
+        .database
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Config("identity database path is required".into()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
+            operation: "create identity database directory",
+            path: parent.display().to_string(),
+            message: error.to_string(),
+        })?;
+    }
+    let store = PrincipalBindingStore::open(path, digest_key)
+        .await
+        .map_err(|_| RuntimeError::Store("open principal binding store failed".into()))?;
+    let mut registered = BTreeSet::new();
+    for issuer in &config.server.identity.trusted_issuers {
+        if registered.insert(issuer.user_id.clone()) {
+            match store.register_user(UserId::new(&issuer.user_id)).await {
+                Ok(()) | Err(PrincipalBindingError::UserAlreadyExists(_)) => {}
+                Err(_) => {
+                    return Err(RuntimeError::Store(
+                        "register stable identity user failed".into(),
+                    ));
+                }
+            }
+        }
+    }
+    let issuers = config.server.identity.trusted_issuers.iter().map(|issuer| {
+        TrustedIdentityIssuer::new(
+            issuer.transport.clone(),
+            issuer.channel_instance_id.clone(),
+            issuer.principal_id.clone(),
+            UserId::new(&issuer.user_id),
+        )
+    });
+    let service = IdentityBindingService::new(
+        store,
+        issuers,
+        std::time::Duration::from_secs(u64::from(config.server.identity.challenge_ttl_seconds)),
+    )
+    .map_err(|_| RuntimeError::Config("identity binding service configuration failed".into()))?;
+    Ok(Some(Arc::new(service)))
+}
+
+fn identity_boundary_error(
+    operation: sylvander_protocol::IdentityBindingOperation,
+    code: IdentityBindingErrorCode,
+    message: &str,
+    retry_after_ms: Option<u64>,
+) -> IdentityBindingResponse {
+    IdentityBindingResponse::Error {
+        version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
+        error: IdentityBindingError {
+            code,
+            operation,
+            message: message.into(),
+            retry_after_ms,
+        },
+    }
 }
 
 fn validate_external_memory_anchor(
@@ -3286,6 +3435,7 @@ id = "model-a"
             revision_provider: runtime.ui_service.revision_provider.clone(),
             credential_resolver: runtime.ui_service.credential_resolver.clone(),
             evidence: runtime.ui_service.evidence.clone(),
+            identity_bindings: runtime.ui_service.identity_bindings.clone(),
             boundary: runtime.ui_service.boundary.clone(),
         }
     }

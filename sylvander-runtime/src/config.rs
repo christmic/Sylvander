@@ -898,6 +898,9 @@ fn validate_identity_settings(settings: &IdentitySettings, errors: &mut Vec<Stri
     if settings.digest_key.is_none() && !settings.trusted_issuers.is_empty() {
         errors.push("server identity trusted_issuers require a digest_key".into());
     }
+    if settings.digest_key.is_none() && settings.database.is_some() {
+        errors.push("server identity database requires a digest_key".into());
+    }
     if settings.digest_key.is_some() && settings.trusted_issuers.is_empty() {
         errors.push("server identity digest_key requires at least one trusted issuer".into());
     }
