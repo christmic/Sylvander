@@ -20,6 +20,12 @@ async fn backup_fixture() -> (tempfile::TempDir, MemoryBackupArtifact) {
     (directory, artifact)
 }
 
+fn verified_pair_count(data_dir: &Path) -> usize {
+    verified_backup_pairs(&data_dir.join("memory-backups"))
+        .unwrap()
+        .len()
+}
+
 async fn create_live(path: &Path) -> Vec<u8> {
     let store = SqliteMemoryStore::open(path).unwrap();
     store
@@ -189,4 +195,101 @@ fn refreshed_manifest(
     let path = directory.join(format!("{name}.manifest.json"));
     std::fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     path
+}
+
+#[test]
+fn rotation_survives_restart_and_keeps_only_newest_verified_pairs() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("source.db");
+    for expected in 1..=2 {
+        let store = SqliteMemoryStore::open(&database).unwrap();
+        store
+            .maintenance()
+            .backup_and_rotate(directory.path(), 2)
+            .unwrap();
+        drop(store);
+        assert_eq!(verified_pair_count(directory.path()), expected);
+    }
+    for _ in 0..3 {
+        let store = SqliteMemoryStore::open(&database).unwrap();
+        store
+            .maintenance()
+            .backup_and_rotate(directory.path(), 2)
+            .unwrap();
+        drop(store);
+        assert_eq!(verified_pair_count(directory.path()), 2);
+    }
+}
+
+#[test]
+fn rotation_ignores_temporary_orphan_and_invalid_pairs() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteMemoryStore::open(directory.path().join("source.db")).unwrap();
+    let first = store
+        .maintenance()
+        .backup_and_rotate(directory.path(), 2)
+        .unwrap();
+    let backups = directory.path().join("memory-backups");
+    std::fs::copy(
+        &first.database_path,
+        backups.join("relationship-memory-orphan.sqlite3"),
+    )
+    .unwrap();
+    std::fs::copy(
+        &first.manifest_path,
+        backups.join("relationship-memory-missing-db.manifest.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        backups.join(".relationship-memory-temp.sqlite3.tmp"),
+        b"partial",
+    )
+    .unwrap();
+    let invalid_database = backups.join("relationship-memory-invalid.sqlite3");
+    std::fs::copy(&first.database_path, &invalid_database).unwrap();
+    let invalid_manifest = backups.join("relationship-memory-invalid.manifest.json");
+    let mut manifest = first.manifest.clone();
+    manifest.sha256 = "00".repeat(32);
+    std::fs::write(invalid_manifest, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+    store
+        .maintenance()
+        .backup_and_rotate(directory.path(), 2)
+        .unwrap();
+    assert_eq!(verified_pair_count(directory.path()), 2);
+    assert!(backups.join("relationship-memory-orphan.sqlite3").exists());
+    assert!(
+        backups
+            .join("relationship-memory-missing-db.manifest.json")
+            .exists()
+    );
+}
+
+#[test]
+fn failed_new_backup_preserves_every_existing_verified_pair() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteMemoryStore::open(directory.path().join("source.db")).unwrap();
+    for _ in 0..2 {
+        store
+            .maintenance()
+            .backup_and_rotate(directory.path(), 2)
+            .unwrap();
+    }
+    store
+        .with_connection(|connection| {
+            connection
+                .execute_batch("CREATE TRIGGER unexpected_backup_object AFTER INSERT ON relationship_memories BEGIN SELECT 1; END;")
+                .map_err(|_| backup_error())
+        })
+        .unwrap();
+
+    let error = store
+        .maintenance()
+        .backup_and_rotate(directory.path(), 2)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "store error: memory backup operation failed"
+    );
+    assert_eq!(verified_pair_count(directory.path()), 2);
 }

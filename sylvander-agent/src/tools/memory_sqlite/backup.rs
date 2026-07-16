@@ -11,6 +11,11 @@ use super::{MemoryStoreError, SCHEMA_VERSION, SqliteMemoryStore, verify_schema};
 
 const MANIFEST_VERSION: u32 = 1;
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024;
+const MIN_RETAINED_COPIES: u32 = 2;
+const MAX_RETAINED_COPIES: u32 = 30;
+const BACKUP_PREFIX: &str = "relationship-memory-";
+const DATABASE_SUFFIX: &str = ".sqlite3";
+const MANIFEST_SUFFIX: &str = ".manifest.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,9 +69,9 @@ pub(super) fn create_backup(
     let directory = data_dir.join("memory-backups");
     std::fs::create_dir_all(&directory).map_err(|_| backup_error())?;
     let created_at = crate::session::now_secs();
-    let id = format!("relationship-memory-{created_at}-{}", uuid::Uuid::new_v4());
-    let database_path = directory.join(format!("{id}.sqlite3"));
-    let manifest_path = directory.join(format!("{id}.manifest.json"));
+    let id = format!("{BACKUP_PREFIX}{created_at}-{}", uuid::Uuid::new_v4());
+    let database_path = directory.join(format!("{id}{DATABASE_SUFFIX}"));
+    let manifest_path = directory.join(format!("{id}{MANIFEST_SUFFIX}"));
     let database_temp = directory.join(format!(".{id}.sqlite3.tmp"));
     let manifest_temp = directory.join(format!(".{id}.manifest.tmp"));
     let result = (|| {
@@ -95,17 +100,100 @@ pub(super) fn create_backup(
         std::fs::rename(&database_temp, &database_path).map_err(|_| backup_error())?;
         std::fs::rename(&manifest_temp, &manifest_path).map_err(|_| backup_error())?;
         sync_directory(&directory)?;
-        Ok(MemoryBackupArtifact {
+        let artifact = MemoryBackupArtifact {
             database_path,
             manifest_path,
             manifest,
-        })
+        };
+        verify_artifact_pair(&artifact)?;
+        Ok(artifact)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(database_temp);
         let _ = std::fs::remove_file(manifest_temp);
     }
     result
+}
+
+pub(super) fn create_backup_and_rotate(
+    store: &SqliteMemoryStore,
+    data_dir: &Path,
+    retained_copies: u32,
+) -> Result<MemoryBackupArtifact, MemoryStoreError> {
+    if !(MIN_RETAINED_COPIES..=MAX_RETAINED_COPIES).contains(&retained_copies) {
+        return Err(backup_error());
+    }
+    let artifact = create_backup(store, data_dir)?;
+    rotate_verified_pairs(data_dir, &artifact, retained_copies)?;
+    Ok(artifact)
+}
+
+fn rotate_verified_pairs(
+    data_dir: &Path,
+    created: &MemoryBackupArtifact,
+    retained_copies: u32,
+) -> Result<(), MemoryStoreError> {
+    let directory = data_dir.join("memory-backups");
+    let mut pairs = verified_backup_pairs(&directory)?;
+    pairs.sort_by(|left, right| {
+        left.manifest
+            .created_at
+            .cmp(&right.manifest.created_at)
+            .then_with(|| left.database_path.cmp(&right.database_path))
+    });
+    let excess = pairs
+        .len()
+        .saturating_sub(usize::try_from(retained_copies).map_err(|_| backup_error())?);
+    let candidates = pairs
+        .into_iter()
+        .filter(|pair| pair.database_path != created.database_path)
+        .take(excess);
+    for pair in candidates {
+        std::fs::remove_file(&pair.manifest_path).map_err(|_| backup_error())?;
+        std::fs::remove_file(&pair.database_path).map_err(|_| backup_error())?;
+        sync_directory(&directory)?;
+    }
+    Ok(())
+}
+
+fn verified_backup_pairs(directory: &Path) -> Result<Vec<MemoryBackupArtifact>, MemoryStoreError> {
+    let mut pairs = Vec::new();
+    for entry in std::fs::read_dir(directory).map_err(|_| backup_error())? {
+        let entry = entry.map_err(|_| backup_error())?;
+        if !entry.file_type().map_err(|_| backup_error())?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(id) = name.strip_suffix(MANIFEST_SUFFIX) else {
+            continue;
+        };
+        if !id.starts_with(BACKUP_PREFIX) {
+            continue;
+        }
+        let database_path = directory.join(format!("{id}{DATABASE_SUFFIX}"));
+        if !database_path.is_file() {
+            continue;
+        }
+        let manifest_path = entry.path();
+        let Ok(manifest) = read_manifest(&manifest_path) else {
+            continue;
+        };
+        let artifact = MemoryBackupArtifact {
+            database_path,
+            manifest_path,
+            manifest,
+        };
+        if verify_artifact_pair(&artifact).is_ok() {
+            pairs.push(artifact);
+        }
+    }
+    Ok(pairs)
+}
+
+fn verify_artifact_pair(artifact: &MemoryBackupArtifact) -> Result<(), MemoryStoreError> {
+    validate_artifact(&artifact.database_path, &artifact.manifest)?;
+    verify_database(&artifact.database_path)
 }
 
 fn restore_offline_impl(
