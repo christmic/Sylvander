@@ -173,6 +173,25 @@ Retention policy revision starts at 1 and is persisted with every row. Any
 policy change must increase it; changing policy values under the same revision
 fails startup instead of silently reinterpreting existing memory.
 
+Production policy rollout is staged rather than activated while the memory
+database opens. The stage is authenticated by the external memory anchor, but
+the previous active policy remains authoritative while Runtime validates Agent
+composition, starts every Agent revision, restores authenticated sessions,
+opens evidence storage, and completes bounded maintenance catch-up. Runtime
+activates the exact staged policy with a SQLite CAS only after all of those
+fallible readiness checks succeed; no fallible startup step follows activation.
+A brand-new database has no active policy and rejects memory operations until
+that activation point.
+
+An interrupted or failed rollout may leave a staged proposal, but never
+reserves its revision. A later startup using the active policy removes the
+stale proposal, and a new higher-revision rollout may atomically replace it.
+Concurrent identical rollouts activate idempotently. Concurrent different
+rollouts are serialized by the stage identifier and active base revision, so a
+losing process fails closed instead of activating another process's proposal.
+The stage protects rollout ordering; it does not add protection beyond the
+external anchor's documented host-administrator threat boundary.
+
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
 the future run ledger; replacing it during restore is a correctness defect.

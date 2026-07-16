@@ -392,7 +392,7 @@ impl SqliteMemoryMaintenance {
 
     /// Atomically activates the policy staged when the protected store opened.
     ///
-    /// The opaque stage identifier is compared in SQLite, so another startup
+    /// The opaque stage identifier is compared in `SQLite`, so another startup
     /// may safely replace a stale proposal without letting this process commit
     /// it. Repeating activation after the same policy won the race is
     /// idempotent.

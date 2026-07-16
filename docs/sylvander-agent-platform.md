@@ -450,7 +450,10 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     `from` root (transaction rolled back) or `to` root (transaction committed)
     and deterministically repairs the anchor; every third state fails closed.
     Read-only recall never scans the full database or rewrites the anchor.
-  - Schema v5 stores an epoch-bound HMAC for every model-visible memory row.
+  - Schema v6 stores an epoch-bound HMAC for every model-visible memory row and
+    an externally anchored, replaceable retention-policy stage. Policy
+    activation is CAS-bound to the active base revision and happens only after
+    Runtime readiness succeeds; failed rollout stages never reserve a revision.
     Insert, update, supersede, delete, and maintenance transactions re-seal
     rows before prepare/commit. `get` and `search` verify only returned rows
     against the committed anchor epoch, so an online database writer cannot
