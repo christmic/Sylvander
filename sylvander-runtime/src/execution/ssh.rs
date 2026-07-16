@@ -17,13 +17,30 @@ use sylvander_agent::workspace_executor::{
     COMMAND_OUTPUT_HEAD_BYTES, MAX_COMMAND_OUTPUT_BYTES_PER_STREAM, WorkspaceCommandOutput,
     WorkspaceCommandProgressSink, WorkspaceCommandStream, WorkspaceEntryKind, WorkspaceExecutor,
     WorkspaceExecutorError, WorkspaceListEntry, WorkspaceListRequest, WorkspaceListResult,
-    WorkspaceQueryLimits, WorkspaceSearchMatch, WorkspaceSearchRequest, WorkspaceSearchResult,
-    WorkspaceTarget,
+    WorkspaceQueryLimits, WorkspaceReadResult, WorkspaceSearchMatch, WorkspaceSearchRequest,
+    WorkspaceSearchResult, WorkspaceTarget,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-const READ_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec cat -- \"$2\"";
+const READ_SCRIPT: &str = r#"cd -P "$1" || exit 125
+root=$(pwd -P) || exit 125
+resolved=$(realpath "./$2" 2>/dev/null) || exit 125
+if [ "$root" != / ]; then
+  case $resolved in "$root"/*) ;; *) exit 126;; esac
+fi
+[ -f "$resolved" ] || exit 125
+exec cat -- "$resolved""#;
+const READ_BOUNDED_SCRIPT: &str = r#"cd -P "$1" || exit 125
+root=$(pwd -P) || exit 125
+resolved=$(realpath "./$2" 2>/dev/null) || exit 125
+if [ "$root" != / ]; then
+  case $resolved in "$root"/*) ;; *) exit 126;; esac
+fi
+[ -f "$resolved" ] || exit 125
+total=$(wc -c < "$resolved") || exit 125
+printf '%s\0' "$total"
+exec head -c "$3" "$resolved""#;
 const WRITE_SCRIPT: &str = "cd -P \"$1\" || exit 125\ntarget=$2\ncase $target in */*) mkdir -p -- \"${target%/*}\" || exit 125;; esac\nexec cat > \"$target\"";
 const COMMAND_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec sh -s";
 const LIST_SCRIPT: &str = r#"cd -P "$1" || exit 125
@@ -372,6 +389,28 @@ impl WorkspaceExecutor for SshExecutor {
         Ok(output.stdout)
     }
 
+    async fn read_file_bounded(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceReadResult, WorkspaceExecutorError> {
+        validate_relative(relative_path)?;
+        let transfer_limit = max_bytes.saturating_add(1);
+        let remote = Self::remote_query_command(
+            READ_BOUNDED_SCRIPT,
+            target,
+            &[relative_path.to_owned(), transfer_limit.to_string()],
+        )?;
+        let output = self
+            .invoke(remote, &[], Some(self.file_operation_timeout))
+            .await?;
+        if !output.status.success() {
+            return Err(remote_failure("bounded read", &output));
+        }
+        parse_bounded_read(&output.stdout, max_bytes)
+    }
+
     async fn write_file(
         &self,
         target: &WorkspaceTarget,
@@ -462,6 +501,35 @@ impl WorkspaceExecutor for SshExecutor {
         }
         Ok(parse_search_output(&output.stdout, limits))
     }
+}
+
+fn parse_bounded_read(
+    output: &[u8],
+    max_bytes: usize,
+) -> Result<WorkspaceReadResult, WorkspaceExecutorError> {
+    let separator = output.iter().position(|byte| *byte == 0).ok_or_else(|| {
+        WorkspaceExecutorError::InvalidRequest(
+            "remote bounded read returned invalid metadata".into(),
+        )
+    })?;
+    let total_bytes = std::str::from_utf8(&output[..separator])
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest(
+                "remote bounded read returned invalid byte count".into(),
+            )
+        })?;
+    let mut bytes = output[separator + 1..].to_vec();
+    let observed_bytes = bytes.len() as u64;
+    let max_bytes_u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    let truncated = total_bytes > max_bytes_u64 || bytes.len() > max_bytes;
+    bytes.truncate(max_bytes);
+    Ok(WorkspaceReadResult {
+        bytes,
+        total_bytes: total_bytes.max(observed_bytes),
+        truncated,
+    })
 }
 
 struct BoundedCommandStream {
@@ -768,9 +836,27 @@ mod tests {
         let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
         assert!(argv.contains("-o\nBatchMode=yes\n-p\n2222\n-i\n/keys/id test"));
         assert!(argv.contains("agent-user@dev.example"));
-        assert!(argv.contains("exec cat -- \"$2\""));
+        assert!(argv.contains("exec cat -- \"$resolved\""));
         assert!(argv.contains("'/srv/工作区/it'\\''s safe'"));
         assert!(argv.contains("'文档/计划.md'"));
+    }
+
+    #[tokio::test]
+    async fn bounded_read_transfers_only_the_limit_probe_and_reports_total_bytes() {
+        let fake = FakeSsh::new("printf '12\\0hello world!'");
+        let result = fake
+            .executor()
+            .read_file_bounded(&target(false), "文档/计划.md", 5)
+            .await
+            .expect("bounded read succeeds");
+        assert_eq!(result.bytes, b"hello");
+        assert_eq!(result.total_bytes, 12);
+        assert!(result.truncated);
+
+        let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
+        assert!(argv.contains("exec head -c \"$3\" \"$resolved\""));
+        assert!(argv.contains("'文档/计划.md'"));
+        assert!(argv.contains("'6'"));
     }
 
     #[tokio::test]
@@ -978,6 +1064,67 @@ mod tests {
             .expect("run search script");
         assert_eq!(search.status.code(), Some(126));
         assert!(search.stdout.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_reject_external_symlinks_and_bound_large_files_remotely() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        fs::write(outside.path().join("secret.txt"), "outside-secret\n").expect("outside file");
+        symlink(outside.path(), workspace.path().join("escape")).expect("workspace symlink");
+
+        for script in [READ_SCRIPT, READ_BOUNDED_SCRIPT] {
+            let mut arguments = vec![
+                "-c",
+                script,
+                "--",
+                workspace.path().to_str().expect("UTF-8 workspace"),
+                "escape/secret.txt",
+            ];
+            if script == READ_BOUNDED_SCRIPT {
+                arguments.push("17");
+            }
+            let output = std::process::Command::new("sh")
+                .args(arguments)
+                .output()
+                .expect("run read script");
+            assert_eq!(output.status.code(), Some(126));
+            assert!(output.stdout.is_empty());
+        }
+
+        let content = vec![b'x'; 64 * 1024];
+        fs::write(workspace.path().join("large.bin"), &content).expect("large file");
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                READ_BOUNDED_SCRIPT,
+                "--",
+                workspace.path().to_str().expect("UTF-8 workspace"),
+                "large.bin",
+                "65",
+            ])
+            .output()
+            .expect("run bounded read script");
+        assert!(output.status.success());
+        let separator = output
+            .stdout
+            .iter()
+            .position(|byte| *byte == 0)
+            .expect("metadata separator");
+        assert_eq!(
+            std::str::from_utf8(&output.stdout[..separator])
+                .expect("UTF-8 size")
+                .trim(),
+            "65536"
+        );
+        assert_eq!(output.stdout.len() - separator - 1, 65);
+        let parsed = parse_bounded_read(&output.stdout, 64).expect("parse bounded read");
+        assert_eq!(parsed.bytes, vec![b'x'; 64]);
+        assert_eq!(parsed.total_bytes, 65_536);
+        assert!(parsed.truncated);
     }
 
     #[tokio::test]

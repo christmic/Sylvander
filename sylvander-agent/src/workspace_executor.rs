@@ -46,6 +46,13 @@ pub enum WorkspaceExecutorError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceReadResult {
+    pub bytes: Vec<u8>,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceCommandOutput {
     pub success: bool,
     pub status_code: Option<i32>,
@@ -196,6 +203,23 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         relative_path: &str,
     ) -> Result<Vec<u8>, WorkspaceExecutorError>;
 
+    async fn read_file_bounded(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceReadResult, WorkspaceExecutorError> {
+        let mut bytes = self.read_file(target, relative_path).await?;
+        let total_bytes = bytes.len() as u64;
+        let truncated = bytes.len() > max_bytes;
+        bytes.truncate(max_bytes);
+        Ok(WorkspaceReadResult {
+            bytes,
+            total_bytes,
+            truncated,
+        })
+    }
+
     async fn write_file(
         &self,
         target: &WorkspaceTarget,
@@ -265,6 +289,30 @@ impl WorkspaceExecutor for LocalExecutor {
     ) -> Result<Vec<u8>, WorkspaceExecutorError> {
         let path = resolve_existing(target, relative_path).await?;
         Ok(tokio::fs::read(path).await?)
+    }
+
+    async fn read_file_bounded(
+        &self,
+        target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceReadResult, WorkspaceExecutorError> {
+        let path = resolve_existing(target, relative_path).await?;
+        let file = tokio::fs::File::open(path).await?;
+        let metadata_bytes = file.metadata().await?.len();
+        let max_bytes_u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+        let read_limit = max_bytes_u64.saturating_add(1);
+        let mut bytes = Vec::with_capacity(max_bytes.min(64 * 1024).saturating_add(1));
+        file.take(read_limit).read_to_end(&mut bytes).await?;
+        let observed_bytes = bytes.len() as u64;
+        let total_bytes = metadata_bytes.max(observed_bytes);
+        let truncated = total_bytes > max_bytes_u64;
+        bytes.truncate(max_bytes);
+        Ok(WorkspaceReadResult {
+            bytes,
+            total_bytes,
+            truncated,
+        })
     }
 
     async fn write_file(
@@ -890,6 +938,28 @@ mod tests {
             .await
             .unwrap();
         assert!(command.content.contains("command-ok"));
+    }
+
+    #[tokio::test]
+    async fn local_bounded_read_reports_total_and_retains_only_the_limit() {
+        let workspace = tempfile::tempdir().unwrap();
+        tokio::fs::write(workspace.path().join("value.txt"), b"abcdefgh")
+            .await
+            .unwrap();
+        let target = WorkspaceTarget::local(workspace.path(), true);
+
+        let read = LocalExecutor
+            .read_file_bounded(&target, "value.txt", 4)
+            .await
+            .unwrap();
+
+        assert_eq!(read.bytes, b"abcd");
+        assert_eq!(read.total_bytes, 8);
+        assert!(read.truncated);
+        assert_eq!(
+            LocalExecutor.read_file(&target, "value.txt").await.unwrap(),
+            b"abcdefgh"
+        );
     }
 
     #[tokio::test]

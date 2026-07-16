@@ -18,6 +18,8 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
+const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Replace text in a file. Paths are resolved relative to `workdir`.
 #[derive(Debug, Clone)]
 pub struct EditTool {
@@ -113,11 +115,21 @@ impl Tool for EditTool {
                 target.id
             )));
         }
-        let bytes = match ctx.executor.read_file(&target, path_str).await {
-            Ok(bytes) => bytes,
+        let read = match ctx
+            .executor
+            .read_file_bounded(&target, path_str, MAX_EDIT_FILE_BYTES)
+            .await
+        {
+            Ok(read) => read,
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
-        let content = match String::from_utf8(bytes) {
+        if read.truncated {
+            return Ok(ToolOutput::err(format!(
+                "file too large to edit ({} bytes > {} byte limit)",
+                read.total_bytes, MAX_EDIT_FILE_BYTES
+            )));
+        }
+        let content = match String::from_utf8(read.bytes) {
             Ok(content) => content,
             Err(error) => return Ok(ToolOutput::err(format!("file is not UTF-8 text: {error}"))),
         };
@@ -320,6 +332,33 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_oversized_file_without_modifying_it() {
+        let dir = setup_workspace();
+        let path = dir.path().join("large.txt");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len((MAX_EDIT_FILE_BYTES + 1) as u64).unwrap();
+
+        let out = EditTool::new(dir.path())
+            .execute(
+                &ctx(),
+                json!({
+                    "file_path": "large.txt",
+                    "old_string": "a",
+                    "new_string": "b"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(out.is_error);
+        assert!(out.content.contains("file too large to edit"));
+        assert_eq!(
+            fs::metadata(path).unwrap().len(),
+            (MAX_EDIT_FILE_BYTES + 1) as u64
+        );
     }
 
     #[tokio::test]
