@@ -18,11 +18,7 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    init_tracing();
 
     let config = load_config()?;
     let runtime = Arc::new(Runtime::boot_config(config.clone()).await?);
@@ -57,6 +53,20 @@ async fn main() -> Result<(), ServerError> {
     }
     shutdown?;
     Ok(())
+}
+
+fn init_tracing() {
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    if std::env::var("SYLVANDER_LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 }
 
 fn load_config() -> Result<ServerConfig, ServerError> {

@@ -262,7 +262,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A27 | Secrets | partial | Typed environment/file references, bounded zeroizing values, request-scoped Provider resolution, immutable generations, live rotation, activation preflight, and redacted administration are implemented. External secret backends, lease renewal, and uniform channel-credential rotation remain. |
 | A28 | Database migrations | partial | Registry components and relationship memory have explicit component ledgers. Relationship memory accepts only its exact latest schema and rejects unmanaged, older, future, or damaged layouts without repair or fallback. This is deliberate latest-only validation, not migration support. Session/evidence schema convergence, backup/restore drills, and any explicitly approved upgrade or downgrade migration remain. |
 | A29 | Shutdown and recovery | partial | Runtime boot restores durable sessions and interrupted evidence, and shutdown uses bounded cooperative channel/Agent drain. Full crash orchestration, executor leases, and per-instance recovery policy remain incomplete. |
-| A30 | Observability and operations | partial | Structured tracing and health endpoints exist. Metrics, readiness dependencies, per-instance health, queue/backpressure visibility, audit export, and operational diagnostics are incomplete. |
+| A30 | Observability and operations | implemented for local deployment | Runtime exposes one content-safe operational snapshot with dependency readiness, Agent/session counts, per-instance channel health, evidence counts, and bounded-bus capacity/publish/backpressure counters. The HTTP adapter serves dependency-aware `/health`, `/ready`, and Prometheus `/metrics`; Server tracing supports human or flattened JSON export. Ingress size/rate quotas, bounded queues, restart policy, alert conditions, incident triage, recovery, and shutdown are documented in `operations-runbook.md`. |
 | A31 | Concurrency isolation | implemented | Agent turns use per-session locks and active-turn cancellation; real-runtime PTY tests cover multi-client session isolation. This must remain a regression gate. |
 | A32 | Approval authority | partial | The Agent owns approval decisions and durable fingerprints can be configured. Permission selection remains global and persistent approvals need identity/policy scoping. |
 | A33 | Mutation recovery | partial | The workspace journal supports local Write/Edit rollback. It is not executor-neutral and does not replace worktree isolation for coding. |
@@ -661,7 +661,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P6.1 Migration and recovery drills:** schema/config migrations,
   interrupted upgrades, backup/restore, executor/channel restart, and orphan
   worktree/run recovery.
-- [ ] **P6.2 Operational controls:** health/readiness, metrics, tracing export,
+- [x] **P6.2 Operational controls:** health/readiness, metrics, tracing export,
   queue/backpressure limits, quotas, diagnostics, alerts, and runbooks.
 - [ ] **P6.3 Security verification:** threat model, secret scanning, dependency
   audit, protocol fuzz/property tests, path/command injection tests, tenant

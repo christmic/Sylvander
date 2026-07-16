@@ -30,6 +30,7 @@ instead of mid-flight.
 | `SYLVANDER_SESSION_DB` | `$XDG_DATA_HOME/sylvander/sessions.db`, or `$HOME/.local/share/sylvander/sessions.db` | Persistent SQLite session/history database. |
 | `SYLVANDER_WORKSPACE_JOURNAL` | sibling `workspace-journal/` beside the session database | Durable pre/post snapshots used only for confirmed rollback of Agent Write/Edit calls. |
 | `RUST_LOG`           | `info`                        | Standard tracing-subscriber filter.            |
+| `SYLVANDER_LOG_FORMAT` | text | Set to `json` for flattened JSON tracing suitable for log collectors. |
 
 ## Why is `SYLVANDER_MODEL` required?
 
