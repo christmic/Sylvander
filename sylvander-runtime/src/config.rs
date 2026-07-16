@@ -1025,6 +1025,23 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
         ExecutionTransportConfig::Container { runtime, image } => {
             require_text("container runtime", runtime, errors);
             require_text("container image", image, errors);
+            if runtime.starts_with('-') || runtime.chars().any(char::is_control) {
+                errors.push(format!(
+                    "container target {} runtime must be one executable, not an option",
+                    target.id
+                ));
+            }
+            if image.starts_with('-')
+                || image.trim() != image
+                || image
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace())
+            {
+                errors.push(format!(
+                    "container target {} image must be one non-option image reference",
+                    target.id
+                ));
+            }
         }
         ExecutionTransportConfig::Sandbox { driver, profile } => {
             require_text("sandbox driver", driver, errors);

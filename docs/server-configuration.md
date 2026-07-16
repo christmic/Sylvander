@@ -61,6 +61,29 @@ or unimplemented targets fail explicitly before a tool can fall back to the
 server filesystem. A read-only workspace permits reads and rejects writes,
 edits, and commands.
 
+A container target runs every workspace operation in a fresh disposable
+container. The server bind-mounts the selected host workspace at `/workspace`,
+sets that directory as the working directory, keeps stdin attached, removes
+the container after the operation, and disables container networking. The
+runtime is one executable (for example `docker` or `podman`), not a shell
+command with embedded flags:
+
+```toml
+[[execution_targets]]
+id = "rust-toolchain"
+
+[execution_targets.transport]
+kind = "container"
+runtime = "docker"
+image = "rust:1.90-bookworm"
+```
+
+Reads, list/search, and trusted inspection commands use a read-only bind mount.
+Writes and ordinary commands require a writable workspace binding. Command
+stdout/stderr use the same bounded head/tail capture and live progress contract
+as local and SSH execution. Each operation has a deadline and terminating the
+Agent turn drops and kills its runtime process.
+
 ## Agents, providers, and models
 
 `model_providers` contains credentials and a catalog of model capabilities.

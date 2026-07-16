@@ -38,7 +38,7 @@ use crate::config::{
     SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
-use crate::execution::SshExecutor;
+use crate::execution::{ContainerExecutor, SshExecutor};
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -828,26 +828,32 @@ fn apply_execution_targets(
     resolve: impl Fn(&crate::config::SecretRef) -> Result<crate::config::SecretValue, ()>,
 ) -> Result<sylvander_agent::run::AgentRunBuilder, CompositionError> {
     for target in &config.execution_targets {
-        let ExecutionTransportConfig::Ssh {
-            host,
-            port,
-            user,
-            credential,
-        } = &target.transport
-        else {
-            continue;
+        let executor: Arc<dyn WorkspaceExecutor> = match &target.transport {
+            ExecutionTransportConfig::Ssh {
+                host,
+                port,
+                user,
+                credential,
+            } => {
+                let identity = resolve(credential)
+                    .map_err(|()| CompositionError::ExecutionTarget(target.id.clone()))?;
+                let identity_path = identity
+                    .as_str()
+                    .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
+                Arc::new(
+                    SshExecutor::new(host, *port, user, identity_path)
+                        .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+                )
+            }
+            ExecutionTransportConfig::Container { runtime, image } => Arc::new(
+                ContainerExecutor::new(runtime, image)
+                    .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
+            ),
+            ExecutionTransportConfig::Local { .. } | ExecutionTransportConfig::Sandbox { .. } => {
+                continue;
+            }
         };
-        let identity = resolve(credential)
-            .map_err(|()| CompositionError::ExecutionTarget(target.id.clone()))?;
-        let identity_path = identity
-            .as_str()
-            .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
-        let executor = SshExecutor::new(host, *port, user, identity_path)
-            .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
-        builder = builder.workspace_executor(
-            target.id.clone(),
-            Arc::new(executor) as Arc<dyn WorkspaceExecutor>,
-        );
+        builder = builder.workspace_executor(target.id.clone(), executor);
     }
     Ok(builder)
 }

@@ -2777,7 +2777,11 @@ async fn with_workspace_context(
         || WorkspaceTarget::local(fallback_task_workspace, true),
         |binding| WorkspaceTarget {
             id: binding.execution_target.clone(),
-            workspace_path: fallback_task_workspace.to_path_buf(),
+            workspace_path: if binding.execution_target == "local" {
+                fallback_task_workspace.to_path_buf()
+            } else {
+                binding.path.clone()
+            },
             read_only: true,
         },
     ));
@@ -3635,7 +3639,7 @@ mod tests {
             }),
             Some(&sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "ssh:task".into(),
-                path: "/stale/task".into(),
+                path: "/remote/task".into(),
                 read_only: false,
             }),
             Path::new("/attached/task"),
@@ -3652,7 +3656,7 @@ mod tests {
         );
         assert_eq!(
             task.reads.lock().unwrap()[0].workspace_path,
-            Path::new("/attached/task")
+            Path::new("/remote/task")
         );
     }
 

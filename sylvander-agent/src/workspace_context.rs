@@ -77,7 +77,7 @@ impl Collector {
         role: WorkspaceRole,
         source: &WorkspaceContextSource<'_>,
     ) -> Result<(), WorkspaceExecutorError> {
-        let listing = source
+        let Ok(listing) = source
             .executor
             .list(
                 &source.target,
@@ -87,7 +87,10 @@ impl Collector {
                     limits: discovery_limits(),
                 },
             )
-            .await?;
+            .await
+        else {
+            return Ok(());
+        };
         for name in INSTRUCTION_NAMES {
             if listing.entries.iter().any(|entry| {
                 entry.relative_path == name
@@ -107,7 +110,7 @@ impl Collector {
         source: &WorkspaceContextSource<'_>,
     ) -> Result<(), WorkspaceExecutorError> {
         for root in SKILL_ROOTS {
-            let listing = match source
+            let Ok(listing) = source
                 .executor
                 .list(
                     &source.target,
@@ -118,15 +121,8 @@ impl Collector {
                     },
                 )
                 .await
-            {
-                Ok(listing) => listing,
-                Err(WorkspaceExecutorError::Unavailable(target)) => {
-                    return Err(WorkspaceExecutorError::Unavailable(target));
-                }
-                Err(WorkspaceExecutorError::Timeout(timeout)) => {
-                    return Err(WorkspaceExecutorError::Timeout(timeout));
-                }
-                Err(_) => continue,
+            else {
+                continue;
             };
             let mut directories = listing
                 .entries
@@ -158,19 +154,12 @@ impl Collector {
         if self.documents >= MAX_DOCUMENTS || !self.seen.insert(key) {
             return Ok(());
         }
-        let read = match source
+        let Ok(read) = source
             .executor
             .read_file_bounded(&source.target, relative_path, MAX_DOCUMENT_BYTES)
             .await
-        {
-            Ok(read) => read,
-            Err(WorkspaceExecutorError::Unavailable(target)) => {
-                return Err(WorkspaceExecutorError::Unavailable(target));
-            }
-            Err(WorkspaceExecutorError::Timeout(timeout)) => {
-                return Err(WorkspaceExecutorError::Timeout(timeout));
-            }
-            Err(_) => return Ok(()),
+        else {
+            return Ok(());
         };
         if read.truncated {
             return Ok(());

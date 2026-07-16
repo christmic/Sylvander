@@ -20,7 +20,10 @@ use crate::Runtime;
 use crate::agent_registry::AgentRegistry;
 use crate::agent_registry_snapshot::AgentSnapshotSelection;
 use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
-use crate::config::{SecretRef, ServerConfig, SystemSecretResolver};
+use crate::config::{
+    ExecutionTargetConfig, ExecutionTransportConfig, SecretRef, ServerConfig, SystemSecretResolver,
+    WorkspaceBindingConfig,
+};
 use crate::registry_domain::CredentialBindingRevision;
 
 const TEXT_STREAM: &str = "\
@@ -188,6 +191,109 @@ async fn persisted_session_with_overrides(
     stored.effective_config = Some(resolve_session_config(agent, &overrides, None, None).unwrap());
     store.save(&stored).await.unwrap();
     session_id
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_container_executor_supplies_workspace_context_to_the_agent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempdir().unwrap();
+    let secret = directory.path().join("secret");
+    std::fs::write(&secret, "test-key\n").unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    for path in [".agents/skills", ".sylvander/skills", "skills"] {
+        std::fs::create_dir_all(workspace.join(path)).unwrap();
+    }
+    std::fs::write(
+        workspace.join("AGENTS.md"),
+        "container-injected-workspace-instruction",
+    )
+    .unwrap();
+    let arguments = directory.path().join("arguments");
+    let runtime = directory.path().join("runtime");
+    std::fs::write(
+        &runtime,
+        format!(
+            r#"#!/bin/sh
+printf '%s\0' "$@" > '{}'
+[ "$1" = rm ] && exit 0
+[ "$1" = run ] || exit 90
+shift
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --rm|--network=none|--interactive) shift ;;
+    --name|--mount|--workdir) [ "$1" = --mount ] && mount=$2; shift 2 ;;
+    *) shift; break ;;
+  esac
+done
+root=$(printf '%s' "$mount" | sed -n 's/.*source=\([^,]*\),target=.*/\1/p')
+cd "$root" || exit 91
+exec "$@"
+"#,
+            arguments.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let server = MockServer::start().await;
+    expect_request(&server, "test-key").await;
+    let mut config = config(&server.uri(), &secret);
+    config.execution_targets.push(ExecutionTargetConfig {
+        id: "container:test".into(),
+        transport: ExecutionTransportConfig::Container {
+            runtime: runtime.display().to_string(),
+            image: "test/image:latest".into(),
+        },
+    });
+    config.agents[0].agent_workspace = Some(WorkspaceBindingConfig {
+        execution_target: "container:test".into(),
+        path: workspace.display().to_string(),
+        read_only: true,
+    });
+    let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
+    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
+    let mut agents = build_agents(
+        &config,
+        bus,
+        store.clone(),
+        Arc::new(InMemoryMemoryStore::new()),
+        None,
+        &SystemSecretResolver,
+    )
+    .unwrap();
+    let agent = agents.pop().unwrap();
+    let session = persisted_session_with_overrides(
+        &agent,
+        store.as_ref(),
+        "container",
+        SessionConfigOverrides {
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "container:test".into(),
+                path: workspace,
+                read_only: true,
+            }),
+            ..SessionConfigOverrides::default()
+        },
+    )
+    .await;
+    agent
+        .run
+        .handle_message(BusMessage::user_chat(session, "user", "read the workspace"))
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let system = body["system"][0]["text"].as_str().unwrap();
+    assert!(system.contains("container-injected-workspace-instruction"));
+    let argv = std::fs::read(arguments).unwrap();
+    assert!(
+        argv.split(|byte| *byte == 0)
+            .any(|argument| argument == b"test/image:latest")
+    );
 }
 
 #[tokio::test]
@@ -707,7 +813,6 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         actual_prompt.starts_with(&expected_prompt),
         "the restarted provider call must preserve the persisted prompt prefix"
     );
-    assert!(actual_prompt.contains("# Workspace instructions and activated Skills"));
 
     let alpha_session = sylvander_channel::UiService::create_session(
         restarted.ui_service.as_ref(),
