@@ -99,6 +99,24 @@ pub struct ContainerExecutor {
     executable: PathBuf,
     image: String,
     file_operation_timeout: Duration,
+    resources: ContainerResourcePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerResourcePolicy {
+    pub memory_mb: u32,
+    pub cpu_millis: u32,
+    pub pids_limit: u32,
+}
+
+impl Default for ContainerResourcePolicy {
+    fn default() -> Self {
+        Self {
+            memory_mb: 2_048,
+            cpu_millis: 2_000,
+            pids_limit: 512,
+        }
+    }
 }
 
 struct CheckedInvocation<'a> {
@@ -154,6 +172,7 @@ impl fmt::Debug for ContainerExecutor {
             .field("executable", &self.executable)
             .field("image", &self.image)
             .field("file_operation_timeout", &self.file_operation_timeout)
+            .field("resources", &self.resources)
             .finish()
     }
 }
@@ -185,6 +204,7 @@ impl ContainerExecutor {
             executable,
             image,
             file_operation_timeout: DEFAULT_FILE_OPERATION_TIMEOUT,
+            resources: ContainerResourcePolicy::default(),
         })
     }
 
@@ -192,6 +212,20 @@ impl ContainerExecutor {
     pub fn with_file_operation_timeout(mut self, timeout: Duration) -> Self {
         self.file_operation_timeout = timeout;
         self
+    }
+
+    pub fn with_resource_policy(
+        mut self,
+        resources: ContainerResourcePolicy,
+    ) -> Result<Self, WorkspaceExecutorError> {
+        if !(128..=65_536).contains(&resources.memory_mb)
+            || !(100..=64_000).contains(&resources.cpu_millis)
+            || !(16..=32_768).contains(&resources.pids_limit)
+        {
+            return Err(invalid("invalid container resource policy"));
+        }
+        self.resources = resources;
+        Ok(self)
     }
 
     async fn process(
@@ -219,6 +253,11 @@ impl ContainerExecutor {
             mount.push_str(",readonly");
         }
         let name = format!("sylvander-{}", Uuid::new_v4());
+        let cpus = format!(
+            "{}.{:03}",
+            self.resources.cpu_millis / 1_000,
+            self.resources.cpu_millis % 1_000
+        );
         let mut command = Command::new(&self.executable);
         command
             .arg("run")
@@ -226,6 +265,19 @@ impl ContainerExecutor {
             .arg("--name")
             .arg(&name)
             .arg("--network=none")
+            .arg("--memory")
+            .arg(format!("{}m", self.resources.memory_mb))
+            .arg("--cpus")
+            .arg(cpus)
+            .arg("--pids-limit")
+            .arg(self.resources.pids_limit.to_string())
+            .arg("--read-only")
+            .arg("--tmpfs")
+            .arg("/tmp:rw,nosuid,nodev,size=64m")
+            .arg("--security-opt")
+            .arg("no-new-privileges")
+            .arg("--cap-drop")
+            .arg("ALL")
             .arg("--interactive")
             .arg("--mount")
             .arg(mount)
@@ -820,8 +872,8 @@ shift
 mount=
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --rm|--network=none|--interactive) shift ;;
-    --name) shift 2 ;;
+    --rm|--network=none|--interactive|--read-only) shift ;;
+    --name|--memory|--cpus|--pids-limit|--tmpfs|--security-opt|--cap-drop) shift 2 ;;
     --mount) mount=$2; shift 2 ;;
     --workdir) shift 2 ;;
     *) image=$1; shift; break ;;
@@ -964,6 +1016,15 @@ exec "$@"
         assert!(argv.contains(&"--rm".into()));
         assert!(argv.contains(&"--name".into()));
         assert!(argv.contains(&"--network=none".into()));
+        assert!(argv.contains(&"--memory".into()));
+        assert!(argv.contains(&"2048m".into()));
+        assert!(argv.contains(&"--cpus".into()));
+        assert!(argv.contains(&"2.000".into()));
+        assert!(argv.contains(&"--pids-limit".into()));
+        assert!(argv.contains(&"512".into()));
+        assert!(argv.contains(&"--read-only".into()));
+        assert!(argv.contains(&"no-new-privileges".into()));
+        assert!(argv.contains(&"ALL".into()));
         assert!(argv.contains(&"--interactive".into()));
         assert!(argv.contains(&"test/image:latest".into()));
     }

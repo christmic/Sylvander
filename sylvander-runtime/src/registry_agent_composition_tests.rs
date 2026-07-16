@@ -195,7 +195,7 @@ async fn persisted_session_with_overrides(
 
 #[cfg(unix)]
 #[tokio::test]
-async fn configured_container_executor_supplies_workspace_context_to_the_agent() {
+async fn configured_sandbox_executor_supplies_workspace_context_to_the_agent() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempdir().unwrap();
@@ -208,7 +208,7 @@ async fn configured_container_executor_supplies_workspace_context_to_the_agent()
     }
     std::fs::write(
         workspace.join("AGENTS.md"),
-        "container-injected-workspace-instruction",
+        "sandbox-injected-workspace-instruction",
     )
     .unwrap();
     let arguments = directory.path().join("arguments");
@@ -223,8 +223,8 @@ printf '%s\0' "$@" > '{}'
 shift
 while [ "$#" -gt 0 ]; do
   case $1 in
-    --rm|--network=none|--interactive) shift ;;
-    --name|--mount|--workdir) [ "$1" = --mount ] && mount=$2; shift 2 ;;
+    --rm|--network=none|--interactive|--read-only) shift ;;
+    --name|--mount|--workdir|--memory|--cpus|--pids-limit|--tmpfs|--security-opt|--cap-drop) [ "$1" = --mount ] && mount=$2; shift 2 ;;
     *) shift; break ;;
   esac
 done
@@ -242,14 +242,15 @@ exec "$@"
     expect_request(&server, "test-key").await;
     let mut config = config(&server.uri(), &secret);
     config.execution_targets.push(ExecutionTargetConfig {
-        id: "container:test".into(),
-        transport: ExecutionTransportConfig::Container {
-            runtime: runtime.display().to_string(),
-            image: "test/image:latest".into(),
+        id: "sandbox:test".into(),
+        transport: ExecutionTransportConfig::Sandbox {
+            driver: runtime.display().to_string(),
+            profile: "test/sandbox:latest".into(),
+            resources: crate::config::ContainerResourceSettings::default(),
         },
     });
     config.agents[0].agent_workspace = Some(WorkspaceBindingConfig {
-        execution_target: "container:test".into(),
+        execution_target: "sandbox:test".into(),
         path: workspace.display().to_string(),
         read_only: true,
         instruction_focus: None,
@@ -269,10 +270,10 @@ exec "$@"
     let session = persisted_session_with_overrides(
         &agent,
         store.as_ref(),
-        "container",
+        "sandbox",
         SessionConfigOverrides {
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
-                execution_target: "container:test".into(),
+                execution_target: "sandbox:test".into(),
                 path: workspace,
                 read_only: true,
                 instruction_focus: None,
@@ -290,11 +291,11 @@ exec "$@"
     let requests = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     let system = body["system"][0]["text"].as_str().unwrap();
-    assert!(system.contains("container-injected-workspace-instruction"));
+    assert!(system.contains("sandbox-injected-workspace-instruction"));
     let argv = std::fs::read(arguments).unwrap();
     assert!(
         argv.split(|byte| *byte == 0)
-            .any(|argument| argument == b"test/image:latest")
+            .any(|argument| argument == b"test/sandbox:latest")
     );
 }
 

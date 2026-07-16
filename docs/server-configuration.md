@@ -76,6 +76,11 @@ id = "rust-toolchain"
 kind = "container"
 runtime = "docker"
 image = "rust:1.90-bookworm"
+
+[execution_targets.transport.resources]
+memory_mb = 2048
+cpu_millis = 2000
+pids_limit = 512
 ```
 
 Reads, list/search, and trusted inspection commands use a read-only bind mount.
@@ -86,6 +91,36 @@ Agent turn drops and kills its runtime process. Because the bind source is a
 server-host workspace, clean writable Git workspaces receive the same default
 session worktree isolation as the local execution target before being mounted
 into the container.
+
+Every operation is also started with a read-only root filesystem, a private
+64 MiB `/tmp`, no added capabilities, `no-new-privileges`, and explicit
+memory, CPU, and process ceilings. Resource values are validated at startup;
+the defaults shown above apply when `resources` is omitted.
+
+A managed sandbox uses the same disposable, restricted OCI execution contract
+but gives the executable and image policy-oriented names:
+
+```toml
+[[execution_targets]]
+id = "review-sandbox"
+
+[execution_targets.transport]
+kind = "sandbox"
+driver = "podman"
+profile = "sylvander/review-sandbox:latest"
+
+[execution_targets.transport.resources]
+memory_mb = 4096
+cpu_millis = 4000
+pids_limit = 768
+```
+
+`driver` is one OCI-compatible executable and `profile` is one immutable image
+reference. Sylvander deliberately does not reuse containers between
+operations: disposable environments prevent session state and credentials
+from leaking into a later Agent operation. Writable Git coding sessions retain
+their durable state in an isolated host worktree, not in a long-lived
+container.
 
 ## Agents, providers, and models
 

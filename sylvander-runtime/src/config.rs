@@ -544,6 +544,39 @@ pub struct ExecutionTargetConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerResourceSettings {
+    #[serde(default = "default_container_memory_mb")]
+    pub memory_mb: u32,
+    #[serde(default = "default_container_cpu_millis")]
+    pub cpu_millis: u32,
+    #[serde(default = "default_container_pids")]
+    pub pids_limit: u32,
+}
+
+impl Default for ContainerResourceSettings {
+    fn default() -> Self {
+        Self {
+            memory_mb: default_container_memory_mb(),
+            cpu_millis: default_container_cpu_millis(),
+            pids_limit: default_container_pids(),
+        }
+    }
+}
+
+const fn default_container_memory_mb() -> u32 {
+    2_048
+}
+
+const fn default_container_cpu_millis() -> u32 {
+    2_000
+}
+
+const fn default_container_pids() -> u32 {
+    512
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionTransportConfig {
     Local {
@@ -560,10 +593,14 @@ pub enum ExecutionTransportConfig {
     Container {
         runtime: String,
         image: String,
+        #[serde(default)]
+        resources: ContainerResourceSettings,
     },
     Sandbox {
         driver: String,
         profile: String,
+        #[serde(default)]
+        resources: ContainerResourceSettings,
     },
 }
 
@@ -1084,7 +1121,11 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
             }
             credential.validate("SSH credential", errors);
         }
-        ExecutionTransportConfig::Container { runtime, image } => {
+        ExecutionTransportConfig::Container {
+            runtime,
+            image,
+            resources,
+        } => {
             require_text("container runtime", runtime, errors);
             require_text("container image", image, errors);
             if runtime.starts_with('-') || runtime.chars().any(char::is_control) {
@@ -1104,11 +1145,42 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                     target.id
                 ));
             }
+            validate_container_resources(target, resources, errors);
         }
-        ExecutionTransportConfig::Sandbox { driver, profile } => {
+        ExecutionTransportConfig::Sandbox {
+            driver,
+            profile,
+            resources,
+        } => {
             require_text("sandbox driver", driver, errors);
             require_text("sandbox profile", profile, errors);
+            validate_container_resources(target, resources, errors);
         }
+    }
+}
+
+fn validate_container_resources(
+    target: &ExecutionTargetConfig,
+    resources: &ContainerResourceSettings,
+    errors: &mut Vec<String>,
+) {
+    if !(128..=65_536).contains(&resources.memory_mb) {
+        errors.push(format!(
+            "container target {} memory_mb must be between 128 and 65536",
+            target.id
+        ));
+    }
+    if !(100..=64_000).contains(&resources.cpu_millis) {
+        errors.push(format!(
+            "container target {} cpu_millis must be between 100 and 64000",
+            target.id
+        ));
+    }
+    if !(16..=32_768).contains(&resources.pids_limit) {
+        errors.push(format!(
+            "container target {} pids_limit must be between 16 and 32768",
+            target.id
+        ));
     }
 }
 

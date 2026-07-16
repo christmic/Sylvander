@@ -3,5 +3,5 @@
 pub mod container;
 pub mod ssh;
 
-pub use container::ContainerExecutor;
+pub use container::{ContainerExecutor, ContainerResourcePolicy};
 pub use ssh::SshExecutor;
