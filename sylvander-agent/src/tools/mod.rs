@@ -24,9 +24,10 @@ pub use memory::{
 };
 pub use memory_read::MemoryReadTool;
 pub use memory_sqlite::{
-    FileMemoryIntegrityAnchor, MemoryBackupArtifact, MemoryBackupManifest, MemoryClock,
-    MemoryIntegrityConfig, MemoryPurgeReport, MemoryRestoreError, SqliteMemoryAdmin,
-    SqliteMemoryMaintenance, SqliteMemoryStore, SystemMemoryClock,
+    FileMemoryIntegrityAnchor, HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig,
+    MemoryBackupArtifact, MemoryBackupManifest, MemoryClock, MemoryIntegrityConfig,
+    MemoryPurgeReport, MemoryRestoreError, SqliteMemoryAdmin, SqliteMemoryMaintenance,
+    SqliteMemoryStore, SystemMemoryClock,
 };
 pub use memory_write::MemoryWriteTool;
 pub use plan::PresentPlanTool;

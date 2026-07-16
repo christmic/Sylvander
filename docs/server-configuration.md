@@ -181,8 +181,8 @@ name = "SYLVANDER_MEMORY_ANCHOR_TOKEN"
 ```
 
 Only HTTPS endpoints are accepted. Credentials, query parameters, and
-fragments are forbidden in the URL. `timeout_millis` is bounded to 100–60000;
-`read_retries` is bounded to 0–10. Private-PKI deployments may add
+fragments are forbidden in the URL. `timeout_millis` is bounded to 100–30000;
+`read_retries` is bounded to 0–3. Private-PKI deployments may add
 `backend.ca_certificate` and `backend.client_identity`, each as a `SecretRef`.
 The endpoint credentials and TLS references are not rendered in Debug output
 or validation errors. Read retries are bounded; compare-and-swap conflicts and

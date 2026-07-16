@@ -448,7 +448,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     administered HTTPS CAS service. The endpoint cannot contain credentials,
     a query, or a fragment. Bearer credentials are mandatory secret
     references; private CA and client-identity references are optional.
-    Timeouts are bounded to 100–60000 ms and read retries to at most 10. CAS
+    Timeouts are bounded to 100–30000 ms and read retries to at most 3. CAS
     conflicts and ambiguous writes fail closed rather than being converted
     into blind retries. This backend is the required deployment shape when the
     threat model includes whole-host historical replay.

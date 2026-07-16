@@ -111,7 +111,7 @@ anchor_path = "/var/lib/sylvander-integrity/anchor.json""#,
 kind = "http"
 endpoint = "https://anchor.example.test/v1/memory/cas"
 timeout_millis = 2500
-read_retries = 4
+read_retries = 3
 
 [server.memory_maintenance.integrity.backend.bearer_token]
 source = "env"
@@ -138,7 +138,7 @@ path = "/run/secrets/anchor-client-do-not-render.pem""#,
         MemoryIntegrityBackend::Http {
             endpoint,
             timeout_millis: 2_500,
-            read_retries: 4,
+            read_retries: 3,
             ..
         } if endpoint == "https://anchor.example.test/v1/memory/cas"
     ));
@@ -172,7 +172,7 @@ name = "ANCHOR_TOKEN""#,
 kind = "http"
 endpoint = "https://anchor.example.test/v1/cas"
 timeout_millis = 99
-read_retries = 11
+read_retries = 4
 
 [server.memory_maintenance.integrity.backend.bearer_token]
 source = "env"
