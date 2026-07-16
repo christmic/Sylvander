@@ -2,9 +2,9 @@
 //!
 //! External identities are scoped by transport and channel instance. Their
 //! raw identifiers are never persisted: the store retains only a
-//! domain-separated SHA-256 digest. A binding can only be created by
-//! confirming a short-lived, single-use challenge delivered through that
-//! exact external principal.
+//! HMAC-keyed digest. A binding can only be created when a trusted stable-user
+//! ingress issues a short-lived, single-use challenge and the target external
+//! principal proves possession of it.
 
 use std::fmt::{self, Write as _};
 use std::path::Path;

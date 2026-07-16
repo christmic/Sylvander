@@ -72,6 +72,21 @@ content = "metadata_only"
 max_request_bytes = 1048576
 requests_per_minute = 240
 
+# Stable cross-channel users are optional. Enabling this section creates a
+# Runtime-owned identity.db and advertises identity_binding_v1.
+# [server.identity]
+# challenge_ttl_seconds = 300
+#
+# [server.identity.digest_key]
+# source = "env"
+# name = "SYLVANDER_IDENTITY_DIGEST_KEY"
+#
+# [[server.identity.trusted_issuers]]
+# transport = "unix"
+# channel_instance_id = "terminal"
+# principal_id = "local-alice"
+# user_id = "alice"
+
 [[model_providers]]
 id = "primary"
 kind = "anthropic_compatible"
