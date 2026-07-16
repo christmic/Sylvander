@@ -115,7 +115,8 @@ completed backend feature.
 - [x] MCP server/tool health, authentication state, tool count, process
       generation, and reconnect count are inspectable through fresh server
       truth.
-- [ ] MCP resource discovery and resource-specific health are inspectable.
+- [x] MCP resource discovery, bounded list/read operations, resource count, and
+      resource-capability health are inspectable.
 - [x] Skills show the successfully activated source, Agent-home/workspace trust,
       active state, and per-turn reload behavior from fresh server truth.
 - [ ] Hooks show execution, output, failure, and blocking decisions.
