@@ -19,6 +19,7 @@
 pub mod agent_admin;
 pub mod boundary;
 pub mod bus_trait;
+pub mod identity_binding;
 pub mod in_process;
 pub mod registry_admin;
 pub mod schema;
@@ -29,6 +30,7 @@ pub mod ui;
 pub use agent_admin::*;
 pub use boundary::*;
 pub use bus_trait::{BusError, MessageBus, SubscriptionFilter};
+pub use identity_binding::*;
 pub use in_process::InProcessMessageBus;
 pub use registry_admin::*;
 pub use session_context::*;
