@@ -119,7 +119,7 @@ use crate::composition::{
     ConfiguredAgent, build_registry_agent_versioned_with_resolver, default_tools,
     resolve_session_config,
 };
-use crate::config::{SecretResolver, ServerConfig, SystemSecretResolver};
+use crate::config::{MemoryIntegrityBackend, SecretResolver, ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 use crate::memory_maintenance::{
@@ -2256,14 +2256,21 @@ impl Runtime {
             .as_ref()
             .expect("resolved memory database")
             .clone();
-        let memory_anchor = config
+        let memory_anchor = match config
             .server
             .memory_maintenance
             .integrity
-            .anchor_path
+            .backend
             .as_ref()
-            .ok_or_else(|| RuntimeError::Config("memory integrity anchor_path is required".into()))?
-            .clone();
+            .ok_or_else(|| RuntimeError::Config("memory integrity backend is required".into()))?
+        {
+            MemoryIntegrityBackend::File { anchor_path } => anchor_path.clone(),
+            MemoryIntegrityBackend::Http { .. } => {
+                return Err(RuntimeError::Config(
+                    "remote memory integrity anchor runtime wiring is unavailable".into(),
+                ));
+            }
+        };
         if let Some(parent) = session_db.parent() {
             std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
                 operation: "create session database directory",
@@ -2940,14 +2947,11 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .memory_db
         .get_or_insert_with(|| data_dir.join("memory.db"));
-    let anchor = config
-        .server
-        .memory_maintenance
-        .integrity
-        .anchor_path
-        .as_ref()
-        .ok_or_else(|| RuntimeError::Config("memory integrity anchor_path is required".into()))?;
-    validate_external_memory_anchor(&data_dir, anchor)?;
+    if let Some(MemoryIntegrityBackend::File { anchor_path }) =
+        config.server.memory_maintenance.integrity.backend.as_ref()
+    {
+        validate_external_memory_anchor(&data_dir, anchor_path)?;
+    }
     config
         .server
         .workspace_journal
@@ -3004,7 +3008,9 @@ pub(crate) fn configure_test_memory_integrity(
     let anchor_dir = directory.join("integrity-anchor");
     std::fs::create_dir_all(&anchor_dir).unwrap();
     config.server.data_dir = Some(data_dir);
-    config.server.memory_maintenance.integrity.anchor_path = Some(anchor_dir.join("anchor.json"));
+    config.server.memory_maintenance.integrity.backend = Some(MemoryIntegrityBackend::File {
+        anchor_path: anchor_dir.join("anchor.json"),
+    });
     let integrity_key = directory.join("memory-integrity.key");
     std::fs::write(&integrity_key, "0123456789abcdef0123456789abcdef").unwrap();
     config.server.memory_maintenance.integrity.key = Some(crate::config::SecretRef::File {
@@ -3201,10 +3207,12 @@ schema_version = 1
 data_dir = "{}"
 
 [server.memory_maintenance.integrity]
-anchor_path = "{}"
 [server.memory_maintenance.integrity.key]
 source = "file"
 path = "{}"
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "{}"
 
 [[model_providers]]
 id = "primary"
@@ -3217,8 +3225,8 @@ id = "model-a"
 {agents}
 "#,
             data_dir.display(),
-            anchor_dir.join("anchor.json").display(),
             secret.display(),
+            anchor_dir.join("anchor.json").display(),
             secret.display()
         ))
         .unwrap()
@@ -3529,8 +3537,9 @@ id = "model-a"
             agents: Vec::new(),
             channels: Vec::new(),
         };
-        config.server.memory_maintenance.integrity.anchor_path =
-            Some(anchor_dir.join("state.json"));
+        config.server.memory_maintenance.integrity.backend = Some(MemoryIntegrityBackend::File {
+            anchor_path: anchor_dir.join("state.json"),
+        });
 
         let resolved = with_resolved_paths(config.clone()).unwrap();
         assert_eq!(resolved.server.memory_db, Some(data_dir.join("memory.db")));
@@ -3703,10 +3712,12 @@ data_dir = "{}"
 session_db = "{}"
 
 [server.memory_maintenance.integrity]
-anchor_path = "{}"
 [server.memory_maintenance.integrity.key]
 source = "file"
 path = "{}"
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "{}"
 
 [[model_providers]]
 id = "alpha"
@@ -3736,8 +3747,8 @@ model_name = "shared"
 "#,
             data_dir.display(),
             database.display(),
-            anchor_dir.join("anchor.json").display(),
             secret.display(),
+            anchor_dir.join("anchor.json").display(),
             secret.display(),
             secret.display()
         );
@@ -3840,8 +3851,9 @@ model_name = "shared"
         let mut config = configured_memory_test_config(&directory, &["assistant"]);
         let data_dir = config.server.data_dir.clone().unwrap();
         std::fs::create_dir_all(data_dir.join("anchor")).unwrap();
-        config.server.memory_maintenance.integrity.anchor_path =
-            Some(data_dir.join("anchor/state.json"));
+        config.server.memory_maintenance.integrity.backend = Some(MemoryIntegrityBackend::File {
+            anchor_path: data_dir.join("anchor/state.json"),
+        });
 
         let error = match Runtime::boot_config(config).await {
             Ok(runtime) => {

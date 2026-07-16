@@ -105,12 +105,139 @@ impl Default for MemoryMaintenanceSettings {
 }
 
 /// Independent authenticated trust anchor for relationship memory. Runtime
-/// resolves the key reference; raw key bytes are never serialized.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// resolves every secret reference; raw secret bytes are never serialized.
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryIntegritySettings {
-    pub anchor_path: Option<PathBuf>,
     pub key: Option<SecretRef>,
+    pub backend: Option<MemoryIntegrityBackend>,
+}
+
+impl std::fmt::Debug for MemoryIntegritySettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemoryIntegritySettings")
+            .field("key", &self.key.as_ref().map(|_| "[REDACTED]"))
+            .field("backend", &self.backend)
+            .finish()
+    }
+}
+
+/// Latest-only integrity backend selection. The file backend protects against
+/// a restricted database writer. The HTTP backend delegates monotonic compare
+/// and swap to a separately administered service.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MemoryIntegrityBackend {
+    File {
+        anchor_path: PathBuf,
+    },
+    Http {
+        endpoint: String,
+        bearer_token: SecretRef,
+        #[serde(default)]
+        ca_certificate: Option<SecretRef>,
+        #[serde(default)]
+        client_identity: Option<SecretRef>,
+        #[serde(default = "default_memory_integrity_http_timeout_millis")]
+        timeout_millis: u32,
+        #[serde(default = "default_memory_integrity_http_read_retries")]
+        read_retries: u8,
+    },
+}
+
+impl std::fmt::Debug for MemoryIntegrityBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File { anchor_path } => formatter
+                .debug_struct("File")
+                .field("anchor_path", anchor_path)
+                .finish(),
+            Self::Http {
+                timeout_millis,
+                read_retries,
+                ca_certificate,
+                client_identity,
+                ..
+            } => formatter
+                .debug_struct("Http")
+                .field("endpoint", &"[REDACTED]")
+                .field("bearer_token", &"[REDACTED]")
+                .field(
+                    "ca_certificate",
+                    &ca_certificate.as_ref().map(|_| "[REDACTED]"),
+                )
+                .field(
+                    "client_identity",
+                    &client_identity.as_ref().map(|_| "[REDACTED]"),
+                )
+                .field("timeout_millis", timeout_millis)
+                .field("read_retries", read_retries)
+                .finish(),
+        }
+    }
+}
+
+impl MemoryIntegrityBackend {
+    fn validate(&self, errors: &mut Vec<String>) {
+        match self {
+            Self::File { anchor_path } => {
+                if !anchor_path.is_absolute() {
+                    errors.push("server memory integrity file anchor_path must be absolute".into());
+                }
+            }
+            Self::Http {
+                endpoint,
+                bearer_token,
+                ca_certificate,
+                client_identity,
+                timeout_millis,
+                read_retries,
+            } => {
+                let valid_endpoint = endpoint.len() <= 2_048
+                    && url::Url::parse(endpoint).is_ok_and(|url| {
+                        url.scheme() == "https"
+                            && url.host_str().is_some()
+                            && url.username().is_empty()
+                            && url.password().is_none()
+                            && url.query().is_none()
+                            && url.fragment().is_none()
+                    });
+                if !valid_endpoint {
+                    errors.push(
+                        "server memory integrity HTTP endpoint must be an HTTPS URL without credentials, query, or fragment"
+                            .into(),
+                    );
+                }
+                bearer_token.validate("server memory integrity HTTP bearer_token", errors);
+                if let Some(reference) = ca_certificate {
+                    reference.validate("server memory integrity HTTP ca_certificate", errors);
+                }
+                if let Some(reference) = client_identity {
+                    reference.validate("server memory integrity HTTP client_identity", errors);
+                }
+                if !(100..=60_000).contains(timeout_millis) {
+                    errors.push(
+                        "server memory integrity HTTP timeout_millis must be between 100 and 60000"
+                            .into(),
+                    );
+                }
+                if *read_retries > 10 {
+                    errors.push(
+                        "server memory integrity HTTP read_retries must not exceed 10".into(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+const fn default_memory_integrity_http_timeout_millis() -> u32 {
+    5_000
+}
+
+const fn default_memory_integrity_http_read_retries() -> u8 {
+    3
 }
 
 /// Finite backup schedule. Backup paths are derived from `data_dir` so a
@@ -523,14 +650,11 @@ impl ServerConfig {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
         }
         let memory = &self.server.memory_maintenance;
-        match &memory.integrity.anchor_path {
-            Some(path) if !path.is_absolute() => {
-                errors.push("server memory integrity anchor_path must be absolute".into());
-            }
-            _ => {}
-        }
         if let Some(reference) = &memory.integrity.key {
             reference.validate("server memory integrity key", &mut errors);
+        }
+        if let Some(backend) = &memory.integrity.backend {
+            backend.validate(&mut errors);
         }
         let retention = &memory.retention;
         if retention.revision == 0 || i64::try_from(retention.revision).is_err() {
