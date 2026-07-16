@@ -367,8 +367,12 @@ mod tests {
     fn enter_on_sessions_pushes_sessions_overlay() {
         let mut state = AppState::new();
         let mut p = CommandPalette::new(&state);
-        // /sessions is at index 1.
-        let _ = p.handle_key(&key(KeyCode::Down, KeyModifiers::NONE), &mut state);
+        for character in "sessions".chars() {
+            let _ = p.handle_key(
+                &key(KeyCode::Char(character), KeyModifiers::NONE),
+                &mut state,
+            );
+        }
         let consumed = p.handle_key(&key(KeyCode::Enter, KeyModifiers::NONE), &mut state);
         assert!(matches!(consumed, Consumed::Yes { dismiss: true }));
         // Palette itself was popped, but it pushed a sessions overlay.

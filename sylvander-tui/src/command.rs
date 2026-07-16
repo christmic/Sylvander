@@ -3,13 +3,15 @@
 use crate::app::{AppMode, AppState, ChatMessage};
 use crate::input::AttachmentKind;
 use crate::modal::{
-    FileMentionModal, HelpModal, ModelPicker, PermissionsPicker, SessionsOverlay, ToolInspector,
+    AgentPicker, FileMentionModal, HelpModal, ModelPicker, PermissionsPicker, SessionsOverlay,
+    ToolInspector,
 };
 use crate::theme::ThemeName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandId {
     New,
+    Agent,
     Sessions,
     Resume,
     Rename,
@@ -63,6 +65,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         usage: "/new",
         description: "Start a clean local session",
         hint: "next prompt creates it",
+    },
+    CommandSpec {
+        id: CommandId::Agent,
+        name: "agent",
+        usage: "/agent [id]",
+        description: "Choose the Agent for a new session",
+        hint: "switching starts fresh",
     },
     CommandSpec {
         id: CommandId::Sessions,
@@ -412,6 +421,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
     let needs_connection = matches!(
         spec.id,
         CommandId::Resume
+            | CommandId::Agent
             | CommandId::Rename
             | CommandId::Fork
             | CommandId::Rewind
@@ -435,6 +445,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
         && matches!(
             spec.id,
             CommandId::New
+                | CommandId::Agent
                 | CommandId::Clear
                 | CommandId::Fork
                 | CommandId::Rewind
@@ -726,6 +737,9 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
         CommandId::New => {
             require_no_args(&invocation)?;
             state.session_id = None;
+            state.session_config = None;
+            state.pending_session_prompt = None;
+            state.session_creation_pending = false;
             state.messages.clear();
             state.streaming.clear();
             state.streaming_thinking.clear();
@@ -742,6 +756,42 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.welcomed = false;
             state.mode = AppMode::Normal;
             state.status = "New session ready".into();
+        }
+        CommandId::Agent => {
+            if state.agents.is_empty() {
+                state
+                    .pending_actions
+                    .push(crate::event::Action::DiscoverAgents);
+                return Err("Agent catalog is still loading".into());
+            }
+            match invocation.args.as_slice() {
+                [] => {
+                    state.modals.push(Box::new(AgentPicker::new(state)));
+                }
+                [id] => {
+                    let index = state
+                        .agents
+                        .iter()
+                        .position(|agent| agent.id.0 == *id || agent.name.eq_ignore_ascii_case(id))
+                        .ok_or_else(|| format!("Agent `{id}` is not advertised by the server"))?;
+                    let agent = state.agents[index].clone();
+                    let changed = state.selected_agent_id.as_ref() != Some(&agent.id);
+                    state.selected_agent_id = Some(agent.id);
+                    state.metadata.models = agent.models;
+                    state.metadata.model = agent.default_model_id;
+                    state.session_model_override = None;
+                    if changed && state.session_id.is_some() {
+                        state.session_id = None;
+                        state.session_config = None;
+                        state.session_creation_pending = false;
+                        state.messages.clear();
+                        state.welcomed = false;
+                    }
+                    state.status =
+                        format!("{} selected · next prompt starts a new session", agent.name);
+                }
+                _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+            }
         }
         CommandId::Sessions | CommandId::Resume => {
             require_no_args(&invocation)?;
@@ -1264,10 +1314,6 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 state.modals.push(Box::new(ModelPicker::new(state)));
             }
             [model] | [model, _] => {
-                let session_id = state
-                    .session_id
-                    .clone()
-                    .ok_or("Start a session before selecting a model")?;
                 let matches = state
                     .metadata
                     .models
@@ -1303,17 +1349,25 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                         crate::app::reasoning_label(effort)
                     ));
                 }
-                state
-                    .pending_actions
-                    .push(crate::event::Action::SelectModel {
-                        session_id,
-                        model: sylvander_protocol::ModelSelection {
-                            provider_id: descriptor.provider.clone(),
-                            model_id: descriptor.id.clone(),
-                        },
-                        reasoning_effort: effort,
-                    });
-                state.status = "Selecting model…".into();
+                let selection = sylvander_protocol::ModelSelection {
+                    provider_id: descriptor.provider.clone(),
+                    model_id: descriptor.id.clone(),
+                };
+                if let Some(session_id) = state.session_id.clone() {
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::SelectModel {
+                            session_id,
+                            model: selection,
+                            reasoning_effort: effort,
+                        });
+                    state.status = "Selecting model…".into();
+                } else {
+                    state.metadata.model.clone_from(&selection.model_id);
+                    state.metadata.reasoning_effort = effort;
+                    state.session_model_override = Some((selection, effort));
+                    state.status = "Model override ready · applies when the session starts".into();
+                }
             }
             _ => return Err(format!("Usage: {}", invocation.spec.usage)),
         },
@@ -1897,6 +1951,7 @@ mod tests {
     fn trusted_dynamic_command_submits_through_the_normal_chat_path() {
         let mut state = AppState::new();
         state.connected = true;
+        state.session_id = Some("session-1".into());
         state.platform.commands = vec![dynamic_command(
             "security-review",
             sylvander_protocol::PlatformTrust::Workspace,

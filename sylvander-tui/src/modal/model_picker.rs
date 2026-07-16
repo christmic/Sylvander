@@ -213,10 +213,6 @@ impl Modal for ModelPicker {
                 Consumed::Yes { dismiss: false }
             }
             KeyCode::Enter => {
-                let Some(session_id) = state.session_id.clone() else {
-                    state.status = "Start a session before selecting a model".into();
-                    return Consumed::Yes { dismiss: true };
-                };
                 let Some(model) = self.selected(state) else {
                     return Consumed::Yes { dismiss: true };
                 };
@@ -225,17 +221,25 @@ impl Modal for ModelPicker {
                     .get(self.effort_index)
                     .copied()
                     .unwrap_or_default();
-                state
-                    .pending_actions
-                    .push(crate::event::Action::SelectModel {
-                        session_id,
-                        model: sylvander_protocol::ModelSelection {
-                            provider_id: model.provider.clone(),
-                            model_id: model.id.clone(),
-                        },
-                        reasoning_effort: effort,
-                    });
-                state.status = "Selecting model…".into();
+                let selection = sylvander_protocol::ModelSelection {
+                    provider_id: model.provider.clone(),
+                    model_id: model.id.clone(),
+                };
+                if let Some(session_id) = state.session_id.clone() {
+                    state
+                        .pending_actions
+                        .push(crate::event::Action::SelectModel {
+                            session_id,
+                            model: selection,
+                            reasoning_effort: effort,
+                        });
+                    state.status = "Selecting model…".into();
+                } else {
+                    state.metadata.model.clone_from(&selection.model_id);
+                    state.metadata.reasoning_effort = effort;
+                    state.session_model_override = Some((selection, effort));
+                    state.status = "Model override ready · applies when the session starts".into();
+                }
                 Consumed::Yes { dismiss: true }
             }
             _ => Consumed::Ignored,

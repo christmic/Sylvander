@@ -23,7 +23,7 @@ use crate::{terminal_input, ui};
 
 enum Wake {
     Input(Option<UserIntent>),
-    Service(Option<DomainEvent>),
+    Service(Option<Box<DomainEvent>>),
     Frame,
     Animation,
     Reconnect,
@@ -106,7 +106,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
     loop {
         let wake = tokio::select! {
             intent = input.recv(), if input_open => Wake::Input(intent),
-            event = service.recv(), if service_open => Wake::Service(event),
+            event = service.recv(), if service_open => Wake::Service(event.map(Box::new)),
             _ = frame_clock.tick() => Wake::Frame,
             _ = animation_clock.tick(), if !reduced_motion => Wake::Animation,
             _ = reconnect_clock.tick() => Wake::Reconnect,
@@ -121,7 +121,7 @@ pub async fn run(config: TuiConfig) -> std::io::Result<()> {
                 application.handle(intent);
             }
             Wake::Input(None) => input_open = false,
-            Wake::Service(Some(event)) => application.apply(event),
+            Wake::Service(Some(event)) => application.apply(*event),
             Wake::Service(None) => service_open = false,
             Wake::Frame => {}
             Wake::Animation => application.apply(DomainEvent::Tick),

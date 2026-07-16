@@ -105,6 +105,13 @@ pub enum DomainEvent {
     /// Server assigned us a session id.
     SessionCreated {
         session_id: String,
+        config: Option<sylvander_protocol::SessionConfigState>,
+    },
+    AgentsDiscovered {
+        agents: Vec<sylvander_protocol::AgentDescriptor>,
+    },
+    SessionConfigLoaded {
+        state: sylvander_protocol::SessionConfigState,
     },
     SessionsLoaded {
         sessions: Vec<SessionSummary>,
@@ -301,6 +308,8 @@ impl DomainEvent {
             | Self::CodingSessionDiscarded
             | Self::CodingSessionOperationFailed { .. }
             | Self::SessionCreated { .. }
+            | Self::AgentsDiscovered { .. }
+            | Self::SessionConfigLoaded { .. }
             | Self::SessionsLoaded { .. }
             | Self::SessionHistoryLoaded { .. }
             | Self::SessionUpdated { .. }
@@ -380,6 +389,10 @@ pub enum Action {
     },
     RequestSessions,
     RequestRuntimeInfo,
+    DiscoverAgents,
+    CreateSession {
+        request: sylvander_protocol::SessionCreateRequest,
+    },
     RequestContext {
         session_id: Option<String>,
     },

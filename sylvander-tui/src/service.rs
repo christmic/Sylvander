@@ -133,6 +133,8 @@ impl AgentService {
             },
             Action::RequestSessions => ClientMsg::ListSessions,
             Action::RequestRuntimeInfo => ClientMsg::GetRuntimeInfo,
+            Action::DiscoverAgents => ClientMsg::DiscoverAgents,
+            Action::CreateSession { request } => ClientMsg::CreateSession { request },
             Action::RequestContext { session_id } => ClientMsg::GetContext { session_id },
             Action::CompactSession { session_id } => ClientMsg::Compact { session_id },
             Action::PreviewWorkspaceRollback { session_id } => {
