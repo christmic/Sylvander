@@ -97,6 +97,7 @@ pub mod tool_context;
 pub mod tools;
 pub mod user_profile_prompt;
 pub mod user_profile_provider;
+pub mod workspace_executor;
 pub mod workspace_journal;
 
 /// Convenient re-exports for the most commonly used types.
@@ -141,6 +142,10 @@ pub mod prelude {
         MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,
         RelationshipMemoryRetentionPolicy, SqliteMemoryAdmin, SqliteMemoryMaintenance,
         SqliteMemoryStore, StartBackgroundTaskTool, SystemMemoryClock, UpdatePlanTool, WriteTool,
+    };
+    pub use crate::workspace_executor::{
+        LocalExecutor, WorkspaceCommandOutput, WorkspaceExecutor, WorkspaceExecutorError,
+        WorkspaceTarget,
     };
     pub use sylvander_llm_anthropic::prelude::*;
     pub use sylvander_protocol::types::UserId;

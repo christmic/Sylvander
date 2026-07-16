@@ -82,15 +82,13 @@ impl Tool for WriteTool {
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `content`".into()))?;
 
-        let root = ctx
-            .surface
-            .fs_root
-            .clone()
-            .unwrap_or_else(|| self.workdir.clone());
-        let path = match crate::workspace_journal::WorkspaceJournal::resolve(&root, path_str) {
-            Ok(path) => path,
-            Err(error) => return Ok(ToolOutput::err(error)),
-        };
+        let target = ctx.execution_target_for(&self.workdir);
+        if target.read_only {
+            return Ok(ToolOutput::err(format!(
+                "execution target `{}` is read-only",
+                target.id
+            )));
+        }
         let prepared = if let Some(journal) = &ctx.workspace_journal {
             let turn_id = ctx.session.request.trace_id.as_deref().ok_or_else(|| {
                 ToolError::Other("workspace journal requires a turn trace id".into())
@@ -100,7 +98,7 @@ impl Tool for WriteTool {
                     .prepare(
                         &ctx.session_id().0,
                         turn_id,
-                        &root,
+                        &target.workspace_path,
                         path_str,
                         content.as_bytes(),
                     )
@@ -110,18 +108,11 @@ impl Tool for WriteTool {
             None
         };
 
-        // Create parent dirs if missing.
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-            && !parent.exists()
-            && let Err(e) = std::fs::create_dir_all(parent)
+        match ctx
+            .executor
+            .write_file(&target, path_str, content.as_bytes())
+            .await
         {
-            return Ok(ToolOutput::err(format!(
-                "cannot create parent dir for `{path_str}`: {e}"
-            )));
-        }
-
-        match std::fs::write(&path, content) {
             Ok(()) => {
                 if let (Some(journal), Some(prepared)) = (&ctx.workspace_journal, &prepared) {
                     journal.commit(prepared).map_err(ToolError::Other)?;
@@ -131,7 +122,7 @@ impl Tool for WriteTool {
                     content.len()
                 )))
             }
-            Err(e) => Ok(ToolOutput::err(format!("cannot write `{path_str}`: {e}"))),
+            Err(error) => Ok(ToolOutput::err(error.to_string())),
         }
     }
 }

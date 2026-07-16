@@ -39,6 +39,10 @@ use std::time::Duration;
 use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_protocol::SessionContext;
 
+use crate::workspace_executor::{
+    LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
+};
+
 /// Per-invocation context handed to every `Tool::execute` call.
 ///
 /// Cheap to clone (one `Arc` + a few small values); tools can pass
@@ -55,6 +59,12 @@ pub struct ToolContext {
 
     /// What the tool is allowed to touch in this invocation.
     pub surface: SurfaceView,
+
+    /// Location-neutral executor selected for this invocation.
+    pub executor: Arc<dyn WorkspaceExecutor>,
+
+    /// Execution target and workspace binding passed to the executor.
+    pub execution_target: WorkspaceTarget,
 
     /// Optional durable workspace mutation journal owned by the Agent runtime.
     pub workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
@@ -77,6 +87,8 @@ impl ToolContext {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
+            executor: Arc::new(LocalExecutor),
+            execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
         }
@@ -90,6 +102,8 @@ impl ToolContext {
             session: Arc::new(session),
             budget: ExecutionBudget::default(),
             surface: SurfaceView::default(),
+            executor: Arc::new(LocalExecutor),
+            execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
         }
@@ -98,8 +112,57 @@ impl ToolContext {
     /// Builder-style: attach a file-system root to the surface.
     #[must_use]
     pub fn with_fs_root(mut self, root: impl Into<PathBuf>) -> Self {
-        self.surface.fs_root = Some(root.into());
+        let root = root.into();
+        self.surface.fs_root = Some(root.clone());
+        self.execution_target.workspace_path = root;
         self
+    }
+
+    /// Bind this invocation to a named execution target.
+    #[must_use]
+    pub fn with_execution_target(
+        mut self,
+        target_id: impl Into<String>,
+        workspace_path: impl Into<PathBuf>,
+        read_only: bool,
+    ) -> Self {
+        let target_id = target_id.into();
+        self.executor = if target_id == "local" {
+            Arc::new(LocalExecutor)
+        } else {
+            Arc::new(UnavailableExecutor::new(target_id.clone()))
+        };
+        self.execution_target = WorkspaceTarget {
+            id: target_id,
+            workspace_path: workspace_path.into(),
+            read_only,
+        };
+        self.surface.fs_root = Some(self.execution_target.workspace_path.clone());
+        self
+    }
+
+    /// Inject an executor, primarily for transport adapters and contract tests.
+    #[must_use]
+    pub fn with_executor(
+        mut self,
+        executor: Arc<dyn WorkspaceExecutor>,
+        target: WorkspaceTarget,
+    ) -> Self {
+        self.surface.fs_root = Some(target.workspace_path.clone());
+        self.executor = executor;
+        self.execution_target = target;
+        self
+    }
+
+    /// Effective target, retaining legacy tool constructors only as a fallback
+    /// when no runtime workspace binding was supplied.
+    #[must_use]
+    pub fn execution_target_for(&self, fallback: &std::path::Path) -> WorkspaceTarget {
+        let mut target = self.execution_target.clone();
+        if target.workspace_path.as_os_str().is_empty() {
+            target.workspace_path = fallback.to_path_buf();
+        }
+        target
     }
 
     /// Builder-style: attach an execution budget.

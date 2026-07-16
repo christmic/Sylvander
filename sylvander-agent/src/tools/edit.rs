@@ -106,21 +106,20 @@ impl Tool for EditTool {
             )));
         }
 
-        let root = ctx
-            .surface
-            .fs_root
-            .clone()
-            .unwrap_or_else(|| self.workdir.clone());
-        let path = match crate::workspace_journal::WorkspaceJournal::resolve(&root, path_str) {
-            Ok(path) => path,
-            Err(error) => return Ok(ToolOutput::err(error)),
+        let target = ctx.execution_target_for(&self.workdir);
+        if target.read_only {
+            return Ok(ToolOutput::err(format!(
+                "execution target `{}` is read-only",
+                target.id
+            )));
+        }
+        let bytes = match ctx.executor.read_file(&target, path_str).await {
+            Ok(bytes) => bytes,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
-
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(ToolOutput::err(format!("cannot read `{path_str}`: {e}")));
-            }
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(error) => return Ok(ToolOutput::err(format!("file is not UTF-8 text: {error}"))),
         };
 
         let occurrences = content.matches(old_string).count();
@@ -151,7 +150,7 @@ impl Tool for EditTool {
                     .prepare(
                         &ctx.session_id().0,
                         turn_id,
-                        &root,
+                        &target.workspace_path,
                         path_str,
                         new_content.as_bytes(),
                     )
@@ -161,7 +160,11 @@ impl Tool for EditTool {
             None
         };
 
-        match std::fs::write(&path, &new_content) {
+        match ctx
+            .executor
+            .write_file(&target, path_str, new_content.as_bytes())
+            .await
+        {
             Ok(()) => {
                 if let (Some(journal), Some(prepared)) = (&ctx.workspace_journal, &prepared) {
                     journal.commit(prepared).map_err(ToolError::Other)?;
@@ -173,7 +176,7 @@ impl Tool for EditTool {
                     path_str
                 )))
             }
-            Err(e) => Ok(ToolOutput::err(format!("cannot write `{path_str}`: {e}"))),
+            Err(error) => Ok(ToolOutput::err(error.to_string())),
         }
     }
 }

@@ -237,7 +237,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
-| A09 | File tools | partial | Read/Write/Edit enforce capabilities and a canonical local root, but call `std::fs` directly and cannot address remote/container/sandbox resources. |
+| A09 | File tools | partial | Read/Write/Edit/Command now use one location-neutral executor contract. The local adapter enforces workspace-relative paths and read-only bindings; unavailable remote targets fail explicitly instead of falling back to host paths. SSH/container adapters remain. |
 | A10 | Command/Git tools | missing | The Agent has no production spawn/shell/Git tool surface. `Cap::Spawn` and `Cap::Git` are declarations without executor-backed tools. |
 | A11 | Worktree isolation | missing | No worktree lease, branch lifecycle, merge gate, ownership, or cleanup service exists. |
 | A12 | AGENTS.md | missing | Repository guides exist for developers, but the running Agent does not discover or assemble workspace instructions. |
@@ -532,6 +532,14 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P3.2 Executor-backed tools:** migrate Read/Write/Edit and add bounded
   List/Search/Command/Git operations without exposing backend location to the
   Agent loop.
+
+  Current evidence: the first local slice provides `WorkspaceExecutor`,
+  `WorkspaceTarget`, and `LocalExecutor`; Read/Write/Edit/Command delegate to
+  it, session workspace bindings select the target per turn, read-only is
+  enforced as the intersection of workspace and permission policy, configured
+  local roots bound accepted workspaces, and unknown remote adapters never
+  execute against a same-named host path. List/Search/Git, environment and
+  streaming contracts, and remote adapters keep P3.1/P3.2 open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, cancellation, upload/download semantics, and conformance tests.
 - [ ] **P3.4 Container and sandbox executors:** lifecycle, mounts, resource and

@@ -59,53 +59,34 @@ impl Tool for CommandTool {
             .and_then(JsonValue::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ToolError::Other("missing required field `command`".into()))?;
-        let root = ctx
-            .surface
-            .fs_root
-            .clone()
-            .unwrap_or_else(|| self.workdir.clone());
-        if !root.is_dir() {
+        let target = ctx.execution_target_for(&self.workdir);
+        if target.read_only {
             return Ok(ToolOutput::err(format!(
-                "workspace does not exist: {}",
-                root.display()
+                "execution target `{}` is read-only",
+                target.id
             )));
         }
-
-        let mut process = shell_command(command);
-        process.current_dir(root).kill_on_drop(true);
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
-        let output = tokio::time::timeout(timeout, process.output())
-            .await
-            .map_err(|_| ToolError::Timeout(timeout))?
-            .map_err(|error| ToolError::Other(format!("cannot run command: {error}")))?;
+        let output = match ctx.executor.run_command(&target, command, timeout).await {
+            Ok(output) => output,
+            Err(crate::workspace_executor::WorkspaceExecutorError::Timeout(timeout)) => {
+                return Err(ToolError::Timeout(timeout));
+            }
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
 
         let stdout = bounded_text(&output.stdout);
         let stderr = bounded_text(&output.stderr);
         let status = output
-            .status
-            .code()
+            .status_code
             .map_or_else(|| "signal".to_string(), |code| code.to_string());
         let content = format!("exit: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
-        if output.status.success() {
+        if output.success {
             Ok(ToolOutput::ok(content))
         } else {
             Ok(ToolOutput::err(content))
         }
     }
-}
-
-#[cfg(unix)]
-fn shell_command(command: &str) -> tokio::process::Command {
-    let mut process = tokio::process::Command::new("sh");
-    process.args(["-lc", command]);
-    process
-}
-
-#[cfg(windows)]
-fn shell_command(command: &str) -> tokio::process::Command {
-    let mut process = tokio::process::Command::new("cmd");
-    process.args(["/C", command]);
-    process
 }
 
 fn bounded_text(bytes: &[u8]) -> String {

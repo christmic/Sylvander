@@ -2345,7 +2345,10 @@ impl AgentRunInner {
             .await
             .contains(&session_id);
         let tool_context = tool_context_for_permissions(
-            &session_metadata,
+            ToolSessionExecution {
+                metadata: &session_metadata,
+                effective_config: effective_config.as_ref(),
+            },
             &self.id,
             &session_id,
             &permissions,
@@ -2776,8 +2779,14 @@ impl TurnCorrelation {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ToolSessionExecution<'a> {
+    metadata: &'a SessionMetadata,
+    effective_config: Option<&'a sylvander_protocol::SessionEffectiveConfig>,
+}
+
 fn tool_context_for_permissions(
-    metadata: &SessionMetadata,
+    execution: ToolSessionExecution<'_>,
     agent_id: &AgentId,
     session_id: &SessionId,
     permissions: &sylvander_protocol::PermissionProfile,
@@ -2785,6 +2794,7 @@ fn tool_context_for_permissions(
     workspace_journal: Option<Arc<crate::workspace_journal::WorkspaceJournal>>,
     turn_id: Option<&str>,
 ) -> ToolContext {
+    let metadata = execution.metadata;
     let mut session = sylvander_protocol::SessionContext::new(
         metadata.user_id.clone(),
         agent_id.clone(),
@@ -2797,9 +2807,25 @@ fn tool_context_for_permissions(
         ToolContext::application(session)
     } else {
         ToolContext::new(session)
-    }
-    .with_fs_root(metadata.workspace.clone());
-    if let Some(journal) = workspace_journal {
+    };
+    let binding = execution.effective_config.and_then(|config| {
+        select_workspace_binding(
+            config.user_workspace.as_ref(),
+            config.agent_workspace.as_ref(),
+        )
+    });
+    let target_id = binding.map_or("local", |binding| binding.execution_target.as_str());
+    let workspace = binding.map_or(metadata.workspace.as_path(), |binding| {
+        binding.path.as_path()
+    });
+    let permission_read_only =
+        permissions.file_access != sylvander_protocol::FileAccess::WorkspaceWrite;
+    let read_only = permission_read_only || binding.is_some_and(|binding| binding.read_only);
+    context = context.with_execution_target(target_id, workspace, read_only);
+    if target_id == "local"
+        && !read_only
+        && let Some(journal) = workspace_journal
+    {
         context = context.with_workspace_journal(journal);
     }
     match permissions.file_access {
@@ -2825,6 +2851,13 @@ fn tool_context_for_permissions(
             .with_capability(Cap::MemoryWrite);
     }
     context
+}
+
+fn select_workspace_binding<'a>(
+    user_workspace: Option<&'a sylvander_protocol::SessionWorkspaceBinding>,
+    agent_workspace: Option<&'a sylvander_protocol::SessionWorkspaceBinding>,
+) -> Option<&'a sylvander_protocol::SessionWorkspaceBinding> {
+    user_workspace.or(agent_workspace)
 }
 
 // ---------------------------------------------------------------------------
@@ -4364,7 +4397,10 @@ mod tests {
     fn permission_profile_builds_a_workspace_scoped_tool_context() {
         let metadata = test_metadata();
         let context = tool_context_for_permissions(
-            &metadata,
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: None,
+            },
             &AgentId::new("agent"),
             &SessionId::new("session"),
             &sylvander_protocol::PermissionProfile {
@@ -4387,6 +4423,27 @@ mod tests {
         assert!(context.has_cap(Cap::MemoryRead));
         assert_eq!(context.user_id().0, metadata.user_id);
         assert_eq!(context.session.request.trace_id.as_deref(), Some("turn-1"));
+    }
+
+    #[test]
+    fn user_workspace_precedes_agent_workspace_and_agent_fallback_keeps_read_only() {
+        let user = sylvander_protocol::SessionWorkspaceBinding {
+            execution_target: "local".into(),
+            path: "/user".into(),
+            read_only: false,
+        };
+        let agent = sylvander_protocol::SessionWorkspaceBinding {
+            execution_target: "ssh:agent".into(),
+            path: "/agent".into(),
+            read_only: true,
+        };
+        assert_eq!(
+            select_workspace_binding(Some(&user), Some(&agent)),
+            Some(&user)
+        );
+        let selected = select_workspace_binding(None, Some(&agent)).unwrap();
+        assert_eq!(selected.execution_target, "ssh:agent");
+        assert!(selected.read_only);
     }
 
     #[tokio::test]

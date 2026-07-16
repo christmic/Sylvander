@@ -80,57 +80,34 @@ impl Tool for ReadTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
 
-        // Effective root: ctx.surface.fs_root takes precedence over the
-        // tool's configured workdir, so a runtime can redirect file
-        // access per-invocation without rebuilding tools.
-        let root = ctx
-            .surface
-            .fs_root
-            .clone()
-            .unwrap_or_else(|| self.workdir.clone());
-
-        // Canonicalize the root first so that symlink-resolved paths
-        // (e.g., /var/folders/... → /private/var/folders/... on macOS)
-        // are compared on equal footing with the requested path.
-        let workdir_canonical = match root.canonicalize() {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot canonicalize workdir: {e}"))),
-        };
-
-        // Resolve the requested path against the root.
-        let requested = root.join(path_str);
-        let canonical = match requested.canonicalize() {
-            Ok(p) => p,
-            Err(e) => return Ok(ToolOutput::err(format!("cannot resolve `{path_str}`: {e}"))),
-        };
-
-        // Reject path traversal (e.g., "../etc/passwd" or symlinks
-        // pointing outside workdir) — security violation, terminate.
-        if !canonical.starts_with(&workdir_canonical) {
-            return Err(ToolError::Other(format!(
-                "path `{path_str}` escapes workdir"
-            )));
-        }
-
-        // Read the file. Cap at 1 MiB to avoid runaway memory.
-        let content = match std::fs::read_to_string(&canonical) {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(ToolOutput::err(format!(
-                    "cannot read `{}`: {e}",
-                    canonical.display()
+        let target = ctx.execution_target_for(&self.workdir);
+        let bytes = match ctx.executor.read_file(&target, path_str).await {
+            Ok(bytes) => bytes,
+            Err(crate::workspace_executor::WorkspaceExecutorError::InvalidPath(_)) => {
+                return Err(ToolError::Other(format!(
+                    "path `{path_str}` escapes workdir"
                 )));
             }
+            Err(crate::workspace_executor::WorkspaceExecutorError::Io(error)) => {
+                return Ok(ToolOutput::err(format!(
+                    "cannot resolve `{path_str}`: {error}"
+                )));
+            }
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
 
         const MAX_BYTES: usize = 1024 * 1024;
-        if content.len() > MAX_BYTES {
+        if bytes.len() > MAX_BYTES {
             return Ok(ToolOutput::err(format!(
                 "file too large ({} bytes > {} byte limit)",
-                content.len(),
+                bytes.len(),
                 MAX_BYTES
             )));
         }
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(error) => return Ok(ToolOutput::err(format!("file is not UTF-8 text: {error}"))),
+        };
 
         Ok(ToolOutput::ok(content))
     }

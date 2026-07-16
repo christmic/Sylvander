@@ -379,6 +379,20 @@ fn unknown_fields_fail_instead_of_being_silently_ignored() {
 }
 
 #[test]
+fn local_execution_root_must_be_absolute_and_normalized() {
+    for root in [
+        PathBuf::from("relative"),
+        PathBuf::from("/workspace/../other"),
+    ] {
+        let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+        config.execution_targets[0].transport =
+            ExecutionTransportConfig::Local { root: Some(root) };
+        let errors = config.validate().unwrap_err().errors.join("\n");
+        assert!(errors.contains("root must be an absolute normalized path"));
+    }
+}
+
+#[test]
 fn validation_collects_duplicate_and_dangling_references() {
     let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
     config
