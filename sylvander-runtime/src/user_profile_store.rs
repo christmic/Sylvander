@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use sylvander_protocol::{UserId, UserProfileData};
+use sylvander_protocol::{
+    USER_PROFILE_PROTOCOL_VERSION, UserId, UserProfileData, UserProfileExport,
+    UserProfileExportFormat, UserProfileView,
+};
 use tokio::{sync::Mutex, task};
 
 const APPLICATION_ID: i64 = 1_398_362_182;
@@ -20,6 +23,7 @@ pub(crate) struct StoredUserProfile {
     pub(crate) revision: u64,
     pub(crate) profile: UserProfileData,
     pub(crate) do_not_learn: bool,
+    pub(crate) created_at_unix_secs: i64,
     pub(crate) updated_at_unix_secs: i64,
 }
 
@@ -31,6 +35,7 @@ impl std::fmt::Debug for StoredUserProfile {
             .field("revision", &self.revision)
             .field("profile", &"[REDACTED]")
             .field("do_not_learn", &self.do_not_learn)
+            .field("created_at_unix_secs", &self.created_at_unix_secs)
             .field("updated_at_unix_secs", &self.updated_at_unix_secs)
             .finish()
     }
@@ -151,7 +156,7 @@ impl UserProfileStore {
             let revision = next_revision(previous_revision)?;
             let changed = transaction
                 .execute(
-                    "INSERT INTO user_profiles(user_id,revision,profile_json,do_not_learn,deleted,updated_at) VALUES (?1,?2,?3,0,0,?4) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,profile_json=excluded.profile_json,do_not_learn=0,deleted=0,updated_at=excluded.updated_at WHERE user_profiles.deleted=1 AND user_profiles.revision=?5",
+                    "INSERT INTO user_profiles(user_id,revision,profile_json,do_not_learn,deleted,created_at,updated_at) VALUES (?1,?2,?3,0,0,?4,?4) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,profile_json=excluded.profile_json,do_not_learn=user_profiles.do_not_learn,deleted=0,created_at=excluded.created_at,updated_at=excluded.updated_at WHERE user_profiles.deleted=1 AND user_profiles.revision=?5",
                     params![owner.0, sql_revision(revision)?, profile_json, now, sql_revision(previous_revision)?],
                 )
                 .map_err(storage)?;
@@ -249,10 +254,23 @@ impl UserProfileStore {
     pub(crate) async fn export(
         &self,
         owner: UserId,
-    ) -> Result<StoredUserProfile, UserProfileStoreError> {
-        self.read(owner)
+    ) -> Result<UserProfileExport, UserProfileStoreError> {
+        let stored = self
+            .read(owner)
             .await?
-            .ok_or(UserProfileStoreError::NotFound)
+            .ok_or(UserProfileStoreError::NotFound)?;
+        Ok(UserProfileExport {
+            schema_version: USER_PROFILE_PROTOCOL_VERSION,
+            format: UserProfileExportFormat::Json,
+            profile: UserProfileView {
+                revision: stored.revision,
+                profile: stored.profile,
+                do_not_learn: stored.do_not_learn,
+                created_at_unix_secs: stored.created_at_unix_secs,
+                updated_at_unix_secs: stored.updated_at_unix_secs,
+            },
+            exported_at_unix_secs: self.clock.now(),
+        })
     }
 
     async fn mutate(
@@ -387,7 +405,7 @@ fn load_profile(
 ) -> Result<Option<StoredUserProfile>, UserProfileStoreError> {
     connection
         .query_row(
-            "SELECT revision,profile_json,do_not_learn,updated_at FROM user_profiles WHERE user_id=?1 AND deleted=0",
+            "SELECT revision,profile_json,do_not_learn,created_at,updated_at FROM user_profiles WHERE user_id=?1 AND deleted=0",
             [&owner.0],
             |row| {
                 Ok((
@@ -395,17 +413,19 @@ fn load_profile(
                     row.get::<_, String>(1)?,
                     row.get::<_, bool>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         )
         .optional()
         .map_err(storage)?
-        .map(|(revision, profile, do_not_learn, updated_at)| {
+        .map(|(revision, profile, do_not_learn, created_at, updated_at)| {
             Ok(StoredUserProfile {
                 owner: owner.clone(),
                 revision: u64::try_from(revision).map_err(|_| UserProfileStoreError::Corrupt)?,
                 profile: decode_profile(&profile)?,
                 do_not_learn,
+                created_at_unix_secs: created_at,
                 updated_at_unix_secs: updated_at,
             })
         })
@@ -430,6 +450,14 @@ fn initialize_schema(connection: &mut Connection) -> Result<(), UserProfileStore
         (0, 0, 0) => connection.execute_batch(SCHEMA).map_err(storage),
         (SCHEMA_VERSION, APPLICATION_ID, _) => validate_schema(connection),
         _ => Err(UserProfileStoreError::IncompatibleSchema),
+    }?;
+    let integrity = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(storage)?;
+    if integrity == "ok" {
+        Ok(())
+    } else {
+        Err(UserProfileStoreError::Corrupt)
     }
 }
 
@@ -472,6 +500,7 @@ CREATE TABLE user_profiles (
     profile_json TEXT CHECK(profile_json IS NULL OR length(profile_json) <= 16384),
     do_not_learn INTEGER NOT NULL CHECK(do_not_learn IN (0,1)),
     deleted INTEGER NOT NULL CHECK(deleted IN (0,1)),
+    created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     CHECK((deleted=1 AND profile_json IS NULL AND do_not_learn=1)
        OR (deleted=0 AND profile_json IS NOT NULL))
@@ -479,3 +508,6 @@ CREATE TABLE user_profiles (
 PRAGMA user_version=1;
 COMMIT;
 ";
+
+#[cfg(test)]
+mod tests;
