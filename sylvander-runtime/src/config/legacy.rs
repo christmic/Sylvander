@@ -161,6 +161,7 @@ impl ServerConfig {
                 },
                 evidence: super::EvidenceSettings::default(),
                 boundary: super::BoundarySettings::default(),
+                identity: super::IdentitySettings::default(),
             },
             model_providers: vec![ModelProviderConfig {
                 id: "primary".into(),

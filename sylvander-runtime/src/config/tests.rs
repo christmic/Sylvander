@@ -475,3 +475,55 @@ name = "SYLVANDER_DESKTOP_TOKEN"
     let error = ServerConfig::from_toml(&(valid_toml() + &missing_token)).unwrap_err();
     assert!(error.errors[0].contains("missing field `bearer_token`"));
 }
+
+#[test]
+fn stable_identity_configuration_is_typed_bounded_and_redacted() {
+    let identity = r#"
+
+[server.identity]
+challenge_ttl_seconds = 180
+
+[server.identity.digest_key]
+source = "env"
+name = "SYLVANDER_IDENTITY_DIGEST_KEY"
+
+[[server.identity.trusted_issuers]]
+transport = "unix"
+channel_instance_id = "terminal"
+principal_id = "local-alice"
+user_id = "alice"
+"#;
+    let config = ServerConfig::from_toml(&(valid_toml() + identity)).unwrap();
+    assert_eq!(config.server.identity.challenge_ttl_seconds, 180);
+    assert_eq!(config.server.identity.trusted_issuers[0].user_id, "alice");
+    let debug = format!("{:?}", config.server.identity);
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("SYLVANDER_IDENTITY_DIGEST_KEY"));
+    assert!(!debug.contains("local-alice"));
+}
+
+#[test]
+fn stable_identity_configuration_rejects_unsafe_or_ambiguous_issuers() {
+    let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+    config.server.identity.challenge_ttl_seconds = 29;
+    config
+        .server
+        .identity
+        .trusted_issuers
+        .push(IdentityIssuerSettings {
+            transport: "telegram".into(),
+            channel_instance_id: "bot-a".into(),
+            principal_id: "42".into(),
+            user_id: "victim".into(),
+        });
+    config
+        .server
+        .identity
+        .trusted_issuers
+        .push(config.server.identity.trusted_issuers[0].clone());
+
+    let error = config.validate().unwrap_err().errors.join("\n");
+    assert!(error.contains("challenge_ttl_seconds"));
+    assert!(error.contains("require a digest_key"));
+    assert!(error.contains("duplicate trusted issuer ingress"));
+}
