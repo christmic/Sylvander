@@ -96,6 +96,8 @@ struct McpInner {
     child: Mutex<Child>,
     result_artifact_root: Option<PathBuf>,
     tool_definitions: std::sync::RwLock<Vec<JsonValue>>,
+    resource_definitions: std::sync::RwLock<Vec<JsonValue>>,
+    supports_resources: AtomicBool,
     health: AtomicU8,
     reconnect_count: AtomicU64,
     shutdown: AtomicBool,
@@ -182,6 +184,8 @@ impl McpStdioClient {
                 child: Mutex::new(child),
                 result_artifact_root,
                 tool_definitions: std::sync::RwLock::new(Vec::new()),
+                resource_definitions: std::sync::RwLock::new(Vec::new()),
+                supports_resources: AtomicBool::new(false),
                 health: AtomicU8::new(MCP_HEALTH_ACTIVE),
                 reconnect_count: AtomicU64::new(0),
                 shutdown: AtomicBool::new(false),
@@ -211,6 +215,13 @@ impl McpStdioClient {
                 ),
             });
         }
+        client.inner.supports_resources.store(
+            initialized
+                .get("capabilities")
+                .and_then(|capabilities| capabilities.get("resources"))
+                .is_some(),
+            Ordering::Release,
+        );
         client
             .notify("notifications/initialized", json!({}))
             .await?;
@@ -244,6 +255,9 @@ impl McpStdioClient {
         self.inner
             .health
             .store(MCP_HEALTH_ACTIVE, Ordering::Release);
+        if self.inner.supports_resources.load(Ordering::Acquire) {
+            self.refresh_resources().await?;
+        }
         Ok(discovered)
     }
 
@@ -255,6 +269,89 @@ impl McpStdioClient {
             .iter()
             .filter_map(|definition| McpTool::from_definition(self.clone(), definition).ok())
             .collect()
+    }
+
+    fn resource_tools(&self) -> Vec<Arc<dyn Tool>> {
+        if !self.inner.supports_resources.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        [McpResourceOperation::List, McpResourceOperation::Read]
+            .into_iter()
+            .map(|operation| {
+                Arc::new(McpResourceTool::new(self.clone(), operation)) as Arc<dyn Tool>
+            })
+            .collect()
+    }
+
+    async fn refresh_resources(&self) -> Result<(), McpError> {
+        const MAX_RESOURCE_PAGES: usize = 32;
+        const MAX_RESOURCES: usize = 4096;
+
+        let mut resources = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_RESOURCE_PAGES {
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+            let result = self.request("resources/list", params).await?;
+            let page = result
+                .get("resources")
+                .and_then(JsonValue::as_array)
+                .ok_or_else(|| McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "resources/list".into(),
+                    message: "missing resources array".into(),
+                })?;
+            if resources.len().saturating_add(page.len()) > MAX_RESOURCES {
+                return Err(McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "resources/list".into(),
+                    message: format!("resource catalog exceeds {MAX_RESOURCES} entries"),
+                });
+            }
+            resources.extend(page.iter().cloned());
+            let next = result
+                .get("nextCursor")
+                .and_then(JsonValue::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            if next.is_none() {
+                *self.inner.resource_definitions.write().unwrap() = resources;
+                return Ok(());
+            }
+            if next == cursor {
+                return Err(McpError::InvalidResult {
+                    server: self.inner.server_name.clone(),
+                    method: "resources/list".into(),
+                    message: "resource pagination cursor did not advance".into(),
+                });
+            }
+            cursor = next;
+        }
+        Err(McpError::InvalidResult {
+            server: self.inner.server_name.clone(),
+            method: "resources/list".into(),
+            message: format!("resource catalog exceeds {MAX_RESOURCE_PAGES} pages"),
+        })
+    }
+
+    async fn read_resource(&self, uri: &str, session_id: &str) -> Result<ToolOutput, McpError> {
+        let result = self
+            .request("resources/read", json!({ "uri": uri }))
+            .await?;
+        let artifact = match &self.inner.result_artifact_root {
+            Some(root) => persist_result_artifact(
+                root,
+                session_id,
+                &self.inner.server_name,
+                "read_resource",
+                &result,
+            )
+            .await
+            .ok(),
+            None => None,
+        };
+        Ok(map_tool_result(&result, artifact.as_deref()))
     }
 
     /// Stop the child process and wait for it to exit.
@@ -373,6 +470,9 @@ impl McpStdioClient {
                 method: "reconnect".into(),
                 message: "replacement process is unexpectedly shared".into(),
             })?;
+        let supports_resources = replacement.supports_resources.load(Ordering::Acquire);
+        let tool_definitions = replacement.tool_definitions.into_inner().unwrap();
+        let resource_definitions = replacement.resource_definitions.into_inner().unwrap();
         let new_io = replacement.io.into_inner();
         let new_child = replacement.child.into_inner();
 
@@ -381,8 +481,11 @@ impl McpStdioClient {
         stop_child(&self.inner.server_name, &mut child).await?;
         *io = new_io;
         *child = new_child;
-        *self.inner.tool_definitions.write().unwrap() =
-            replacement.tool_definitions.into_inner().unwrap();
+        *self.inner.tool_definitions.write().unwrap() = tool_definitions;
+        *self.inner.resource_definitions.write().unwrap() = resource_definitions;
+        self.inner
+            .supports_resources
+            .store(supports_resources, Ordering::Release);
         self.inner.generation.fetch_add(1, Ordering::Release);
         self.inner.reconnect_count.fetch_add(1, Ordering::Relaxed);
         self.inner
@@ -478,10 +581,13 @@ fn spawn_health_monitor(client: &McpStdioClient) {
 
 impl DynamicToolSource for McpStdioClient {
     fn snapshot(&self) -> Vec<Arc<dyn Tool>> {
-        self.current_tools()
+        let mut tools = self
+            .current_tools()
             .into_iter()
             .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
-            .collect()
+            .collect::<Vec<_>>();
+        tools.extend(self.resource_tools());
+        tools
     }
 
     fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
@@ -496,6 +602,7 @@ impl DynamicToolSource for McpStdioClient {
             _ => PlatformFeatureStatus::Unavailable,
         };
         let tool_count = self.inner.tool_definitions.read().unwrap().len();
+        let resource_count = self.inner.resource_definitions.read().unwrap().len();
         let generation = self.inner.generation.load(Ordering::Acquire);
         let reconnects = self.inner.reconnect_count.load(Ordering::Acquire);
         Some(PlatformFeature {
@@ -503,7 +610,7 @@ impl DynamicToolSource for McpStdioClient {
             name: self.inner.server_name.clone(),
             status,
             summary: format!(
-                "{tool_count} tools · generation {generation} · {reconnects} reconnects"
+                "{tool_count} tools · {resource_count} resources · generation {generation} · {reconnects} reconnects"
             ),
             source: std::path::Path::new(&self.inner.config.command)
                 .file_name()
@@ -515,7 +622,11 @@ impl DynamicToolSource for McpStdioClient {
             } else {
                 PlatformAuthStatus::Configured
             },
-            capabilities: vec!["tools".into()],
+            capabilities: if self.inner.supports_resources.load(Ordering::Acquire) {
+                vec!["tools".into(), "resources".into()]
+            } else {
+                vec!["tools".into()]
+            },
             reloadable: true,
         })
     }
@@ -622,6 +733,97 @@ impl Tool for McpTool {
                 McpError::Timeout { duration, .. } => ToolError::Timeout(duration),
                 other => ToolError::Other(other.to_string()),
             })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum McpResourceOperation {
+    List,
+    Read,
+}
+
+#[derive(Debug, Clone)]
+struct McpResourceTool {
+    client: McpStdioClient,
+    name: String,
+    operation: McpResourceOperation,
+}
+
+impl McpResourceTool {
+    fn new(client: McpStdioClient, operation: McpResourceOperation) -> Self {
+        let remote_name = match operation {
+            McpResourceOperation::List => "list_resources",
+            McpResourceOperation::Read => "read_resource",
+        };
+        let name = namespaced_tool_name(&client.inner.server_name, remote_name);
+        Self {
+            client,
+            name,
+            operation,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for McpResourceTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        match self.operation {
+            McpResourceOperation::List => "List resources currently advertised by this MCP server.",
+            McpResourceOperation::Read => {
+                "Read one MCP resource by its exact URI. Use list_resources first when needed."
+            }
+        }
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        match self.operation {
+            McpResourceOperation::List => InputSchema::from_json_value(json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            })),
+            McpResourceOperation::Read => InputSchema::from_json_value(json!({
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "Exact URI returned by list_resources"
+                    }
+                },
+                "required": ["uri"],
+                "additionalProperties": false
+            })),
+        }
+    }
+
+    async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
+        match self.operation {
+            McpResourceOperation::List => {
+                self.client
+                    .refresh_resources()
+                    .await
+                    .map_err(|error| ToolError::Other(error.to_string()))?;
+                let resources = self.client.inner.resource_definitions.read().unwrap();
+                Ok(ToolOutput::ok(bound_tool_result(
+                    json!({ "resources": &*resources }).to_string(),
+                )))
+            }
+            McpResourceOperation::Read => {
+                let uri = input
+                    .get("uri")
+                    .and_then(JsonValue::as_str)
+                    .filter(|uri| !uri.is_empty())
+                    .ok_or_else(|| ToolError::Other("resource URI is required".into()))?;
+                self.client
+                    .read_resource(uri, &ctx.session_id().0)
+                    .await
+                    .map_err(|error| ToolError::Other(error.to_string()))
+            }
+        }
     }
 }
 
@@ -734,6 +936,11 @@ fn map_tool_result(result: &JsonValue, artifact: Option<&Path>) -> ToolOutput {
         parts.push(
             serde_json::to_string_pretty(structured)
                 .unwrap_or_else(|_| "<invalid MCP structured content>".into()),
+        );
+    }
+    if parts.is_empty() {
+        parts.push(
+            serde_json::to_string_pretty(result).unwrap_or_else(|_| "<invalid MCP result>".into()),
         );
     }
     let content = match artifact {
@@ -888,7 +1095,7 @@ while True:
     if method == "initialize":
         send({"jsonrpc":"2.0", "id":message["id"], "result":{
             "protocolVersion":"2025-11-25",
-            "capabilities":{"tools":{}},
+            "capabilities":{"tools":{}, "resources":{}},
             "serverInfo":{"name":"fake", "version":"1"}
         }})
     elif method == "notifications/initialized":
@@ -906,6 +1113,19 @@ while True:
             "name":tool_name,
             "description":"Echo an input value",
             "inputSchema":{"type":"object", "properties":{"value":{"type":"string"}}}
+        }]}})
+    elif method == "resources/list":
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{"resources":[{
+            "uri":"memory://fake/guide",
+            "name":"Fake guide",
+            "mimeType":"text/markdown"
+        }]}})
+    elif method == "resources/read":
+        uri = message.get("params", {}).get("uri", "")
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{"contents":[{
+            "uri":uri,
+            "mimeType":"text/markdown",
+            "text":"Fake guide\nResource content"
         }]}})
     elif method == "tools/call":
         arguments = message.get("params", {}).get("arguments", {})
@@ -953,6 +1173,8 @@ while True:
             sylvander_protocol::PlatformFeatureStatus::Active
         );
         assert!(feature.summary.contains("1 tools"));
+        assert!(feature.summary.contains("1 resources"));
+        assert!(feature.capabilities.contains(&"resources".to_owned()));
         client.probe_health().await.expect("health probe");
 
         let context = crate::tool_context::defaults::system_tool_context();
@@ -973,6 +1195,27 @@ while True:
         assert!(model_error.is_error);
         assert!(model_error.content.starts_with("echo:no"));
 
+        let resource_tools = client.resource_tools();
+        assert_eq!(resource_tools.len(), 2);
+        let list = resource_tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__list_resources"))
+            .expect("list resources tool");
+        let listed = list
+            .execute(&context, json!({}))
+            .await
+            .expect("list resources");
+        assert!(listed.content.contains("memory://fake/guide"));
+        let read = resource_tools
+            .iter()
+            .find(|tool| tool.name().ends_with("__read_resource"))
+            .expect("read resource tool");
+        let resource_output = read
+            .execute(&context, json!({ "uri": "memory://fake/guide" }))
+            .await
+            .expect("read resource");
+        assert!(resource_output.content.contains("Resource content"));
+
         client.shutdown().await.expect("shutdown process");
         let log = fs::read_to_string(temp.path().join("requests.log")).expect("read request log");
         assert_eq!(
@@ -981,9 +1224,12 @@ while True:
                 "initialize",
                 "notifications/initialized",
                 "tools/list",
+                "resources/list",
                 "ping",
                 "tools/call",
-                "tools/call"
+                "tools/call",
+                "resources/list",
+                "resources/read"
             ]
         );
     }
@@ -1072,7 +1318,14 @@ while True:
             .into_iter()
             .map(|definition| definition.name)
             .collect::<Vec<_>>();
-        assert_eq!(names, ["mcp__fake__echo_v2"]);
+        assert_eq!(
+            names,
+            [
+                "mcp__fake__echo_v2",
+                "mcp__fake__list_resources",
+                "mcp__fake__read_resource"
+            ]
+        );
         let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
         assert_eq!(
             feature.status,
