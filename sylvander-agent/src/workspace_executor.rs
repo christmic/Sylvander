@@ -195,6 +195,10 @@ pub struct WorkspaceSearchResult {
 }
 
 /// Transport-neutral operations needed by the built-in coding tools.
+///
+/// Operation futures are cancellation boundaries. Implementations that spawn a
+/// process or transport must terminate it when the returned future is dropped,
+/// so interrupting an Agent turn does not leave the command running detached.
 #[async_trait]
 pub trait WorkspaceExecutor: Send + Sync + Debug {
     async fn read_file(
@@ -1010,6 +1014,38 @@ mod tests {
             result,
             Err(WorkspaceExecutorError::Timeout(value)) if value == timeout
         ));
+    }
+
+    #[tokio::test]
+    async fn dropping_local_command_future_terminates_the_process() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = WorkspaceTarget::local(workspace.path(), false);
+        let ready = workspace.path().join("ready");
+        let survived = workspace.path().join("survived");
+        let task = tokio::spawn(async move {
+            LocalExecutor
+                .run_command(
+                    &target,
+                    "printf ready > ready; sleep 1; printf survived > survived",
+                    Duration::from_secs(10),
+                )
+                .await
+        });
+        for _ in 0..100 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "command never reached its ready boundary");
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !survived.exists(),
+            "cancelled command continued after its future was dropped"
+        );
     }
 
     #[test]
