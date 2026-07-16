@@ -823,17 +823,38 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 return user_profile_error(operation, code, None);
             }
         };
+        let Some(evidence) = &self.evidence else {
+            return user_profile_error(operation, UserProfileErrorCode::ServiceUnavailable, None);
+        };
+        let audit_id = uuid::Uuid::new_v4().to_string();
+        let mutation = !matches!(
+            request.action,
+            UserProfileAction::Read {} | UserProfileAction::Export { .. }
+        );
+        if mutation
+            && evidence
+                .begin_administration_mutation(user_profile_audit(
+                    audit_id.clone(),
+                    boundary,
+                    &owner,
+                    operation,
+                    "pending",
+                    None,
+                ))
+                .await
+                .is_err()
+        {
+            return user_profile_error(operation, UserProfileErrorCode::Internal, None);
+        }
         let result = match request.action {
-            UserProfileAction::Create { profile } => {
-                store
-                    .create(owner, profile)
-                    .await
-                    .map(|profile| UserProfileResponse::Created {
-                        version: USER_PROFILE_PROTOCOL_VERSION,
-                        profile: profile.into_view(),
-                    })
-            }
-            UserProfileAction::Read {} => match store.read(owner).await {
+            UserProfileAction::Create { profile } => store
+                .create(owner.clone(), profile)
+                .await
+                .map(|profile| UserProfileResponse::Created {
+                    version: USER_PROFILE_PROTOCOL_VERSION,
+                    profile: profile.into_view(),
+                }),
+            UserProfileAction::Read {} => match store.read(owner.clone()).await {
                 Ok(Some(profile)) => Ok(UserProfileResponse::Read {
                     version: USER_PROFILE_PROTOCOL_VERSION,
                     profile: profile.into_view(),
@@ -847,7 +868,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 expected_revision,
                 profile,
             } => store
-                .update(owner, expected_revision, profile)
+                .update(owner.clone(), expected_revision, profile)
                 .await
                 .map(|profile| UserProfileResponse::Updated {
                     version: USER_PROFILE_PROTOCOL_VERSION,
@@ -857,7 +878,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 expected_revision,
                 profile,
             } => store
-                .correct(owner, expected_revision, profile)
+                .correct(owner.clone(), expected_revision, profile)
                 .await
                 .map(|profile| UserProfileResponse::Corrected {
                     version: USER_PROFILE_PROTOCOL_VERSION,
@@ -865,7 +886,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 }),
             UserProfileAction::Export { .. } => {
                 store
-                    .export(owner)
+                    .export(owner.clone())
                     .await
                     .map(|export| UserProfileResponse::Exported {
                         version: USER_PROFILE_PROTOCOL_VERSION,
@@ -873,7 +894,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     })
             }
             UserProfileAction::Delete { expected_revision } => store
-                .delete(owner, expected_revision)
+                .delete(owner.clone(), expected_revision)
                 .await
                 .map(|deleted_revision| UserProfileResponse::Deleted {
                     version: USER_PROFILE_PROTOCOL_VERSION,
@@ -884,14 +905,30 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 expected_revision,
                 enabled,
             } => store
-                .set_do_not_learn(owner, expected_revision, enabled)
+                .set_do_not_learn(owner.clone(), expected_revision, enabled)
                 .await
                 .map(|profile| UserProfileResponse::DoNotLearnUpdated {
                     version: USER_PROFILE_PROTOCOL_VERSION,
                     profile: profile.into_view(),
                 }),
         };
-        result.unwrap_or_else(|error| map_user_profile_error(operation, error))
+        let response = result.unwrap_or_else(|error| map_user_profile_error(operation, error));
+        let (outcome, error_code) = user_profile_outcome(&response);
+        let audit_result = if mutation {
+            evidence
+                .finish_administration_mutation(audit_id, outcome, error_code)
+                .await
+        } else {
+            evidence
+                .record_administration_audit(user_profile_audit(
+                    audit_id, boundary, &owner, operation, outcome, error_code,
+                ))
+                .await
+        };
+        if audit_result.is_err() {
+            return user_profile_error(operation, UserProfileErrorCode::Internal, None);
+        }
+        response
     }
 
     async fn identity_binding(
@@ -1966,6 +2003,69 @@ fn user_profile_error(
             current_revision,
             retry_after_ms: None,
         },
+    }
+}
+
+fn user_profile_audit(
+    id: String,
+    boundary: &sylvander_protocol::BoundaryContext,
+    owner: &UserId,
+    operation: UserProfileOperation,
+    outcome: &'static str,
+    error_code: Option<String>,
+) -> AdministrationAudit {
+    AdministrationAudit {
+        id,
+        occurred_at: sylvander_agent::session::now_secs(),
+        request_id: boundary.request_id.clone(),
+        principal_digest: boundary.principal.as_ref().map_or_else(
+            || sha256_text("unauthenticated"),
+            |principal| sha256_text(&principal.id.0),
+        ),
+        channel_instance_id: boundary.channel_instance_id.clone(),
+        transport: boundary.transport.clone(),
+        operation: user_profile_operation_name(operation).into(),
+        resource_kind: "user_profile".into(),
+        resource_digest: sha256_text(&owner.0),
+        version: None,
+        outcome: outcome.into(),
+        error_code,
+    }
+}
+
+fn user_profile_outcome(response: &UserProfileResponse) -> (&'static str, Option<String>) {
+    match response {
+        UserProfileResponse::Error { error, .. } => {
+            ("failed", Some(user_profile_error_name(error.code).into()))
+        }
+        _ => ("succeeded", None),
+    }
+}
+
+const fn user_profile_operation_name(operation: UserProfileOperation) -> &'static str {
+    match operation {
+        UserProfileOperation::Create => "user_profile_create",
+        UserProfileOperation::Read => "user_profile_read",
+        UserProfileOperation::Update => "user_profile_update",
+        UserProfileOperation::Export => "user_profile_export",
+        UserProfileOperation::Correct => "user_profile_correct",
+        UserProfileOperation::Delete => "user_profile_delete",
+        UserProfileOperation::SetDoNotLearn => "user_profile_set_do_not_learn",
+    }
+}
+
+const fn user_profile_error_name(code: UserProfileErrorCode) -> &'static str {
+    match code {
+        UserProfileErrorCode::UnsupportedVersion => "unsupported_version",
+        UserProfileErrorCode::InvalidRequest => "invalid_request",
+        UserProfileErrorCode::Unauthenticated => "unauthenticated",
+        UserProfileErrorCode::Forbidden => "forbidden",
+        UserProfileErrorCode::NotFound => "not_found",
+        UserProfileErrorCode::AlreadyExists => "already_exists",
+        UserProfileErrorCode::Conflict => "conflict",
+        UserProfileErrorCode::RateLimited => "rate_limited",
+        UserProfileErrorCode::ServiceUnavailable => "service_unavailable",
+        UserProfileErrorCode::Internal => "internal",
     }
 }
 
@@ -4084,6 +4184,24 @@ id = "model-a"
             profile_from_external,
             UserProfileResponse::Read { profile, .. } if profile.revision == 1
         ));
+        let profile_audits = runtime
+            .ui_service
+            .evidence
+            .as_ref()
+            .unwrap()
+            .administration_audits(10)
+            .await
+            .unwrap();
+        assert!(profile_audits.iter().any(|audit| {
+            audit.operation == "user_profile_create"
+                && audit.resource_kind == "user_profile"
+                && audit.outcome == "succeeded"
+        }));
+        assert!(profile_audits.iter().any(|audit| {
+            audit.operation == "user_profile_read"
+                && audit.resource_kind == "user_profile"
+                && audit.outcome == "succeeded"
+        }));
         let created = sylvander_channel::UiService::create_session(
             runtime.ui_service.as_ref(),
             &local,
