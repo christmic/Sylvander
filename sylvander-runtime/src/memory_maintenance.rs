@@ -181,7 +181,22 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    use sylvander_agent::tools::SqliteMemoryStore;
+    use sylvander_agent::tools::{
+        MemoryIntegrityConfig, RelationshipMemoryRetentionPolicy, SqliteMemoryStore,
+    };
+
+    fn protected_store(directory: &std::path::Path) -> SqliteMemoryStore {
+        SqliteMemoryStore::open_with_integrity(
+            directory.join("memory.db"),
+            RelationshipMemoryRetentionPolicy::default(),
+            MemoryIntegrityConfig::new(
+                directory.join("memory.anchor"),
+                b"0123456789abcdef0123456789abcdef",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn settings_map_exact_revision_and_maximum_batch() {
@@ -228,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn scheduled_rotation_restarts_and_shutdown_stops_future_backups() {
         let directory = tempfile::tempdir().unwrap();
-        let store = SqliteMemoryStore::open(directory.path().join("memory.db")).unwrap();
+        let store = protected_store(directory.path());
         let mut settings = MemoryMaintenanceSettings::default();
         settings.backup.retained_copies = 2;
         let policy = RuntimeMemoryMaintenancePolicy::from_settings(&settings)
@@ -258,7 +273,7 @@ mod tests {
     async fn backup_failure_is_content_safe_and_retries_next_interval() {
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("memory.db");
-        let store = SqliteMemoryStore::open(&database).unwrap();
+        let store = protected_store(directory.path());
         rusqlite::Connection::open(&database)
             .unwrap()
             .execute_batch(

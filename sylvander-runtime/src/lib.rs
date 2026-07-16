@@ -90,7 +90,9 @@ use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
 use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
-use sylvander_agent::tools::{InMemoryMemoryStore, MemoryStore, SqliteMemoryStore};
+use sylvander_agent::tools::{
+    InMemoryMemoryStore, MemoryIntegrityConfig, MemoryStore, SqliteMemoryStore,
+};
 use sylvander_channel::{Channel, ChannelContext, ChannelReadiness};
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_protocol::{
@@ -110,7 +112,7 @@ use crate::composition::{
     ConfiguredAgent, build_registry_agent_versioned_with_resolver, default_tools,
     resolve_session_config,
 };
-use crate::config::{ServerConfig, SystemSecretResolver};
+use crate::config::{SecretResolver, ServerConfig, SystemSecretResolver};
 use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 use crate::memory_maintenance::{
@@ -2247,6 +2249,14 @@ impl Runtime {
             .as_ref()
             .expect("resolved memory database")
             .clone();
+        let memory_anchor = config
+            .server
+            .memory_maintenance
+            .integrity
+            .anchor_path
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Config("memory integrity anchor_path is required".into()))?
+            .clone();
         if let Some(parent) = session_db.parent() {
             std::fs::create_dir_all(parent).map_err(|error| RuntimeError::Io {
                 operation: "create session database directory",
@@ -2318,8 +2328,23 @@ impl Runtime {
         let memory_policy =
             RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)?;
         let retention_policy = memory_policy.retention.clone();
+        let integrity_secret = SystemSecretResolver
+            .resolve(
+                config
+                    .server
+                    .memory_maintenance
+                    .integrity
+                    .key
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RuntimeError::Config("memory integrity key reference is required".into())
+                    })?,
+            )
+            .map_err(|_| RuntimeError::Config("memory integrity key resolution failed".into()))?;
+        let integrity = MemoryIntegrityConfig::new(memory_anchor, integrity_secret.as_bytes())
+            .map_err(|_| RuntimeError::Config("memory integrity configuration failed".into()))?;
         let sqlite_memory = tokio::task::spawn_blocking(move || {
-            SqliteMemoryStore::open_with_retention_policy(memory_db, retention_policy)
+            SqliteMemoryStore::open_with_integrity(memory_db, retention_policy, integrity)
         })
         .await
         .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
@@ -2898,6 +2923,14 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .memory_db
         .get_or_insert_with(|| data_dir.join("memory.db"));
+    let anchor = config
+        .server
+        .memory_maintenance
+        .integrity
+        .anchor_path
+        .as_ref()
+        .ok_or_else(|| RuntimeError::Config("memory integrity anchor_path is required".into()))?;
+    validate_external_memory_anchor(&data_dir, anchor)?;
     config
         .server
         .workspace_journal
@@ -2908,6 +2941,58 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .path
         .get_or_insert_with(|| data_dir.join("evidence.db"));
     Ok(config)
+}
+
+fn validate_external_memory_anchor(
+    data_dir: &std::path::Path,
+    anchor: &std::path::Path,
+) -> Result<(), RuntimeError> {
+    let data_dir = std::fs::canonicalize(data_dir).map_err(|_| {
+        RuntimeError::Config("memory integrity anchor boundary validation failed".into())
+    })?;
+    let parent = anchor.parent().ok_or_else(|| {
+        RuntimeError::Config("memory integrity anchor boundary validation failed".into())
+    })?;
+    let parent = std::fs::canonicalize(parent).map_err(|_| {
+        RuntimeError::Config("memory integrity anchor boundary validation failed".into())
+    })?;
+    if parent.starts_with(&data_dir) {
+        return Err(RuntimeError::Config(
+            "memory integrity anchor must be outside the runtime data directory".into(),
+        ));
+    }
+    if anchor.exists() {
+        let metadata = std::fs::metadata(anchor).map_err(|_| {
+            RuntimeError::Config("memory integrity anchor boundary validation failed".into())
+        })?;
+        let resolved = std::fs::canonicalize(anchor).map_err(|_| {
+            RuntimeError::Config("memory integrity anchor boundary validation failed".into())
+        })?;
+        if !metadata.is_file() || resolved.starts_with(&data_dir) {
+            return Err(RuntimeError::Config(
+                "memory integrity anchor boundary validation failed".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn configure_test_memory_integrity(
+    config: &mut ServerConfig,
+    directory: &std::path::Path,
+    _secret: &std::path::Path,
+) {
+    let data_dir = directory.join("runtime-data");
+    let anchor_dir = directory.join("integrity-anchor");
+    std::fs::create_dir_all(&anchor_dir).unwrap();
+    config.server.data_dir = Some(data_dir);
+    config.server.memory_maintenance.integrity.anchor_path = Some(anchor_dir.join("anchor.json"));
+    let integrity_key = directory.join("memory-integrity.key");
+    std::fs::write(&integrity_key, "0123456789abcdef0123456789abcdef").unwrap();
+    config.server.memory_maintenance.integrity.key = Some(crate::config::SecretRef::File {
+        path: integrity_key,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -3071,7 +3156,10 @@ mod tests {
         agent_ids: &[&str],
     ) -> ServerConfig {
         let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "test-secret").unwrap();
+        std::fs::write(&secret, "0123456789abcdef0123456789abcdef").unwrap();
+        let data_dir = directory.path().join("runtime-data");
+        let anchor_dir = directory.path().join("integrity-anchor");
+        std::fs::create_dir_all(&anchor_dir).unwrap();
         let agents = agent_ids.iter().fold(String::new(), |mut output, id| {
             use std::fmt::Write as _;
             write!(
@@ -3095,6 +3183,12 @@ schema_version = 1
 [server]
 data_dir = "{}"
 
+[server.memory_maintenance.integrity]
+anchor_path = "{}"
+[server.memory_maintenance.integrity.key]
+source = "file"
+path = "{}"
+
 [[model_providers]]
 id = "primary"
 base_url = "https://models.invalid"
@@ -3105,7 +3199,9 @@ path = "{}"
 id = "model-a"
 {agents}
 "#,
-            directory.path().display(),
+            data_dir.display(),
+            anchor_dir.join("anchor.json").display(),
+            secret.display(),
             secret.display()
         ))
         .unwrap()
@@ -3403,7 +3499,9 @@ id = "model-a"
     fn resolved_paths_default_and_preserve_memory_database() {
         let directory = tempfile::tempdir().unwrap();
         let data_dir = directory.path().join("data");
-        let config = ServerConfig {
+        let anchor_dir = directory.path().join("anchor");
+        std::fs::create_dir_all(&anchor_dir).unwrap();
+        let mut config = ServerConfig {
             schema_version: crate::config::CONFIG_SCHEMA_VERSION,
             server: crate::config::ServerSettings {
                 data_dir: Some(data_dir.clone()),
@@ -3414,12 +3512,13 @@ id = "model-a"
             agents: Vec::new(),
             channels: Vec::new(),
         };
+        config.server.memory_maintenance.integrity.anchor_path =
+            Some(anchor_dir.join("state.json"));
 
         let resolved = with_resolved_paths(config.clone()).unwrap();
         assert_eq!(resolved.server.memory_db, Some(data_dir.join("memory.db")));
 
         let explicit = directory.path().join("stores/custom-memory.db");
-        let mut config = config;
         config.server.memory_db = Some(explicit.clone());
         let resolved = with_resolved_paths(config).unwrap();
         assert_eq!(resolved.server.memory_db, Some(explicit));
@@ -3575,13 +3674,22 @@ id = "model-a"
         let directory = tempfile::tempdir().unwrap();
         let database = directory.path().join("qualified.db");
         let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "test-secret").unwrap();
+        std::fs::write(&secret, "0123456789abcdef0123456789abcdef").unwrap();
+        let data_dir = directory.path().join("runtime-data");
+        let anchor_dir = directory.path().join("integrity-anchor");
+        std::fs::create_dir_all(&anchor_dir).unwrap();
         let input = format!(
             r#"
 schema_version = 1
 [server]
 data_dir = "{}"
 session_db = "{}"
+
+[server.memory_maintenance.integrity]
+anchor_path = "{}"
+[server.memory_maintenance.integrity.key]
+source = "file"
+path = "{}"
 
 [[model_providers]]
 id = "alpha"
@@ -3609,8 +3717,10 @@ name = "Assistant"
 provider = "alpha"
 model_name = "shared"
 "#,
-            directory.path().display(),
+            data_dir.display(),
             database.display(),
+            anchor_dir.join("anchor.json").display(),
+            secret.display(),
             secret.display(),
             secret.display()
         );
@@ -3705,6 +3815,62 @@ model_name = "shared"
             );
             assert!(!error.to_string().contains(&memory_db.display().to_string()));
         }
+    }
+
+    #[tokio::test]
+    async fn production_boot_requires_anchor_outside_data_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        let data_dir = config.server.data_dir.clone().unwrap();
+        std::fs::create_dir_all(data_dir.join("anchor")).unwrap();
+        config.server.memory_maintenance.integrity.anchor_path =
+            Some(data_dir.join("anchor/state.json"));
+
+        let error = match Runtime::boot_config(config).await {
+            Ok(runtime) => {
+                runtime.shutdown().await.unwrap();
+                panic!("anchor within data directory must fail production boot")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "configuration error: memory integrity anchor must be outside the runtime data directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_restart_rejects_database_writer_tampering() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = configured_memory_test_config(&directory, &["assistant"]);
+        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
+        let session = attach_memory_session(&runtime, "assistant", "alice").await;
+        runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .remember_entry(&session, MemoryAppend::new("trusted"))
+            .await
+            .unwrap();
+        runtime.shutdown().await.unwrap();
+
+        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
+        let connection = rusqlite::Connection::open(memory_db).unwrap();
+        connection
+            .execute("UPDATE relationship_memories SET content = 'forged'", [])
+            .unwrap();
+        drop(connection);
+        let error = match Runtime::boot_config(config).await {
+            Ok(runtime) => {
+                runtime.shutdown().await.unwrap();
+                panic!("tampered memory database must fail production restart")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "store error: store error: memory integrity verification failed"
+        );
     }
 
     #[tokio::test]
@@ -3854,7 +4020,7 @@ model_name = "shared"
             .unwrap()
             .run;
         for content in ["one", "two", "three"] {
-            run.remember_entry(&session, MemoryAppend::new(content))
+            run.remember_entry(&session, MemoryAppend::new(content).with_ttl(1))
                 .await
                 .unwrap();
         }
@@ -3870,15 +4036,8 @@ model_name = "shared"
         runtime.shutdown().await.unwrap();
         drop(runtime);
 
-        let memory_db = directory.path().join("memory.db");
-        let connection = rusqlite::Connection::open(&memory_db).unwrap();
-        connection
-            .execute(
-                "UPDATE relationship_memories SET expires_at = unixepoch() - 1",
-                [],
-            )
-            .unwrap();
-        drop(connection);
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
 
         let restarted = Runtime::boot_config(config.clone()).await.unwrap();
         restarted.shutdown().await.unwrap();
@@ -3925,7 +4084,7 @@ model_name = "shared"
             .unwrap();
         runtime.shutdown().await.unwrap();
         drop(runtime);
-        let memory_db = directory.path().join("memory.db");
+        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
         let policy =
             RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
                 .unwrap();
@@ -4037,7 +4196,7 @@ model_name = "shared"
         let directory = tempfile::tempdir().unwrap();
         let secret = directory.path().join("provider.key");
         std::fs::write(&secret, "test-secret").unwrap();
-        let config = ServerConfig::from_toml(&format!(
+        let mut config = ServerConfig::from_toml(&format!(
             r#"
 schema_version = 1
 [server]
@@ -4064,6 +4223,7 @@ model_name = "model-a"
             secret.display()
         ))
         .unwrap();
+        configure_test_memory_integrity(&mut config, directory.path(), &secret);
         let runtime = Runtime::boot_config(config.clone()).await.unwrap();
         let provider = runtime.revision_provider.as_ref().unwrap();
         assert!(Arc::ptr_eq(&runtime.memory_store, &provider.memory));
@@ -4198,6 +4358,7 @@ model_name = "model-a"
             secret.display()
         );
         let mut config = ServerConfig::from_toml(&input).unwrap();
+        configure_test_memory_integrity(&mut config, directory.path(), &secret);
         let mut explicit_definition = config.agents[0].clone();
         explicit_definition.spec.model.allowed_models = vec![sylvander_protocol::ModelSelection {
             provider_id: "primary".into(),

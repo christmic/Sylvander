@@ -90,12 +90,12 @@ impl Drop for IntegrityState {
 }
 
 impl IntegrityState {
-    pub(super) fn new(mut config: MemoryIntegrityConfig) -> Result<Self, MemoryStoreError> {
+    pub(super) fn new(mut config: MemoryIntegrityConfig) -> Self {
         let key = std::mem::take(&mut config.key);
-        Ok(Self {
+        Self {
             anchor: config.anchor.clone(),
             key: Mutex::new(key),
-        })
+        }
     }
 
     pub(super) fn establish(&self, connection: &Connection) -> Result<(), MemoryStoreError> {
@@ -763,7 +763,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let integrity = IntegrityState::new(config(&anchor)).unwrap();
+        let integrity = IntegrityState::new(config(&anchor));
         let mut connection = Connection::open(&database).unwrap();
         let before = integrity.verify(&connection).unwrap();
         let transaction = connection
@@ -784,7 +784,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&anchor).unwrap()).unwrap();
         assert!(matches!(record, AnchorRecord::Committed { epoch, .. } if epoch > 1));
 
-        let integrity = IntegrityState::new(config(&anchor)).unwrap();
+        let integrity = IntegrityState::new(config(&anchor));
         let mut connection = Connection::open(&database).unwrap();
         let before = integrity.verify(&connection).unwrap();
         let transaction = connection

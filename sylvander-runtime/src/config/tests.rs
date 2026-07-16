@@ -8,6 +8,13 @@ schema_version = 1
 name = "test-sylvander"
 data_dir = "/var/lib/sylvander"
 
+[server.memory_maintenance.integrity]
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
 [[model_providers]]
 id = "primary"
 kind = "anthropic_compatible"
@@ -85,8 +92,13 @@ fn valid_configuration_parses_and_resolves_references() {
         SecretRef::Env { ref name } if name == "MODEL_API_KEY"
     ));
     assert_eq!(
-        config.server.memory_maintenance,
-        MemoryMaintenanceSettings::default()
+        config
+            .server
+            .memory_maintenance
+            .integrity
+            .anchor_path
+            .as_deref(),
+        Some(Path::new("/var/lib/sylvander-integrity/anchor.json"))
     );
 }
 
