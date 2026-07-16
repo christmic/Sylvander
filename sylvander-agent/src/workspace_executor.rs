@@ -1706,6 +1706,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn large_local_workspace_queries_stop_at_their_result_budget() {
+        let workspace = tempfile::tempdir().unwrap();
+        for directory in 0..25 {
+            let directory = workspace.path().join(format!("src-{directory:02}"));
+            std::fs::create_dir(&directory).unwrap();
+            for file in 0..100 {
+                std::fs::write(
+                    directory.join(format!("file-{file:03}.txt")),
+                    "performance-needle\n",
+                )
+                .unwrap();
+            }
+        }
+        let target = WorkspaceTarget::local(workspace.path(), true);
+        let executor = LocalExecutor;
+
+        let listed = executor
+            .list(
+                &target,
+                WorkspaceListRequest {
+                    relative_path: ".".into(),
+                    recursive: true,
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.entries.len(), 200);
+        assert!(listed.truncated);
+
+        let searched = executor
+            .search(
+                &target,
+                WorkspaceSearchRequest {
+                    relative_path: ".".into(),
+                    query: "performance-needle".into(),
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(searched.matches.len(), 200);
+        assert!(searched.truncated);
+    }
+
+    #[tokio::test]
     async fn local_query_limits_are_clamped_and_zero_is_rejected() {
         let bounded = WorkspaceQueryLimits {
             max_results: usize::MAX,

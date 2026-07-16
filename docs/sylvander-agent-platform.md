@@ -677,9 +677,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   injection, cross-owner isolation, credential redaction, and complete learned
   data deletion. Environment-dependent limitations are recorded in
   [`security-verification.md`](security-verification.md).
-- [ ] **P6.4 Performance verification:** concurrency, long sessions, large
-  workspaces, slow remote execution, channel bursts, resource ceilings, and
-  latency budgets.
+- [x] **P6.4 Local performance verification:** a locked release build and
+  isolated repeatable gate cover concurrent message delivery, parallel tools,
+  long TUI transcripts, large workspaces, tool/input/service bursts, executor
+  resource ceilings, and explicit latency budgets. SSH and external-service
+  latency are outside the current local scope and recorded in
+  [`performance-verification.md`](performance-verification.md).
 - [ ] **P6.5 Final closure:** full clean-room deployment, real-client journeys,
   zero known critical/high defects, no unchecked backlog item, and an explicit
   residual-risk record for anything that cannot be proven away.

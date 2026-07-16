@@ -203,6 +203,49 @@ mod t {
             }
         );
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_publish_burst_delivers_every_message_within_capacity() {
+        const PUBLISHERS: usize = 8;
+        const MESSAGES_PER_PUBLISHER: usize = 500;
+        const TOTAL: usize = PUBLISHERS * MESSAGES_PER_PUBLISHER;
+
+        let bus = InProcessMessageBus::with_capacity(TOTAL);
+        let mut receiver = bus.subscribe(SubscriptionFilter::all()).await.unwrap();
+        let consumer = tokio::spawn(async move {
+            let mut delivered = 0;
+            while delivered < TOTAL {
+                receiver.recv().await.expect("publisher remains alive");
+                delivered += 1;
+            }
+            delivered
+        });
+
+        let mut publishers = Vec::new();
+        for publisher in 0..PUBLISHERS {
+            let bus = bus.clone();
+            publishers.push(tokio::spawn(async move {
+                for message in 0..MESSAGES_PER_PUBLISHER {
+                    bus.publish(tm(&format!("{publisher}-{message}")))
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for publisher in publishers {
+            publisher.await.unwrap();
+        }
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), consumer)
+                .await
+                .expect("consumer latency budget")
+                .unwrap(),
+            TOTAL
+        );
+        assert_eq!(bus.diagnostics().await.published_messages, TOTAL as u64);
+        assert_eq!(bus.diagnostics().await.backpressure_rejections, 0);
+    }
+
     #[test]
     fn filter_agent_matches() {
         let a = AgentId::new("a");
