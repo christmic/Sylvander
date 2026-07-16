@@ -153,6 +153,7 @@ impl ServerConfig {
                 data_dir: None,
                 session_db: values.get("SYLVANDER_SESSION_DB").map(PathBuf::from),
                 memory_db: values.get("SYLVANDER_MEMORY_DB").map(PathBuf::from),
+                user_profile_db: None,
                 workspace_journal: values.get("SYLVANDER_WORKSPACE_JOURNAL").map(PathBuf::from),
                 memory_maintenance: super::MemoryMaintenanceSettings::default(),
                 approval: ApprovalSettings {
