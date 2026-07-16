@@ -113,7 +113,7 @@ impl IntegrityState {
     pub(super) fn verify(&self, connection: &Connection) -> Result<String, MemoryStoreError> {
         let observed = self.read_record()?;
         let record = &observed.record;
-        self.verify_record(&record)?;
+        self.verify_record(record)?;
         let actual = database_root(connection)?;
         match record {
             AnchorRecord::Committed { database_root, .. } => {
