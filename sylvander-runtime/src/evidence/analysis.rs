@@ -384,3 +384,6 @@ fn hex_digest(bytes: &[u8]) -> String {
     }
     output
 }
+
+#[cfg(test)]
+mod tests;
