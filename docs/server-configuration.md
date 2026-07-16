@@ -82,7 +82,10 @@ Reads, list/search, and trusted inspection commands use a read-only bind mount.
 Writes and ordinary commands require a writable workspace binding. Command
 stdout/stderr use the same bounded head/tail capture and live progress contract
 as local and SSH execution. Each operation has a deadline and terminating the
-Agent turn drops and kills its runtime process.
+Agent turn drops and kills its runtime process. Because the bind source is a
+server-host workspace, clean writable Git workspaces receive the same default
+session worktree isolation as the local execution target before being mounted
+into the container.
 
 ## Agents, providers, and models
 
