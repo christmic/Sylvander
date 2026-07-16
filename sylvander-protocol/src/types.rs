@@ -612,6 +612,58 @@ pub struct SessionWorkspaceBinding {
     pub read_only: bool,
 }
 
+/// Semantic role of one workspace in the Agent's composed filesystem view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMountRole {
+    AgentHome,
+    Task,
+    Dependency,
+    Artifact,
+}
+
+/// Operations that may be routed to one logical workspace mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceCapabilityPolicy {
+    #[serde(default = "default_true")]
+    pub read: bool,
+    #[serde(default)]
+    pub write: bool,
+    #[serde(default)]
+    pub command: bool,
+    #[serde(default)]
+    pub git: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for WorkspaceCapabilityPolicy {
+    fn default() -> Self {
+        Self {
+            read: true,
+            write: false,
+            command: false,
+            git: false,
+        }
+    }
+}
+
+/// One collision-free logical reference in the effective workspace set.
+///
+/// File-oriented tools address non-task mounts with `@reference/path`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SessionWorkspaceMount {
+    pub reference: String,
+    pub role: WorkspaceMountRole,
+    pub binding: SessionWorkspaceBinding,
+    #[serde(default)]
+    pub capabilities: WorkspaceCapabilityPolicy,
+}
+
 /// The configuration layer that supplied one effective session field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -894,6 +946,10 @@ pub struct SessionEffectiveConfig {
     pub agent_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_workspace: Option<SessionWorkspaceBinding>,
+    /// Canonical role-bearing workspace composition. The singular fields above
+    /// remain projections for the default Agent-home and task bindings.
+    #[serde(default)]
+    pub workspace_mounts: Vec<SessionWorkspaceMount>,
     pub execution_target: String,
     pub provenance: SessionConfigProvenance,
 }

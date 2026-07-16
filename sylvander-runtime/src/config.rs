@@ -582,6 +582,16 @@ pub struct WorkspaceBindingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkspaceMountConfig {
+    pub reference: String,
+    pub role: sylvander_protocol::WorkspaceMountRole,
+    pub binding: WorkspaceBindingConfig,
+    #[serde(default)]
+    pub capabilities: sylvander_protocol::WorkspaceCapabilityPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptProfileConfig {
     pub id: String,
     #[serde(default)]
@@ -601,6 +611,8 @@ pub struct AgentDefinitionConfig {
     pub revision: u64,
     pub spec: AgentSpec,
     pub agent_workspace: Option<WorkspaceBindingConfig>,
+    #[serde(default)]
+    pub workspace_mounts: Vec<WorkspaceMountConfig>,
     #[serde(default)]
     pub prompt_profiles: Vec<PromptProfileConfig>,
     pub default_prompt_profile: Option<String>,
@@ -1064,6 +1076,14 @@ fn validate_agent_shape_and_environment(
     validate_agent_prompts(agent, errors);
     if let Some(workspace) = &agent.agent_workspace {
         validate_workspace(workspace, targets, "Agent workspace", errors);
+    }
+    for mount in &agent.workspace_mounts {
+        validate_workspace(
+            &mount.binding,
+            targets,
+            &format!("Agent workspace mount {}", mount.reference),
+            errors,
+        );
     }
     let profiles = unique_ids(
         &format!("prompt profile for Agent {}", agent.spec.id),

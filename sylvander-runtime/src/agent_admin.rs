@@ -293,6 +293,25 @@ pub(crate) fn definition_from_draft(
                     .expect("non-UTF-8 workspace paths are rejected during validation"),
                 read_only: workspace.read_only,
             }),
+        workspace_mounts: draft
+            .workspace_mounts
+            .into_iter()
+            .map(|mount| crate::config::WorkspaceMountConfig {
+                reference: mount.reference,
+                role: mount.role,
+                binding: WorkspaceBindingConfig {
+                    execution_target: mount.binding.execution_target,
+                    path: mount
+                        .binding
+                        .path
+                        .into_os_string()
+                        .into_string()
+                        .expect("non-UTF-8 workspace paths are rejected during validation"),
+                    read_only: mount.binding.read_only,
+                },
+                capabilities: mount.capabilities,
+            })
+            .collect(),
         prompt_profiles: draft
             .prompt_profiles
             .into_iter()
@@ -398,6 +417,20 @@ pub(crate) fn draft_from_definition(
                 read_only: workspace.read_only,
             }
         }),
+        workspace_mounts: definition
+            .workspace_mounts
+            .iter()
+            .map(|mount| sylvander_protocol::SessionWorkspaceMount {
+                reference: mount.reference.clone(),
+                role: mount.role,
+                binding: SessionWorkspaceBinding {
+                    execution_target: mount.binding.execution_target.clone(),
+                    path: PathBuf::from(&mount.binding.path),
+                    read_only: mount.binding.read_only,
+                },
+                capabilities: mount.capabilities,
+            })
+            .collect(),
         prompt_profiles: definition
             .prompt_profiles
             .iter()
@@ -480,6 +513,7 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 max_retries: definition.spec.behavior.max_retries,
             },
             agent_workspace_configured: definition.agent_workspace.is_some(),
+            workspace_mount_count: definition.workspace_mounts.len(),
             prompt_profiles: definition
                 .prompt_profiles
                 .iter()
@@ -635,6 +669,21 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
         .is_some_and(|workspace| workspace.path.to_str().is_none())
     {
         return Err(invalid_definition("workspace path must be valid UTF-8"));
+    }
+    unique_non_empty(
+        draft
+            .workspace_mounts
+            .iter()
+            .map(|mount| mount.reference.as_str()),
+        "workspace mount",
+    )?;
+    if draft.workspace_mounts.iter().any(|mount| {
+        mount.binding.path.to_str().is_none()
+            || (mount.binding.read_only && (mount.capabilities.write || mount.capabilities.command))
+    }) {
+        return Err(invalid_definition(
+            "workspace mount path or capability policy is invalid",
+        ));
     }
     validate_prompt_draft(draft)?;
     unique_non_empty(
@@ -974,6 +1023,7 @@ id = "sonnet"
             }],
             behavior: AgentBehaviorDraft::default(),
             agent_workspace: None,
+            workspace_mounts: Vec::new(),
             prompt_profiles: Vec::new(),
             default_prompt_profile: None,
             allow_session_prompt: false,

@@ -1025,6 +1025,7 @@ mod tests {
                 prompt_manifest: None,
                 agent_workspace: None,
                 user_workspace: None,
+                workspace_mounts: Vec::new(),
                 execution_target: "local".into(),
                 provenance: SessionConfigProvenance {
                     model: source.clone(),
