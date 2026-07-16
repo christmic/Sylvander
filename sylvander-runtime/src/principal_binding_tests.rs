@@ -9,8 +9,14 @@ use sylvander_protocol::UserId;
 use tempfile::tempdir;
 
 use crate::principal_binding::{
-    Clock, ExternalPrincipal, PrincipalBindingError, PrincipalBindingStore,
+    Clock, ExternalPrincipal, PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey,
 };
+
+const DIGEST_KEY: &[u8] = b"principal-binding-test-key-32bytes";
+
+fn digest_key() -> PrincipalDigestKey {
+    PrincipalDigestKey::new(DIGEST_KEY).unwrap()
+}
 
 struct TestClock(AtomicI64);
 
@@ -66,7 +72,9 @@ async fn binding_survives_restart_without_persisting_raw_external_id_or_secret()
     let external = "telegram-user-raw-991";
     let secret;
     {
-        let store = PrincipalBindingStore::open(&path).await.unwrap();
+        let store = PrincipalBindingStore::open(&path, digest_key())
+            .await
+            .unwrap();
         let user = register(&store, "user-alice").await;
         let key = principal("telegram", "bot-primary", external);
         let challenge = store
@@ -92,7 +100,9 @@ async fn binding_survives_restart_without_persisting_raw_external_id_or_secret()
             .any(|window| window == secret.as_bytes())
     );
 
-    let restarted = PrincipalBindingStore::open(&path).await.unwrap();
+    let restarted = PrincipalBindingStore::open(&path, digest_key())
+        .await
+        .unwrap();
     let resolved = restarted
         .resolve(principal("telegram", "bot-primary", external))
         .await
@@ -104,7 +114,7 @@ async fn binding_survives_restart_without_persisting_raw_external_id_or_secret()
 
 #[tokio::test]
 async fn channel_instances_and_transports_are_distinct_identity_domains() {
-    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)))
+    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)), digest_key())
         .await
         .unwrap();
     let alice = register(&store, "alice").await;
@@ -161,7 +171,7 @@ async fn channel_instances_and_transports_are_distinct_identity_domains() {
 
 #[tokio::test]
 async fn linked_principal_cannot_be_silently_rebound_or_unlinked_by_another_user() {
-    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)))
+    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)), digest_key())
         .await
         .unwrap();
     let alice = register(&store, "alice").await;
@@ -191,7 +201,7 @@ async fn linked_principal_cannot_be_silently_rebound_or_unlinked_by_another_user
 
 #[tokio::test]
 async fn unlink_and_relink_advance_revision_to_prevent_stale_cas_aba() {
-    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)))
+    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)), digest_key())
         .await
         .unwrap();
     let alice = register(&store, "alice").await;
@@ -216,7 +226,7 @@ async fn unlink_and_relink_advance_revision_to_prevent_stale_cas_aba() {
 
 #[tokio::test]
 async fn concurrent_confirmation_consumes_a_challenge_once() {
-    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)))
+    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)), digest_key())
         .await
         .unwrap();
     let user = register(&store, "alice").await;
@@ -250,7 +260,7 @@ async fn concurrent_confirmation_consumes_a_challenge_once() {
 #[tokio::test]
 async fn challenge_is_scoped_expires_and_has_a_bounded_guess_budget() {
     let clock = Arc::new(TestClock::new(100));
-    let store = PrincipalBindingStore::open_in_memory(clock.clone())
+    let store = PrincipalBindingStore::open_in_memory(clock.clone(), digest_key())
         .await
         .unwrap();
     let user = register(&store, "alice").await;
@@ -310,7 +320,7 @@ async fn challenge_is_scoped_expires_and_has_a_bounded_guess_budget() {
 
 #[tokio::test]
 async fn latest_challenge_invalidates_older_secret_and_unknown_users_fail_closed() {
-    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)))
+    let store = PrincipalBindingStore::open_in_memory(Arc::new(TestClock::new(100)), digest_key())
         .await
         .unwrap();
     let key = principal("telegram", "bot-a", "external-a");
@@ -356,7 +366,35 @@ async fn incompatible_existing_schema_is_rejected_instead_of_migrated() {
     drop(connection);
 
     assert!(matches!(
-        PrincipalBindingStore::open(path).await,
+        PrincipalBindingStore::open(path, digest_key()).await,
+        Err(PrincipalBindingError::IncompatibleSchema)
+    ));
+}
+
+#[tokio::test]
+async fn wrong_digest_key_and_extra_schema_objects_fail_closed() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("principals.db");
+    PrincipalBindingStore::open(&path, digest_key())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        PrincipalBindingStore::open(
+            &path,
+            PrincipalDigestKey::new(b"different-principal-binding-key-32").unwrap()
+        )
+        .await,
+        Err(PrincipalBindingError::Storage)
+    ));
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE injected(value TEXT) STRICT;")
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        PrincipalBindingStore::open(&path, digest_key()).await,
         Err(PrincipalBindingError::IncompatibleSchema)
     ));
 }
