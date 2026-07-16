@@ -212,7 +212,7 @@ impl SqliteMemoryStore {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
-        let integrity = Arc::new(integrity::IntegrityState::new(config)?);
+        let integrity = Arc::new(integrity::IntegrityState::new(config));
         if existed {
             verify_schema(&connection)?;
             integrity.verify(&connection)?;
@@ -416,7 +416,7 @@ impl SqliteMemoryMaintenance {
         let wall_now = self.store.clock.now_secs();
         self.store.with_connection(|transaction| {
             let now = resolve_effective_now(
-                &transaction,
+                transaction,
                 self.store.retention_policy.revision(),
                 wall_now,
             )
@@ -556,7 +556,7 @@ impl MemoryStore for SqliteMemoryStore {
         let record_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(move |transaction| {
             let now =
-                resolve_effective_now(&transaction, self.retention_policy.revision(), wall_now)
+                resolve_effective_now(transaction, self.retention_policy.revision(), wall_now)
                     .map_err(|_| store_failure())?
                     .now;
             let entry = MemoryEntry::materialize(
@@ -668,14 +668,14 @@ impl MemoryStore for SqliteMemoryStore {
         let wall_now = self.clock.now_secs();
         self.with_connection(|transaction| {
             let now = resolve_effective_now(
-                &transaction,
+                transaction,
                 self.retention_policy.revision(),
                 wall_now,
             )
             .map_err(|_| mutation_error())?
             .now;
             let (record_key, revision) = select_active_record(
-                &transaction,
+                transaction,
                 &user_id,
                 &agent_id,
                 id,
@@ -731,7 +731,7 @@ impl MemoryStore for SqliteMemoryStore {
         let provenance = ctx.provenance();
         let replacement_key = uuid::Uuid::new_v4().to_string();
         self.with_connection(move |transaction| {
-            let now = resolve_effective_now(&transaction, self.retention_policy.revision(), wall_now).map_err(|_| mutation_error())?.now;
+            let now = resolve_effective_now(transaction, self.retention_policy.revision(), wall_now).map_err(|_| mutation_error())?.now;
             let replacement = MemoryEntry::materialize(
                 replacement_id,
                 owner,
@@ -740,7 +740,7 @@ impl MemoryStore for SqliteMemoryStore {
                 self.retention_policy.revision(),
                 now,
             )?;
-            let (record_key, revision) = select_active_record(&transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
+            let (record_key, revision) = select_active_record(transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
             if revision != expected_revision {
                 return Err(MemoryStoreError::Conflict);
             }
@@ -805,7 +805,7 @@ impl MemoryStore for SqliteMemoryStore {
                 return Err(MemoryStoreError::Conflict);
             }
             append_audit(
-                &transaction,
+                transaction,
                 ctx,
                 &record_key,
                 "delete",
@@ -999,7 +999,7 @@ fn activate_policy_transaction(
             "UPDATE relationship_memory_retention_state SET policy_revision = ?1, default_ttl_days = ?2, max_ttl_days = ?3, expiry_grace_days = ?4, superseded_retention_days = ?5, batch_limit = ?6 WHERE singleton = 1",
             params![policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
         ).map_err(|_| retention_error())?;
-        resolve_effective_now(&transaction, policy.revision(), wall_now)?;
+        resolve_effective_now(transaction, policy.revision(), wall_now)?;
     } else {
         transaction.execute(
             "INSERT INTO relationship_memory_retention_state (singleton, clock_watermark, quarantined_forward_time, quarantined_observed_at, last_confirmed_forward_time, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, NULL, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",

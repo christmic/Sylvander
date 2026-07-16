@@ -69,6 +69,7 @@ model_name = "shared"
             secret.display(),
         ))
         .unwrap();
+        crate::configure_test_memory_integrity(&mut config, directory.path(), &secret);
         config.agents[0].spec.model.allowed_models = vec![model("alpha")];
         let runtime = Runtime::boot_config(config.clone()).await.unwrap();
         let mut principal =
@@ -276,6 +277,7 @@ model_name = "shared"
         secret.display(),
     ))
     .unwrap();
+    crate::configure_test_memory_integrity(&mut config, directory.path(), &secret);
     config.agents[0].spec.model.allowed_models = vec![model("alpha")];
     let original = config.clone();
     let runtime = Runtime::boot_config(config.clone()).await.unwrap();

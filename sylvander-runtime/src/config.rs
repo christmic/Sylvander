@@ -78,6 +78,8 @@ impl Default for ServerSettings {
 #[serde(deny_unknown_fields)]
 pub struct MemoryMaintenanceSettings {
     #[serde(default)]
+    pub integrity: MemoryIntegritySettings,
+    #[serde(default)]
     pub retention: MemoryRetentionSettings,
     #[serde(default)]
     pub backup: MemoryBackupSettings,
@@ -92,6 +94,7 @@ pub struct MemoryMaintenanceSettings {
 impl Default for MemoryMaintenanceSettings {
     fn default() -> Self {
         Self {
+            integrity: MemoryIntegritySettings::default(),
             retention: MemoryRetentionSettings::default(),
             backup: MemoryBackupSettings::default(),
             interval_seconds: default_memory_maintenance_interval_seconds(),
@@ -99,6 +102,15 @@ impl Default for MemoryMaintenanceSettings {
             max_batches_per_run: default_memory_maintenance_max_batches(),
         }
     }
+}
+
+/// Independent authenticated trust anchor for relationship memory. Runtime
+/// resolves the key reference; raw key bytes are never serialized.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryIntegritySettings {
+    pub anchor_path: Option<PathBuf>,
+    pub key: Option<SecretRef>,
 }
 
 /// Finite backup schedule. Backup paths are derived from `data_dir` so a
@@ -511,6 +523,15 @@ impl ServerConfig {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
         }
         let memory = &self.server.memory_maintenance;
+        match &memory.integrity.anchor_path {
+            Some(path) if !path.is_absolute() => {
+                errors.push("server memory integrity anchor_path must be absolute".into());
+            }
+            _ => {}
+        }
+        if let Some(reference) = &memory.integrity.key {
+            reference.validate("server memory integrity key", &mut errors);
+        }
         let retention = &memory.retention;
         if retention.revision == 0 || i64::try_from(retention.revision).is_err() {
             errors.push(

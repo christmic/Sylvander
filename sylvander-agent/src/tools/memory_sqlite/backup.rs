@@ -227,7 +227,7 @@ fn restore_offline_impl(
 ) -> Result<(), MemoryRestoreError> {
     reject_live_sidecars(live).map_err(|_| MemoryRestoreError::Rejected)?;
     let manifest = read_manifest(manifest_path).map_err(|_| MemoryRestoreError::Rejected)?;
-    let integrity = IntegrityState::new(integrity).map_err(|_| MemoryRestoreError::Rejected)?;
+    let integrity = IntegrityState::new(integrity);
     let (anchored_epoch, anchored_root) = integrity
         .snapshot()
         .map_err(|_| MemoryRestoreError::Rejected)?;

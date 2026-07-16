@@ -243,7 +243,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A12 | AGENTS.md | missing | Repository guides exist for developers, but the running Agent does not discover or assemble workspace instructions. |
 | A13 | Skills | missing | Protocol/UI placeholders can display Skills, but the Agent has no Skill discovery, trust, activation, or instruction loading runtime. |
 | A14 | MCP | defect | MCP configuration types and UI inspection exist, but no MCP process/client, discovery, execution, health, or resource implementation exists. The UI correctly reports configuration only. |
-| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`; only a Runtime-issued, run-bound authenticated session can obtain memory authority, while raw bus joins remain untrusted. Revision, immutable provenance, bounded trace digest, policy revision, and effective expiry survive restart. The exact latest schema fails closed and never falls back to InMemory. CAS update/delete, atomic non-dangling supersession, finite default/max TTL, and bounded physical purge are transaction-coupled to content-safe per-record and run audit. A persistent monotonic watermark prevents rollback from reviving expired data; dangerous forward jumps enter a durable quarantine that blocks purge until maintenance explicitly confirms the clock. Runtime owns startup catch-up, periodic retention, verified scheduled backup rotation, and bounded shutdown. Restore remains explicit and offline; externally anchored tamper evidence remains. |
+| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`; only a Runtime-issued, run-bound authenticated session can obtain memory authority, while raw bus joins remain untrusted. Revision, immutable provenance, bounded trace digest, policy revision, and effective expiry survive restart. The exact latest schema fails closed and never falls back to InMemory. CAS update/delete, atomic non-dangling supersession, finite default/max TTL, and bounded physical purge are transaction-coupled to content-safe per-record and run audit. A persistent monotonic watermark prevents rollback from reviving expired data; dangerous forward jumps enter a durable quarantine that blocks purge until maintenance explicitly confirms the clock. Runtime owns startup catch-up, periodic retention, authenticated scheduled backup rotation, and bounded shutdown. Every production mutation advances a keyed, external epoch/root anchor; startup detects row, audit, deletion, and database rollback tampering. Offline restore accepts only a signed backup at the currently anchored epoch. Host-administrator rollback still requires a remote monotonic CAS anchor backend; the file backend proves the restricted database-writer boundary only. |
 | A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. External Channels receive subscribe-only bus access; authenticated chat and interactive controls enter through Runtime-owned UI operations. A new chat subscribes before exactly one publish, and any creation, metadata, Engine, subscription, or dispatch failure compensates durable session, Engine attachment, and AgentRun authority without deleting an existing session. |
 | A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
 | A18 | Identity and authorization | complete | Protocol-owned authenticated principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced across production transports. |
@@ -420,6 +420,34 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     assertions for update, supersede, expiry, purge, and delete transitions.
   - [ ] Add backup/restore verification and only those schema/data migrations
     that receive explicit approval under section 2.1.
+
+  Production integrity boundary:
+
+  - `server.memory_maintenance.integrity.anchor_path` and `key` are mandatory.
+    The path must be absolute, its parent must already exist, and Runtime
+    rejects paths that resolve inside `server.data_dir`.
+  - The anchor directory must be mounted or permissioned so the identity that
+    can write `memory.db` cannot write, delete, or roll back the anchor. The
+    key is resolved from an environment/file secret reference and is never
+    stored in SQLite, the anchor, a backup manifest, logs, or errors.
+  - The file backend uses authenticated epoch/root records and atomic initial
+    creation. It detects a restricted database writer changing/deleting rows,
+    deleting audit history, replaying an older database, forging a manifest,
+    or restoring an older backup epoch. It does **not** defeat a host
+    administrator who can replay both the database and an older valid anchor.
+    That threat requires replacing the file path with a remote monotonic-CAS
+    secret/HSM service; no local-file implementation may claim that property.
+  - Mutations use a two-phase anchor transition: a signed
+    `Pending{from_epoch/root,to_epoch/root}` is fsynced before SQLite commit,
+    then finalized after commit. Restart accepts only the authenticated
+    `from` root (transaction rolled back) or `to` root (transaction committed)
+    and deterministically repairs the anchor; every third state fails closed.
+    Read-only recall never scans the full database or rewrites the anchor.
+  - Schema v5 stores an epoch-bound HMAC for every model-visible memory row.
+    Insert, update, supersede, delete, and maintenance transactions re-seal
+    rows before prepare/commit. `get` and `search` verify only returned rows
+    against the committed anchor epoch, so an online database writer cannot
+    feed forged or replayed row content to the model between checkpoints.
 
   Current evidence: `acd5ab661` (runtime-derived ownership), `73316754f` and
   `e0ebfaae5` (SQLite persistence and contract tests), `1d11d8fc9` (one store

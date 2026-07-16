@@ -45,7 +45,7 @@ data: {\"type\":\"message_stop\"}
 ";
 
 fn config(base_url: &str, secret_path: &std::path::Path) -> ServerConfig {
-    ServerConfig::from_toml(&format!(
+    let mut config = ServerConfig::from_toml(&format!(
         r#"
 schema_version = 1
 
@@ -79,7 +79,9 @@ model_name = "model-a"
 "#,
         secret_path.display()
     ))
-    .unwrap()
+    .unwrap();
+    crate::configure_test_memory_integrity(&mut config, secret_path.parent().unwrap(), secret_path);
+    config
 }
 
 fn dual_provider_config(
@@ -570,6 +572,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let mut config = dual_provider_config(&alpha.uri(), &alpha_secret, &beta.uri(), &beta_secret);
     config.server.data_dir = Some(directory.path().into());
     config.server.session_db = Some(directory.path().join("runtime.db"));
+    crate::configure_test_memory_integrity(&mut config, directory.path(), &alpha_secret);
     config.agents[0].spec.persona.system_prompt = AGENT_PROMPT.into();
     config.agents[0].allow_session_prompt = true;
     config.agents[0].prompt_profiles = vec![crate::config::PromptProfileConfig {
