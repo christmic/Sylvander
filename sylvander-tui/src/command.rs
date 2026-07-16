@@ -270,7 +270,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Model,
         name: "model",
-        usage: "/model [model-id] [off|low|medium|high]",
+        usage: "/model [provider/model|model-id] [off|low|medium|high]",
         description: "Select a server-advertised model and reasoning effort",
         hint: "next turn",
     },
@@ -1268,12 +1268,29 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                     .session_id
                     .clone()
                     .ok_or("Start a session before selecting a model")?;
-                let descriptor = state
+                let matches = state
                     .metadata
                     .models
                     .iter()
-                    .find(|entry| entry.id == *model)
-                    .ok_or_else(|| format!("Model `{model}` is not advertised by the server"))?;
+                    .filter(|entry| {
+                        model
+                            .split_once('/')
+                            .map_or(entry.id == *model, |(provider, id)| {
+                                entry.provider == provider && entry.id == id
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                let descriptor = match matches.as_slice() {
+                    [] => {
+                        return Err(format!("Model `{model}` is not advertised by the server"));
+                    }
+                    [descriptor] => *descriptor,
+                    _ => {
+                        return Err(format!(
+                            "Model `{model}` is available from multiple providers; use provider/model"
+                        ));
+                    }
+                };
                 let effort = invocation
                     .args
                     .get(1)
@@ -1290,7 +1307,10 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                     .pending_actions
                     .push(crate::event::Action::SelectModel {
                         session_id,
-                        model: (*model).to_string(),
+                        model: sylvander_protocol::ModelSelection {
+                            provider_id: descriptor.provider.clone(),
+                            model_id: descriptor.id.clone(),
+                        },
                         reasoning_effort: effort,
                     });
                 state.status = "Selecting model…".into();
@@ -1961,10 +1981,39 @@ mod tests {
                 session_id,
                 model,
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
-            }] if session_id == "session-1" && model == "thinking"
+            }] if session_id == "session-1"
+                && model.provider_id == "test"
+                && model.model_id == "thinking"
         ));
         assert!(execute(parse("model thinking high").unwrap(), &mut state).is_err());
         assert!(execute(parse("model missing off").unwrap(), &mut state).is_err());
+    }
+
+    #[test]
+    fn model_command_requires_provider_for_shared_ids() {
+        let mut state = AppState::new();
+        state.connected = true;
+        state.session_id = Some("session-1".into());
+        state.metadata.models = ["alpha", "beta"]
+            .into_iter()
+            .map(|provider| sylvander_protocol::ModelDescriptor {
+                id: "shared".into(),
+                provider: provider.into(),
+                capabilities: 0,
+                capability_names: Vec::new(),
+                reasoning_efforts: vec![sylvander_protocol::ReasoningEffort::Off],
+                lifecycle: sylvander_protocol::ModelLifecycle::Active,
+                pricing: None,
+            })
+            .collect();
+
+        assert!(execute(parse("model shared").unwrap(), &mut state).is_err());
+        execute(parse("model beta/shared").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.pending_actions.as_slice(),
+            [crate::event::Action::SelectModel { model, .. }]
+                if model.provider_id == "beta" && model.model_id == "shared"
+        ));
     }
 
     #[test]

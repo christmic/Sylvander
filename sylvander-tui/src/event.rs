@@ -404,7 +404,7 @@ pub enum Action {
     },
     SelectModel {
         session_id: String,
-        model: String,
+        model: sylvander_protocol::ModelSelection,
         reasoning_effort: sylvander_protocol::ReasoningEffort,
     },
     SelectPermissions {
