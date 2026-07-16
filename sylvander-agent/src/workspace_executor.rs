@@ -1,6 +1,6 @@
 //! Location-neutral workspace operations used by coding tools.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -204,6 +204,19 @@ pub struct WorkspaceSearchResult {
 /// so interrupting an Agent turn does not leave the command running detached.
 #[async_trait]
 pub trait WorkspaceExecutor: Send + Sync + Debug {
+    fn select_mount_target(
+        &self,
+        target: &WorkspaceTarget,
+        reference: Option<&str>,
+    ) -> Result<WorkspaceTarget, WorkspaceExecutorError> {
+        if let Some(reference) = reference {
+            return Err(WorkspaceExecutorError::InvalidRequest(format!(
+                "workspace mount `@{reference}` is unavailable"
+            )));
+        }
+        Ok(target.clone())
+    }
+
     async fn read_file(
         &self,
         target: &WorkspaceTarget,
@@ -280,6 +293,228 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         _request: WorkspaceSearchRequest,
     ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
         Err(WorkspaceExecutorError::Unavailable(target.id.clone()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MountedWorkspace {
+    pub executor: Arc<dyn WorkspaceExecutor>,
+    pub target: WorkspaceTarget,
+    pub capabilities: sylvander_protocol::WorkspaceCapabilityPolicy,
+}
+
+/// Routes logical `@reference/path` requests to role-bearing workspaces while
+/// preserving the ordinary task workspace as the unqualified default.
+#[derive(Debug, Clone)]
+pub struct WorkspaceRouter {
+    default_reference: String,
+    mounts: BTreeMap<String, MountedWorkspace>,
+}
+
+impl WorkspaceRouter {
+    pub fn new(
+        default_reference: impl Into<String>,
+        mounts: impl IntoIterator<Item = (String, MountedWorkspace)>,
+    ) -> Result<Self, WorkspaceExecutorError> {
+        let default_reference = default_reference.into();
+        let mounts = mounts.into_iter().collect::<BTreeMap<_, _>>();
+        if !mounts.contains_key(&default_reference) {
+            return Err(WorkspaceExecutorError::InvalidRequest(format!(
+                "default workspace mount `{default_reference}` is unavailable"
+            )));
+        }
+        Ok(Self {
+            default_reference,
+            mounts,
+        })
+    }
+
+    fn route_path<'a>(
+        &'a self,
+        relative_path: &str,
+    ) -> Result<(String, &'a MountedWorkspace, String, bool), WorkspaceExecutorError> {
+        let (reference, path, explicit) = if let Some(logical) = relative_path.strip_prefix('@') {
+            let (reference, path) = logical.split_once('/').unwrap_or((logical, "."));
+            (reference, path, true)
+        } else {
+            (self.default_reference.as_str(), relative_path, false)
+        };
+        if reference.is_empty() || path.starts_with('@') {
+            return Err(WorkspaceExecutorError::InvalidPath(relative_path.into()));
+        }
+        let mount = self.mounts.get(reference).ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest(format!(
+                "workspace mount `@{reference}` is unavailable"
+            ))
+        })?;
+        Ok((reference.to_owned(), mount, path.to_owned(), explicit))
+    }
+
+    fn route_target<'a>(
+        &'a self,
+        target: &WorkspaceTarget,
+    ) -> Result<&'a MountedWorkspace, WorkspaceExecutorError> {
+        let reference = target
+            .workspace_path
+            .to_str()
+            .and_then(|path| path.strip_prefix('@'))
+            .unwrap_or(&self.default_reference);
+        self.mounts.get(reference).ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest(format!(
+                "workspace mount `@{reference}` is unavailable"
+            ))
+        })
+    }
+
+    fn require(
+        mount: &MountedWorkspace,
+        allowed: bool,
+        operation: &str,
+    ) -> Result<(), WorkspaceExecutorError> {
+        if allowed {
+            Ok(())
+        } else {
+            Err(WorkspaceExecutorError::InvalidRequest(format!(
+                "{operation} is disabled for workspace mount `{}`",
+                mount.target.workspace_path.display()
+            )))
+        }
+    }
+}
+
+#[async_trait]
+impl WorkspaceExecutor for WorkspaceRouter {
+    fn select_mount_target(
+        &self,
+        _target: &WorkspaceTarget,
+        reference: Option<&str>,
+    ) -> Result<WorkspaceTarget, WorkspaceExecutorError> {
+        let reference = reference.unwrap_or(&self.default_reference);
+        let mount = self.mounts.get(reference).ok_or_else(|| {
+            WorkspaceExecutorError::InvalidRequest(format!(
+                "workspace mount `@{reference}` is unavailable"
+            ))
+        })?;
+        Ok(WorkspaceTarget {
+            id: "workspace-router".into(),
+            workspace_path: format!("@{reference}").into(),
+            read_only: mount.target.read_only,
+        })
+    }
+
+    async fn read_file(
+        &self,
+        _target: &WorkspaceTarget,
+        relative_path: &str,
+    ) -> Result<Vec<u8>, WorkspaceExecutorError> {
+        let (_, mount, path, _) = self.route_path(relative_path)?;
+        Self::require(mount, mount.capabilities.read, "read")?;
+        mount.executor.read_file(&mount.target, &path).await
+    }
+
+    async fn read_file_bounded(
+        &self,
+        _target: &WorkspaceTarget,
+        relative_path: &str,
+        max_bytes: usize,
+    ) -> Result<WorkspaceReadResult, WorkspaceExecutorError> {
+        let (_, mount, path, _) = self.route_path(relative_path)?;
+        Self::require(mount, mount.capabilities.read, "read")?;
+        mount
+            .executor
+            .read_file_bounded(&mount.target, &path, max_bytes)
+            .await
+    }
+
+    async fn write_file(
+        &self,
+        _target: &WorkspaceTarget,
+        relative_path: &str,
+        content: &[u8],
+    ) -> Result<(), WorkspaceExecutorError> {
+        let (_, mount, path, _) = self.route_path(relative_path)?;
+        Self::require(mount, mount.capabilities.write, "write")?;
+        mount
+            .executor
+            .write_file(&mount.target, &path, content)
+            .await
+    }
+
+    async fn run_command(
+        &self,
+        _target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mount = self.route_target(_target)?;
+        Self::require(mount, mount.capabilities.command, "command")?;
+        mount
+            .executor
+            .run_command(&mount.target, command, timeout)
+            .await
+    }
+
+    async fn run_command_streaming(
+        &self,
+        _target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mount = self.route_target(_target)?;
+        Self::require(mount, mount.capabilities.command, "command")?;
+        mount
+            .executor
+            .run_command_streaming(&mount.target, command, timeout, progress)
+            .await
+    }
+
+    async fn run_read_only_command(
+        &self,
+        _target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mount = self.route_target(_target)?;
+        Self::require(mount, mount.capabilities.git, "git")?;
+        mount
+            .executor
+            .run_read_only_command(&mount.target, command, timeout)
+            .await
+    }
+
+    async fn list(
+        &self,
+        _target: &WorkspaceTarget,
+        mut request: WorkspaceListRequest,
+    ) -> Result<WorkspaceListResult, WorkspaceExecutorError> {
+        let (reference, mount, path, explicit) = self.route_path(&request.relative_path)?;
+        Self::require(mount, mount.capabilities.read, "list")?;
+        request.relative_path = path;
+        let mut result = mount.executor.list(&mount.target, request).await?;
+        if explicit {
+            for entry in &mut result.entries {
+                entry.relative_path = format!("@{reference}/{}", entry.relative_path);
+            }
+        }
+        Ok(result)
+    }
+
+    async fn search(
+        &self,
+        _target: &WorkspaceTarget,
+        mut request: WorkspaceSearchRequest,
+    ) -> Result<WorkspaceSearchResult, WorkspaceExecutorError> {
+        let (reference, mount, path, explicit) = self.route_path(&request.relative_path)?;
+        Self::require(mount, mount.capabilities.read, "search")?;
+        request.relative_path = path;
+        let mut result = mount.executor.search(&mount.target, request).await?;
+        if explicit {
+            for found in &mut result.matches {
+                found.relative_path = format!("@{reference}/{}", found.relative_path);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -1245,6 +1480,137 @@ mod tests {
             }
             .bounded()
             .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_router_resolves_logical_mounts_and_enforces_capabilities() {
+        let task = tempfile::tempdir().unwrap();
+        let dependency = tempfile::tempdir().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        tokio::fs::write(task.path().join("task.txt"), "task")
+            .await
+            .unwrap();
+        tokio::fs::write(dependency.path().join("lib.txt"), "dependency")
+            .await
+            .unwrap();
+        let local = Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>;
+        let mount =
+            |path: &Path,
+             read_only: bool,
+             capabilities: sylvander_protocol::WorkspaceCapabilityPolicy| {
+                MountedWorkspace {
+                    executor: local.clone(),
+                    target: WorkspaceTarget::local(path, read_only),
+                    capabilities,
+                }
+            };
+        let router = WorkspaceRouter::new(
+            "task",
+            [
+                (
+                    "task".into(),
+                    mount(
+                        task.path(),
+                        false,
+                        sylvander_protocol::WorkspaceCapabilityPolicy {
+                            read: true,
+                            write: true,
+                            command: true,
+                            git: true,
+                        },
+                    ),
+                ),
+                (
+                    "dependency".into(),
+                    mount(
+                        dependency.path(),
+                        true,
+                        sylvander_protocol::WorkspaceCapabilityPolicy {
+                            read: true,
+                            git: true,
+                            ..Default::default()
+                        },
+                    ),
+                ),
+                (
+                    "artifacts".into(),
+                    mount(
+                        artifacts.path(),
+                        false,
+                        sylvander_protocol::WorkspaceCapabilityPolicy {
+                            read: true,
+                            write: true,
+                            ..Default::default()
+                        },
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+        let target = WorkspaceTarget::local("/", false);
+
+        assert_eq!(
+            router.read_file(&target, "task.txt").await.unwrap(),
+            b"task"
+        );
+        assert_eq!(
+            router
+                .read_file(&target, "@dependency/lib.txt")
+                .await
+                .unwrap(),
+            b"dependency"
+        );
+        router
+            .write_file(&target, "@artifacts/report.txt", b"report")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(artifacts.path().join("report.txt"))
+                .await
+                .unwrap(),
+            b"report"
+        );
+        assert!(
+            router
+                .write_file(&target, "@dependency/forbidden.txt", b"x")
+                .await
+                .is_err()
+        );
+        let listing = router
+            .list(
+                &target,
+                WorkspaceListRequest {
+                    relative_path: "@dependency/.".into(),
+                    recursive: false,
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .any(|entry| entry.relative_path == "@dependency/lib.txt")
+        );
+        let dependency_target = router
+            .select_mount_target(&target, Some("dependency"))
+            .unwrap();
+        assert!(
+            router
+                .run_command(
+                    &dependency_target,
+                    "printf forbidden",
+                    Duration::from_secs(1)
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            router
+                .select_mount_target(&target, Some("missing"))
+                .is_err()
         );
     }
 
