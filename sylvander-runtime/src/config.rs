@@ -41,6 +41,8 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerSettings {
+    #[serde(default)]
+    pub mode: ServerMode,
     #[serde(default = "default_server_name")]
     pub name: String,
     pub data_dir: Option<PathBuf>,
@@ -63,6 +65,7 @@ pub struct ServerSettings {
 impl Default for ServerSettings {
     fn default() -> Self {
         Self {
+            mode: ServerMode::default(),
             name: default_server_name(),
             data_dir: None,
             session_db: None,
@@ -76,6 +79,16 @@ impl Default for ServerSettings {
             identity: IdentitySettings::default(),
         }
     }
+}
+
+/// Runtime trust profile. Production requires an independent memory integrity
+/// anchor; self-use keeps durable `SQLite` memory without that external anchor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerMode {
+    Production,
+    #[default]
+    SelfUse,
 }
 
 /// Optional durable stable-user identity service.
@@ -709,6 +722,19 @@ impl ServerConfig {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
         }
         let memory = &self.server.memory_maintenance;
+        match (
+            self.server.mode,
+            memory.integrity.key.is_some(),
+            memory.integrity.backend.is_some(),
+        ) {
+            (ServerMode::Production, false, false) => {
+                errors.push("production mode requires a memory integrity key and backend".into());
+            }
+            (_, key, backend) if key != backend => {
+                errors.push("memory integrity key and backend must be configured together".into());
+            }
+            _ => {}
+        }
         if let Some(reference) = &memory.integrity.key {
             reference.validate("server memory integrity key", &mut errors);
         }
@@ -1231,6 +1257,9 @@ mod qualified_model_tests {
         ServerConfig::from_toml(
             r#"
 schema_version = 1
+
+[server]
+mode = "self_use"
 
 [[model_providers]]
 id = "alpha"

@@ -128,7 +128,9 @@ use crate::composition::{
     ConfiguredAgent, build_registry_agent_versioned_with_resolver, default_tools,
     resolve_session_config,
 };
-use crate::config::{MemoryIntegrityBackend, SecretResolver, ServerConfig, SystemSecretResolver};
+use crate::config::{
+    MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
+};
 use crate::credential_registry::CredentialSecretResolver;
 use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
 use crate::identity_binding_service::{
@@ -2877,84 +2879,105 @@ impl Runtime {
             RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)?;
         let retention_policy = memory_policy.retention.clone();
         let integrity_settings = &config.server.memory_maintenance.integrity;
-        let integrity_secret = SystemSecretResolver
-            .resolve(integrity_settings.key.as_ref().ok_or_else(|| {
-                RuntimeError::Config("memory integrity key reference is required".into())
-            })?)
-            .map_err(|_| RuntimeError::Config("memory integrity key resolution failed".into()))?;
-        let integrity = match integrity_settings
-            .backend
-            .as_ref()
-            .ok_or_else(|| RuntimeError::Config("memory integrity backend is required".into()))?
+        let sqlite_memory = if config.server.mode == ServerMode::SelfUse
+            && integrity_settings.key.is_none()
+            && integrity_settings.backend.is_none()
         {
-            MemoryIntegrityBackend::File { anchor_path } => {
-                MemoryIntegrityConfig::new(anchor_path, integrity_secret.as_bytes())
-            }
-            MemoryIntegrityBackend::Http {
-                endpoint,
-                bearer_token,
-                ca_certificate,
-                client_identity,
-                timeout_millis,
-                read_retries,
-            } => {
-                let bearer = SystemSecretResolver.resolve(bearer_token).map_err(|_| {
-                    RuntimeError::Config(
-                        "memory integrity HTTP bearer token resolution failed".into(),
-                    )
-                })?;
-                let mut remote = HttpMemoryIntegrityAnchorConfig::new(
-                    endpoint,
-                    bearer.as_bytes(),
-                    std::time::Duration::from_millis(u64::from(*timeout_millis)),
-                    *read_retries,
-                )
+            tokio::task::spawn_blocking(move || {
+                SqliteMemoryStore::open_with_retention_policy(memory_db, retention_policy)
+            })
+            .await
+            .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+        } else {
+            let integrity_secret = SystemSecretResolver
+                .resolve(integrity_settings.key.as_ref().ok_or_else(|| {
+                    RuntimeError::Config("memory integrity key reference is required".into())
+                })?)
                 .map_err(|_| {
-                    RuntimeError::Config("memory integrity HTTP configuration failed".into())
+                    RuntimeError::Config("memory integrity key resolution failed".into())
                 })?;
-                let ca = ca_certificate
-                    .as_ref()
-                    .map(|reference| SystemSecretResolver.resolve(reference))
-                    .transpose()
-                    .map_err(|_| {
-                        RuntimeError::Config("memory integrity HTTP CA resolution failed".into())
-                    })?;
-                if let Some(ca) = &ca {
-                    remote = remote.with_ca_certificate(ca.as_bytes()).map_err(|_| {
-                        RuntimeError::Config("memory integrity HTTP CA configuration failed".into())
-                    })?;
+            let integrity = match integrity_settings.backend.as_ref().ok_or_else(|| {
+                RuntimeError::Config("memory integrity backend is required".into())
+            })? {
+                MemoryIntegrityBackend::File { anchor_path } => {
+                    MemoryIntegrityConfig::new(anchor_path, integrity_secret.as_bytes())
                 }
-                let identity = client_identity
-                    .as_ref()
-                    .map(|reference| SystemSecretResolver.resolve(reference))
-                    .transpose()
-                    .map_err(|_| {
+                MemoryIntegrityBackend::Http {
+                    endpoint,
+                    bearer_token,
+                    ca_certificate,
+                    client_identity,
+                    timeout_millis,
+                    read_retries,
+                } => {
+                    let bearer = SystemSecretResolver.resolve(bearer_token).map_err(|_| {
                         RuntimeError::Config(
-                            "memory integrity HTTP client identity resolution failed".into(),
+                            "memory integrity HTTP bearer token resolution failed".into(),
                         )
                     })?;
-                if let Some(identity) = &identity {
-                    remote = remote
-                        .with_client_identity(identity.as_bytes())
+                    let mut remote = HttpMemoryIntegrityAnchorConfig::new(
+                        endpoint,
+                        bearer.as_bytes(),
+                        std::time::Duration::from_millis(u64::from(*timeout_millis)),
+                        *read_retries,
+                    )
+                    .map_err(|_| {
+                        RuntimeError::Config("memory integrity HTTP configuration failed".into())
+                    })?;
+                    let ca = ca_certificate
+                        .as_ref()
+                        .map(|reference| SystemSecretResolver.resolve(reference))
+                        .transpose()
                         .map_err(|_| {
                             RuntimeError::Config(
-                                "memory integrity HTTP client identity configuration failed".into(),
+                                "memory integrity HTTP CA resolution failed".into(),
                             )
                         })?;
+                    if let Some(ca) = &ca {
+                        remote = remote.with_ca_certificate(ca.as_bytes()).map_err(|_| {
+                            RuntimeError::Config(
+                                "memory integrity HTTP CA configuration failed".into(),
+                            )
+                        })?;
+                    }
+                    let identity = client_identity
+                        .as_ref()
+                        .map(|reference| SystemSecretResolver.resolve(reference))
+                        .transpose()
+                        .map_err(|_| {
+                            RuntimeError::Config(
+                                "memory integrity HTTP client identity resolution failed".into(),
+                            )
+                        })?;
+                    if let Some(identity) = &identity {
+                        remote =
+                            remote
+                                .with_client_identity(identity.as_bytes())
+                                .map_err(|_| {
+                                    RuntimeError::Config(
+                                    "memory integrity HTTP client identity configuration failed"
+                                        .into(),
+                                )
+                                })?;
+                    }
+                    let anchor = HttpMemoryIntegrityAnchor::new(remote).map_err(|_| {
+                        RuntimeError::Config("memory integrity HTTP configuration failed".into())
+                    })?;
+                    MemoryIntegrityConfig::with_anchor(
+                        Arc::new(anchor),
+                        integrity_secret.as_bytes(),
+                    )
                 }
-                let anchor = HttpMemoryIntegrityAnchor::new(remote).map_err(|_| {
-                    RuntimeError::Config("memory integrity HTTP configuration failed".into())
-                })?;
-                MemoryIntegrityConfig::with_anchor(Arc::new(anchor), integrity_secret.as_bytes())
             }
-        }
-        .map_err(|_| RuntimeError::Config("memory integrity configuration failed".into()))?;
-        let sqlite_memory = tokio::task::spawn_blocking(move || {
-            SqliteMemoryStore::open_with_integrity(memory_db, retention_policy, integrity)
-        })
-        .await
-        .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
-        .map_err(|error| RuntimeError::Store(error.to_string()))?;
+            .map_err(|_| RuntimeError::Config("memory integrity configuration failed".into()))?;
+            tokio::task::spawn_blocking(move || {
+                SqliteMemoryStore::open_with_integrity(memory_db, retention_policy, integrity)
+            })
+            .await
+            .map_err(|error| RuntimeError::Store(format!("open memory store: {error}")))?
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+        };
         let memory_maintenance_handle = sqlite_memory.maintenance();
         let memory_store: Arc<dyn MemoryStore> = Arc::new(sqlite_memory);
         let bus = Arc::new(InProcessMessageBus::new());

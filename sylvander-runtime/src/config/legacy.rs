@@ -13,6 +13,7 @@ use super::{
 
 const LEGACY_KEYS: &[&str] = &[
     "SYLVANDER_MODEL",
+    "SYLVANDER_MODE",
     "SYLVANDER_MODELS",
     "SYLVANDER_REASONING_MODELS",
     "ANTHROPIC_API_KEY",
@@ -63,6 +64,17 @@ impl ServerConfig {
                 })
         };
         let model = required("SYLVANDER_MODEL")?;
+        let mode = match required("SYLVANDER_MODE")?.as_str() {
+            "self_use" => super::ServerMode::SelfUse,
+            _ => {
+                return Err(ConfigError {
+                    errors: vec![
+                        "legacy environment requires SYLVANDER_MODE=self_use; production uses SYLVANDER_CONFIG"
+                            .into(),
+                    ],
+                });
+            }
+        };
         required("ANTHROPIC_API_KEY")?;
         let base_url = required("ANTHROPIC_BASE_URL")?;
 
@@ -149,6 +161,7 @@ impl ServerConfig {
         let config = Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             server: ServerSettings {
+                mode,
                 name: "sylvander".into(),
                 data_dir: None,
                 session_db: values.get("SYLVANDER_SESSION_DB").map(PathBuf::from),
@@ -219,7 +232,7 @@ fn legacy_agent_access(
         .transpose()?
         .unwrap_or_default();
     Ok(super::AgentAccessConfig {
-        allow_authenticated: false,
+        allow_authenticated: allowed_principals.is_empty(),
         allowed_principals,
         allowed_roles: Vec::new(),
     })
@@ -323,6 +336,7 @@ mod tests {
 
     fn required_values() -> HashMap<String, String> {
         HashMap::from([
+            ("SYLVANDER_MODE".into(), "self_use".into()),
             ("SYLVANDER_MODEL".into(), "model-a".into()),
             ("ANTHROPIC_API_KEY".into(), "must-not-be-stored".into()),
             (
@@ -341,7 +355,7 @@ mod tests {
         assert!(!encoded.contains("must-not-be-stored"));
         assert_eq!(config.agents[0].spec.model.provider, "primary");
         assert!(config.agents[0].spec.model.allowed_models.is_empty());
-        assert!(!config.agents[0].access.allow_authenticated);
+        assert!(config.agents[0].access.allow_authenticated);
         assert!(config.agents[0].access.allowed_principals.is_empty());
     }
 
@@ -389,6 +403,18 @@ mod tests {
         values.insert("SYLVANDER_UNIX_UID".into(), "current-user".into());
         let error = ServerConfig::from_legacy_values(&values).unwrap_err();
         assert!(error.errors[0].contains("non-negative numeric uid"));
+    }
+
+    #[test]
+    fn legacy_environment_requires_explicit_self_use_mode() {
+        let mut values = required_values();
+        values.remove("SYLVANDER_MODE");
+        let error = ServerConfig::from_legacy_values(&values).unwrap_err();
+        assert!(error.errors[0].contains("SYLVANDER_MODE"));
+
+        values.insert("SYLVANDER_MODE".into(), "production".into());
+        let error = ServerConfig::from_legacy_values(&values).unwrap_err();
+        assert!(error.errors[0].contains("production uses SYLVANDER_CONFIG"));
     }
 
     #[test]
