@@ -26,6 +26,8 @@ use crate::tool_context::ToolContext;
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
+const TOOL_RESULT_HEAD_BYTES: usize = 16 * 1024;
 
 /// Errors raised while starting or communicating with an MCP server.
 #[derive(Debug, Error)]
@@ -411,7 +413,9 @@ fn map_tool_result(result: &JsonValue) -> ToolOutput {
                     .unwrap_or("")
                     .to_owned()
             } else {
-                serde_json::to_string(part).unwrap_or_else(|_| "<invalid MCP content>".into())
+                let mut summary = part.clone();
+                redact_binary_payloads(&mut summary);
+                serde_json::to_string(&summary).unwrap_or_else(|_| "<invalid MCP content>".into())
             }
         })
         .collect::<Vec<_>>();
@@ -423,12 +427,67 @@ fn map_tool_result(result: &JsonValue) -> ToolOutput {
                 .unwrap_or_else(|_| "<invalid MCP structured content>".into()),
         );
     }
-    let content = parts.join("\n");
+    let content = bound_tool_result(parts.join("\n"));
     if is_error {
         ToolOutput::err(content)
     } else {
         ToolOutput::ok(content)
     }
+}
+
+fn redact_binary_payloads(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(object) => {
+            for key in ["data", "blob"] {
+                if let Some(payload) = object.get_mut(key)
+                    && let Some(encoded) = payload.as_str()
+                {
+                    *payload =
+                        JsonValue::String(format!("<omitted {} encoded bytes>", encoded.len()));
+                }
+            }
+            for child in object.values_mut() {
+                redact_binary_payloads(child);
+            }
+        }
+        JsonValue::Array(values) => {
+            for child in values {
+                redact_binary_payloads(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn bound_tool_result(content: String) -> String {
+    if content.len() <= MAX_TOOL_RESULT_BYTES {
+        return content;
+    }
+    let marker = format!(
+        "\n… MCP result truncated: {} bytes total …\n",
+        content.len()
+    );
+    let available = MAX_TOOL_RESULT_BYTES.saturating_sub(marker.len());
+    let head_end = floor_char_boundary(&content, TOOL_RESULT_HEAD_BYTES.min(available));
+    let tail_bytes = available.saturating_sub(head_end);
+    let tail_start = ceil_char_boundary(&content, content.len().saturating_sub(tail_bytes));
+    format!("{}{marker}{}", &content[..head_end], &content[tail_start..])
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
+    }
+    index
 }
 
 #[cfg(test)]
@@ -525,6 +584,8 @@ while True:
         assert!(!output.is_error);
         assert!(output.content.starts_with("echo:hello\n"));
         assert!(output.content.contains("\"type\":\"image\""));
+        assert!(output.content.contains("<omitted 4 encoded bytes>"));
+        assert!(!output.content.contains("AA=="));
 
         let model_error = tools[0]
             .execute(&context, json!({ "value": "no", "error": true }))
@@ -564,5 +625,19 @@ while True:
             .expect_err("slow call must time out");
         assert!(matches!(error, ToolError::Timeout(duration) if duration == timeout));
         client.shutdown().await.expect("shutdown after timeout");
+    }
+
+    #[test]
+    fn tool_results_keep_unicode_safe_head_and_tail_with_explicit_truncation() {
+        let content = format!("{}TAIL-蟹", "前".repeat(MAX_TOOL_RESULT_BYTES));
+        let output = map_tool_result(&json!({
+            "content": [{ "type": "text", "text": content }],
+            "isError": false
+        }));
+
+        assert!(output.content.len() <= MAX_TOOL_RESULT_BYTES);
+        assert!(output.content.starts_with('前'));
+        assert!(output.content.contains("MCP result truncated"));
+        assert!(output.content.ends_with("TAIL-蟹"));
     }
 }
