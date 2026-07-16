@@ -10,6 +10,7 @@ use super::proposal_types::ImprovementProposalStatus;
 use super::{EvidenceError, EvidenceStore, as_i64};
 
 mod evidence;
+mod transition;
 
 impl EvidenceStore {
     /// Atomically bind one approved proposal to one isolated worktree lease.

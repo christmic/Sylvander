@@ -37,8 +37,9 @@ pub use experiment_signer::{
     verify_experiment_evidence,
 };
 pub use experiment_types::{
-    ExperimentPhase, RecordExperimentEvidence, SelfChangeExperiment, SelfChangeExperimentStatus,
-    SignedExperimentEvidence, StoredSelfChangeExperiment, UnsignedExperimentEvidence,
+    ExperimentPhase, ExperimentTransition, RecordExperimentEvidence, SelfChangeExperiment,
+    SelfChangeExperimentStatus, SignedExperimentEvidence, StoredSelfChangeExperiment,
+    UnsignedExperimentEvidence,
 };
 pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
