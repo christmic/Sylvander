@@ -23,9 +23,9 @@ pub use analysis_types::{
     FailureBreakdown, FailureClass,
 };
 pub use evaluation_types::{
-    EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
-    RegressionMetric, ScoreDirection, ScoringAdapterKind, ScoringAdapterRevision,
-    StoredEvaluationBaseline, StoredEvaluationDataset,
+    EvaluationBaseline, EvaluationCase, EvaluationComparison, EvaluationDatasetRevision,
+    EvaluationSplit, MetricMeasurement, RegressionDecision, RegressionMetric, ScoreDirection,
+    ScoringAdapterKind, ScoringAdapterRevision, StoredEvaluationBaseline, StoredEvaluationDataset,
 };
 pub use recorder::EvidenceRecorder;
 

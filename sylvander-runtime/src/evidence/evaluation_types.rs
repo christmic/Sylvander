@@ -78,3 +78,29 @@ pub struct StoredEvaluationBaseline {
     pub definition: EvaluationBaseline,
     pub digest_sha256: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetricMeasurement {
+    pub metric: String,
+    pub value: i64,
+    pub sample_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegressionDecision {
+    pub metric: String,
+    pub direction: ScoreDirection,
+    pub baseline_value: i64,
+    pub candidate_value: i64,
+    pub allowed_boundary: i64,
+    pub sample_count: u64,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluationComparison {
+    pub baseline_id: String,
+    pub baseline_digest_sha256: String,
+    pub passed: bool,
+    pub decisions: Vec<RegressionDecision>,
+}

@@ -1,7 +1,7 @@
 use super::*;
 use crate::evidence::evaluation_types::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
-    RegressionMetric, ScoreDirection,
+    MetricMeasurement, RegressionMetric, ScoreDirection,
 };
 use sylvander_protocol::EvidenceReference;
 
@@ -204,4 +204,31 @@ async fn baseline_thresholds_must_match_dataset_scorer_metrics() {
             .unwrap_err(),
         EvidenceError::InvalidEvaluationDefinition
     ));
+
+    let passing = store
+        .compare_evaluation_baseline(
+            "coding-core-main".into(),
+            vec![MetricMeasurement {
+                metric: "passed".into(),
+                value: 8_950,
+                sample_count: 2,
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(passing.passed);
+    assert_eq!(passing.decisions[0].allowed_boundary, 8_910);
+
+    let regression = store
+        .compare_evaluation_baseline(
+            "coding-core-main".into(),
+            vec![MetricMeasurement {
+                metric: "passed".into(),
+                value: 8_900,
+                sample_count: 2,
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(!regression.passed);
 }
