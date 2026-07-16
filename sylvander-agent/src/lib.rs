@@ -94,6 +94,7 @@ pub mod task_gate;
 pub mod tool;
 pub mod tool_context;
 pub mod tools;
+pub mod user_profile_prompt;
 pub mod workspace_journal;
 
 /// Convenient re-exports for the most commonly used types.
