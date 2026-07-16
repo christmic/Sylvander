@@ -72,7 +72,7 @@ mod registry_domain_tests;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -80,7 +80,9 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{InProcessMessageBus, MessageBus};
+use sylvander_agent::bus::{
+    BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
+};
 use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
 use sylvander_agent::run::AgentRun;
 use sylvander_agent::session::SessionMetadata;
@@ -170,6 +172,7 @@ struct ChannelTask {
 
 struct RuntimeUiService {
     engine: Arc<AgentRunEngine>,
+    bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
     agents: HashMap<AgentId, ConfiguredAgent>,
     agent_registry: Option<AgentRegistry>,
@@ -817,6 +820,106 @@ impl sylvander_channel::UiService for RuntimeUiService {
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
     }
 
+    async fn submit_chat(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: sylvander_channel::ExternalChatRequest,
+    ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
+        let sylvander_channel::ExternalChatRequest {
+            existing_session,
+            agent_id,
+            label,
+            overrides,
+            text,
+            attachments,
+            external_meta,
+        } = request;
+        let chat = sylvander_protocol::UiClientMessage::Chat {
+            text: text.clone(),
+            attachments: attachments.clone(),
+            session_id: existing_session.as_ref().map(|id| id.0.clone()),
+            workspace: None,
+        };
+        self.authorize_message(boundary, &chat).await?;
+        validate_external_metadata(boundary, &external_meta)?;
+
+        let session_id = if let Some(session_id) = existing_session {
+            let session = self
+                .owned_session(boundary, &session_id, "submit_chat")
+                .await?;
+            if session.agents.as_slice() != std::slice::from_ref(&agent_id) {
+                return Err(sylvander_protocol::BoundaryError::forbidden(
+                    boundary,
+                    "submit_chat",
+                ));
+            }
+            session_id
+        } else {
+            let create = SessionCreateRequest {
+                agent_id: agent_id.clone(),
+                label,
+                channel_id: Some(boundary.channel_instance_id.clone()),
+                overrides,
+            };
+            self.authorize_message(
+                boundary,
+                &sylvander_protocol::UiClientMessage::CreateSession {
+                    request: create.clone(),
+                },
+            )
+            .await?;
+            let state = self.create_session(boundary, create).await?;
+            if !external_meta.is_empty() {
+                self.sessions
+                    .patch_metadata(
+                        &state.session_id,
+                        sylvander_agent::session_store::SessionMetadataPatch {
+                            name: None,
+                            external_meta: external_meta
+                                .into_iter()
+                                .map(|(key, value)| (key, serde_json::Value::String(value)))
+                                .collect(),
+                        },
+                    )
+                    .await
+                    .map_err(|_| {
+                        boundary_failure(
+                            boundary,
+                            "submit_chat",
+                            "session metadata persistence failed",
+                        )
+                    })?;
+            }
+            state.session_id
+        };
+
+        let events = self
+            .bus
+            .subscribe(SubscriptionFilter {
+                session_ids: Some(vec![session_id.clone()]),
+                recipients: None,
+                kinds: None,
+            })
+            .await
+            .map_err(|_| boundary_failure(boundary, "submit_chat", "event relay unavailable"))?;
+        self.bus
+            .publish(BusMessage {
+                session_id: session_id.clone(),
+                sender: sylvander_agent::bus::Sender::User(
+                    require_principal(boundary, "submit_chat")?.id.0.clone(),
+                ),
+                recipient: Recipient::Agent(agent_id),
+                kind: sylvander_agent::bus::MessageKind::Chat,
+                payload: text,
+                attachments,
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            })
+            .await
+            .map_err(|_| boundary_failure(boundary, "submit_chat", "message dispatch failed"))?;
+        Ok(sylvander_channel::SubmittedChat { session_id, events })
+    }
+
     async fn agent_admin(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -1398,6 +1501,28 @@ fn boundary_failure(
     }
 }
 
+fn validate_external_metadata(
+    boundary: &sylvander_protocol::BoundaryContext,
+    metadata: &BTreeMap<String, String>,
+) -> Result<(), sylvander_protocol::BoundaryError> {
+    if metadata.len() > 32
+        || metadata.iter().any(|(key, value)| {
+            key.is_empty()
+                || key.len() > 64
+                || key.chars().any(char::is_control)
+                || value.len() > 4096
+                || value.chars().any(char::is_control)
+        })
+    {
+        return Err(boundary_failure(
+            boundary,
+            "submit_chat",
+            "external metadata exceeds the accepted shape",
+        ));
+    }
+    Ok(())
+}
+
 fn agent_admin_error(code: AgentAdminErrorCode, message: impl Into<String>) -> AgentAdminResponse {
     AgentAdminResponse::Error {
         error: AgentAdminError {
@@ -1888,6 +2013,7 @@ impl Runtime {
         let configured_agents = HashMap::new();
         let ui_service = Arc::new(RuntimeUiService {
             engine: engine.clone(),
+            bus: bus.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             agent_registry: None,
@@ -2155,6 +2281,7 @@ impl Runtime {
         );
         let ui_service = Arc::new(RuntimeUiService {
             engine: engine.clone(),
+            bus: bus.clone(),
             sessions: session_store.clone(),
             agents: configured_agents.clone(),
             agent_registry: Some(agent_registry.clone()),
@@ -3882,7 +4009,7 @@ model_name = "model-a"
             ui: Some(runtime.ui_service.clone()),
             readiness: None,
         };
-        let platform_session = sylvander_channel::authorize_external_chat(
+        let mut platform_submission = sylvander_channel::submit_external_chat(
             &channel_context,
             &platform_boundary,
             sylvander_channel::ExternalChatRequest {
@@ -3900,6 +4027,21 @@ model_name = "model-a"
         )
         .await
         .expect("an allowed platform principal may create and use its session");
+        let platform_session = platform_submission.session_id.clone();
+        let routed = platform_submission
+            .events
+            .recv()
+            .await
+            .expect("the authenticated user message must be routed");
+        assert_eq!(routed.session_id, platform_session);
+        assert_eq!(
+            routed.sender,
+            sylvander_agent::bus::Sender::User("telegram:bot-a:42".into())
+        );
+        assert_eq!(
+            routed.recipient,
+            sylvander_agent::bus::Recipient::Agent(AgentId::new("assistant"))
+        );
         let platform_stored = runtime
             .session_store
             .get(&platform_session)
@@ -3921,7 +4063,7 @@ model_name = "model-a"
             "telegram",
             "telegram-update-2",
         );
-        let denial = sylvander_channel::authorize_external_chat(
+        let denial = sylvander_channel::submit_external_chat(
             &channel_context,
             &other_bot,
             sylvander_channel::ExternalChatRequest {

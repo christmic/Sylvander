@@ -26,10 +26,10 @@ use serde_json::Value as JsonValue;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use sylvander_agent::bus::{BusMessage, MessageKind, StreamEvent, SubscriptionFilter};
+use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
-use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, authorize_external_chat};
+use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
 use sylvander_protocol::{
     AuthenticatedPrincipal, AuthenticationFailure, AuthenticationMethod, BoundaryContext,
     BoundaryErrorCode,
@@ -280,7 +280,7 @@ async fn handle_webhook(
         ("channel_instance_id".into(), state.instance_id.clone()),
         ("chat_id".into(), chat_id_str.clone()),
     ]);
-    let session_id = match authorize_external_chat(
+    let submitted = match submit_external_chat(
         &state.ctx,
         &boundary,
         ExternalChatRequest {
@@ -295,34 +295,17 @@ async fn handle_webhook(
     )
     .await
     {
-        Ok(session_id) => session_id,
+        Ok(submitted) => submitted,
         Err(error) => {
             warn!(code = ?error.code, request_id = %error.request_id, "telegram: message denied");
             return Ok("denied");
         }
     };
+    drop(submitted.events);
     let sender_name = msg
         .from
         .as_ref()
         .map_or_else(|| "user".into(), |user| user.first_name.clone());
-
-    if let Ok(Some(session)) = state.sessions.get(&session_id).await {
-        let _ = state
-            .ctx
-            .bus
-            .publish(BusMessage::system_join_session(
-                state.agent_id.clone(),
-                session_id.clone(),
-                session.metadata,
-            ))
-            .await;
-    }
-
-    let bus_msg = BusMessage::user_chat(session_id.clone(), &principal_id, &text);
-    if let Err(e) = state.ctx.bus.publish(bus_msg).await {
-        warn!(error = %e, "telegram: bus publish failed");
-        return Ok("error");
-    }
 
     info!(%chat_id, sender = %sender_name, text, "telegram: message received");
     Ok("ok")
