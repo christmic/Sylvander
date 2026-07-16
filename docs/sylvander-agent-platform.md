@@ -158,9 +158,11 @@ Every layer has provenance, precedence, size limits, and a content digest.
 Secrets are excluded. `CLAUDE.md` compatibility may be supported as an explicit
 alias, but `AGENTS.md` is the canonical portable contract.
 
-Skills are discoverable packages with activation rules and trust metadata. MCP
-is a supervised runtime with transport, tool/resource discovery, health,
-timeouts, restart policy, authentication references, and namespaced tools.
+Skills are discoverable packages with activation rules and trust metadata.
+The current package contract is documented in
+[`sylvander-agent/docs/skills.md`](../sylvander-agent/docs/skills.md). MCP is a
+supervised runtime with transport, tool/resource discovery, health, timeouts,
+restart policy, authentication references, and namespaced tools.
 
 ### 3.5 Worktree lease
 
@@ -241,7 +243,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout and streaming head/tail capture, and structured read-only Git status/diff/log works through local and SSH targets. The local executor isolates each shell in a process group and regression tests prove timeout or interrupt cannot leave background descendants running. Local Git worktree inspection/accept/discard is operational; remote process-tree cancellation and remote worktree review remain. |
 | A11 | Worktree isolation | implemented for local/host-backed execution | Writable local and host-backed container Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state, removes leases for deleted sessions, and recovers worktrees left before manifest commit. Remote SSH worktrees remain deferred with P3.3. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
-| A13 | Skills | partial | Agent-home and task-workspace Skills are discovered through local or remote executors, injected with deterministic precedence, and reported after successful activation with source, trust, and per-turn reload truth. Package metadata, explicit activation controls, resources, health, and distribution remain. |
+| A13 | Skills | implemented | Agent-home and task-workspace packages are discovered through the selected executor with deterministic precedence. Strict optional manifests provide versioned metadata, activation, and exact resources; invalid or incomplete packages fail atomically. Redacted active/configured/degraded health, trust, source, capabilities, and per-turn reload truth are protocol-visible. |
 | A14 | MCP | partial | Production composition starts configured MCP stdio servers, initializes them, discovers collision-safe namespaced tools and advertised resources, exposes bounded `list_resources`/`read_resource` model tools, executes calls with timeouts, probes health every 30 seconds, exposes redacted active/degraded/unavailable state plus generation/reconnect/tool/resource counts and capabilities to `/mcp`, reconnects after transport failure without replaying the uncertain in-flight call, atomically refreshes the replacement tool and resource catalogs for the next model iteration, persists every complete raw JSON tool/resource result below the server data directory, bounds model/UI-facing results to a Unicode-safe head/tail summary with an artifact reference, omits inline binary payloads from that summary, and shuts servers down. Prompts, resource templates, subscriptions, and remote transports remain. |
 | A14H | Hooks | partial | Agent definitions and the public administration contract configure bounded before-tool hooks. Hooks execute through the selected location-neutral workspace executor, stream running/stdout/stderr/pass/failure/block decisions into the ordinary typed tool lifecycle, prevent the underlying tool from running when a blocking hook fails, allow advisory failures to remain visible without replacing the real result, redact commands from inspection, and expose configuration through `/hooks`. Turn/session/after-tool hook phases and hot reload remain. |
 | A14X | Extensions | implemented | Agent definitions and the public administration contract contribute ordinary tools, typed prompt commands, and bounded declarative tool-presentation metadata. The TUI interprets presentation kind/label/target fields using trusted local renderers, sanitizes all values, retains a visible fallback, and exposes contribution counts/capabilities through `/extensions`; extensions receive neither UI callbacks nor a path around normal tool execution and approval. |
@@ -543,8 +545,15 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   `AGENT.md`, and `agent.md` have deterministic alias priority. Every accepted
   document is bounded, path-attributed in the prompt, reloaded per turn, and
   cannot escape the executor-backed workspace root.
-- [ ] **P2.3 Skills runtime:** package format, discovery, trust, activation,
+- [x] **P2.3 Skills runtime:** package format, discovery, trust, activation,
   instruction/resource loading, validation, health, and protocol inspection.
+
+  Agent-home and task-workspace packages use a strict optional `SKILL.toml`
+  manifest plus mandatory `SKILL.md`. The manifest controls activation and
+  exact relative resources. Invalid, incomplete, oversized, or disabled
+  packages never inject partial content. Active/configured/degraded health,
+  trust, provenance, capabilities, and per-turn reload truth are available
+  through the redacted platform snapshot.
 - [ ] **P2.4 MCP runtime:** supervised transports, initialization, tool/resource
   discovery, namespacing, auth references, timeouts, cancellation, restart,
   health, and safe tool adaptation.
