@@ -39,9 +39,12 @@ use sylvander_agent::session_store::SessionStore;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentDescriptor,
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
-    RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse,
-    RunFeedback, SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest,
-    SessionCreateRequest, SessionId, UiClientMessage,
+    IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingCapabilities, IdentityBindingError,
+    IdentityBindingErrorCode, IdentityBindingOperation, IdentityBindingRequest,
+    IdentityBindingResponse, IdentityBindingValidationError, PrincipalKind, RegistryAdminError,
+    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
+    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
+    SessionId, UiClientMessage,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -63,6 +66,79 @@ pub struct ExternalChatRequest {
 pub struct SubmittedChat {
     pub session_id: SessionId,
     pub events: tokio::sync::mpsc::UnboundedReceiver<BusMessage>,
+}
+
+/// Non-serializable identity derived inside an authenticated Channel ingress.
+///
+/// There is deliberately no public constructor. A wire client or model can
+/// construct an identity-binding request, but only [`ChannelContext`] can bind
+/// it to the transport principal established by a concrete adapter's
+/// authentication path. Runtime code may consume the typed parts after it has
+/// independently authorized the accompanying [`BoundaryContext`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthenticatedTransportIdentity {
+    transport: String,
+    channel_instance_id: String,
+    external_principal_id: String,
+}
+
+impl AuthenticatedTransportIdentity {
+    fn from_ingress(boundary: &BoundaryContext) -> Result<Self, IdentityIngressError> {
+        let principal = boundary
+            .principal
+            .as_ref()
+            .ok_or(IdentityIngressError::Unauthenticated)?;
+        if principal.kind != PrincipalKind::User {
+            return Err(IdentityIngressError::Forbidden);
+        }
+        validate_ingress_part(&boundary.transport)?;
+        validate_ingress_part(&boundary.channel_instance_id)?;
+        validate_ingress_part(&principal.id.0)?;
+        Ok(Self {
+            transport: boundary.transport.clone(),
+            channel_instance_id: boundary.channel_instance_id.clone(),
+            external_principal_id: principal.id.0.clone(),
+        })
+    }
+
+    /// Consume the sealed envelope at the Runtime identity-store adapter.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String) {
+        (
+            self.transport,
+            self.channel_instance_id,
+            self.external_principal_id,
+        )
+    }
+}
+
+impl std::fmt::Debug for AuthenticatedTransportIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedTransportIdentity")
+            .field("transport", &self.transport)
+            .field("channel_instance_id", &self.channel_instance_id)
+            .field("external_principal_id", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityIngressError {
+    Unauthenticated,
+    Forbidden,
+    Invalid,
+}
+
+fn validate_ingress_part(value: &str) -> Result<(), IdentityIngressError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > 512
+        || value.chars().any(char::is_control)
+    {
+        return Err(IdentityIngressError::Invalid);
+    }
+    Ok(())
 }
 
 /// Transport-neutral UI service boundary owned by the runtime.
@@ -109,6 +185,31 @@ pub trait UiService: Send + Sync {
         boundary: &BoundaryContext,
         feedback: RunFeedback,
     ) -> Result<String, BoundaryError>;
+
+    /// Advertise identity-binding versions installed by this Runtime.
+    ///
+    /// The default is empty and therefore denies every identity operation.
+    fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
+        IdentityBindingCapabilities::default()
+    }
+
+    /// Apply one identity operation to the ingress-derived transport identity.
+    ///
+    /// Channels receive no identity store and no constructor for `identity`.
+    /// A Runtime override must authorize `boundary` again before consuming the
+    /// identity parts. The default response is content-safe and fail-closed.
+    async fn identity_binding(
+        &self,
+        _boundary: &BoundaryContext,
+        _identity: AuthenticatedTransportIdentity,
+        request: IdentityBindingRequest,
+    ) -> IdentityBindingResponse {
+        identity_error_response(
+            request.operation(),
+            IdentityBindingErrorCode::ServiceUnavailable,
+            "identity binding service is unavailable",
+        )
+    }
 
     /// Authenticate, resolve or create and attach the owned session, then
     /// publish exactly one user chat message through the runtime boundary.
@@ -202,6 +303,22 @@ pub trait UiService: Send + Sync {
         _request: RegistryAdminRequest,
     ) -> RegistryAdminResponse {
         unavailable_registry_admin_response()
+    }
+}
+
+fn identity_error_response(
+    operation: IdentityBindingOperation,
+    code: IdentityBindingErrorCode,
+    message: &'static str,
+) -> IdentityBindingResponse {
+    IdentityBindingResponse::Error {
+        version: IDENTITY_BINDING_PROTOCOL_VERSION,
+        error: IdentityBindingError {
+            code,
+            operation,
+            message: message.into(),
+            retry_after_ms: None,
+        },
     }
 }
 
@@ -373,6 +490,83 @@ impl ChannelContext {
         ui.submit_control(boundary, message).await
     }
 
+    /// Return identity versions installed by the Runtime.
+    ///
+    /// An absent service and the trait default both advertise no capability.
+    #[must_use]
+    pub fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
+        self.ui
+            .as_ref()
+            .map_or_else(IdentityBindingCapabilities::default, |ui| {
+                ui.identity_binding_capabilities()
+            })
+    }
+
+    /// Submit an identity action for the principal authenticated by this
+    /// concrete Channel ingress.
+    ///
+    /// This method derives the transport identity; the serializable request
+    /// cannot override any identity component. Adapters must never deserialize
+    /// a caller-provided `BoundaryContext` in place of their authentication
+    /// result.
+    pub async fn submit_identity_binding(
+        &self,
+        boundary: &BoundaryContext,
+        request: IdentityBindingRequest,
+    ) -> IdentityBindingResponse {
+        let operation = request.operation();
+        let identity = match AuthenticatedTransportIdentity::from_ingress(boundary) {
+            Ok(identity) => identity,
+            Err(IdentityIngressError::Unauthenticated) => {
+                return identity_error_response(
+                    operation,
+                    IdentityBindingErrorCode::Unauthenticated,
+                    "authentication is required",
+                );
+            }
+            Err(IdentityIngressError::Forbidden | IdentityIngressError::Invalid) => {
+                return identity_error_response(
+                    operation,
+                    IdentityBindingErrorCode::Forbidden,
+                    "the authenticated principal cannot bind an identity",
+                );
+            }
+        };
+
+        if let Err(error) = request.validate() {
+            let (code, message) = match error {
+                IdentityBindingValidationError::UnsupportedVersion => (
+                    IdentityBindingErrorCode::UnsupportedVersion,
+                    "identity binding protocol version is unsupported",
+                ),
+                IdentityBindingValidationError::InvalidUserId
+                | IdentityBindingValidationError::InvalidChallengeId
+                | IdentityBindingValidationError::InvalidSecret => (
+                    IdentityBindingErrorCode::InvalidRequest,
+                    "identity binding request is invalid",
+                ),
+            };
+            return identity_error_response(operation, code, message);
+        }
+
+        let Some(ui) = self.ui.as_ref() else {
+            return identity_error_response(
+                operation,
+                IdentityBindingErrorCode::ServiceUnavailable,
+                "identity binding service is unavailable",
+            );
+        };
+        if !ui.identity_binding_capabilities().supports(request.version) {
+            return identity_error_response(
+                operation,
+                IdentityBindingErrorCode::ServiceUnavailable,
+                "identity binding service is unavailable",
+            );
+        }
+
+        ui.identity_binding(boundary, identity, request).await
+    }
+
     pub fn mark_ready(&self) {
         if let Some(readiness) = &self.readiness {
             readiness.mark_ready();
@@ -470,11 +664,17 @@ impl Default for ChannelReadiness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
-    use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod};
+
+    use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, IdentityBindingAction};
 
     struct DefaultUiService;
+
+    struct EnabledIdentityUiService {
+        observed_parts: Mutex<Option<(String, String, String)>>,
+    }
 
     #[async_trait]
     impl UiService for DefaultUiService {
@@ -523,6 +723,82 @@ mod tests {
             _: RunFeedback,
         ) -> Result<String, BoundaryError> {
             Err(BoundaryError::forbidden(boundary, "test"))
+        }
+    }
+
+    #[async_trait]
+    impl UiService for EnabledIdentityUiService {
+        async fn authorize_message(
+            &self,
+            boundary: &BoundaryContext,
+            message: &UiClientMessage,
+        ) -> Result<(), BoundaryError> {
+            DefaultUiService.authorize_message(boundary, message).await
+        }
+
+        async fn discover_agents(
+            &self,
+            boundary: &BoundaryContext,
+        ) -> Result<Vec<AgentDescriptor>, BoundaryError> {
+            DefaultUiService.discover_agents(boundary).await
+        }
+
+        async fn create_session(
+            &self,
+            boundary: &BoundaryContext,
+            request: SessionCreateRequest,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            DefaultUiService.create_session(boundary, request).await
+        }
+
+        async fn session_config(
+            &self,
+            boundary: &BoundaryContext,
+            session_id: &SessionId,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            DefaultUiService.session_config(boundary, session_id).await
+        }
+
+        async fn update_session_config(
+            &self,
+            boundary: &BoundaryContext,
+            request: SessionConfigUpdateRequest,
+        ) -> Result<SessionConfigState, BoundaryError> {
+            DefaultUiService
+                .update_session_config(boundary, request)
+                .await
+        }
+
+        async fn submit_feedback(
+            &self,
+            boundary: &BoundaryContext,
+            feedback: RunFeedback,
+        ) -> Result<String, BoundaryError> {
+            DefaultUiService.submit_feedback(boundary, feedback).await
+        }
+
+        fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
+            IdentityBindingCapabilities::current()
+        }
+
+        async fn identity_binding(
+            &self,
+            _: &BoundaryContext,
+            identity: AuthenticatedTransportIdentity,
+            _: IdentityBindingRequest,
+        ) -> IdentityBindingResponse {
+            let debug = format!("{identity:?}");
+            assert!(debug.contains("[REDACTED]"));
+            assert!(!debug.contains("external-secret"));
+            *self.observed_parts.lock().unwrap() = Some(identity.into_parts());
+            IdentityBindingResponse::NotLinked { version: 1 }
+        }
+    }
+
+    fn resolve_identity_request() -> IdentityBindingRequest {
+        IdentityBindingRequest {
+            version: IDENTITY_BINDING_PROTOCOL_VERSION,
+            action: IdentityBindingAction::Resolve {},
         }
     }
 
@@ -617,5 +893,113 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code, BoundaryErrorCode::InvalidScope);
+    }
+
+    #[tokio::test]
+    async fn identity_binding_defaults_to_no_capability_and_denial() {
+        let context = ChannelContext::with_runtime_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            Arc::new(DefaultUiService),
+            None,
+        );
+        let boundary = BoundaryContext::authenticated(
+            AuthenticatedPrincipal::user("external-secret", AuthenticationMethod::PlatformIdentity),
+            "bot-a",
+            "telegram",
+            "update-1",
+        );
+
+        assert!(context.identity_binding_capabilities().versions.is_empty());
+        let response = context
+            .submit_identity_binding(&boundary, resolve_identity_request())
+            .await;
+        assert!(matches!(
+            response,
+            IdentityBindingResponse::Error {
+                error: IdentityBindingError {
+                    code: IdentityBindingErrorCode::ServiceUnavailable,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(!format!("{response:?}").contains("external-secret"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_channel_context_derives_the_only_transport_identity() {
+        let service = Arc::new(EnabledIdentityUiService {
+            observed_parts: Mutex::new(None),
+        });
+        let context = ChannelContext::with_runtime_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            service.clone(),
+            None,
+        );
+        let boundary = BoundaryContext::authenticated(
+            AuthenticatedPrincipal::user("external-secret", AuthenticationMethod::PlatformIdentity),
+            "bot-a",
+            "telegram",
+            "update-1",
+        );
+
+        let response = context
+            .submit_identity_binding(&boundary, resolve_identity_request())
+            .await;
+        assert_eq!(response, IdentityBindingResponse::NotLinked { version: 1 });
+        assert_eq!(
+            service.observed_parts.lock().unwrap().as_ref(),
+            Some(&("telegram".into(), "bot-a".into(), "external-secret".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_or_non_user_ingress_never_reaches_identity_service() {
+        let service = Arc::new(EnabledIdentityUiService {
+            observed_parts: Mutex::new(None),
+        });
+        let context = ChannelContext::with_runtime_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            service.clone(),
+            None,
+        );
+        let unauthenticated = BoundaryContext::unauthenticated("bot-a", "telegram", "update-1");
+        let response = context
+            .submit_identity_binding(&unauthenticated, resolve_identity_request())
+            .await;
+        assert!(matches!(
+            response,
+            IdentityBindingResponse::Error {
+                error: IdentityBindingError {
+                    code: IdentityBindingErrorCode::Unauthenticated,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let mut channel =
+            AuthenticatedPrincipal::user("external-secret", AuthenticationMethod::PlatformIdentity);
+        channel.kind = PrincipalKind::Channel;
+        let response = context
+            .submit_identity_binding(
+                &BoundaryContext::authenticated(channel, "bot-a", "telegram", "update-2"),
+                resolve_identity_request(),
+            )
+            .await;
+        assert!(matches!(
+            response,
+            IdentityBindingResponse::Error {
+                error: IdentityBindingError {
+                    code: IdentityBindingErrorCode::Forbidden,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(service.observed_parts.lock().unwrap().is_none());
     }
 }
