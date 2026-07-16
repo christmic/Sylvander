@@ -203,7 +203,7 @@ async fn find_by_conversation_id(
 // ===========================================================================
 
 async fn run_outgoing(ctx: Arc<ChannelContext>, client: Client, instance_id: String) {
-    let mut rx = match ctx.bus.subscribe(SubscriptionFilter::all()).await {
+    let mut rx = match ctx.subscribe(SubscriptionFilter::all()).await {
         Ok(rx) => rx,
         Err(e) => {
             warn!(error = %e, "dingtalk: outgoing subscribe failed");

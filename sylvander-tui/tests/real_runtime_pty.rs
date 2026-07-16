@@ -534,12 +534,12 @@ async fn start_runtime(
         approval_enabled,
         next_session: AtomicUsize::new(1),
     });
-    let channel_task = tokio::spawn(channel.run(ChannelContext {
-        bus: bus.clone(),
-        sessions: store,
-        ui: Some(ui),
-        readiness: None,
-    }));
+    let channel_task = tokio::spawn(channel.run(ChannelContext::with_services(
+        bus.clone(),
+        store,
+        Some(ui),
+        None,
+    )));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     while !socket_path.exists() {
         assert!(
