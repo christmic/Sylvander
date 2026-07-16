@@ -3121,11 +3121,29 @@ impl Runtime {
                 .map_err(|error| RuntimeError::Engine(error.to_string()))?;
         }
 
-        for mut session in session_store
+        let persistent_sessions = session_store
             .list_persistent()
             .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))?
-        {
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        let active_worktrees = persistent_sessions
+            .iter()
+            .filter(|session| session.external_meta.contains_key("git_worktree"))
+            .map(|session| (session.id.0.clone(), session.metadata.workspace.clone()))
+            .collect::<HashMap<_, _>>();
+        let reconciliation_manager = worktrees.clone();
+        let reconciliation = tokio::task::spawn_blocking(move || {
+            reconciliation_manager.reconcile(&active_worktrees)
+        })
+        .await
+        .map_err(|_| RuntimeError::Store("worktree reconciliation stopped".into()))?
+        .map_err(|error| RuntimeError::Store(format!("worktree reconciliation: {error}")))?;
+        info!(
+            retained = reconciliation.retained,
+            removed = reconciliation.removed,
+            "reconciled coding session worktrees"
+        );
+
+        for mut session in persistent_sessions {
             if session.agents.len() != 1 {
                 return Err(RuntimeError::Config(format!(
                     "revisioned session {} requires exactly one Agent",

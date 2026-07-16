@@ -239,7 +239,7 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
 | A09 | File tools | partial | Read/Write/Edit/List/Search/Command use one location-neutral executor contract. Local and OpenSSH adapters enforce workspace-relative paths, bounded structured queries, and read-only bindings; unavailable targets fail explicitly instead of falling back to host paths. Container/sandbox adapters remain. |
 | A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout and streaming head/tail capture, and structured read-only Git status/diff/log works through local and SSH targets. The local executor isolates each shell in a process group and regression tests prove timeout or interrupt cannot leave background descendants running. Local Git worktree inspection/accept/discard is operational; remote process-tree cancellation and remote worktree review remain. |
-| A11 | Worktree isolation | partial | Writable local Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Lease garbage collection and remote worktrees remain. |
+| A11 | Worktree isolation | implemented for local/host-backed execution | Writable local and host-backed container Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state, removes leases for deleted sessions, and recovers worktrees left before manifest commit. Remote SSH worktrees remain deferred with P3.3. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
 | A13 | Skills | partial | Agent-home and task-workspace Skills are discovered through local or remote executors, injected with deterministic precedence, and reported after successful activation with source, trust, and per-turn reload truth. Package metadata, explicit activation controls, resources, health, and distribution remain. |
 | A14 | MCP | partial | Production composition starts configured MCP stdio servers, initializes them, discovers collision-safe namespaced tools and advertised resources, exposes bounded `list_resources`/`read_resource` model tools, executes calls with timeouts, probes health every 30 seconds, exposes redacted active/degraded/unavailable state plus generation/reconnect/tool/resource counts and capabilities to `/mcp`, reconnects after transport failure without replaying the uncertain in-flight call, atomically refreshes the replacement tool and resource catalogs for the next model iteration, persists every complete raw JSON tool/resource result below the server data directory, bounds model/UI-facing results to a Unicode-safe head/tail summary with an artifact reference, omits inline binary payloads from that summary, and shuts servers down. Prompts, resource templates, subscriptions, and remote transports remain. |
@@ -567,9 +567,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 - [ ] **P3.4 Container and sandbox executors:** the disposable-container
   baseline has lifecycle, mounts, network denial, cleanup, and conformance
   tests; resource policy, reusable environments, and managed sandboxes remain.
-- [ ] **P3.5 Worktree manager:** default lease creation for Git coding,
-  collision-free ownership, validation evidence, review/merge/abandon flow,
-  recovery, and garbage collection.
+- [x] **P3.5 Worktree manager (local/host-backed scope):** writable Git coding
+  sessions default to collision-free durable leases; review, merge, abandon,
+  restart, and compensation paths are public and tested. Runtime boot validates
+  active leases against the durable effective workspace, garbage-collects
+  deleted-session leases, and recovers worktrees left by a crash before
+  manifest commit. Remote SSH worktrees remain explicitly deferred with P3.3.
 
 ### P4 — Multi-instance channels
 

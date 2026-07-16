@@ -1,5 +1,6 @@
 //! Git worktree lifecycle used to isolate coding sessions.
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -25,6 +26,12 @@ pub struct WorkspaceLease {
 pub struct WorkspaceDiff {
     pub status: String,
     pub patch: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorktreeReconciliation {
+    pub retained: usize,
+    pub removed: usize,
 }
 
 impl GitWorktreeManager {
@@ -108,6 +115,83 @@ impl GitWorktreeManager {
         serde_json::from_slice(&bytes).map_err(display_error)
     }
 
+    /// Reconcile durable lease manifests with the sessions restored by Runtime.
+    ///
+    /// Active leases are validated against their durable effective workspace.
+    /// Leases belonging to deleted sessions and worktree directories left
+    /// behind before a manifest was committed are removed.
+    pub fn reconcile(
+        &self,
+        active: &HashMap<String, PathBuf>,
+    ) -> Result<WorktreeReconciliation, String> {
+        let mut remaining = active.clone();
+        let mut retained_roots = HashSet::new();
+        let mut retained = 0;
+        let mut removed = 0;
+        let leases = self.base.join("leases");
+        if leases.is_dir() {
+            let mut manifests = fs::read_dir(&leases)
+                .map_err(display_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(display_error)?;
+            manifests.sort_by_key(fs::DirEntry::file_name);
+            for entry in manifests {
+                if !entry.file_type().map_err(display_error)?.is_file()
+                    || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+                {
+                    continue;
+                }
+                let lease: WorkspaceLease =
+                    serde_json::from_slice(&fs::read(entry.path()).map_err(display_error)?)
+                        .map_err(display_error)?;
+                let expected_name = format!("{}.json", lease.session_id);
+                if entry.file_name() != expected_name.as_str() {
+                    return Err("worktree lease filename does not match its session".into());
+                }
+                self.validate_lease(&lease)?;
+                if let Some(expected_workspace) = remaining.remove(&lease.session_id) {
+                    if canonical(&lease.effective_workspace)? != canonical(&expected_workspace)? {
+                        return Err(format!(
+                            "worktree lease workspace does not match session {}",
+                            lease.session_id
+                        ));
+                    }
+                    retained_roots.insert(canonical(&lease.worktree_root)?);
+                    retained += 1;
+                } else {
+                    self.cleanup(&lease)?;
+                    removed += 1;
+                }
+            }
+        }
+        if let Some(session_id) = remaining.keys().min() {
+            return Err(format!(
+                "session {session_id} references a missing worktree lease"
+            ));
+        }
+
+        let worktrees = self.base.join("worktrees");
+        if worktrees.is_dir() {
+            let mut directories = fs::read_dir(&worktrees)
+                .map_err(display_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(display_error)?;
+            directories.sort_by_key(fs::DirEntry::file_name);
+            for entry in directories {
+                if !entry.file_type().map_err(display_error)?.is_dir() {
+                    continue;
+                }
+                let path = canonical(&entry.path())?;
+                if retained_roots.contains(&path) {
+                    continue;
+                }
+                Self::cleanup_unmanifested(&path)?;
+                removed += 1;
+            }
+        }
+        Ok(WorktreeReconciliation { retained, removed })
+    }
+
     pub fn inspect(&self, lease: &WorkspaceLease) -> Result<WorkspaceDiff, String> {
         let mut patch = git_text(&lease.worktree_root, &["diff", "--binary", "HEAD"])?;
         let untracked = git_text(
@@ -168,17 +252,12 @@ impl GitWorktreeManager {
     }
 
     fn cleanup(&self, lease: &WorkspaceLease) -> Result<(), String> {
-        git_ok(
-            &lease.source_root,
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                path_text(&lease.worktree_root)?,
-            ],
-        )?;
-        git_ok(&lease.source_root, &["branch", "-D", &lease.branch])?;
-        fs::remove_file(self.manifest_path(&lease.session_id)).map_err(display_error)
+        remove_worktree_and_branch(&lease.source_root, &lease.worktree_root, &lease.branch)?;
+        let manifest = self.manifest_path(&lease.session_id);
+        if manifest.exists() {
+            fs::remove_file(manifest).map_err(display_error)?;
+        }
+        Ok(())
     }
 
     fn save(&self, lease: &WorkspaceLease) -> Result<(), String> {
@@ -190,6 +269,81 @@ impl GitWorktreeManager {
     fn manifest_path(&self, session_id: &str) -> PathBuf {
         self.base.join("leases").join(format!("{session_id}.json"))
     }
+
+    fn validate_lease(&self, lease: &WorkspaceLease) -> Result<(), String> {
+        if lease.session_id.is_empty()
+            || !lease
+                .session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || lease.branch != format!("sylvander/{}", lease.session_id)
+        {
+            return Err("invalid worktree lease identity".into());
+        }
+        let source = canonical(&lease.source_root)?;
+        let worktree = canonical(&lease.worktree_root)?;
+        let effective = canonical(&lease.effective_workspace)?;
+        let managed = canonical(&self.base.join("worktrees"))?;
+        if !worktree.starts_with(&managed) || !effective.starts_with(&worktree) {
+            return Err("worktree lease escapes its managed directory".into());
+        }
+        let actual_source = PathBuf::from(git_text(&source, &["rev-parse", "--show-toplevel"])?);
+        let actual_worktree =
+            PathBuf::from(git_text(&worktree, &["rev-parse", "--show-toplevel"])?);
+        if canonical(&actual_source)? != source || canonical(&actual_worktree)? != worktree {
+            return Err("worktree lease does not match its Git repository".into());
+        }
+        Ok(())
+    }
+
+    fn cleanup_unmanifested(worktree: &Path) -> Result<(), String> {
+        let common = PathBuf::from(git_text(
+            worktree,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?);
+        let source_root = common
+            .parent()
+            .ok_or_else(|| "orphan worktree has no source repository".to_string())?;
+        let branch = git_text(worktree, &["branch", "--show-current"])?;
+        if !branch.starts_with("sylvander/") {
+            return Err("refusing to remove an unmanaged worktree branch".into());
+        }
+        remove_worktree_and_branch(source_root, worktree, &branch)
+    }
+}
+
+fn canonical(path: &Path) -> Result<PathBuf, String> {
+    path.canonicalize().map_err(display_error)
+}
+
+fn remove_worktree_and_branch(
+    source_root: &Path,
+    worktree_root: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    let removal = git_output(
+        source_root,
+        &["worktree", "remove", "--force", path_text(worktree_root)?],
+    )?;
+    if !removal.status.success() && worktree_root.exists() {
+        return Err(git_failure(&removal));
+    }
+    let deletion = git_output(source_root, &["branch", "-D", branch])?;
+    if !deletion.status.success() {
+        let exists = git_output(
+            source_root,
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )?;
+        if exists.status.success() {
+            return Err(git_failure(&deletion));
+        }
+    }
+    Ok(())
 }
 
 fn git_text(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -302,5 +456,84 @@ mod tests {
             "before\n"
         );
         assert!(manager.open("session-2").is_err());
+    }
+
+    #[test]
+    fn reconcile_retains_active_and_removes_deleted_session_leases() {
+        let repo = repo();
+        let state = tempfile::tempdir().unwrap();
+        let manager = GitWorktreeManager::new(state.path());
+        let active = manager.create("active", repo.path()).unwrap();
+        let deleted = manager.create("stale", repo.path()).unwrap();
+        let report = manager
+            .reconcile(&HashMap::from([(
+                active.session_id.clone(),
+                active.effective_workspace.clone(),
+            )]))
+            .unwrap();
+
+        assert_eq!(
+            report,
+            WorktreeReconciliation {
+                retained: 1,
+                removed: 1
+            }
+        );
+        assert!(active.worktree_root.is_dir());
+        assert!(!deleted.worktree_root.exists());
+        assert!(manager.open("active").is_ok());
+        assert!(manager.open("stale").is_err());
+        manager.discard(&active).unwrap();
+    }
+
+    #[test]
+    fn reconcile_removes_worktree_left_before_manifest_commit() {
+        let repo = repo();
+        let state = tempfile::tempdir().unwrap();
+        let manager = GitWorktreeManager::new(state.path());
+        let orphan = manager.create("orphan", repo.path()).unwrap();
+        fs::remove_file(manager.manifest_path("orphan")).unwrap();
+
+        let report = manager.reconcile(&HashMap::new()).unwrap();
+
+        assert_eq!(report.retained, 0);
+        assert_eq!(report.removed, 1);
+        assert!(!orphan.worktree_root.exists());
+        let branch = git_output(
+            repo.path(),
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                "refs/heads/sylvander/orphan",
+            ],
+        )
+        .unwrap();
+        assert!(!branch.status.success());
+    }
+
+    #[test]
+    fn reconcile_rejects_missing_or_mismatched_active_lease() {
+        let repo = repo();
+        let state = tempfile::tempdir().unwrap();
+        let manager = GitWorktreeManager::new(state.path());
+        let lease = manager.create("active", repo.path()).unwrap();
+
+        let mismatch = manager
+            .reconcile(&HashMap::from([(
+                lease.session_id.clone(),
+                repo.path().to_path_buf(),
+            )]))
+            .unwrap_err();
+        assert!(mismatch.contains("does not match"));
+
+        manager.discard(&lease).unwrap();
+        let missing = manager
+            .reconcile(&HashMap::from([(
+                "missing".into(),
+                repo.path().to_path_buf(),
+            )]))
+            .unwrap_err();
+        assert!(missing.contains("missing worktree lease"));
     }
 }
