@@ -816,12 +816,17 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         feedback: RunFeedback,
     ) -> Result<String, sylvander_protocol::BoundaryError> {
-        require_principal(boundary, "submit_feedback")?;
-        if feedback.note.as_ref().is_some_and(|note| note.len() > 4096) {
+        let principal = require_principal(boundary, "submit_feedback")?;
+        if feedback.note.as_ref().is_some_and(|note| note.len() > 4096)
+            || feedback
+                .correction
+                .as_ref()
+                .is_some_and(|correction| correction.len() > 4096)
+        {
             return Err(boundary_failure(
                 boundary,
                 "submit_feedback",
-                "feedback note exceeds 4096 bytes",
+                "feedback note or correction exceeds 4096 bytes",
             ));
         }
         if feedback.tags.len() > 16
@@ -834,6 +839,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 boundary,
                 "submit_feedback",
                 "feedback supports at most 16 non-empty tags of 64 bytes each",
+            ));
+        }
+        if !valid_evidence_references(&feedback.artifacts)
+            || !valid_evidence_references(&feedback.validations)
+        {
+            return Err(boundary_failure(
+                boundary,
+                "submit_feedback",
+                "feedback evidence references are invalid",
             ));
         }
         let store = self.evidence.as_ref().ok_or_else(|| {
@@ -857,7 +871,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
         self.owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
             .await?;
         store
-            .record_feedback(feedback, sylvander_agent::session::now_secs())
+            .record_feedback(
+                feedback,
+                crate::evidence::FeedbackAttribution {
+                    principal_digest: sha256_text(&principal.id.0),
+                    channel_instance_id: boundary.channel_instance_id.clone(),
+                    transport: boundary.transport.clone(),
+                },
+                sylvander_agent::session::now_secs(),
+            )
             .await
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
     }
@@ -2232,6 +2254,17 @@ fn require_principal<'a>(
         .principal
         .as_ref()
         .ok_or_else(|| sylvander_protocol::BoundaryError::unauthenticated(boundary, operation))
+}
+
+fn valid_evidence_references(references: &[sylvander_protocol::EvidenceReference]) -> bool {
+    references.len() <= 16
+        && references.iter().all(|reference| {
+            !reference.locator.trim().is_empty()
+                && reference.locator.len() <= 1024
+                && reference.digest_sha256.as_ref().is_none_or(|digest| {
+                    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        })
 }
 
 fn boundary_failure(
@@ -6846,27 +6879,50 @@ model_name = "model-a"
             })
             .await
             .unwrap();
-        let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
-            feedback: RunFeedback {
-                run_id: "feedback-auth-run".into(),
-                turn_id: Some("feedback-auth-turn".into()),
-                rating: sylvander_protocol::FeedbackRating::Positive,
-                note: None,
-                correction: None,
-                tags: Vec::new(),
-                task_result: None,
-                artifacts: Vec::new(),
-                validations: Vec::new(),
-                privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
-            },
+        let feedback = RunFeedback {
+            run_id: "feedback-auth-run".into(),
+            turn_id: Some("feedback-auth-turn".into()),
+            rating: sylvander_protocol::FeedbackRating::Positive,
+            note: None,
+            correction: Some("prefer the verified result".into()),
+            tags: Vec::new(),
+            task_result: Some(sylvander_protocol::FeedbackTaskResult::Succeeded),
+            artifacts: Vec::new(),
+            validations: vec![sylvander_protocol::EvidenceReference {
+                locator: "test:runtime-controls".into(),
+                digest_sha256: Some("a".repeat(64)),
+            }],
+            privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
         };
-        sylvander_channel::UiService::authorize_message(
+        let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
+            feedback: feedback.clone(),
+        };
+        let feedback_id = sylvander_channel::UiService::submit_feedback(
             runtime.ui_service.as_ref(),
             &owner,
-            &feedback_message,
+            feedback,
         )
         .await
         .expect("the session owner may submit feedback");
+        let stored_feedback = evidence
+            .feedback(feedback_id)
+            .await
+            .unwrap()
+            .expect("submitted feedback must be readable from the evidence ledger");
+        assert_eq!(
+            stored_feedback.attribution.principal_digest,
+            sha256_text("test-user")
+        );
+        assert_eq!(stored_feedback.attribution.channel_instance_id, "tui-local");
+        assert_eq!(stored_feedback.attribution.transport, "unix");
+        assert_eq!(
+            stored_feedback.correction.as_deref(),
+            Some("prefer the verified result")
+        );
+        assert_eq!(
+            stored_feedback.task_result,
+            Some(sylvander_protocol::FeedbackTaskResult::Succeeded)
+        );
         let denial = sylvander_channel::UiService::authorize_message(
             runtime.ui_service.as_ref(),
             &stranger,
