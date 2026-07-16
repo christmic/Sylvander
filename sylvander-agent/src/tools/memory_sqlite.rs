@@ -18,10 +18,17 @@ use super::memory::{
 
 mod backup;
 mod integrity;
+mod integrity_anchor;
+#[cfg(test)]
+mod integrity_anchor_tests;
 pub use backup::{
     MemoryBackupArtifact, MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin,
 };
-pub use integrity::{FileMemoryIntegrityAnchor, MemoryIntegrityConfig};
+pub use integrity::MemoryIntegrityConfig;
+pub use integrity_anchor::{
+    FileMemoryIntegrityAnchor, HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig,
+    MemoryAnchorError, MemoryAnchorObservation, MemoryAnchorRevision, MonotonicMemoryAnchor,
+};
 
 const COMPONENT: &str = "relationship_memory";
 const SCHEMA_VERSION: i64 = 6;
