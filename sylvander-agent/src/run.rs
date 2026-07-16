@@ -2255,10 +2255,7 @@ impl AgentRunInner {
                     .agent_workspace
                     .as_ref()
                     .map(|binding| binding.path.as_path()),
-                effective
-                    .user_workspace
-                    .as_ref()
-                    .map(|binding| binding.path.as_path()),
+                Some(session_metadata.workspace.as_path()),
             ));
         } else if loop_config.system_prompt.is_some() || user_profile.is_some() {
             let mut prompt = loop_config.system_prompt.take().unwrap_or_default();
@@ -3400,6 +3397,90 @@ mod tests {
                 )])) as sylvander_llm_core::ModelEventStream)
             })
         }
+    }
+
+    #[tokio::test]
+    async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() {
+        let source = tempfile::TempDir::new().unwrap();
+        let worktree = tempfile::TempDir::new().unwrap();
+        std::fs::write(source.path().join("AGENTS.md"), "source-workspace-guide").unwrap();
+        std::fs::write(
+            worktree.path().join("AGENTS.md"),
+            "effective-worktree-guide",
+        )
+        .unwrap();
+
+        let store: Arc<dyn SessionStore> = Arc::new(
+            crate::session_store::SqliteSessionStore::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let (spec, _) = test_spec_and_client();
+        let resolver = Arc::new(
+            crate::prompt::PromptResolver::new(
+                "agent:test-agent@1".into(),
+                spec.persona.system_prompt.clone(),
+                Vec::new(),
+                None,
+                false,
+            )
+            .unwrap(),
+        );
+        let provider = Arc::new(RecordingProvider::default());
+        let model = ProviderModelInfo {
+            reference: sylvander_llm_core::ModelRef::new(
+                spec.model.provider.clone(),
+                spec.model.model_name.clone(),
+            ),
+            context_window: 100_000,
+            max_output_tokens: 4096,
+            capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+        };
+        let run = AgentRun::provider_builder(spec, provider.clone(), model)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .session_store(store.clone())
+            .prompt_resolver(resolver)
+            .build()
+            .unwrap();
+        let metadata = SessionMetadata {
+            workspace: worktree.path().to_path_buf(),
+            ..test_metadata()
+        };
+        let session_id = run.join_session(metadata.clone()).await;
+        let mut stored = StoredSession::new(
+            session_id.clone(),
+            metadata.name.clone(),
+            SessionLifetime::Persistent,
+            metadata.clone(),
+            vec![run.id().clone()],
+        );
+        stored.effective_config = Some(run.inner.legacy_session_config(&metadata).await);
+        stored
+            .effective_config
+            .as_mut()
+            .unwrap()
+            .user_workspace
+            .as_mut()
+            .unwrap()
+            .path = source.path().to_path_buf();
+        store.save(&stored).await.unwrap();
+
+        run.handle_message(BusMessage::user_chat(
+            session_id,
+            metadata.user_id,
+            "inspect the workspace",
+        ))
+        .await
+        .unwrap();
+
+        let requests = provider.requests.lock().unwrap();
+        let system = requests[0]
+            .system
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<String>();
+        assert!(system.contains("effective-worktree-guide"));
+        assert!(!system.contains("source-workspace-guide"));
     }
 
     #[tokio::test]

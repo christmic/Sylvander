@@ -145,6 +145,29 @@ use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
 use agent_registry::AgentRegistry;
 use boundary::BoundaryGuard;
 
+fn bind_effective_workspace(effective: &mut SessionEffectiveConfig, workspace: &std::path::Path) {
+    if let Some(binding) = effective.user_workspace.as_mut() {
+        binding.path = workspace.to_path_buf();
+    } else if let Some(binding) = effective.agent_workspace.as_mut() {
+        binding.path = workspace.to_path_buf();
+    }
+}
+
+fn ensure_workspace_update_is_static(
+    session: &StoredSession,
+    overrides: &SessionConfigOverrides,
+) -> Result<(), String> {
+    if session.config_overrides.user_workspace != overrides.user_workspace
+        || session.config_overrides.execution_target != overrides.execution_target
+    {
+        return Err(
+            "workspace and execution target cannot change after session creation; create a new session"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // SystemConfig
 // ---------------------------------------------------------------------------
@@ -662,6 +685,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let session = self
             .owned_session(boundary, &request.session_id, "update_session_config")
             .await?;
+        ensure_workspace_update_is_static(&session, &request.overrides)
+            .map_err(|error| boundary_failure(boundary, "update_session_config", error))?;
         let agent = session
             .agents
             .iter()
@@ -677,13 +702,11 @@ impl sylvander_channel::UiService for RuntimeUiService {
         let agent = self
             .bind_session_revision(boundary, &session, agent, "update_session_config")
             .await?;
-        let effective = resolve_session_config(
-            &agent,
-            &request.overrides,
-            None,
-            Some(&session.metadata.workspace),
-        )
-        .map_err(|error| boundary_failure(boundary, "update_session_config", error.to_string()))?;
+        let mut effective = resolve_session_config(&agent, &request.overrides, None, None)
+            .map_err(|error| {
+                boundary_failure(boundary, "update_session_config", error.to_string())
+            })?;
+        bind_effective_workspace(&mut effective, &session.metadata.workspace);
         let revision = self
             .sessions
             .update_config(
@@ -993,7 +1016,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
     ) -> Result<sylvander_channel::SubmittedChat, sylvander_protocol::BoundaryError> {
         let sylvander_channel::ExternalChatRequest {
             existing_session,
-            agent_id,
+            mut agent_id,
             label,
             overrides,
             text,
@@ -1013,12 +1036,15 @@ impl sylvander_channel::UiService for RuntimeUiService {
             let session = self
                 .owned_session(boundary, &session_id, "submit_chat")
                 .await?;
-            if session.agents.as_slice() != std::slice::from_ref(&agent_id) {
+            let [session_agent] = session.agents.as_slice() else {
                 return Err(sylvander_protocol::BoundaryError::forbidden(
                     boundary,
                     "submit_chat",
                 ));
-            }
+            };
+            // A durable session owns its Agent identity. Channel defaults are
+            // creation defaults and must not override a TUI-selected Agent.
+            agent_id.clone_from(session_agent);
             (session_id, None)
         } else {
             let create = SessionCreateRequest {
@@ -1620,7 +1646,7 @@ impl RuntimeUiService {
                 "create_session",
             ));
         }
-        let effective = resolve_session_config(&agent, &request.overrides, None, None)
+        let mut effective = resolve_session_config(&agent, &request.overrides, None, None)
             .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
         let workspace_binding = effective
             .user_workspace
@@ -1631,7 +1657,8 @@ impl RuntimeUiService {
             |binding| binding.path.clone(),
         );
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let lease = if workspace_binding.is_some_and(|binding| !binding.read_only)
+        let lease = if workspace_binding
+            .is_some_and(|binding| binding.execution_target == "local" && !binding.read_only)
             && self
                 .worktrees
                 .as_ref()
@@ -1651,6 +1678,7 @@ impl RuntimeUiService {
         } else {
             None
         };
+        bind_effective_workspace(&mut effective, &workspace);
         let metadata = SessionMetadata {
             workspace,
             name: label.clone(),
@@ -3293,13 +3321,14 @@ impl Runtime {
                     RuntimeError::Config(format!("session {session_id} has no configured Agent"))
                 })?
         };
-        let effective =
-            resolve_session_config(&agent, &overrides, None, Some(&session.metadata.workspace))
-                .map_err(|error| {
-                    RuntimeError::Config(format!(
-                        "resolve configuration for session {session_id}: {error}"
-                    ))
-                })?;
+        ensure_workspace_update_is_static(&session, &overrides).map_err(RuntimeError::Config)?;
+        let mut effective =
+            resolve_session_config(&agent, &overrides, None, None).map_err(|error| {
+                RuntimeError::Config(format!(
+                    "resolve configuration for session {session_id}: {error}"
+                ))
+            })?;
+        bind_effective_workspace(&mut effective, &session.metadata.workspace);
         let revision = self
             .session_store
             .update_config(session_id, expected_revision, overrides, effective.clone())
@@ -4010,6 +4039,145 @@ id = "model-a"
         .unwrap()
     }
 
+    fn git(repository: &std::path::Path, arguments: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = directory.path().join("project");
+        std::fs::create_dir(&repository).unwrap();
+        git(&repository, &["init", "-b", "master"]);
+        git(&repository, &["config", "user.email", "test@example.com"]);
+        git(&repository, &["config", "user.name", "Sylvander Test"]);
+        std::fs::write(repository.join("AGENTS.md"), "worktree instructions").unwrap();
+        git(&repository, &["add", "AGENTS.md"]);
+        git(&repository, &["commit", "-m", "initial"]);
+
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "workspace-owner",
+                sylvander_protocol::AuthenticationMethod::UnixPeer,
+            ),
+            "tui-local",
+            "unix",
+            "request-worktree",
+        );
+        let requested_workspace = sylvander_protocol::SessionWorkspaceBinding {
+            execution_target: "local".into(),
+            path: repository.clone(),
+            read_only: false,
+        };
+        let initial_overrides = SessionConfigOverrides {
+            user_workspace: Some(requested_workspace.clone()),
+            ..SessionConfigOverrides::default()
+        };
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "isolated coding".into(),
+                channel_id: Some("tui-local".into()),
+                overrides: initial_overrides.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let effective_workspace = created
+            .effective
+            .user_workspace
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
+        assert_ne!(effective_workspace, repository);
+        assert!(effective_workspace.join("AGENTS.md").is_file());
+
+        let stored = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.metadata.workspace, effective_workspace);
+        assert_eq!(stored.effective_config, Some(created.effective.clone()));
+        let attached = runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap()
+            .run
+            .get_session(&created.session_id)
+            .await
+            .unwrap();
+        assert_eq!(attached.metadata.workspace, effective_workspace);
+
+        let updated = sylvander_channel::UiService::update_session_config(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionConfigUpdateRequest {
+                session_id: created.session_id.clone(),
+                expected_revision: created.revision,
+                overrides: SessionConfigOverrides {
+                    permissions: Some(sylvander_protocol::PermissionProfile {
+                        file_access: sylvander_protocol::FileAccess::ReadOnly,
+                        network_access: sylvander_protocol::NetworkAccess::Denied,
+                        approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
+                    }),
+                    ..initial_overrides.clone()
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            updated.effective.user_workspace.unwrap().path,
+            effective_workspace
+        );
+
+        let changed_workspace = directory.path().join("different");
+        std::fs::create_dir(&changed_workspace).unwrap();
+        let error = sylvander_channel::UiService::update_session_config(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionConfigUpdateRequest {
+                session_id: created.session_id.clone(),
+                expected_revision: updated.revision,
+                overrides: SessionConfigOverrides {
+                    user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                        path: changed_workspace,
+                        ..requested_workspace
+                    }),
+                    ..initial_overrides
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("cannot change after session creation")
+        );
+
+        runtime
+            .discard_coding_session(&created.session_id)
+            .await
+            .unwrap();
+    }
+
     fn ui_service_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeUiService {
         RuntimeUiService {
             engine: runtime.ui_service.engine.clone(),
@@ -4147,6 +4315,23 @@ id = "model-a"
                 .list_sessions()
                 .await
                 .contains(&existing.session_id)
+        );
+
+        let selected_agent_bus = Arc::new(InstrumentedBus::new(false, false));
+        let selected_agent_service = ui_service_with_bus(&runtime, selected_agent_bus);
+        let mut existing_request = request(Some(existing.session_id.clone()));
+        existing_request.agent_id = AgentId::new("different-channel-default");
+        let mut selected_submission = sylvander_channel::UiService::submit_chat(
+            &selected_agent_service,
+            &boundary,
+            existing_request,
+        )
+        .await
+        .expect("the durable session Agent must override the channel creation default");
+        let selected_chat = selected_submission.events.recv().await.unwrap();
+        assert_eq!(
+            selected_chat.recipient,
+            Recipient::Agent(AgentId::new("assistant"))
         );
 
         let success_bus = Arc::new(InstrumentedBus::new(false, false));
