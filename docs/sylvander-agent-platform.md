@@ -420,7 +420,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     assertions for update, supersede, expiry, purge, and delete transitions.
   - [x] Add backup/restore verification and only those schema/data migrations
     that receive explicit approval under section 2.1.
-  - [ ] Activate a changed retention-policy revision only after full Runtime
+  - [x] Activate a changed retention-policy revision only after full Runtime
     readiness; a failed rollout must leave the previous revision reusable.
   - [ ] Bound audit and retention-ledger growth only after a verified external
     checkpoint preserves the evidence required for recovery and inspection.
@@ -472,7 +472,9 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   fidelity), and `6b245d052` plus `7251f8336` (CAS update, atomic supersession,
   audit rollback, and inactive-record isolation), `fd95f67c6` (schema-v5
   authenticated external anchor and signed backup epochs), and `7758a1b`
-  (transactional generated-identifier collision handling). G0 must not be marked complete until every remaining P1.4 gate
+  (transactional generated-identifier collision handling), and `94bfeb4`
+  through `6c6a207f0` (readiness-gated policy activation and cross-store anchor
+  writer serialization). G0 must not be marked complete until every remaining P1.4 gate
   above has implementation and acceptance evidence.
 - [ ] **P1.5 Stable user identity and account binding:** make Runtime own the
   latest-only stable user/principal store and its external HMAC key. Channel
