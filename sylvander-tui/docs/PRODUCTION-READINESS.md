@@ -144,7 +144,13 @@ completed backend feature.
 - [x] Optional Vim editing is complete, discoverable, and testable.
 - [x] Themes validate semantic contrast and terminal color capability.
 - [x] Reduced-motion and no-italic fallbacks preserve hierarchy.
-- [ ] Narrow, standard, wide, tmux, SSH, and Ghostty surfaces are verified.
+- [x] Narrow, standard, and wide layouts are snapshot-verified and the compiled
+      TUI reflows across 40×18, 88×24, and 132×30 PTY surfaces.
+- [x] `screen-256color` and `xterm-ghostty` terminal contracts run through the
+      compiled PTY flow; native Ghostty session discovery, reconciliation,
+      activity, selection, and management tests pass in Xcode.
+- [ ] A real tmux process is verified (the current machine has no tmux binary).
+- [ ] SSH terminal verification is deferred with the remote-execution track.
 
 ## Production gates
 
