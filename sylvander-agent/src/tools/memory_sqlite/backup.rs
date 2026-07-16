@@ -41,6 +41,12 @@ pub struct MemoryBackupArtifact {
     pub manifest: MemoryBackupManifest,
 }
 
+pub(super) struct VerifiedMemoryCheckpoint {
+    pub epoch: u64,
+    pub database_root: String,
+    pub sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum MemoryRestoreError {
     #[error("memory restore rejected")]
@@ -216,6 +222,31 @@ fn verified_backup_pairs(directory: &Path) -> Result<Vec<MemoryBackupArtifact>, 
 fn verify_artifact_pair(artifact: &MemoryBackupArtifact) -> Result<(), MemoryStoreError> {
     validate_artifact(&artifact.database_path, &artifact.manifest)?;
     verify_database(&artifact.database_path)
+}
+
+pub(super) fn verify_current_checkpoint(
+    store: &SqliteMemoryStore,
+    connection: &Connection,
+    artifact: &MemoryBackupArtifact,
+) -> Result<VerifiedMemoryCheckpoint, MemoryStoreError> {
+    let manifest = read_manifest(&artifact.manifest_path)?;
+    let integrity = store.integrity.as_ref().ok_or_else(backup_error)?;
+    integrity.verify_signature(&manifest_payload(&manifest), &manifest.integrity_mac)?;
+    validate_artifact(&artifact.database_path, &manifest)?;
+    verify_database(&artifact.database_path)?;
+    let (epoch, anchored_root) = integrity.snapshot()?;
+    let current_root = database_root(connection)?;
+    if manifest.integrity_epoch != epoch
+        || manifest.database_root != anchored_root
+        || current_root != anchored_root
+    {
+        return Err(backup_error());
+    }
+    Ok(VerifiedMemoryCheckpoint {
+        epoch,
+        database_root: anchored_root,
+        sha256: manifest.sha256,
+    })
 }
 
 fn restore_offline_impl(
