@@ -23,7 +23,7 @@ sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-runtime = { path = "../sylvander-runtime" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = { workspace = true }
 
 [lints]
