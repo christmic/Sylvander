@@ -310,7 +310,11 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         ServerMsg::ProtocolError { error } => DomainEvent::ProtocolDiagnostic {
             message: format!("{}: {}", error.code, error.message),
         },
-        ServerMsg::SessionCreated { session_id, .. } => DomainEvent::SessionCreated { session_id },
+        ServerMsg::SessionCreated { session_id, config } => {
+            DomainEvent::SessionCreated { session_id, config }
+        }
+        ServerMsg::AgentsDiscovered { agents } => DomainEvent::AgentsDiscovered { agents },
+        ServerMsg::SessionConfig { state } => DomainEvent::SessionConfigLoaded { state },
         ServerMsg::RuntimeInfo {
             model,
             reasoning_effort,
@@ -574,8 +578,6 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. }
-        | ServerMsg::AgentsDiscovered { .. }
-        | ServerMsg::SessionConfig { .. }
         | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
@@ -650,6 +652,27 @@ mod tests {
                 timeout_secs: 120,
                 recovery: sylvander_protocol::TimeoutRecovery::NarrowScope,
             }) if subject_id == "call-1"
+        ));
+    }
+
+    #[test]
+    fn agent_discovery_crosses_the_protocol_adapter() {
+        let event = parse_server_msg(ServerMsg::AgentsDiscovered {
+            agents: vec![sylvander_protocol::AgentDescriptor {
+                id: sylvander_protocol::AgentId::new("coding"),
+                revision: 3,
+                name: "Coding".into(),
+                provider_id: "provider".into(),
+                default_model_id: "model".into(),
+                models: Vec::new(),
+                default_prompt_profile: None,
+                agent_workspace: None,
+            }],
+        });
+        assert!(matches!(
+            event,
+            Some(DomainEvent::AgentsDiscovered { agents })
+                if agents.len() == 1 && agents[0].id.0 == "coding"
         ));
     }
 

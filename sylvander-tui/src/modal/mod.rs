@@ -131,6 +131,7 @@ impl Default for ModalStack {
 // Concrete modal implementations
 // ===========================================================================
 
+pub mod agent_picker;
 pub mod approval;
 pub mod ask_user;
 pub mod coding_session;
@@ -145,6 +146,7 @@ pub mod sessions;
 pub(crate) mod surface;
 pub mod tool_inspector;
 
+pub use agent_picker::AgentPicker;
 pub use approval::ApprovalModal;
 pub use ask_user::AskUserModal;
 pub use coding_session::CodingSessionConfirmationModal;

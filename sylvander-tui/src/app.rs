@@ -44,6 +44,15 @@ pub struct AppState {
     pub streaming: String,
     pub streaming_thinking: String,
     pub session_id: Option<String>,
+    pub agents: Vec<sylvander_protocol::AgentDescriptor>,
+    pub selected_agent_id: Option<sylvander_protocol::AgentId>,
+    pub session_config: Option<sylvander_protocol::SessionConfigState>,
+    pub pending_session_prompt: Option<(String, Vec<sylvander_protocol::MessageAttachment>)>,
+    pub session_creation_pending: bool,
+    pub session_model_override: Option<(
+        sylvander_protocol::ModelSelection,
+        sylvander_protocol::ReasoningEffort,
+    )>,
     pub connected: bool,
     pub protocol_version: Option<u16>,
     pub protocol_capabilities: Vec<String>,
@@ -143,6 +152,12 @@ impl AppState {
             streaming: String::new(),
             streaming_thinking: String::new(),
             session_id: None,
+            agents: Vec::new(),
+            selected_agent_id: None,
+            session_config: None,
+            pending_session_prompt: None,
+            session_creation_pending: false,
+            session_model_override: None,
             connected: false,
             protocol_version: None,
             protocol_capabilities: Vec::new(),
@@ -375,6 +390,13 @@ impl AppState {
         self.unread_events = 0;
         self.dirty.mark();
         self.enforce_memory_budget();
+        if self.session_id.is_none() {
+            self.pending_session_prompt = Some((text, attachments));
+            self.status = "Creating session…".into();
+            let action = self.create_session_action();
+            self.session_creation_pending = action.is_some();
+            return action;
+        }
         Some(Action::SendChat {
             text,
             attachments,
@@ -383,11 +405,36 @@ impl AppState {
         })
     }
 
+    pub(crate) fn create_session_action(&self) -> Option<Action> {
+        let agent_id = self.selected_agent_id.clone()?;
+        let mut overrides = sylvander_protocol::SessionConfigOverrides {
+            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: self.metadata.workspace.clone(),
+                read_only: false,
+            }),
+            ..Default::default()
+        };
+        if let Some((model, effort)) = &self.session_model_override {
+            overrides.model = Some(model.clone());
+            overrides.reasoning_effort = Some(*effort);
+        }
+        Some(Action::CreateSession {
+            request: sylvander_protocol::SessionCreateRequest {
+                agent_id,
+                label: "New session".into(),
+                channel_id: None,
+                overrides,
+            },
+        })
+    }
+
     fn apply_inner(&mut self, event: DomainEvent) -> Option<Action> {
         match event {
             DomainEvent::Connected => {
                 self.connected = true;
                 self.status = "Connected".into();
+                self.pending_actions.push(Action::DiscoverAgents);
                 return Some(Action::RequestRuntimeInfo);
             }
             DomainEvent::ProtocolNegotiated {
@@ -398,6 +445,7 @@ impl AppState {
                 self.connected = true;
                 self.protocol_version = Some(version);
                 self.protocol_capabilities = capabilities;
+                self.pending_actions.push(Action::DiscoverAgents);
                 self.status = format!("Connected to {server_name} · protocol v{version}");
                 if let Some(session_id) = self.session_id.clone() {
                     self.pending_actions.push(Action::RequestRuntimeInfo);
@@ -542,7 +590,33 @@ impl AppState {
                 self.messages
                     .push(ChatMessage::Info(format!("Disconnected: {reason}")));
             }
-            DomainEvent::SessionCreated { session_id } => {
+            DomainEvent::AgentsDiscovered { agents } => {
+                self.agents = agents;
+                if self
+                    .selected_agent_id
+                    .as_ref()
+                    .is_none_or(|selected| !self.agents.iter().any(|agent| &agent.id == selected))
+                {
+                    self.selected_agent_id = self.agents.first().map(|agent| agent.id.clone());
+                }
+                if self.pending_session_prompt.is_some() && !self.session_creation_pending {
+                    let action = self.create_session_action();
+                    self.session_creation_pending = action.is_some();
+                    return action;
+                }
+                self.status = match self.agents.len() {
+                    0 => "No Agents available".into(),
+                    count => format!("{count} Agent{} available", if count == 1 { "" } else { "s" }),
+                };
+            }
+            DomainEvent::SessionConfigLoaded { state } => {
+                self.selected_agent_id = Some(state.effective.agent_id.clone());
+                self.metadata.model.clone_from(&state.effective.model_id);
+                self.metadata.reasoning_effort = state.effective.reasoning_effort;
+                self.session_config = Some(state);
+            }
+            DomainEvent::SessionCreated { session_id, config } => {
+                self.session_creation_pending = false;
                 // First time we see this id — push a local session entry.
                 // De-dup by id so reconnects don't create dup rows.
                 if self.sessions.iter().any(|e| e.id == session_id) {
@@ -566,6 +640,20 @@ impl AppState {
                     self.sessions.truncate(MAX_SESSION_CACHE);
                 }
                 self.session_id = Some(session_id);
+                if let Some(config) = config {
+                    self.selected_agent_id = Some(config.effective.agent_id.clone());
+                    self.metadata.model.clone_from(&config.effective.model_id);
+                    self.metadata.reasoning_effort = config.effective.reasoning_effort;
+                    self.session_config = Some(config);
+                }
+                if let Some((text, attachments)) = self.pending_session_prompt.take() {
+                    return Some(Action::SendChat {
+                        text,
+                        attachments,
+                        session_id: self.session_id.clone(),
+                        workspace: self.metadata.workspace.display().to_string(),
+                    });
+                }
                 if self.interrupt_requested
                     && let Some(session_id) = self.session_id.clone() {
                         self.pending_actions
@@ -707,6 +795,11 @@ impl AppState {
                 self.status = "Session permanently deleted".into();
             }
             DomainEvent::OperationFailed { operation, message } => {
+                if operation == "create_session" {
+                    self.session_creation_pending = false;
+                    self.pending_session_prompt = None;
+                    self.turn_active = false;
+                }
                 self.status = format!("{operation} failed: {message}");
                 self.messages.push(ChatMessage::Info(self.status.clone()));
             }
@@ -1843,7 +1936,7 @@ mod tests {
         ));
         assert!(matches!(
             state.pending_actions.as_slice(),
-            [Action::RequestRuntimeInfo]
+            [Action::DiscoverAgents, Action::RequestRuntimeInfo]
         ));
 
         state.apply(DomainEvent::SessionHistoryLoaded {
@@ -2369,6 +2462,7 @@ mod tests {
     #[test]
     fn plain_enter_submits_chat_returns_send_action() {
         let mut s = AppState::new();
+        s.session_id = Some("session-1".into());
         let key = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
         s.handle_key(&key);
         let key = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
@@ -2382,6 +2476,7 @@ mod tests {
     #[test]
     fn submitted_prompt_is_visible_before_the_server_replies() {
         let mut s = AppState::new();
+        s.session_id = Some("session-1".into());
         s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         s.handle_key(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
         let action = s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2393,6 +2488,7 @@ mod tests {
     #[test]
     fn shift_enter_inserts_newline_and_does_not_submit() {
         let mut s = AppState::new();
+        s.session_id = Some("session-1".into());
         s.handle_key(&KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         s.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         s.handle_key(&KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
@@ -2702,6 +2798,7 @@ mod tests {
         let mut s = AppState::new();
         s.apply(DomainEvent::SessionCreated {
             session_id: "abc-123".into(),
+            config: None,
         });
         assert_eq!(s.sessions.len(), 1);
         assert_eq!(s.sessions[0].id, "abc-123");
@@ -2709,8 +2806,81 @@ mod tests {
         // Re-creating the same id should NOT add a dup row.
         s.apply(DomainEvent::SessionCreated {
             session_id: "abc-123".into(),
+            config: None,
         });
         assert_eq!(s.sessions.len(), 1);
+    }
+
+    #[test]
+    fn first_prompt_creates_configured_session_then_sends_exactly_once() {
+        let mut state = AppState::with_metadata(
+            None,
+            RuntimeMetadata {
+                workspace: "/tmp/work".into(),
+                ..RuntimeMetadata::default()
+            },
+        );
+        state.apply(DomainEvent::AgentsDiscovered {
+            agents: vec![sylvander_protocol::AgentDescriptor {
+                id: sylvander_protocol::AgentId::new("coding"),
+                revision: 1,
+                name: "Coding".into(),
+                provider_id: "provider".into(),
+                default_model_id: "default".into(),
+                models: Vec::new(),
+                default_prompt_profile: None,
+                agent_workspace: None,
+            }],
+        });
+        state.session_model_override = Some((
+            sylvander_protocol::ModelSelection {
+                provider_id: "provider".into(),
+                model_id: "fast".into(),
+            },
+            sylvander_protocol::ReasoningEffort::Low,
+        ));
+
+        let create = state
+            .submit_prompt("ship it".into(), Vec::new())
+            .expect("explicit session creation");
+        assert!(matches!(
+            create,
+            Action::CreateSession { request }
+                if request.agent_id.0 == "coding"
+                    && request.overrides.model.as_ref().is_some_and(|model| model.model_id == "fast")
+                    && request.overrides.user_workspace.as_ref().is_some_and(|workspace| workspace.path == std::path::Path::new("/tmp/work"))
+        ));
+        assert!(state.session_creation_pending);
+        let repeated_agents = state.agents.clone();
+        assert!(
+            state
+                .apply(DomainEvent::AgentsDiscovered {
+                    agents: repeated_agents,
+                })
+                .is_none(),
+            "a repeated discovery response must not create a second session"
+        );
+
+        let send = state
+            .apply(DomainEvent::SessionCreated {
+                session_id: "session-1".into(),
+                config: None,
+            })
+            .expect("pending prompt sent after creation");
+        assert!(matches!(
+            send,
+            Action::SendChat { text, session_id: Some(session_id), .. }
+                if text == "ship it" && session_id == "session-1"
+        ));
+        assert!(!state.session_creation_pending);
+        assert!(
+            state
+                .apply(DomainEvent::SessionCreated {
+                    session_id: "session-1".into(),
+                    config: None,
+                })
+                .is_none()
+        );
     }
 
     #[test]
