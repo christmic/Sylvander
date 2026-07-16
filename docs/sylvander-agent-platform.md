@@ -239,8 +239,8 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 | A06 | Model providers | partial | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. Optional provider-native catalog synchronization and additional adapter implementations remain. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
 | A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
-| A09 | File tools | partial | Read/Write/Edit/List/Search/Command use one location-neutral executor contract. Local and OpenSSH adapters enforce workspace-relative paths, bounded structured queries, and read-only bindings; unavailable targets fail explicitly instead of falling back to host paths. Container/sandbox adapters remain. |
-| A10 | Command/Git tools | partial | Command is executor-backed with bounded timeout and streaming head/tail capture, and structured read-only Git status/diff/log works through local and SSH targets. The local executor isolates each shell in a process group and regression tests prove timeout or interrupt cannot leave background descendants running. Local Git worktree inspection/accept/discard is operational; remote process-tree cancellation and remote worktree review remain. |
+| A09 | File tools | implemented for local execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. Remote/container/sandbox adapter completion is tracked separately in P3.3/P3.4. |
+| A10 | Command/Git tools | implemented for local execution | Command and structured read-only Git share the executor boundary. Local execution supports validated command-scoped environment, bounded concurrent stdout/stderr capture, Unicode-safe streaming, timeout and dropped-future process-group cancellation, plus isolated worktree review/accept/discard. Remote process-tree and worktree semantics remain P3.3. |
 | A11 | Worktree isolation | implemented for local/host-backed execution | Writable local and host-backed container Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state, removes leases for deleted sessions, and recovers worktrees left before manifest commit. Remote SSH worktrees remain deferred with P3.3. |
 | A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
 | A13 | Skills | implemented | Agent-home and task-workspace packages are discovered through the selected executor with deterministic precedence. Strict optional manifests provide versioned metadata, activation, and exact resources; invalid or incomplete packages fail atomically. Redacted active/configured/degraded health, trust, source, capabilities, and per-turn reload truth are protocol-visible. |
@@ -568,10 +568,10 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 ### P3 — Location-transparent execution and coding isolation
 
-- [ ] **P3.1 Executor contract:** local reference implementation plus a shared
+- [x] **P3.1 Executor contract:** local reference implementation plus a shared
   conformance suite for filesystem, process, environment, cancellation,
   streaming, limits, and Git operations.
-- [ ] **P3.2 Executor-backed tools:** migrate Read/Write/Edit and add bounded
+- [x] **P3.2 Executor-backed tools:** migrate Read/Write/Edit and add bounded
   List/Search/Command/Git operations without exposing backend location to the
   Agent loop.
 
@@ -603,8 +603,17 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   edits it through the container executor, inspects and accepts the diff,
   restarts Runtime with the same durable lease, performs another container
   edit, and discards the session without changing the accepted source state.
-  Environment contracts, sandbox adapters, SSH pooling, explicit host-key
-  policy, container resource policy, and remote worktree review remain open.
+  Sandbox adapters, SSH pooling, explicit host-key policy, container resource
+  policy, and remote worktree review remain open.
+
+  The local environment contract is now explicit: Command accepts bounded,
+  validated per-invocation overrides, Local applies them only to the child
+  process, unsupported adapters reject rather than ignore them, and ordinary
+  plus streaming paths share the same behavior. A reusable conformance helper
+  exercises filesystem, bounded query, environment, process, streaming, and
+  read-only inspection behavior through Local and the logical mount router.
+  Detailed invariants are in
+  [`sylvander-agent/docs/workspace-execution.md`](../sylvander-agent/docs/workspace-execution.md).
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, remote process-tree cancellation, upload/download semantics, and
   conformance tests.

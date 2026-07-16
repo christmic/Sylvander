@@ -69,6 +69,8 @@ pub struct WorkspaceCommandOutput {
 
 pub const MAX_COMMAND_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
 pub const COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
+const MAX_COMMAND_ENVIRONMENT_ENTRIES: usize = 64;
+const MAX_COMMAND_ENVIRONMENT_VALUE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceCommandStream {
@@ -254,6 +256,24 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError>;
 
+    async fn run_command_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        validate_command_environment(environment)?;
+        if environment.is_empty() {
+            self.run_command(target, command, timeout).await
+        } else {
+            Err(WorkspaceExecutorError::InvalidRequest(format!(
+                "execution target `{}` does not support command environment overrides",
+                target.id
+            )))
+        }
+    }
+
     async fn run_command_streaming(
         &self,
         target: &WorkspaceTarget,
@@ -262,6 +282,26 @@ pub trait WorkspaceExecutor: Send + Sync + Debug {
         _progress: WorkspaceCommandProgressSink,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         self.run_command(target, command, timeout).await
+    }
+
+    async fn run_command_streaming_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        validate_command_environment(environment)?;
+        if environment.is_empty() {
+            self.run_command_streaming(target, command, timeout, progress)
+                .await
+        } else {
+            Err(WorkspaceExecutorError::InvalidRequest(format!(
+                "execution target `{}` does not support command environment overrides",
+                target.id
+            )))
+        }
     }
 
     /// Run a command selected by a trusted structured read-only operation.
@@ -454,6 +494,21 @@ impl WorkspaceExecutor for WorkspaceRouter {
             .await
     }
 
+    async fn run_command_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mount = self.route_target(target)?;
+        Self::require(mount, mount.capabilities.command, "command")?;
+        mount
+            .executor
+            .run_command_with_environment(&mount.target, command, timeout, environment)
+            .await
+    }
+
     async fn run_command_streaming(
         &self,
         _target: &WorkspaceTarget,
@@ -466,6 +521,28 @@ impl WorkspaceExecutor for WorkspaceRouter {
         mount
             .executor
             .run_command_streaming(&mount.target, command, timeout, progress)
+            .await
+    }
+
+    async fn run_command_streaming_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let mount = self.route_target(target)?;
+        Self::require(mount, mount.capabilities.command, "command")?;
+        mount
+            .executor
+            .run_command_streaming_with_environment(
+                &mount.target,
+                command,
+                timeout,
+                environment,
+                progress,
+            )
             .await
     }
 
@@ -579,7 +656,19 @@ impl WorkspaceExecutor for LocalExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        run_local_command(target, command, timeout, None).await
+        run_local_command(target, command, timeout, &BTreeMap::new(), None).await
+    }
+
+    async fn run_command_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        ensure_writable(target)?;
+        validate_command_environment(environment)?;
+        run_local_command(target, command, timeout, environment, None).await
     }
 
     async fn run_command_streaming(
@@ -590,7 +679,20 @@ impl WorkspaceExecutor for LocalExecutor {
         progress: WorkspaceCommandProgressSink,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        run_local_command(target, command, timeout, Some(progress)).await
+        run_local_command(target, command, timeout, &BTreeMap::new(), Some(progress)).await
+    }
+
+    async fn run_command_streaming_with_environment(
+        &self,
+        target: &WorkspaceTarget,
+        command: &str,
+        timeout: Duration,
+        environment: &BTreeMap<String, String>,
+        progress: WorkspaceCommandProgressSink,
+    ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        ensure_writable(target)?;
+        validate_command_environment(environment)?;
+        run_local_command(target, command, timeout, environment, Some(progress)).await
     }
 
     async fn run_read_only_command(
@@ -599,7 +701,7 @@ impl WorkspaceExecutor for LocalExecutor {
         command: &str,
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
-        run_local_command(target, command, timeout, None).await
+        run_local_command(target, command, timeout, &BTreeMap::new(), None).await
     }
 
     async fn list(
@@ -955,6 +1057,7 @@ async fn run_local_command(
     target: &WorkspaceTarget,
     command: &str,
     timeout: Duration,
+    environment: &BTreeMap<String, String>,
     progress: Option<WorkspaceCommandProgressSink>,
 ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
     let root = tokio::fs::canonicalize(&target.workspace_path).await?;
@@ -967,6 +1070,7 @@ async fn run_local_command(
     let mut process = shell_command(command);
     process
         .current_dir(root)
+        .envs(environment)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1020,6 +1124,31 @@ async fn run_local_command(
         stdout_total_bytes: stdout.total_bytes,
         stderr_total_bytes: stderr.total_bytes,
     })
+}
+
+fn validate_command_environment(
+    environment: &BTreeMap<String, String>,
+) -> Result<(), WorkspaceExecutorError> {
+    if environment.len() > MAX_COMMAND_ENVIRONMENT_ENTRIES {
+        return Err(WorkspaceExecutorError::InvalidRequest(
+            "command environment has too many entries".into(),
+        ));
+    }
+    if environment.iter().any(|(name, value)| {
+        name.is_empty()
+            || name.len() > 128
+            || !name.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_'
+                    || byte.is_ascii_alphanumeric() && (index > 0 || !byte.is_ascii_digit())
+            })
+            || value.len() > MAX_COMMAND_ENVIRONMENT_VALUE_BYTES
+            || value.contains('\0')
+    }) {
+        return Err(WorkspaceExecutorError::InvalidRequest(
+            "command environment contains an invalid name or value".into(),
+        ));
+    }
+    Ok(())
 }
 
 struct CapturedCommandOutput {
@@ -1138,6 +1267,87 @@ mod tests {
             .with_capability(Cap::Spawn)
     }
 
+    async fn assert_executor_core_conformance(
+        executor: &dyn WorkspaceExecutor,
+        target: &WorkspaceTarget,
+    ) {
+        executor
+            .write_file(target, "contract/data.txt", b"alpha\nneedle\nomega")
+            .await
+            .unwrap();
+        let bounded = executor
+            .read_file_bounded(target, "contract/data.txt", 5)
+            .await
+            .unwrap();
+        assert_eq!(bounded.bytes, b"alpha");
+        assert_eq!(bounded.total_bytes, 18);
+        assert!(bounded.truncated);
+
+        let listed = executor
+            .list(
+                target,
+                WorkspaceListRequest {
+                    relative_path: "contract".into(),
+                    recursive: true,
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            listed
+                .entries
+                .iter()
+                .any(|entry| entry.relative_path.ends_with("contract/data.txt"))
+        );
+        let found = executor
+            .search(
+                target,
+                WorkspaceSearchRequest {
+                    relative_path: "contract".into(),
+                    query: "needle".into(),
+                    limits: WorkspaceQueryLimits::default(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(found.matches.len(), 1);
+
+        let environment = BTreeMap::from([("SYLVANDER_CONFORMANCE".into(), "ready".into())]);
+        let command = executor
+            .run_command_with_environment(
+                target,
+                "printf %s \"$SYLVANDER_CONFORMANCE\"",
+                Duration::from_secs(2),
+                &environment,
+            )
+            .await
+            .unwrap();
+        assert_eq!(command.stdout, b"ready");
+
+        let progress = Arc::new(Mutex::new(String::new()));
+        let captured = progress.clone();
+        executor
+            .run_command_streaming_with_environment(
+                target,
+                "printf streamed",
+                Duration::from_secs(2),
+                &BTreeMap::new(),
+                WorkspaceCommandProgressSink::new(move |_, delta| {
+                    captured.lock().unwrap().push_str(&delta);
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(&*progress.lock().unwrap(), "streamed");
+
+        let inspected = executor
+            .run_read_only_command(target, "printf inspected", Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(inspected.stdout, b"inspected");
+    }
+
     #[derive(Debug, Default)]
     struct RecordingExecutor {
         reads: Mutex<Vec<(String, String)>>,
@@ -1228,6 +1438,42 @@ mod tests {
             .await
             .unwrap();
         assert!(command.content.contains("command-ok"));
+        assert_executor_core_conformance(
+            &LocalExecutor,
+            &WorkspaceTarget::local(workspace.path(), false),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn local_command_environment_is_scoped_validated_and_streaming_compatible() {
+        let workspace = tempfile::tempdir().unwrap();
+        let context = context(WorkspaceTarget::local(workspace.path(), false));
+        let output = CommandTool::new("/")
+            .execute(
+                &context,
+                json!({
+                    "command":"printf %s \"$SYLVANDER_CONTRACT_VALUE\"",
+                    "environment":{"SYLVANDER_CONTRACT_VALUE":"蟹伙伴"}
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(!output.is_error);
+        assert!(output.content.contains("蟹伙伴"));
+
+        let invalid = CommandTool::new("/")
+            .execute(
+                &context,
+                json!({
+                    "command":"printf unreachable",
+                    "environment":{"1_INVALID":"value"}
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(invalid.is_error);
+        assert!(invalid.content.contains("invalid name or value"));
     }
 
     #[tokio::test]
@@ -1612,6 +1858,8 @@ mod tests {
                 .select_mount_target(&target, Some("missing"))
                 .is_err()
         );
+        let task_target = router.select_mount_target(&target, Some("task")).unwrap();
+        assert_executor_core_conformance(&router, &task_target).await;
     }
 
     #[tokio::test]

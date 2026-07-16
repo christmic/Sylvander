@@ -166,6 +166,7 @@ Runtime contracts:
 
 - [Skill package format, activation, and health](docs/skills.md)
 - [MCP supervision, cancellation, and inspection](docs/mcp.md)
+- [Workspace executor and coding-tool contract](docs/workspace-execution.md)
 
 ```
 src/

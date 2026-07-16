@@ -1,5 +1,6 @@
 //! Workspace-scoped command execution for coding tasks.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -54,6 +55,11 @@ impl Tool for CommandTool {
                 "workspace": {
                     "type": "string",
                     "description": "Optional logical workspace reference without the @ prefix"
+                },
+                "environment": {
+                    "type": "object",
+                    "description": "Optional command-scoped environment overrides",
+                    "additionalProperties": { "type": "string" }
                 }
             }),
             &["command"],
@@ -92,6 +98,7 @@ impl CommandTool {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ToolError::Other("missing required field `command`".into()))?;
         let workspace = input.get("workspace").and_then(JsonValue::as_str);
+        let environment = parse_environment(input.get("environment"))?;
         let target = match ctx
             .executor
             .select_mount_target(&ctx.execution_target_for(&self.workdir), workspace)
@@ -110,10 +117,18 @@ impl CommandTool {
         let progress_state = progress.map(CommandProgress::new);
         let result = if let Some(state) = &progress_state {
             ctx.executor
-                .run_command_streaming(&target, command, timeout, state.executor_sink())
+                .run_command_streaming_with_environment(
+                    &target,
+                    command,
+                    timeout,
+                    &environment,
+                    state.executor_sink(),
+                )
                 .await
         } else {
-            ctx.executor.run_command(&target, command, timeout).await
+            ctx.executor
+                .run_command_with_environment(&target, command, timeout, &environment)
+                .await
         };
         if let Some(state) = &progress_state {
             state.flush();
@@ -146,6 +161,24 @@ impl CommandTool {
             Ok(ToolOutput::err(content))
         }
     }
+}
+
+fn parse_environment(value: Option<&JsonValue>) -> Result<BTreeMap<String, String>, ToolError> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| ToolError::Other("`environment` must be an object of strings".into()))?;
+    object
+        .iter()
+        .map(|(name, value)| {
+            value
+                .as_str()
+                .map(|value| (name.clone(), value.to_owned()))
+                .ok_or_else(|| ToolError::Other("`environment` values must be strings".into()))
+        })
+        .collect()
 }
 
 struct CommandProgress {
