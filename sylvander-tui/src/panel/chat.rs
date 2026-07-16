@@ -103,7 +103,13 @@ fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'_>> {
     // transcript, but must never remove its first block.
     let mut lines = build_welcome_lockup(width, state);
     for message in &state.messages {
-        push_message_lines(message, &mut lines, width, state.tool_details_expanded);
+        push_message_lines(
+            message,
+            &mut lines,
+            width,
+            state.tool_details_expanded,
+            &state.platform.tool_presentations,
+        );
     }
     if !state.streaming_thinking.is_empty() {
         for chunk in char_chunks(&state.streaming_thinking, width) {
@@ -127,6 +133,7 @@ fn push_message_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     width: usize,
     tool_details_expanded: bool,
+    tool_presentations: &[sylvander_protocol::ToolPresentationDescriptor],
 ) {
     match msg {
         ChatMessage::User(text) => {
@@ -215,7 +222,11 @@ fn push_message_lines<'a>(
             ]));
             for child in children {
                 let child_style = theme::tool_status_style(child.status);
-                let target = crate::tool_presenter::compact_target(&child.name, &child.input);
+                let target = crate::tool_presenter::compact_target_with_presentation(
+                    &child.name,
+                    &child.input,
+                    tool_presentations,
+                );
                 let inline_diff = if tool_details_expanded || child.status == ToolStatus::Pending {
                     Vec::new()
                 } else {
@@ -811,7 +822,7 @@ mod tests {
     fn wrapped_user_turn_marks_only_the_first_visual_row() {
         let mut lines = Vec::new();
         let message = ChatMessage::User("a user message that wraps across rows".into());
-        push_message_lines(&message, &mut lines, 14, false);
+        push_message_lines(&message, &mut lines, 14, false, &[]);
         let rendered = lines
             .iter()
             .map(Line::to_string)
@@ -837,7 +848,7 @@ mod tests {
                 is_error: None,
             }],
         };
-        push_message_lines(&message, &mut lines, 100, false);
+        push_message_lines(&message, &mut lines, 100, false, &[]);
         let rendered = lines
             .iter()
             .map(Line::to_string)

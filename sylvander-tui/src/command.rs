@@ -36,6 +36,7 @@ pub enum CommandId {
     Mcp,
     Skills,
     Hooks,
+    Extensions,
     Memory,
     Inspect,
     Copy,
@@ -243,6 +244,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "server truth",
     },
     CommandSpec {
+        id: CommandId::Extensions,
+        name: "extensions",
+        usage: "/extensions",
+        description: "Inspect declarative extension contributions",
+        hint: "no UI callbacks",
+    },
+    CommandSpec {
         id: CommandId::Memory,
         name: "memory",
         usage: "/memory",
@@ -445,6 +453,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Mcp
             | CommandId::Skills
             | CommandId::Hooks
+            | CommandId::Extensions
             | CommandId::Memory
     );
     if needs_connection && !state.connected {
@@ -1237,6 +1246,14 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 &state.platform,
             )));
         }
+        CommandId::Extensions => {
+            require_no_args(&invocation)?;
+            state.messages.push(ChatMessage::Info(platform_report(
+                "Extensions",
+                sylvander_protocol::PlatformFeatureKind::Extension,
+                &state.platform,
+            )));
+        }
         CommandId::Memory => {
             require_no_args(&invocation)?;
             state.messages.push(ChatMessage::Info(platform_report(
@@ -1934,6 +1951,17 @@ mod tests {
                 capabilities: vec!["before_tool".into()],
                 reloadable: false,
             },
+            sylvander_protocol::PlatformFeature {
+                kind: sylvander_protocol::PlatformFeatureKind::Extension,
+                name: "agent configuration".into(),
+                status: sylvander_protocol::PlatformFeatureStatus::Active,
+                summary: "1 tools · 1 commands · 1 presentations".into(),
+                source: Some("agent definition".into()),
+                trust: Some(sylvander_protocol::PlatformTrust::Workspace),
+                auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
+                capabilities: vec!["tool_presentations".into()],
+                reloadable: false,
+            },
         ];
 
         execute(parse("/mcp").unwrap(), &mut state).unwrap();
@@ -1962,6 +1990,13 @@ mod tests {
                 if report.contains("lint")
                     && report.contains("before-tool · blocking")
                     && report.contains("capabilities before_tool")
+        ));
+        execute(parse("/extensions").unwrap(), &mut state).unwrap();
+        assert!(matches!(
+            state.messages.last(),
+            Some(ChatMessage::Info(report))
+                if report.contains("1 presentations")
+                    && report.contains("capabilities tool_presentations")
         ));
     }
 

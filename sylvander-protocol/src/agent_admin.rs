@@ -77,6 +77,8 @@ pub struct AgentDefinitionDraft {
     #[serde(default)]
     pub hooks: Vec<AgentHookDraft>,
     #[serde(default)]
+    pub tool_presentations: Vec<AgentToolPresentationDraft>,
+    #[serde(default)]
     pub behavior: AgentBehaviorDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_workspace: Option<SessionWorkspaceBinding>,
@@ -105,6 +107,7 @@ impl fmt::Debug for AgentDefinitionDraft {
             .field("memory_store_count", &self.memory_stores.len())
             .field("ui_command_count", &self.ui_commands.len())
             .field("hook_count", &self.hooks.len())
+            .field("tool_presentation_count", &self.tool_presentations.len())
             .field("prompt_profile_count", &self.prompt_profiles.len())
             .field(
                 "agent_workspace_configured",
@@ -168,6 +171,16 @@ pub struct AgentHookDraft {
     pub timeout_secs: u64,
     #[serde(default)]
     pub blocking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentToolPresentationDraft {
+    pub tool_name: String,
+    pub label: String,
+    pub kind: crate::ToolPresentationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_field: Option<String>,
 }
 
 const fn default_hook_timeout_secs() -> u64 {
@@ -293,6 +306,8 @@ pub struct RedactedAgentDefinition {
     pub ui_commands: Vec<RedactedAgentUiCommand>,
     #[serde(default)]
     pub hooks: Vec<RedactedAgentHook>,
+    #[serde(default)]
+    pub tool_presentations: Vec<AgentToolPresentationDraft>,
     pub behavior: AgentBehaviorDraft,
     pub agent_workspace_configured: bool,
     #[serde(default)]
@@ -442,6 +457,7 @@ mod tests {
                 memory_stores: Vec::new(),
                 ui_commands: Vec::new(),
                 hooks: Vec::new(),
+                tool_presentations: Vec::new(),
                 behavior: AgentBehaviorDraft::default(),
                 agent_workspace: None,
                 prompt_profiles: Vec::new(),
@@ -485,6 +501,7 @@ mod tests {
                         memory_store_types: vec!["sqlite".into()],
                         ui_commands: Vec::new(),
                         hooks: Vec::new(),
+                        tool_presentations: Vec::new(),
                         behavior: AgentBehaviorDraft::default(),
                         agent_workspace_configured: true,
                         prompt_profiles: Vec::new(),

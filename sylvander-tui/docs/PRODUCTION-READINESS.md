@@ -102,7 +102,8 @@ completed backend feature.
 - [x] Work: `/diff`, `/review`, `/mention` (with `/copy` complete).
 - [x] Runtime: `/model`, `/permissions`, `/context`, `/compact`.
 - [x] Platform inspection commands: `/mcp`, `/skills`, `/memory`, `/doctor`,
-      `/hooks`, and `/config` render server or local service truth.
+      `/hooks`, `/extensions`, and `/config` render server or local service
+      truth.
 - [x] Commands support fuzzy matching, completion, aliases, recent ordering,
       and state-derived availability rules.
 - [x] Workspace/user prompt commands use dynamic registration with typed
@@ -121,7 +122,9 @@ completed backend feature.
       active state, and per-turn reload behavior from fresh server truth.
 - [x] Before-tool hooks show running/output/pass/failure/blocking lifecycle in
       the tool stream and expose redacted configuration through `/hooks`.
-- [ ] Extensions can contribute tools, renderers, and slash commands safely.
+- [x] Extensions contribute tools, declarative tool presentations, and typed
+      slash-command effects without receiving UI callbacks or bypassing the
+      Agent tool/approval path.
 - [x] Unknown protocol/tool additions degrade visibly, never silently disappear.
 
 ### Reliability and diagnostics

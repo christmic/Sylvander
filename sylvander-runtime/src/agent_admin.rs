@@ -11,15 +11,15 @@ use std::path::PathBuf;
 use sha2::{Digest, Sha256};
 use sylvander_agent::spec::{
     AgentSpec, BehaviorConfig, McpServerConfig, MemoryStoreConfig, ModelConfig, PersonaConfig,
-    ToolRef, UiCommandConfig,
+    ToolPresentationConfig, ToolRef, UiCommandConfig,
 };
 use sylvander_agent::tool::ToolHookConfig;
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentBehaviorDraft, AgentDefinitionDraft, AgentRevisionView, AgentSecretReference,
-    AgentToolDraft, AuthenticatedPrincipal, PrincipalKind, RedactedAgentAccess,
-    RedactedAgentDefinition, RedactedAgentHook, RedactedAgentPromptProfile, RedactedAgentTool,
-    RedactedAgentUiCommand,
+    AgentToolDraft, AgentToolPresentationDraft, AuthenticatedPrincipal, PrincipalKind,
+    RedactedAgentAccess, RedactedAgentDefinition, RedactedAgentHook, RedactedAgentPromptProfile,
+    RedactedAgentTool, RedactedAgentUiCommand,
 };
 #[cfg(test)]
 use sylvander_protocol::{
@@ -267,6 +267,16 @@ pub(crate) fn definition_from_draft(
                     blocking: hook.blocking,
                 })
                 .collect(),
+            tool_presentations: draft
+                .tool_presentations
+                .into_iter()
+                .map(|presentation| ToolPresentationConfig {
+                    tool_name: presentation.tool_name,
+                    label: presentation.label,
+                    kind: presentation.kind,
+                    target_field: presentation.target_field,
+                })
+                .collect(),
             behavior: BehaviorConfig {
                 max_iterations: draft.behavior.max_iterations,
                 max_retries: draft.behavior.max_retries,
@@ -366,6 +376,17 @@ pub(crate) fn draft_from_definition(
                 blocking: hook.blocking,
             })
             .collect(),
+        tool_presentations: definition
+            .spec
+            .tool_presentations
+            .iter()
+            .map(|presentation| AgentToolPresentationDraft {
+                tool_name: presentation.tool_name.clone(),
+                label: presentation.label.clone(),
+                kind: presentation.kind,
+                target_field: presentation.target_field.clone(),
+            })
+            .collect(),
         behavior: AgentBehaviorDraft {
             max_iterations: definition.spec.behavior.max_iterations,
             max_retries: definition.spec.behavior.max_retries,
@@ -441,6 +462,17 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                     name: hook.name.clone(),
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
+                })
+                .collect(),
+            tool_presentations: definition
+                .spec
+                .tool_presentations
+                .iter()
+                .map(|presentation| AgentToolPresentationDraft {
+                    tool_name: presentation.tool_name.clone(),
+                    label: presentation.label.clone(),
+                    kind: presentation.kind,
+                    target_field: presentation.target_field.clone(),
                 })
                 .collect(),
             behavior: AgentBehaviorDraft {
@@ -620,6 +652,30 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     }) {
         return Err(invalid_definition(
             "hook command or timeout is outside the supported bounds",
+        ));
+    }
+    if draft.tool_presentations.len() > 128 {
+        return Err(invalid_definition(
+            "at most 128 tool presentations are allowed",
+        ));
+    }
+    unique_non_empty(
+        draft
+            .tool_presentations
+            .iter()
+            .map(|presentation| presentation.tool_name.as_str()),
+        "tool presentation",
+    )?;
+    if draft.tool_presentations.iter().any(|presentation| {
+        presentation.label.trim().is_empty()
+            || presentation.label.chars().count() > 80
+            || presentation
+                .target_field
+                .as_ref()
+                .is_some_and(|field| field.trim().is_empty() || field.len() > 128)
+    }) {
+        return Err(invalid_definition(
+            "tool presentation metadata is outside the supported bounds",
         ));
     }
     if draft
@@ -909,6 +965,12 @@ id = "sonnet"
                 command: "cargo check --quiet".into(),
                 timeout_secs: 20,
                 blocking: true,
+            }],
+            tool_presentations: vec![AgentToolPresentationDraft {
+                tool_name: "search".into(),
+                label: "Search docs".into(),
+                kind: sylvander_protocol::ToolPresentationKind::Search,
+                target_field: Some("query".into()),
             }],
             behavior: AgentBehaviorDraft::default(),
             agent_workspace: None,

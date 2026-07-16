@@ -336,12 +336,38 @@ pub struct UiCommandDescriptor {
     pub effect: UiCommandEffect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolPresentationKind {
+    Generic,
+    Command,
+    File,
+    Search,
+    Resource,
+}
+
+/// Declarative presentation metadata. Clients interpret this data using their
+/// own trusted renderers; extensions never receive rendering callbacks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolPresentationDescriptor {
+    pub tool_name: String,
+    pub label: String,
+    pub kind: ToolPresentationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_field: Option<String>,
+    pub source: String,
+    pub trust: PlatformTrust,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PlatformSnapshot {
     #[serde(default)]
     pub features: Vec<PlatformFeature>,
     #[serde(default)]
     pub commands: Vec<UiCommandDescriptor>,
+    #[serde(default)]
+    pub tool_presentations: Vec<ToolPresentationDescriptor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1755,6 +1781,14 @@ mod tests {
                 effect: UiCommandEffect::SubmitPrompt {
                     template: "Review {{args}} for security issues.".into(),
                 },
+            }],
+            tool_presentations: vec![ToolPresentationDescriptor {
+                tool_name: "search".into(),
+                label: "Search".into(),
+                kind: ToolPresentationKind::Search,
+                target_field: Some("query".into()),
+                source: "agent configuration".into(),
+                trust: PlatformTrust::Workspace,
             }],
         };
         let json = serde_json::to_string(&snapshot).unwrap();
