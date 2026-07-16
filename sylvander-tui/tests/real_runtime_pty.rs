@@ -309,7 +309,16 @@ impl UiService for HarnessUiService {
         boundary: &BoundaryContext,
     ) -> Result<Vec<AgentDescriptor>, BoundaryError> {
         Self::principal(boundary, "discover_agents")?;
-        Ok(Vec::new())
+        Ok(vec![AgentDescriptor {
+            id: self.agent_id.clone(),
+            revision: 0,
+            name: "Sylvander".into(),
+            provider_id: self.provider_id.clone(),
+            default_model_id: "sylvander-test-model".into(),
+            models: Vec::new(),
+            default_prompt_profile: None,
+            agent_workspace: None,
+        }])
     }
 
     async fn create_session(
@@ -855,9 +864,11 @@ fn run_tui_with_exit(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     let upstream = MockServer::start().await;
+    let scenario = RealAgentScenario::default();
+    let request_count = Arc::clone(&scenario.request_index);
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(RealAgentScenario::default())
+        .respond_with(scenario)
         .mount(&upstream)
         .await;
 
@@ -887,9 +898,14 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
         .await
         .expect("subscribe runtime observer");
     let completed_turns = Arc::new(AtomicUsize::new(0));
+    let published_chats = Arc::new(AtomicUsize::new(0));
     let observed_turns = Arc::clone(&completed_turns);
+    let observed_chats = Arc::clone(&published_chats);
     let observer_task = tokio::spawn(async move {
         while let Some(message) = observed.recv().await {
+            if matches!(message.kind, MessageKind::Chat) {
+                observed_chats.fetch_add(1, Ordering::SeqCst);
+            }
             if matches!(message.kind, MessageKind::Stream(StreamEvent::Done { .. })) {
                 observed_turns.fetch_add(1, Ordering::SeqCst);
             }
@@ -897,85 +913,91 @@ async fn real_agent_runtime_persists_and_resumes_a_terminal_session() {
     });
 
     let completed_for_tui = Arc::clone(&completed_turns);
-    let first = run_tui(&socket_path, |writer, captured| {
-        writer
-            .write_all(b"persist this turn\r")
-            .expect("submit real Agent turn");
-        writer.flush().expect("flush real Agent turn");
-        assert!(
-            wait_for_output(captured, "AgentRun.", Duration::from_secs(5)),
-            "real Agent response was not rendered; output={}",
-            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-        );
-        writer.write_all(b"ask me\r").expect("submit AskUser turn");
-        writer.flush().expect("flush AskUser turn");
-        assert!(
-            wait_for_output(captured, "Type your answer", Duration::from_secs(4)),
-            "real Agent AskUser input was not rendered"
-        );
-        captured.lock().expect("clear AskUser output").clear();
-        writer
-            .write_all(b"use the safe path\r")
-            .expect("answer real Agent AskUser");
-        writer.flush().expect("flush real Agent answer");
-        assert!(
-            wait_for_output(captured, "Real", Duration::from_secs(4)),
-            "real Agent did not continue after AskUser answer; output={}",
-            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-        );
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while completed_for_tui.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(
-            completed_for_tui.load(Ordering::SeqCst),
-            2,
-            "real Agent AskUser turn did not publish Done"
-        );
-        std::thread::sleep(Duration::from_millis(150));
+    let first = tokio::task::block_in_place(|| {
+        run_tui(&socket_path, |writer, captured| {
+            writer
+                .write_all(b"persist this turn\r")
+                .expect("submit real Agent turn");
+            writer.flush().expect("flush real Agent turn");
+            assert!(
+                wait_for_output(captured, "AgentRun.", Duration::from_secs(5)),
+                "real Agent response was not rendered; chats={}; provider_requests={}; output={}",
+                published_chats.load(Ordering::SeqCst),
+                request_count.load(Ordering::SeqCst),
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+            );
+            writer.write_all(b"ask me\r").expect("submit AskUser turn");
+            writer.flush().expect("flush AskUser turn");
+            assert!(
+                wait_for_output(captured, "Type your answer", Duration::from_secs(4)),
+                "real Agent AskUser input was not rendered"
+            );
+            captured.lock().expect("clear AskUser output").clear();
+            writer
+                .write_all(b"use the safe path\r")
+                .expect("answer real Agent AskUser");
+            writer.flush().expect("flush real Agent answer");
+            assert!(
+                wait_for_output(captured, "Real", Duration::from_secs(4)),
+                "real Agent did not continue after AskUser answer; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+            );
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while completed_for_tui.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(
+                completed_for_tui.load(Ordering::SeqCst),
+                2,
+                "real Agent AskUser turn did not publish Done"
+            );
+            std::thread::sleep(Duration::from_millis(150));
 
-        captured.lock().expect("clear PTY output").clear();
-        writer
-            .write_all(b"interrupt the real turn\r")
-            .expect("submit interruptible real Agent turn");
-        writer.flush().expect("flush interruptible turn");
-        assert!(
-            wait_for_output(captured, "esc interrupt", Duration::from_secs(3)),
-            "real Agent turn did not enter interruptible state; output={}",
-            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-        );
-        writer
-            .write_all(b"\x1b")
-            .expect("interrupt real Agent turn");
-        writer.flush().expect("flush real Agent interrupt");
-        assert!(
-            wait_for_output(captured, "interrupted", Duration::from_secs(3)),
-            "real Agent interrupt terminal event was not rendered"
-        );
+            captured.lock().expect("clear PTY output").clear();
+            writer
+                .write_all(b"interrupt the real turn\r")
+                .expect("submit interruptible real Agent turn");
+            writer.flush().expect("flush interruptible turn");
+            assert!(
+                wait_for_output(captured, "esc interrupt", Duration::from_secs(3)),
+                "real Agent turn did not enter interruptible state; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
+            );
+            writer
+                .write_all(b"\x1b")
+                .expect("interrupt real Agent turn");
+            writer.flush().expect("flush real Agent interrupt");
+            assert!(
+                wait_for_output(captured, "interrupted", Duration::from_secs(3)),
+                "real Agent interrupt terminal event was not rendered"
+            );
+        })
     });
     assert!(first.contains("interrupted"));
 
-    let second = run_tui(&socket_path, |writer, captured| {
-        writer.write_all(b"\x10").expect("open persisted sessions");
-        writer.flush().expect("flush sessions shortcut");
-        if !wait_for_output(
-            captured,
-            "Loading one session replaces",
-            Duration::from_secs(3),
-        ) {
-            panic!(
-                "persisted session Focus Picker was not rendered; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("inspect resume picker"))
+    let second = tokio::task::block_in_place(|| {
+        run_tui(&socket_path, |writer, captured| {
+            writer.write_all(b"\x10").expect("open persisted sessions");
+            writer.flush().expect("flush sessions shortcut");
+            if !wait_for_output(
+                captured,
+                "Loading one session replaces",
+                Duration::from_secs(3),
+            ) {
+                panic!(
+                    "persisted session Focus Picker was not rendered; output={}",
+                    String::from_utf8_lossy(&captured.lock().expect("inspect resume picker"))
+                );
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            writer.write_all(b"\r").expect("resume selected session");
+            writer.flush().expect("flush session selection");
+            assert!(
+                wait_for_output(captured, "accepted.", Duration::from_secs(4)),
+                "persisted SQLite transcript was not restored; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
             );
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        writer.write_all(b"\r").expect("resume selected session");
-        writer.flush().expect("flush session selection");
-        assert!(
-            wait_for_output(captured, "accepted.", Duration::from_secs(4)),
-            "persisted SQLite transcript was not restored; output={}",
-            String::from_utf8_lossy(&captured.lock().expect("lock failed output"))
-        );
+        })
     });
     assert!(second.contains("persist") && second.contains("turn"));
 
@@ -1012,30 +1034,32 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
     )
     .await;
 
-    let rendered = run_tui(&socket_path, |writer, captured| {
-        writer
-            .write_all(b"try protected write\r")
-            .expect("submit approval turn");
-        writer.flush().expect("flush approval turn");
-        assert!(
-            wait_for_output(captured, "Permission needed", Duration::from_secs(4)),
-            "real Agent approval Decision Dock was not rendered"
-        );
-        writer.write_all(b"n").expect("reject real Agent tool");
-        writer.flush().expect("flush approval rejection");
-        assert!(
-            wait_for_output(captured, "Add guidance", Duration::from_secs(3)),
-            "approval guidance input was not rendered"
-        );
-        writer
-            .write_all(b"outside safe scope\r")
-            .expect("submit approval rejection reason");
-        writer.flush().expect("flush approval reason");
-        assert!(
-            wait_for_output(captured, "respected.", Duration::from_secs(5)),
-            "real Agent did not continue after approval rejection"
-        );
-        std::thread::sleep(Duration::from_millis(150));
+    let rendered = tokio::task::block_in_place(|| {
+        run_tui(&socket_path, |writer, captured| {
+            writer
+                .write_all(b"try protected write\r")
+                .expect("submit approval turn");
+            writer.flush().expect("flush approval turn");
+            assert!(
+                wait_for_output(captured, "Permission needed", Duration::from_secs(4)),
+                "real Agent approval Decision Dock was not rendered"
+            );
+            writer.write_all(b"n").expect("reject real Agent tool");
+            writer.flush().expect("flush approval rejection");
+            assert!(
+                wait_for_output(captured, "Add guidance", Duration::from_secs(3)),
+                "approval guidance input was not rendered"
+            );
+            writer
+                .write_all(b"outside safe scope\r")
+                .expect("submit approval rejection reason");
+            writer.flush().expect("flush approval reason");
+            assert!(
+                wait_for_output(captured, "respected.", Duration::from_secs(5)),
+                "real Agent did not continue after approval rejection"
+            );
+            std::thread::sleep(Duration::from_millis(150));
+        })
     });
     assert!(rendered.contains("outside safe scope"));
     assert!(
@@ -1180,44 +1204,48 @@ async fn real_agent_keeps_colliding_multi_client_interactions_isolated() {
             }
         }
     });
-    disconnect_tui(&socket_path, |writer, captured| {
-        submit(writer, b"replay client gamma\r");
-        assert!(wait_for_output(
-            captured,
-            "esc interrupt",
-            Duration::from_secs(3)
-        ));
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !gamma_published.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(
-            gamma_published.load(Ordering::SeqCst),
-            "gamma chat did not cross the authenticated Unix boundary"
-        );
+    tokio::task::block_in_place(|| {
+        disconnect_tui(&socket_path, |writer, captured| {
+            submit(writer, b"replay client gamma\r");
+            assert!(wait_for_output(
+                captured,
+                "esc interrupt",
+                Duration::from_secs(3)
+            ));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !gamma_published.load(Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                gamma_published.load(Ordering::SeqCst),
+                "gamma chat did not cross the authenticated Unix boundary"
+            );
+        })
     });
     gamma_observer
         .await
         .expect("join gamma publication observer");
-    let replayed = run_tui(&socket_path, |writer, captured| {
-        submit(writer, b"\x10");
-        if !wait_for_output(
-            captured,
-            "Loading one session replaces",
-            Duration::from_secs(3),
-        ) {
-            panic!(
-                "resume Focus Picker was not rendered; output={}",
-                String::from_utf8_lossy(&captured.lock().expect("inspect replay picker"))
+    let replayed = tokio::task::block_in_place(|| {
+        run_tui(&socket_path, |writer, captured| {
+            submit(writer, b"\x10");
+            if !wait_for_output(
+                captured,
+                "Loading one session replaces",
+                Duration::from_secs(3),
+            ) {
+                panic!(
+                    "resume Focus Picker was not rendered; output={}",
+                    String::from_utf8_lossy(&captured.lock().expect("inspect replay picker"))
+                );
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            submit(writer, b"\r");
+            assert!(
+                wait_for_output(captured, "completed.", Duration::from_secs(4)),
+                "reattached TUI did not receive buffered live events; output={}",
+                String::from_utf8_lossy(&captured.lock().expect("inspect replay failure"))
             );
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        submit(writer, b"\r");
-        assert!(
-            wait_for_output(captured, "completed.", Duration::from_secs(4)),
-            "reattached TUI did not receive buffered live events; output={}",
-            String::from_utf8_lossy(&captured.lock().expect("inspect replay failure"))
-        );
+        })
     });
     assert!(replayed.contains("completed."));
 

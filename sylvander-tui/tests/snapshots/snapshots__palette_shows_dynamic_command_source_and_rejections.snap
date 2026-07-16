@@ -1,5 +1,6 @@
 ---
 source: sylvander-tui/tests/snapshots.rs
+assertion_line: 494
 expression: "render_buf(state, 100, 24)"
 ---
               ⢀⣤⣴⡆               Sylvander                                                          
@@ -15,7 +16,6 @@ expression: "render_buf(state, 100, 24)"
                                                                                                     
                                                                                                     
                                                                                                     
-                                                                                                    
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ /review                                                                                           
 ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -24,5 +24,6 @@ expression: "render_buf(state, 100, 24)"
   /security-review Review a workspace scope · agent configuration                                   
   /external-review external source is not trusted for commands                                      
   /status          conflicts with a built-in command or alias                                       
+  /accept          requires a persisted session                                                     
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ● choosing command · model — · branch —                         ↑↓ select   tab complete · esc close

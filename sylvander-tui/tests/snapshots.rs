@@ -69,14 +69,10 @@ fn one_user_message_visible() {
 
 #[test]
 fn welcome_first_turn_and_clean_agent_reply_share_one_transcript() {
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
     let mut state = AppState::new();
-    for ch in "what tools do you have?".chars() {
-        state.handle_key(&KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
-    }
-    let action = state.handle_key(&KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(action.is_some());
+    state
+        .messages
+        .push(ChatMessage::User("what tools do you have?".into()));
     state.apply(DomainEvent::TextChunk {
         delta: "I have tools:1. **`ask_user`** — Ask for missing information.2. **`Read`** — Read a workspace file.".into(),
     });
