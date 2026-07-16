@@ -75,6 +75,19 @@ pub fn sign_experiment_evidence(
     ))
 }
 
+pub fn verify_experiment_evidence(
+    signed: &SignedExperimentEvidence,
+    verifier: &dyn ExperimentEvidenceSigner,
+) -> Result<bool, EvidenceError> {
+    if verifier.key_id() != signed.signer_key_id {
+        return Ok(false);
+    }
+    let (expected, _) =
+        sign_experiment_evidence(signed.id.clone(), signed.evidence.clone(), verifier)?;
+    Ok(expected.digest_sha256 == signed.digest_sha256
+        && expected.signature_hex == signed.signature_hex)
+}
+
 fn validate_unsigned(evidence: &UnsignedExperimentEvidence) -> Result<(), EvidenceError> {
     if !valid_key(&evidence.experiment_id)
         || !valid_sha256(&evidence.proposal_digest_sha256)

@@ -69,3 +69,11 @@ pub struct SignedExperimentEvidence {
     pub signer_key_id: String,
     pub signature_hex: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordExperimentEvidence {
+    pub id: String,
+    pub expected_state_revision: u64,
+    pub principal_digest: String,
+    pub evidence: UnsignedExperimentEvidence,
+}
