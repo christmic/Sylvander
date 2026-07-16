@@ -2,6 +2,7 @@
 schema_version = 1
 
 [server]
+mode = "production"
 name = "sylvander"
 # Defaults to $XDG_DATA_HOME/sylvander or ~/.local/share/sylvander.
 # data_dir = "/var/lib/sylvander"

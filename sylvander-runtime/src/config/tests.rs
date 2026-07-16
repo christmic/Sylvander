@@ -102,6 +102,64 @@ fn valid_configuration_parses_and_resolves_references() {
 }
 
 #[test]
+fn self_use_mode_allows_durable_memory_without_external_integrity_anchor() {
+    let input = valid_toml()
+        .replace(
+            "name = \"test-sylvander\"",
+            "mode = \"self_use\"\nname = \"test-sylvander\"",
+        )
+        .replace(
+            r#"
+[server.memory_maintenance.integrity]
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+"#,
+            "\n",
+        );
+
+    let config = ServerConfig::from_toml(&input).expect("self-use config without anchor");
+    assert_eq!(config.server.mode, ServerMode::SelfUse);
+    assert!(config.server.memory_maintenance.integrity.key.is_none());
+    assert!(config.server.memory_maintenance.integrity.backend.is_none());
+}
+
+#[test]
+fn production_mode_still_requires_complete_memory_integrity_configuration() {
+    let input = valid_toml()
+        .replace(
+            "name = \"test-sylvander\"",
+            "mode = \"production\"\nname = \"test-sylvander\"",
+        )
+        .replace(
+            r#"
+[server.memory_maintenance.integrity]
+
+[server.memory_maintenance.integrity.key]
+source = "env"
+name = "SYLVANDER_MEMORY_INTEGRITY_KEY"
+
+[server.memory_maintenance.integrity.backend]
+kind = "file"
+anchor_path = "/var/lib/sylvander-integrity/anchor.json"
+"#,
+            "\n",
+        );
+    let error = ServerConfig::from_toml(&input).unwrap_err();
+    assert!(
+        error
+            .errors
+            .iter()
+            .any(|message| message.contains("production mode requires"))
+    );
+}
+
+#[test]
 fn remote_memory_integrity_backend_is_typed_bounded_and_redacted() {
     let input = valid_toml().replace(
         r#"[server.memory_maintenance.integrity.backend]

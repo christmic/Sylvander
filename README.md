@@ -47,19 +47,33 @@ sylvander-server                  binary — boots the system
 
 ## Quickstart
 
+Self-use mode is the supported local, single-user startup profile. It keeps
+sessions and Agent memory in SQLite, allows the authenticated local Unix user
+to use the default Agent, and does not require a separately administered
+memory-integrity anchor.
+
 ```bash
-# Configure
-export ANTHROPIC_API_KEY=sk-...
-export SYLVANDER_MODEL=MiniMax-M3
+# Configure the provider, model, and explicit self-use trust profile.
+cp sylvander.env sylvander.env.local
+$EDITOR sylvander.env.local
+source sylvander.env.local
 
-# Run
+# Start the server and TUI in separate terminals.
 cargo run -p sylvander-server --release
-
-# Test
-curl -X POST http://localhost:8080/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"session_id":"test","message":"hello"}'
+source sylvander.env.local
+cargo run -p sylvander-tui --release -- /tmp/sylvander.sock
 ```
+
+The required self-use setting is:
+
+```bash
+export SYLVANDER_MODE=self_use
+```
+
+Production does not use this mode. Set `SYLVANDER_CONFIG` to a TOML document
+whose explicit `server.mode = "production"` configures both a memory-integrity
+key and an independent file or HTTP anchor; see
+[`docs/server-configuration.md`](docs/server-configuration.md).
 
 For tool approval, set `SYLVANDER_APPROVAL=1`. Add
 `SYLVANDER_APPROVAL_STORE=/path/to/approvals.json` only when durable
