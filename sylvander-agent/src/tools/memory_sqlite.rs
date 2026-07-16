@@ -636,14 +636,8 @@ impl MemoryStore for SqliteMemoryStore {
                 IdentifierNamespace::Memory { user_id, agent_id },
             )?;
             let record_key = allocate_identifier(transaction, IdentifierNamespace::RecordKey)?;
-            let entry = MemoryEntry::materialize(
-                id,
-                owner,
-                append,
-                provenance,
-                policy.revision(),
-                now,
-            )?;
+            let entry =
+                MemoryEntry::materialize(id, owner, append, provenance, policy.revision(), now)?;
             insert_entry(transaction, &record_key, &entry)?;
             append_audit(
                 transaction,
