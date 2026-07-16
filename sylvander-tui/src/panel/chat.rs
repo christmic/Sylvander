@@ -523,6 +523,35 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
 }
 
 fn summarize_output(output: &str, width: usize) -> String {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(output)
+        && let Some(object) = value.as_object()
+        && (object.contains_key("exit_code") || object.contains_key("duration_ms"))
+    {
+        let exit = object
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .map_or_else(|| "signal".into(), |code| code.to_string());
+        let duration = object
+            .get("duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .map_or_else(String::new, |ms| format!(" · {ms}ms"));
+        let truncated = object
+            .get("stdout_truncated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            || object
+                .get("stderr_truncated")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+        return format!(
+            "exit {exit}{duration}{}",
+            if truncated {
+                " · output truncated"
+            } else {
+                ""
+            }
+        );
+    }
     let line = output
         .lines()
         .map(str::trim)

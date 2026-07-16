@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
@@ -11,7 +12,10 @@ use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::{Cap, ToolContext};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
-const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+// Tool results enter both the model context and the TUI transcript. Keep the
+// final structured payload compact; the executor retains a larger bounded
+// head/tail capture for diagnostics.
+const MAX_MODEL_BYTES_PER_STREAM: usize = 24 * 1024;
 
 /// Run a shell command inside the invocation's effective workspace.
 #[derive(Debug, Clone)]
@@ -67,6 +71,7 @@ impl Tool for CommandTool {
             )));
         }
         let timeout = ctx.budget.timeout.unwrap_or(DEFAULT_TIMEOUT);
+        let started = Instant::now();
         let output = match ctx.executor.run_command(&target, command, timeout).await {
             Ok(output) => output,
             Err(crate::workspace_executor::WorkspaceExecutorError::Timeout(timeout)) => {
@@ -75,12 +80,20 @@ impl Tool for CommandTool {
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };
 
-        let stdout = bounded_text(&output.stdout);
-        let stderr = bounded_text(&output.stderr);
-        let status = output
-            .status_code
-            .map_or_else(|| "signal".to_string(), |code| code.to_string());
-        let content = format!("exit: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        let (stdout, stdout_model_truncated) = model_text(&output.stdout);
+        let (stderr, stderr_model_truncated) = model_text(&output.stderr);
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let content = serde_json::to_string(&json!({
+            "exit_code": output.status_code,
+            "duration_ms": duration_ms,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_total_bytes": output.stdout_total_bytes,
+            "stderr_total_bytes": output.stderr_total_bytes,
+            "stdout_truncated": output.stdout_truncated || stdout_model_truncated,
+            "stderr_truncated": output.stderr_truncated || stderr_model_truncated,
+        }))
+        .expect("command result is serializable");
         if output.success {
             Ok(ToolOutput::ok(content))
         } else {
@@ -89,14 +102,15 @@ impl Tool for CommandTool {
     }
 }
 
-fn bounded_text(bytes: &[u8]) -> String {
-    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
-    let bytes = &bytes[..bytes.len().min(MAX_OUTPUT_BYTES)];
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    if truncated {
-        text.push_str("\n[output truncated]");
+fn model_text(bytes: &[u8]) -> (String, bool) {
+    if bytes.len() <= MAX_MODEL_BYTES_PER_STREAM {
+        return (String::from_utf8_lossy(bytes).into_owned(), false);
     }
-    text
+    let head_bytes = MAX_MODEL_BYTES_PER_STREAM / 4;
+    let tail_bytes = MAX_MODEL_BYTES_PER_STREAM - head_bytes;
+    let head = String::from_utf8_lossy(&bytes[..head_bytes]);
+    let tail = String::from_utf8_lossy(&bytes[bytes.len() - tail_bytes..]);
+    (format!("{head}\n[… output omitted …]\n{tail}"), true)
 }
 
 #[cfg(test)]
@@ -124,8 +138,10 @@ mod tests {
             .await
             .unwrap();
         assert!(!output.is_error);
-        assert!(output.content.contains("exit: 0"));
-        assert!(output.content.contains("hello"));
+        let result: JsonValue = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(result["exit_code"], 0);
+        assert_eq!(result["stdout"], "hello\n");
+        assert_eq!(result["stdout_truncated"], false);
     }
 
     #[tokio::test]
@@ -139,7 +155,9 @@ mod tests {
             .await
             .unwrap();
         assert!(output.is_error);
-        assert!(output.content.contains("exit: 7"));
-        assert!(output.content.contains("boom"));
+        let result: JsonValue = serde_json::from_str(&output.content).unwrap();
+        assert_eq!(result["exit_code"], 7);
+        assert_eq!(result["stderr"], "boom");
+        assert_eq!(result["stderr_truncated"], false);
     }
 }

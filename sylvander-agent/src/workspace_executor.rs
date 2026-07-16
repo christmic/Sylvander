@@ -3,10 +3,11 @@
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
 /// A workspace mounted on an execution target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +50,14 @@ pub struct WorkspaceCommandOutput {
     pub status_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub stdout_total_bytes: u64,
+    pub stderr_total_bytes: u64,
 }
 
+pub const MAX_COMMAND_OUTPUT_BYTES_PER_STREAM: usize = 256 * 1024;
+pub const COMMAND_OUTPUT_HEAD_BYTES: usize = 64 * 1024;
 pub const MAX_QUERY_RESULTS: usize = 1_000;
 pub const MAX_QUERY_LINE_CHARS: usize = 4_096;
 pub const MAX_QUERY_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -252,15 +259,40 @@ impl WorkspaceExecutor for LocalExecutor {
             )));
         }
         let mut process = shell_command(command);
-        process.current_dir(root).kill_on_drop(true);
-        let output = tokio::time::timeout(timeout, process.output())
+        process
+            .current_dir(root)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = process.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("command stdout was not piped"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("command stderr was not piped"))?;
+        let execution = async move {
+            let (stdout, stderr, status) = tokio::try_join!(
+                capture_command_output(stdout),
+                capture_command_output(stderr),
+                child.wait(),
+            )?;
+            Ok::<_, std::io::Error>((stdout, stderr, status))
+        };
+        let (stdout, stderr, status) = Box::pin(tokio::time::timeout(timeout, execution))
             .await
             .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
         Ok(WorkspaceCommandOutput {
-            success: output.status.success(),
-            status_code: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
+            success: status.success(),
+            status_code: status.code(),
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
+            stdout_truncated: stdout.truncated,
+            stderr_truncated: stderr.truncated,
+            stdout_total_bytes: stdout.total_bytes,
+            stderr_total_bytes: stderr.total_bytes,
         })
     }
 
@@ -577,6 +609,53 @@ fn shell_command(command: &str) -> tokio::process::Command {
     process
 }
 
+struct CapturedCommandOutput {
+    bytes: Vec<u8>,
+    total_bytes: u64,
+    truncated: bool,
+}
+
+async fn capture_command_output(
+    mut reader: impl AsyncRead + Unpin,
+) -> std::io::Result<CapturedCommandOutput> {
+    let tail_capacity =
+        MAX_COMMAND_OUTPUT_BYTES_PER_STREAM.saturating_sub(COMMAND_OUTPUT_HEAD_BYTES);
+    let mut head = Vec::with_capacity(COMMAND_OUTPUT_HEAD_BYTES);
+    let mut tail = VecDeque::<u8>::with_capacity(tail_capacity);
+    let mut total_bytes = 0_u64;
+    let mut buffer = [0_u8; 8 * 1024];
+
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        total_bytes = total_bytes.saturating_add(read as u64);
+        let mut chunk = &buffer[..read];
+        if head.len() < COMMAND_OUTPUT_HEAD_BYTES {
+            let keep = chunk
+                .len()
+                .min(COMMAND_OUTPUT_HEAD_BYTES.saturating_sub(head.len()));
+            head.extend_from_slice(&chunk[..keep]);
+            chunk = &chunk[keep..];
+        }
+        if tail_capacity > 0 && !chunk.is_empty() {
+            tail.extend(chunk);
+            if tail.len() > tail_capacity {
+                tail.drain(..tail.len() - tail_capacity);
+            }
+        }
+    }
+
+    let mut bytes = head;
+    bytes.extend(tail);
+    Ok(CapturedCommandOutput {
+        truncated: total_bytes > bytes.len() as u64,
+        total_bytes,
+        bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -686,6 +765,56 @@ mod tests {
             .await
             .unwrap();
         assert!(command.content.contains("command-ok"));
+    }
+
+    #[tokio::test]
+    async fn local_command_drains_and_bounds_stdout_and_stderr_without_deadlock() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = WorkspaceTarget::local(workspace.path(), false);
+        let payload_bytes = MAX_COMMAND_OUTPUT_BYTES_PER_STREAM + 8 * 1024;
+        let expected_total = (payload_bytes + 8) as u64;
+        let command = format!(
+            "(printf HEAD; head -c {payload_bytes} /dev/zero | tr '\\\\000' o; printf TAIL) & \
+             (printf HEAD >&2; head -c {payload_bytes} /dev/zero | tr '\\\\000' e >&2; \
+             printf TAIL >&2) & wait"
+        );
+
+        let output = LocalExecutor
+            .run_command(&target, &command, Duration::from_secs(5))
+            .await
+            .unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.stdout.len(), MAX_COMMAND_OUTPUT_BYTES_PER_STREAM);
+        assert_eq!(output.stderr.len(), MAX_COMMAND_OUTPUT_BYTES_PER_STREAM);
+        assert_eq!(output.stdout_total_bytes, expected_total);
+        assert_eq!(output.stderr_total_bytes, expected_total);
+        assert!(output.stdout_truncated);
+        assert!(output.stderr_truncated);
+        assert!(output.stdout.starts_with(b"HEAD"));
+        assert!(output.stdout.ends_with(b"TAIL"));
+        assert!(output.stderr.starts_with(b"HEAD"));
+        assert!(output.stderr.ends_with(b"TAIL"));
+    }
+
+    #[tokio::test]
+    async fn local_command_timeout_cancels_capture() {
+        let workspace = tempfile::tempdir().unwrap();
+        let target = WorkspaceTarget::local(workspace.path(), false);
+        let timeout = Duration::from_millis(30);
+
+        let result = LocalExecutor
+            .run_command(
+                &target,
+                "while :; do printf stdout; printf stderr >&2; done",
+                timeout,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceExecutorError::Timeout(value)) if value == timeout
+        ));
     }
 
     #[tokio::test]
