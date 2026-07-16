@@ -554,6 +554,7 @@ pub enum ExecutionTransportConfig {
         #[serde(default = "default_ssh_port")]
         port: u16,
         user: String,
+        /// Resolves to the absolute path of an OpenSSH identity file.
         credential: SecretRef,
     },
     Container {

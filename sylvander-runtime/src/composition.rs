@@ -17,6 +17,7 @@ use sylvander_agent::tools::{
     StartBackgroundTaskTool, UpdatePlanTool, WriteTool,
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
+use sylvander_agent::workspace_executor::WorkspaceExecutor;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_core::{
@@ -37,6 +38,7 @@ use crate::config::{
     SecretResolver, ServerConfig,
 };
 use crate::credential_registry::CredentialSecretResolver;
+use crate::execution::SshExecutor;
 #[cfg(test)]
 use crate::registry_composition::RegistryCompositionSnapshot;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
@@ -193,6 +195,9 @@ pub(crate) fn build_agent(
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
+    builder = apply_execution_targets(config, builder, |reference| {
+        secrets.resolve(reference).map_err(|_| ())
+    })?;
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -262,7 +267,7 @@ pub(crate) fn build_registry_agent_with_resolver(
             .preflight(&provider, model)
             .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
     }
-    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
+    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver.clone()));
     let provider_adapter = AnthropicProviderFactory
         .create(provider.clone(), credentials)
         .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
@@ -304,6 +309,9 @@ pub(crate) fn build_registry_agent_with_resolver(
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
+    builder = apply_execution_targets(config, builder, |reference| {
+        resolver.resolve_credential(reference)
+    })?;
     builder = apply_server_run_settings(config, builder);
     let (run, session_issuer) = builder
         .build_with_session_issuer()
@@ -352,7 +360,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
             .preflight(provider, model)
             .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
     }
-    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver));
+    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver.clone()));
     let mut adapters_by_provider =
         HashMap::<String, Arc<dyn ModelProvider>>::with_capacity(providers.len());
     for (provider_id, provider) in providers {
@@ -427,6 +435,9 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
+    builder = apply_execution_targets(config, builder, |reference| {
+        resolver.resolve_credential(reference)
+    })?;
     let (run, session_issuer) = apply_server_run_settings(config, builder)
         .build_with_session_issuer()
         .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
@@ -808,6 +819,36 @@ fn apply_server_run_settings(
     builder
 }
 
+fn apply_execution_targets(
+    config: &ServerConfig,
+    mut builder: sylvander_agent::run::AgentRunBuilder,
+    resolve: impl Fn(&crate::config::SecretRef) -> Result<crate::config::SecretValue, ()>,
+) -> Result<sylvander_agent::run::AgentRunBuilder, CompositionError> {
+    for target in &config.execution_targets {
+        let ExecutionTransportConfig::Ssh {
+            host,
+            port,
+            user,
+            credential,
+        } = &target.transport
+        else {
+            continue;
+        };
+        let identity = resolve(credential)
+            .map_err(|()| CompositionError::ExecutionTarget(target.id.clone()))?;
+        let identity_path = identity
+            .as_str()
+            .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
+        let executor = SshExecutor::new(host, *port, user, identity_path)
+            .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
+        builder = builder.workspace_executor(
+            target.id.clone(),
+            Arc::new(executor) as Arc<dyn WorkspaceExecutor>,
+        );
+    }
+    Ok(builder)
+}
+
 #[cfg(test)]
 fn registry_revision_bindings(
     provider: &ProviderDefinition,
@@ -1072,6 +1113,8 @@ pub enum CompositionError {
     UnsupportedReasoning(String),
     #[error("execution target `{0}` is unavailable")]
     MissingExecutionTarget(String),
+    #[error("execution target `{0}` could not be initialized")]
+    ExecutionTarget(String),
     #[error("workspace `{workspace}` is outside local execution root `{root}`")]
     WorkspaceOutsideExecutionRoot { workspace: String, root: String },
     #[error("workspace and session execution targets do not match")]
@@ -1496,7 +1539,22 @@ path = "/tmp/sylvander-test.sock"
 "#,
             secret_path.display()
         );
-        let config = ServerConfig::from_toml(&input).unwrap();
+        let mut config = ServerConfig::from_toml(&input).unwrap();
+        let identity_reference = directory.path().join("ssh-identity.ref");
+        std::fs::write(&identity_reference, "/tmp/sylvander-test-identity\n").unwrap();
+        config
+            .execution_targets
+            .push(crate::config::ExecutionTargetConfig {
+                id: "ssh:test".into(),
+                transport: ExecutionTransportConfig::Ssh {
+                    host: "dev.example".into(),
+                    port: 22,
+                    user: "agent".into(),
+                    credential: crate::config::SecretRef::File {
+                        path: identity_reference,
+                    },
+                },
+            });
         let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
         let sessions: Arc<dyn SessionStore> =
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());

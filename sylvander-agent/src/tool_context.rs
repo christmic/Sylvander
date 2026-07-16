@@ -127,11 +127,10 @@ impl ToolContext {
         read_only: bool,
     ) -> Self {
         let target_id = target_id.into();
-        self.executor = if target_id == "local" {
-            Arc::new(LocalExecutor)
-        } else {
-            Arc::new(UnavailableExecutor::new(target_id.clone()))
-        };
+        // A named target is meaningful only together with an executor chosen
+        // by the owning runtime. Keep this convenience fail-closed instead of
+        // embedding target-id routing policy in a per-tool value object.
+        self.executor = Arc::new(UnavailableExecutor::new(target_id.clone()));
         self.execution_target = WorkspaceTarget {
             id: target_id,
             workspace_path: workspace_path.into(),
