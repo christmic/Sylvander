@@ -559,6 +559,10 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   The first container adapter now runs every operation in a disposable,
   network-disabled container with a bounded bind mount, read-only inspection,
   live bounded command output, and daemon-side forced cleanup on cancellation.
+  A Runtime-level dogfood journey now creates a clean-Git session worktree,
+  edits it through the container executor, inspects and accepts the diff,
+  restarts Runtime with the same durable lease, performs another container
+  edit, and discards the session without changing the accepted source state.
   Environment contracts, sandbox adapters, SSH pooling, explicit host-key
   policy, container resource policy, and remote worktree review remain open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
@@ -566,7 +570,9 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   conformance tests.
 - [ ] **P3.4 Container and sandbox executors:** the disposable-container
   baseline has lifecycle, mounts, network denial, cleanup, and conformance
-  tests; resource policy, reusable environments, and managed sandboxes remain.
+  tests, including the complete host-backed coding-session journey across a
+  Runtime restart; resource policy, reusable environments, and managed
+  sandboxes remain.
 - [x] **P3.5 Worktree manager (local/host-backed scope):** writable Git coding
   sessions default to collision-free durable leases; review, merge, abandon,
   restart, and compensation paths are public and tested. Runtime boot validates
