@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -29,6 +29,10 @@ const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TOOL_RESULT_BYTES: usize = 64 * 1024;
 const TOOL_RESULT_HEAD_BYTES: usize = 16 * 1024;
+const MCP_HEALTH_ACTIVE: u8 = 1;
+const MCP_HEALTH_DEGRADED: u8 = 2;
+const MCP_HEALTH_UNAVAILABLE: u8 = 3;
+const MCP_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Errors raised while starting or communicating with an MCP server.
 #[derive(Debug, Error)]
@@ -91,6 +95,9 @@ struct McpInner {
     child: Mutex<Child>,
     result_artifact_root: Option<PathBuf>,
     tool_definitions: std::sync::RwLock<Vec<JsonValue>>,
+    health: AtomicU8,
+    reconnect_count: AtomicU64,
+    shutdown: AtomicBool,
 }
 
 /// A connected MCP stdio server.
@@ -115,7 +122,7 @@ impl McpStdioClient {
         config: &McpServerConfig,
         request_timeout: Duration,
     ) -> Result<Self, McpError> {
-        Self::connect_inner(config, request_timeout, None).await
+        Self::connect_inner(config, request_timeout, None, true).await
     }
 
     /// Start a server and persist every complete tool result below `root`.
@@ -128,13 +135,14 @@ impl McpStdioClient {
         request_timeout: Duration,
         root: PathBuf,
     ) -> Result<Self, McpError> {
-        Self::connect_inner(config, request_timeout, Some(root)).await
+        Self::connect_inner(config, request_timeout, Some(root), true).await
     }
 
     async fn connect_inner(
         config: &McpServerConfig,
         request_timeout: Duration,
         result_artifact_root: Option<PathBuf>,
+        start_health_monitor: bool,
     ) -> Result<Self, McpError> {
         let mut command = Command::new(&config.command);
         command
@@ -173,6 +181,9 @@ impl McpStdioClient {
                 child: Mutex::new(child),
                 result_artifact_root,
                 tool_definitions: std::sync::RwLock::new(Vec::new()),
+                health: AtomicU8::new(MCP_HEALTH_ACTIVE),
+                reconnect_count: AtomicU64::new(0),
+                shutdown: AtomicBool::new(false),
             }),
         };
 
@@ -202,6 +213,9 @@ impl McpStdioClient {
         client
             .notify("notifications/initialized", json!({}))
             .await?;
+        if start_health_monitor {
+            spawn_health_monitor(&client);
+        }
         Ok(client)
     }
 
@@ -226,6 +240,9 @@ impl McpStdioClient {
             .write()
             .unwrap()
             .clone_from(tools);
+        self.inner
+            .health
+            .store(MCP_HEALTH_ACTIVE, Ordering::Release);
         Ok(discovered)
     }
 
@@ -241,8 +258,35 @@ impl McpStdioClient {
 
     /// Stop the child process and wait for it to exit.
     pub async fn shutdown(&self) -> Result<(), McpError> {
+        self.inner.shutdown.store(true, Ordering::Release);
         let mut child = self.inner.child.lock().await;
-        stop_child(&self.inner.server_name, &mut child).await
+        let result = stop_child(&self.inner.server_name, &mut child).await;
+        self.inner
+            .health
+            .store(MCP_HEALTH_UNAVAILABLE, Ordering::Release);
+        result
+    }
+
+    /// Probe the MCP transport without exposing server content.
+    pub async fn probe_health(&self) -> Result<(), McpError> {
+        let generation = self.inner.generation.load(Ordering::Acquire);
+        match self.request("ping", json!({})).await {
+            Ok(_) => {
+                self.inner
+                    .health
+                    .store(MCP_HEALTH_ACTIVE, Ordering::Release);
+                Ok(())
+            }
+            Err(error) => {
+                self.inner
+                    .health
+                    .store(MCP_HEALTH_DEGRADED, Ordering::Release);
+                if is_recoverable_transport_error(&error) {
+                    self.reconnect_if_current(generation).await?;
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn call_tool(
@@ -260,6 +304,9 @@ impl McpStdioClient {
             .await;
         match result {
             Ok(result) => {
+                self.inner
+                    .health
+                    .store(MCP_HEALTH_ACTIVE, Ordering::Release);
                 let artifact = match &self.inner.result_artifact_root {
                     Some(root) => {
                         match persist_result_artifact(
@@ -290,7 +337,15 @@ impl McpStdioClient {
             }
             Err(error) => {
                 if is_recoverable_transport_error(&error) {
-                    let _ = self.reconnect_if_current(generation).await;
+                    if self.reconnect_if_current(generation).await.is_err() {
+                        self.inner
+                            .health
+                            .store(MCP_HEALTH_DEGRADED, Ordering::Release);
+                    }
+                } else {
+                    self.inner
+                        .health
+                        .store(MCP_HEALTH_DEGRADED, Ordering::Release);
                 }
                 Err(error)
             }
@@ -306,6 +361,7 @@ impl McpStdioClient {
             &self.inner.config,
             self.inner.request_timeout,
             self.inner.result_artifact_root.clone(),
+            false,
         )
         .await?;
         let refreshed = replacement.list_tools().await?;
@@ -327,6 +383,10 @@ impl McpStdioClient {
         *self.inner.tool_definitions.write().unwrap() =
             replacement.tool_definitions.into_inner().unwrap();
         self.inner.generation.fetch_add(1, Ordering::Release);
+        self.inner.reconnect_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .health
+            .store(MCP_HEALTH_ACTIVE, Ordering::Release);
         Ok(())
     }
 
@@ -398,12 +458,65 @@ impl McpStdioClient {
     }
 }
 
+fn spawn_health_monitor(client: &McpStdioClient) {
+    let inner = Arc::downgrade(&client.inner);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(MCP_HEALTH_INTERVAL).await;
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
+            if inner.shutdown.load(Ordering::Acquire) {
+                break;
+            }
+            let client = McpStdioClient { inner };
+            let _ = client.probe_health().await;
+        }
+    });
+}
+
 impl DynamicToolSource for McpStdioClient {
     fn snapshot(&self) -> Vec<Arc<dyn Tool>> {
         self.current_tools()
             .into_iter()
             .map(|tool| Arc::new(tool) as Arc<dyn Tool>)
             .collect()
+    }
+
+    fn platform_feature(&self) -> Option<sylvander_protocol::PlatformFeature> {
+        use sylvander_protocol::{
+            PlatformAuthStatus, PlatformFeature, PlatformFeatureKind, PlatformFeatureStatus,
+            PlatformTrust,
+        };
+
+        let status = match self.inner.health.load(Ordering::Acquire) {
+            MCP_HEALTH_ACTIVE => PlatformFeatureStatus::Active,
+            MCP_HEALTH_DEGRADED => PlatformFeatureStatus::Degraded,
+            _ => PlatformFeatureStatus::Unavailable,
+        };
+        let tool_count = self.inner.tool_definitions.read().unwrap().len();
+        let generation = self.inner.generation.load(Ordering::Acquire);
+        let reconnects = self.inner.reconnect_count.load(Ordering::Acquire);
+        Some(PlatformFeature {
+            kind: PlatformFeatureKind::Mcp,
+            name: self.inner.server_name.clone(),
+            status,
+            summary: format!(
+                "{tool_count} tools · generation {generation} · {reconnects} reconnects"
+            ),
+            source: std::path::Path::new(&self.inner.config.command)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string),
+            trust: Some(PlatformTrust::External),
+            auth: if self.inner.config.envs.is_empty() {
+                PlatformAuthStatus::NotRequired
+            } else {
+                PlatformAuthStatus::Configured
+            },
+            capabilities: vec!["tools".into()],
+            reloadable: true,
+        })
     }
 }
 
@@ -738,6 +851,8 @@ while True:
         }})
     elif method == "notifications/initialized":
         pass
+    elif method == "ping":
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{}})
     elif method == "tools/list":
         send({"jsonrpc":"2.0", "method":"notifications/tools/list_changed"})
         tool_name = "echo"
@@ -790,6 +905,13 @@ while True:
         assert_eq!(tools[0].name(), "echo");
         assert_eq!(tools[0].description(), "Echo an input value");
         assert_eq!(tools[0].input_schema().schema["type"], "object");
+        let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
+        assert_eq!(
+            feature.status,
+            sylvander_protocol::PlatformFeatureStatus::Active
+        );
+        assert!(feature.summary.contains("1 tools"));
+        client.probe_health().await.expect("health probe");
 
         let context = crate::tool_context::defaults::system_tool_context();
         let output = tools[0]
@@ -817,6 +939,7 @@ while True:
                 "initialize",
                 "notifications/initialized",
                 "tools/list",
+                "ping",
                 "tools/call",
                 "tools/call"
             ]
@@ -908,8 +1031,21 @@ while True:
             .map(|definition| definition.name)
             .collect::<Vec<_>>();
         assert_eq!(names, ["echo_v2"]);
+        let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
+        assert_eq!(
+            feature.status,
+            sylvander_protocol::PlatformFeatureStatus::Active
+        );
+        assert!(feature.summary.contains("generation 2"));
+        assert!(feature.summary.contains("1 reconnects"));
 
         client.shutdown().await.expect("shutdown replacement");
+        assert_eq!(
+            DynamicToolSource::platform_feature(&client)
+                .expect("MCP health")
+                .status,
+            sylvander_protocol::PlatformFeatureStatus::Unavailable
+        );
     }
 
     #[test]

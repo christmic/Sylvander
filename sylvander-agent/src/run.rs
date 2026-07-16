@@ -612,6 +612,16 @@ impl AgentRun {
             })
             .collect::<Vec<_>>();
 
+        for runtime_feature in self.inner.loop_config.tools.platform_features() {
+            if let Some(existing) = features.iter_mut().find(|feature| {
+                feature.kind == runtime_feature.kind && feature.name == runtime_feature.name
+            }) {
+                *existing = runtime_feature;
+            } else {
+                features.push(runtime_feature);
+            }
+        }
+
         if self.inner.memory_source == MemorySource::RuntimeInjected {
             features.push(PlatformFeature {
                 kind: PlatformFeatureKind::Memory,
