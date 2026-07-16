@@ -44,7 +44,8 @@ use sylvander_protocol::{
     IdentityBindingResponse, IdentityBindingValidationError, PrincipalKind, RegistryAdminError,
     RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
     SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionId, UiClientMessage,
+    SessionId, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UserProfileCapabilities,
+    UserProfileError, UserProfileRequest, UserProfileResponse,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -209,6 +210,29 @@ pub trait UiService: Send + Sync {
             IdentityBindingErrorCode::ServiceUnavailable,
             "identity binding service is unavailable",
         )
+    }
+
+    /// Advertise User Profile versions installed by this Runtime.
+    ///
+    /// The default is empty and therefore denies every profile operation.
+    fn user_profile_capabilities(&self) -> UserProfileCapabilities {
+        UserProfileCapabilities::default()
+    }
+
+    /// Apply one profile operation to the boundary-derived stable user.
+    ///
+    /// The request has no owner selector. A Runtime override must authenticate
+    /// and resolve `boundary` to a stable user before store access. The default
+    /// never reflects profile content and fails closed.
+    async fn user_profile(
+        &self,
+        _boundary: &BoundaryContext,
+        request: UserProfileRequest,
+    ) -> UserProfileResponse {
+        UserProfileResponse::Error {
+            version: USER_PROFILE_PROTOCOL_VERSION,
+            error: UserProfileError::service_unavailable(request.operation()),
+        }
     }
 
     /// Authenticate, resolve or create and attach the owned session, then
@@ -667,7 +691,11 @@ mod tests {
     use sylvander_agent::bus::InProcessMessageBus;
     use sylvander_agent::session_store::SqliteSessionStore;
 
-    use sylvander_protocol::{AuthenticatedPrincipal, AuthenticationMethod, IdentityBindingAction};
+    use sylvander_protocol::{
+        AuthenticatedPrincipal, AuthenticationMethod, ClassifiedPreference, IdentityBindingAction,
+        LanguageTag, PrivacyClass, UserProfileAction, UserProfileData, UserProfileErrorCode,
+        UserProfileOperation,
+    };
 
     struct DefaultUiService;
 
@@ -924,6 +952,52 @@ mod tests {
             }
         ));
         assert!(!format!("{response:?}").contains("external-secret"));
+    }
+
+    #[tokio::test]
+    async fn user_profile_defaults_to_no_capability_and_content_safe_denial() {
+        let boundary = BoundaryContext::authenticated(
+            AuthenticatedPrincipal::user("stable-user", AuthenticationMethod::UnixPeer),
+            "local",
+            "unix",
+            "request-1",
+        );
+        let private_marker = "private-language-marker";
+        let request = UserProfileRequest {
+            version: USER_PROFILE_PROTOCOL_VERSION,
+            action: UserProfileAction::Create {
+                profile: UserProfileData {
+                    preferred_language: Some(ClassifiedPreference {
+                        value: LanguageTag::new(private_marker).unwrap(),
+                        privacy_class: PrivacyClass::Restricted,
+                    }),
+                    ..UserProfileData::default()
+                },
+            },
+        };
+
+        assert!(
+            DefaultUiService
+                .user_profile_capabilities()
+                .versions
+                .is_empty()
+        );
+        let response = DefaultUiService.user_profile(&boundary, request).await;
+        assert!(matches!(
+            response,
+            UserProfileResponse::Error {
+                version: USER_PROFILE_PROTOCOL_VERSION,
+                error: UserProfileError {
+                    code: UserProfileErrorCode::ServiceUnavailable,
+                    operation: UserProfileOperation::Create,
+                    current_revision: None,
+                    retry_after_ms: None,
+                }
+            }
+        ));
+        let encoded = serde_json::to_string(&response).unwrap();
+        assert!(!encoded.contains(private_marker));
+        assert!(!format!("{response:?}").contains(private_marker));
     }
 
     #[tokio::test]
