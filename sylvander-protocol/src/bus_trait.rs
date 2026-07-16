@@ -75,7 +75,7 @@ pub trait MessageBus: Send + Sync {
     async fn subscribe(
         &self,
         filter: SubscriptionFilter,
-    ) -> Result<mpsc::UnboundedReceiver<BusMessage>, BusError>;
+    ) -> Result<mpsc::Receiver<BusMessage>, BusError>;
 }
 
 // ===========================================================================
@@ -88,4 +88,6 @@ pub enum BusError {
     SendFailed(String),
     #[error("failed to subscribe: {0}")]
     SubscribeFailed(String),
+    #[error("message bus is at capacity")]
+    Backpressure,
 }

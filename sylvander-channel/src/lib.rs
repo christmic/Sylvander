@@ -66,7 +66,7 @@ pub struct ExternalChatRequest {
 #[derive(Debug)]
 pub struct SubmittedChat {
     pub session_id: SessionId,
-    pub events: tokio::sync::mpsc::UnboundedReceiver<BusMessage>,
+    pub events: tokio::sync::mpsc::Receiver<BusMessage>,
 }
 
 /// Non-serializable identity derived inside an authenticated Channel ingress.
@@ -542,7 +542,7 @@ impl ChannelContext {
     pub async fn subscribe(
         &self,
         filter: SubscriptionFilter,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<BusMessage>, BusError> {
+    ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, BusError> {
         self.bus.subscribe(filter).await
     }
 

@@ -65,9 +65,7 @@ async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>
 }
 
 /// Subscribe to all stream events for the agent
-async fn subscribe_stream(
-    bus: &InProcessMessageBus,
-) -> tokio::sync::mpsc::UnboundedReceiver<BusMessage> {
+async fn subscribe_stream(bus: &InProcessMessageBus) -> tokio::sync::mpsc::Receiver<BusMessage> {
     bus.subscribe(SubscriptionFilter::all())
         .await
         .expect("subscribe")

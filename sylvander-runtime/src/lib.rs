@@ -4220,7 +4220,7 @@ mod tests {
         async fn subscribe(
             &self,
             filter: SubscriptionFilter,
-        ) -> Result<tokio::sync::mpsc::UnboundedReceiver<BusMessage>, sylvander_agent::bus::BusError>
+        ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, sylvander_agent::bus::BusError>
         {
             self.operations.lock().unwrap().push("subscribe");
             if self.fail_subscribe {
