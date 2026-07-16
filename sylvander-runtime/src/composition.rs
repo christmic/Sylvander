@@ -737,7 +737,7 @@ fn compose_workspace_mounts(
 
 fn validate_workspace_mounts(mounts: &[SessionWorkspaceMount]) -> Result<(), CompositionError> {
     let mut references = std::collections::HashSet::new();
-    let mut locations = std::collections::HashSet::new();
+    let mut locations = std::collections::HashMap::new();
     for mount in mounts {
         let reference = mount.reference.trim();
         if reference.is_empty()
@@ -759,10 +759,17 @@ fn validate_workspace_mounts(mounts: &[SessionWorkspaceMount]) -> Result<(), Com
             mount.binding.execution_target.clone(),
             mount.binding.path.clone(),
         );
-        if !locations.insert(location) {
-            return Err(CompositionError::DuplicateWorkspaceMountLocation(
-                reference.to_owned(),
-            ));
+        if let Some(existing_role) = locations.insert(location, mount.role) {
+            let agent_task_alias = matches!(
+                (existing_role, mount.role),
+                (WorkspaceMountRole::AgentHome, WorkspaceMountRole::Task)
+                    | (WorkspaceMountRole::Task, WorkspaceMountRole::AgentHome)
+            );
+            if !agent_task_alias {
+                return Err(CompositionError::DuplicateWorkspaceMountLocation(
+                    reference.to_owned(),
+                ));
+            }
         }
         if mount.binding.read_only && (mount.capabilities.write || mount.capabilities.command) {
             return Err(CompositionError::WorkspaceMountCapabilityConflict(
@@ -1806,6 +1813,19 @@ path = "/tmp/sylvander-test.sock"
             effective.provenance.user_workspace.kind,
             SessionConfigSourceKind::LegacyMigration
         );
+
+        agents[0].definition.workspace_mounts[1].binding.path = "/dependencies/shared-lib".into();
+        assert!(matches!(
+            resolve_session_config(
+                &agents[0],
+                &SessionConfigOverrides::default(),
+                None,
+                Some(std::path::Path::new("/work/project")),
+            ),
+            Err(CompositionError::DuplicateWorkspaceMountLocation(reference))
+                if reference == "artifacts"
+        ));
+        agents[0].definition.workspace_mounts[1].binding.path = "/artifacts".into();
 
         agents[0]
             .definition

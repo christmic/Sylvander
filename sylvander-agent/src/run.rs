@@ -59,7 +59,8 @@ use crate::tools::memory::{
     MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
 };
 use crate::workspace_executor::{
-    LocalExecutor, UnavailableExecutor, WorkspaceExecutor, WorkspaceTarget,
+    LocalExecutor, MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter,
+    WorkspaceTarget,
 };
 
 #[path = "workspace_context.rs"]
@@ -2322,6 +2323,7 @@ impl AgentRunInner {
                     turn_prompt,
                     effective.agent_workspace.as_ref(),
                     effective.user_workspace.as_ref(),
+                    &effective.workspace_mounts,
                     session_metadata.workspace.as_path(),
                     &self.workspace_executors,
                     &self.skill_features,
@@ -2341,6 +2343,7 @@ impl AgentRunInner {
                     prompt,
                     None,
                     None,
+                    &[],
                     session_metadata.workspace.as_path(),
                     &self.workspace_executors,
                     &self.skill_features,
@@ -2830,6 +2833,7 @@ async fn with_workspace_context(
     prompt: String,
     agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
     task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
@@ -2890,9 +2894,41 @@ async fn with_workspace_context(
             reloadable: true,
         })
         .collect();
-    Ok(context
+    let mut prompt = context
         .prompt
-        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}")))
+        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}"));
+    if !workspace_mounts.is_empty() {
+        let mounts = workspace_mounts
+            .iter()
+            .map(|mount| {
+                let mut operations = vec!["read"];
+                if mount.capabilities.write {
+                    operations.push("write");
+                }
+                if mount.capabilities.command {
+                    operations.push("command");
+                }
+                if mount.capabilities.git {
+                    operations.push("git");
+                }
+                let role = match mount.role {
+                    sylvander_protocol::WorkspaceMountRole::AgentHome => "agent-home",
+                    sylvander_protocol::WorkspaceMountRole::Task => "task",
+                    sylvander_protocol::WorkspaceMountRole::Dependency => "dependency",
+                    sylvander_protocol::WorkspaceMountRole::Artifact => "artifact",
+                };
+                format!("- @{} ({role}): {}", mount.reference, operations.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push_str(
+            "\n\n# Available workspace mounts\n\
+             Unqualified paths use the task workspace. Address another mount \
+             as `@reference/path`; Command and Git accept `workspace: \"reference\"`.\n",
+        );
+        prompt.push_str(&mounts);
+    }
+    Ok(prompt)
 }
 
 fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
@@ -2982,12 +3018,63 @@ fn tool_context_for_permissions(
         read_only,
     };
     let executor = execution
-        .workspace_executors
-        .get(target_id)
-        .cloned()
-        .unwrap_or_else(|| {
-            Arc::new(UnavailableExecutor::new(target_id)) as Arc<dyn WorkspaceExecutor>
-        });
+        .effective_config
+        .filter(|config| !config.workspace_mounts.is_empty())
+        .map_or_else(
+            || {
+                execution
+                    .workspace_executors
+                    .get(target_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        Arc::new(UnavailableExecutor::new(target_id)) as Arc<dyn WorkspaceExecutor>
+                    })
+            },
+            |config| {
+                let default_reference = config
+                    .workspace_mounts
+                    .iter()
+                    .find(|mount| mount.role == sylvander_protocol::WorkspaceMountRole::Task)
+                    .or_else(|| config.workspace_mounts.first())
+                    .map(|mount| mount.reference.clone())
+                    .expect("non-empty workspace composition has a default mount");
+                let mounts = config.workspace_mounts.iter().map(|mount| {
+                    let mut capabilities = mount.capabilities;
+                    if permission_read_only {
+                        capabilities.write = false;
+                        capabilities.command = false;
+                    }
+                    let executor = execution
+                        .workspace_executors
+                        .get(&mount.binding.execution_target)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Arc::new(UnavailableExecutor::new(
+                                mount.binding.execution_target.clone(),
+                            )) as Arc<dyn WorkspaceExecutor>
+                        });
+                    (
+                        mount.reference.clone(),
+                        MountedWorkspace {
+                            executor,
+                            target: WorkspaceTarget {
+                                id: mount.binding.execution_target.clone(),
+                                workspace_path: mount.binding.path.clone(),
+                                read_only: permission_read_only || mount.binding.read_only,
+                            },
+                            capabilities,
+                        },
+                    )
+                });
+                WorkspaceRouter::new(default_reference, mounts).map_or_else(
+                    |_| {
+                        Arc::new(UnavailableExecutor::new("workspace-composition"))
+                            as Arc<dyn WorkspaceExecutor>
+                    },
+                    |router| Arc::new(router) as Arc<dyn WorkspaceExecutor>,
+                )
+            },
+        );
     context = context.with_executor(executor, target);
     if target_id == "local"
         && !read_only
@@ -3593,6 +3680,20 @@ mod tests {
             Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
         )]);
         let skill_features = std::sync::RwLock::new(Vec::new());
+        let mounts = vec![sylvander_protocol::SessionWorkspaceMount {
+            reference: "docs".into(),
+            role: sylvander_protocol::WorkspaceMountRole::Dependency,
+            binding: sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: task.path().into(),
+                read_only: true,
+            },
+            capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+                read: true,
+                git: true,
+                ..Default::default()
+            },
+        }];
         let prompt = with_workspace_context(
             "base-prompt".into(),
             Some(&sylvander_protocol::SessionWorkspaceBinding {
@@ -3605,6 +3706,7 @@ mod tests {
                 path: task.path().to_path_buf(),
                 read_only: false,
             }),
+            &mounts,
             task.path(),
             &executors,
             &skill_features,
@@ -3624,6 +3726,8 @@ mod tests {
         let task = prompt.find("task-guide").unwrap();
         let skill = prompt.find("skill-guide").unwrap();
         assert!(base < agent && agent < task && task < skill);
+        assert!(prompt.contains("@docs (dependency): read, git"));
+        assert!(prompt.contains("`@reference/path`"));
     }
 
     #[derive(Default)]
@@ -3736,6 +3840,7 @@ mod tests {
                 path: "/remote/task".into(),
                 read_only: false,
             }),
+            &[],
             Path::new("/attached/task"),
             &executors,
             &std::sync::RwLock::new(Vec::new()),
@@ -4923,6 +5028,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, b"new");
+    }
+
+    #[tokio::test]
+    async fn effective_workspace_mounts_route_file_operations_by_logical_reference() {
+        let task = tempfile::tempdir().unwrap();
+        let dependency = tempfile::tempdir().unwrap();
+        std::fs::write(task.path().join("task.txt"), "task").unwrap();
+        std::fs::write(dependency.path().join("lib.txt"), "dependency").unwrap();
+        let metadata = test_metadata();
+        let mut effective = remote_effective_config("local", task.path().to_str().unwrap());
+        effective.workspace_mounts = vec![
+            sylvander_protocol::SessionWorkspaceMount {
+                reference: "task".into(),
+                role: sylvander_protocol::WorkspaceMountRole::Task,
+                binding: sylvander_protocol::SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path: task.path().into(),
+                    read_only: false,
+                },
+                capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+                    read: true,
+                    write: true,
+                    command: true,
+                    git: true,
+                },
+            },
+            sylvander_protocol::SessionWorkspaceMount {
+                reference: "shared".into(),
+                role: sylvander_protocol::WorkspaceMountRole::Dependency,
+                binding: sylvander_protocol::SessionWorkspaceBinding {
+                    execution_target: "local".into(),
+                    path: dependency.path().into(),
+                    read_only: true,
+                },
+                capabilities: sylvander_protocol::WorkspaceCapabilityPolicy {
+                    read: true,
+                    git: true,
+                    ..Default::default()
+                },
+            },
+        ];
+        let executors = [(
+            "local".into(),
+            Arc::new(crate::workspace_executor::LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        )]
+        .into_iter()
+        .collect();
+        let context = tool_context_for_permissions(
+            ToolSessionExecution {
+                metadata: &metadata,
+                effective_config: Some(&effective),
+                workspace_executors: &executors,
+            },
+            &AgentId::new("agent"),
+            &SessionId::new("session"),
+            &sylvander_protocol::PermissionProfile::default(),
+            false,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            context
+                .executor
+                .read_file(&context.execution_target, "task.txt")
+                .await
+                .unwrap(),
+            b"task"
+        );
+        assert_eq!(
+            context
+                .executor
+                .read_file(&context.execution_target, "@shared/lib.txt")
+                .await
+                .unwrap(),
+            b"dependency"
+        );
+        assert!(
+            context
+                .executor
+                .write_file(&context.execution_target, "@shared/nope.txt", b"x")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

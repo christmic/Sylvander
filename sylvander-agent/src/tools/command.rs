@@ -46,10 +46,16 @@ impl Tool for CommandTool {
 
     fn input_schema(&self) -> InputSchema {
         InputSchema::new_with_properties(
-            json!({"command": {
-                "type": "string",
-                "description": "Shell command to run"
-            }}),
+            json!({
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to run"
+                },
+                "workspace": {
+                    "type": "string",
+                    "description": "Optional logical workspace reference without the @ prefix"
+                }
+            }),
             &["command"],
         )
     }
@@ -85,7 +91,14 @@ impl CommandTool {
             .and_then(JsonValue::as_str)
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| ToolError::Other("missing required field `command`".into()))?;
-        let target = ctx.execution_target_for(&self.workdir);
+        let workspace = input.get("workspace").and_then(JsonValue::as_str);
+        let target = match ctx
+            .executor
+            .select_mount_target(&ctx.execution_target_for(&self.workdir), workspace)
+        {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
                 "execution target `{}` is read-only",
