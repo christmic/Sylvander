@@ -2890,8 +2890,18 @@ async fn with_workspace_context(
         .map(|skill| sylvander_protocol::PlatformFeature {
             kind: sylvander_protocol::PlatformFeatureKind::Skill,
             name: skill.name.clone(),
-            status: sylvander_protocol::PlatformFeatureStatus::Active,
-            summary: format!("activated from {}", skill.role),
+            status: match skill.status {
+                workspace_context::SkillStatus::Active => {
+                    sylvander_protocol::PlatformFeatureStatus::Active
+                }
+                workspace_context::SkillStatus::Disabled => {
+                    sylvander_protocol::PlatformFeatureStatus::Configured
+                }
+                workspace_context::SkillStatus::Degraded => {
+                    sylvander_protocol::PlatformFeatureStatus::Degraded
+                }
+            },
+            summary: format!("{} ({})", skill.summary, skill.role),
             source: Some(format!("{}:{}", skill.target_id, skill.relative_path)),
             trust: Some(if skill.role == "agent-home" {
                 sylvander_protocol::PlatformTrust::BuiltIn
@@ -2899,7 +2909,7 @@ async fn with_workspace_context(
                 sylvander_protocol::PlatformTrust::Workspace
             }),
             auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
-            capabilities: vec!["prompt_instructions".into()],
+            capabilities: skill.capabilities.clone(),
             reloadable: true,
         })
         .collect();
@@ -3735,6 +3745,15 @@ mod tests {
         assert_eq!(
             skills[0].trust,
             Some(sylvander_protocol::PlatformTrust::Workspace)
+        );
+        assert_eq!(
+            skills[0].status,
+            sylvander_protocol::PlatformFeatureStatus::Active
+        );
+        assert!(
+            skills[0]
+                .capabilities
+                .contains(&"prompt_instructions".to_owned())
         );
         assert!(skills[0].reloadable);
         let task = prompt.find("task-guide").unwrap();
