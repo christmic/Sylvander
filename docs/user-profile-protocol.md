@@ -96,17 +96,43 @@ profile values, transport principals, and internal policy reasons never cross
 this boundary. Inputs are bounded during deserialization and validation;
 unknown fields fail closed.
 
-## Integration acceptance criteria
+## Runtime integration status
 
-Runtime and store work is incomplete until tests prove:
+The production path currently includes:
 
-1. every action uses only the boundary-derived stable user;
-2. cross-user requests cannot be constructed or routed;
-3. revision compare-and-swap survives restart and concurrent writers;
-4. correction, export, deletion, and opt-out are separately audited;
-5. deletion preserves the opt-out tombstone and removes preference content;
-6. prompt composition excludes learning when the durable marker is active;
-7. all diagnostics and public failures remain content-safe.
+- a Runtime-owned durable SQLite store with exact latest-schema validation;
+- boundary-derived stable ownership and owner-free requests;
+- optimistic revision compare-and-swap, restart continuity, export,
+  correction, deletion, and the durable opt-out tombstone;
+- Unix-domain socket and WebSocket routing through the Runtime UI service;
+- `user_profile_v1` capability negotiation and content-safe public errors;
+- Evidence-backed, content-safe operation outcomes in the Runtime path.
+
+The TUI advertises and negotiates `user_profile_v1`, but does not yet provide a
+profile editor. Protocol support must not be described as an implemented TUI
+editing experience.
+
+The Agent crate contains a deterministic, bounded formatter for the compact
+User Profile interaction contract. It is not yet injected by the live
+per-turn Runtime/Agent prompt path. The durable `do_not_learn` marker is also
+not yet enforced across every Relationship Memory and Agent private-candidate
+write. Those are open integration gates, not implied by storage or wire
+support.
+
+Completion still requires tests proving:
+
+1. the live turn snapshot injects the owner profile with revision and digest
+   provenance in the documented prompt precedence order;
+2. an active `do_not_learn` marker denies every governed learning write while
+   leaving explicit correction, export, and deletion available;
+3. audit failure and profile-store failure remain fail-closed without leaking
+   profile, SQL, path, or principal content;
+4. the future TUI editor sends operations only after capability negotiation
+   and handles typed revision conflicts without overwriting newer data.
+
+Operational database placement, backup, permissions, and tombstone retention
+are specified in
+[`server-configuration.md`](server-configuration.md#global-user-profile).
 
 The generated schema is available through
 `schema::user_profile_protocol_schema()` and is embedded under `user_profile`

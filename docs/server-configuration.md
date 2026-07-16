@@ -149,6 +149,62 @@ external channel being linked. Resolve and CAS unlink always apply to the
 authenticated ingress-derived external identity. See
 [`identity-binding-protocol.md`](identity-binding-protocol.md).
 
+## Global User Profile
+
+Runtime always opens one owner-scoped User Profile SQLite database. Configure
+it with `server.user_profile_db`; when omitted it resolves to
+`<data_dir>/user-profiles.db`:
+
+```toml
+[server]
+data_dir = "/var/lib/sylvander"
+user_profile_db = "/var/lib/sylvander/user-profiles.db"
+```
+
+The database accepts only the exact latest schema (`application_id` plus
+`user_version = 1` and an exact schema-object comparison). An empty database
+is initialized once. An old, unknown, modified, or corrupt schema fails
+startup; Runtime does not migrate, repair, downgrade, or fall back to an
+in-memory store.
+
+`user_profile_v1` is the public UI capability. Unix-domain socket and
+WebSocket channels route the strict `UiClientMessage::UserProfile` envelope to
+Runtime, which derives its owner from the authenticated boundary. Both peers
+must advertise the capability before a client uses it. The TUI currently
+advertises and negotiates the capability but does **not** yet expose a profile
+editing surface; use a protocol client until that UI is implemented.
+
+Operational requirements:
+
+- create the database directory with access limited to the Sylvander service
+  account (normally directory mode `0700` and database mode `0600`), and do not
+  grant channel or Agent processes direct SQLite access;
+- include `user-profiles.db` in encrypted, access-controlled backups; the
+  current store has no dedicated online-backup lifecycle, so stop/quiesce the
+  Runtime and copy the database as one unit rather than copying it during a
+  write;
+- test restore into an isolated data directory and require Sylvander startup
+  to pass exact-schema and SQLite integrity validation before promotion;
+- treat owner exports and the database as personal data even though Debug and
+  public errors redact profile values.
+
+Profile deletion removes preference content but deliberately retains a
+minimal owner-scoped tombstone with `do_not_learn = true`. Backups and restore
+procedures must retain that tombstone; dropping it can silently re-enable
+learning after profile recreation. The owner may change the marker only
+through the explicit versioned protocol operation.
+
+Runtime currently requires the Evidence store for profile operations and
+records content-safe administration evidence for their outcome. The
+deterministic, bounded User Profile prompt formatter exists in the Agent
+crate, but the live per-turn Agent prompt path does not yet inject that layer.
+Likewise, `do_not_learn` is durable protocol/storage state, not yet a complete
+enforcement gate across Relationship Memory and Agent candidate creation. Do
+not claim those latter controls are active until their Runtime call paths and
+acceptance tests land. See
+[`user-profile-protocol.md`](user-profile-protocol.md) for the wire contract and
+the live completion boundary.
+
 ## Secret references
 
 Credentials cannot be embedded as TOML literals. A secret is either:
@@ -252,9 +308,10 @@ separation and credential-lifecycle boundary.
 
 If `server.data_dir` is omitted, it resolves to
 `$XDG_DATA_HOME/sylvander`, `~/.local/share/sylvander`, or
-`.local/share/sylvander`, in that order. The default session database and
-workspace journal live below that directory. Explicit paths remain useful for
-containers, backups, and migration drills.
+`.local/share/sylvander`, in that order. The default session,
+relationship-memory, and User Profile databases and the workspace journal live
+below that directory. Explicit paths remain useful for containers, backups,
+and restore drills.
 
 `server.evidence` controls the structured run ledger. It is enabled by default
 with a 30-day retention declaration and `metadata_only` content policy. The
