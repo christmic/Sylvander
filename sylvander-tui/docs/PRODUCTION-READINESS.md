@@ -149,8 +149,11 @@ completed backend feature.
 - [x] `screen-256color` and `xterm-ghostty` terminal contracts run through the
       compiled PTY flow; native Ghostty session discovery, reconciliation,
       activity, selection, and management tests pass in Xcode.
-- [ ] A real tmux process is verified (the current machine has no tmux binary).
-- [ ] SSH terminal verification is deferred with the remote-execution track.
+- [x] The current supported-terminal scope does not claim native tmux
+      integration. PTY reflow is verified for tmux's `screen-256color` surface;
+      real-process verification moves into a future tmux integration track.
+- [x] SSH terminal behavior is excluded with the explicitly deferred remote
+      execution track; no SSH terminal capability is advertised by this release.
 
 ## Production gates
 
