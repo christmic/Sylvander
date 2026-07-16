@@ -2254,14 +2254,16 @@ impl AgentRunInner {
                     user_profile.as_ref(),
                 )
                 .map_err(|_| prompt_integrity_error())?;
-            loop_config.system_prompt = Some(with_workspace_context(
-                turn_prompt,
-                effective
-                    .agent_workspace
-                    .as_ref()
-                    .map(|binding| binding.path.as_path()),
-                Some(session_metadata.workspace.as_path()),
-            ));
+            loop_config.system_prompt = Some(
+                with_workspace_context(
+                    turn_prompt,
+                    effective.agent_workspace.as_ref(),
+                    effective.user_workspace.as_ref(),
+                    session_metadata.workspace.as_path(),
+                    &self.workspace_executors,
+                )
+                .await?,
+            );
         } else if loop_config.system_prompt.is_some() || user_profile.is_some() {
             let mut prompt = loop_config.system_prompt.take().unwrap_or_default();
             if let Some(profile) = &user_profile {
@@ -2270,11 +2272,16 @@ impl AgentRunInner {
                 }
                 prompt.push_str(profile.content());
             }
-            loop_config.system_prompt = Some(with_workspace_context(
-                prompt,
-                None,
-                Some(session_metadata.workspace.as_path()),
-            ));
+            loop_config.system_prompt = Some(
+                with_workspace_context(
+                    prompt,
+                    None,
+                    None,
+                    session_metadata.workspace.as_path(),
+                    &self.workspace_executors,
+                )
+                .await?,
+            );
         }
 
         // 1. Persist the immutable turn boundary before provider or tool work.
@@ -2758,13 +2765,67 @@ impl AgentRunInner {
     }
 }
 
-fn with_workspace_context(
+async fn with_workspace_context(
     prompt: String,
-    agent_home: Option<&Path>,
-    task_workspace: Option<&Path>,
-) -> String {
-    workspace_context::discover(agent_home, task_workspace)
-        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}"))
+    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    fallback_task_workspace: &Path,
+    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+) -> Result<String, AgentRunError> {
+    let agent_target = agent_workspace.map(workspace_target);
+    let task_target = Some(task_workspace.map_or_else(
+        || WorkspaceTarget::local(fallback_task_workspace, true),
+        |binding| WorkspaceTarget {
+            id: binding.execution_target.clone(),
+            workspace_path: fallback_task_workspace.to_path_buf(),
+            read_only: true,
+        },
+    ));
+    let agent_executor = agent_target
+        .as_ref()
+        .map(|target| workspace_context_executor(workspace_executors, target))
+        .transpose()?;
+    let task_executor = task_target
+        .as_ref()
+        .map(|target| workspace_context_executor(workspace_executors, target))
+        .transpose()?;
+    let context = workspace_context::discover(
+        agent_target.zip(agent_executor).map(|(target, executor)| {
+            workspace_context::WorkspaceContextSource {
+                executor: executor.as_ref(),
+                target,
+            }
+        }),
+        task_target.zip(task_executor).map(|(target, executor)| {
+            workspace_context::WorkspaceContextSource {
+                executor: executor.as_ref(),
+                target,
+            }
+        }),
+    )
+    .await
+    .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+    Ok(context.map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}")))
+}
+
+fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
+    WorkspaceTarget {
+        id: binding.execution_target.clone(),
+        workspace_path: binding.path.clone(),
+        read_only: true,
+    }
+}
+
+fn workspace_context_executor<'a>(
+    workspace_executors: &'a HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    target: &WorkspaceTarget,
+) -> Result<&'a Arc<dyn WorkspaceExecutor>, AgentRunError> {
+    workspace_executors.get(&target.id).ok_or_else(|| {
+        AgentRunError::Configuration(format!(
+            "execution target `{}` is unavailable on this server",
+            target.id
+        ))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3426,8 +3487,8 @@ mod tests {
         (spec, client)
     }
 
-    #[test]
-    fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
+    #[tokio::test]
+    async fn turn_prompt_contains_discovered_agent_task_and_skill_context() {
         let agent_home = tempfile::TempDir::new().unwrap();
         let task = tempfile::TempDir::new().unwrap();
         std::fs::write(agent_home.path().join("AGENTS.md"), "agent-home-guide").unwrap();
@@ -3439,11 +3500,27 @@ mod tests {
         )
         .unwrap();
 
+        let executors = HashMap::from([(
+            "local".to_owned(),
+            Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
+        )]);
         let prompt = with_workspace_context(
             "base-prompt".into(),
-            Some(agent_home.path()),
-            Some(task.path()),
-        );
+            Some(&sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: agent_home.path().to_path_buf(),
+                read_only: true,
+            }),
+            Some(&sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "local".into(),
+                path: task.path().to_path_buf(),
+                read_only: false,
+            }),
+            task.path(),
+            &executors,
+        )
+        .await
+        .unwrap();
         let base = prompt.find("base-prompt").unwrap();
         let agent = prompt.find("agent-home-guide").unwrap();
         let task = prompt.find("task-guide").unwrap();
@@ -3511,6 +3588,72 @@ mod tests {
                 stderr_total_bytes: 0,
             })
         }
+
+        async fn list(
+            &self,
+            _target: &WorkspaceTarget,
+            request: crate::workspace_executor::WorkspaceListRequest,
+        ) -> Result<
+            crate::workspace_executor::WorkspaceListResult,
+            crate::workspace_executor::WorkspaceExecutorError,
+        > {
+            let entries = (request.relative_path == ".")
+                .then(|| crate::workspace_executor::WorkspaceListEntry {
+                    relative_path: "AGENTS.md".into(),
+                    kind: crate::workspace_executor::WorkspaceEntryKind::File,
+                    size: self.marker.len() as u64,
+                })
+                .into_iter()
+                .collect();
+            Ok(crate::workspace_executor::WorkspaceListResult {
+                entries,
+                truncated: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_prompt_uses_each_execution_target_without_local_filesystem_access() {
+        let agent = Arc::new(MarkerWorkspaceExecutor::new(b"remote-agent-guide"));
+        let task = Arc::new(MarkerWorkspaceExecutor::new(b"remote-task-guide"));
+        let executors = HashMap::from([
+            (
+                "ssh:agent".to_owned(),
+                agent.clone() as Arc<dyn WorkspaceExecutor>,
+            ),
+            (
+                "ssh:task".to_owned(),
+                task.clone() as Arc<dyn WorkspaceExecutor>,
+            ),
+        ]);
+        let prompt = with_workspace_context(
+            "base".into(),
+            Some(&sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "ssh:agent".into(),
+                path: "/remote/agent".into(),
+                read_only: true,
+            }),
+            Some(&sylvander_protocol::SessionWorkspaceBinding {
+                execution_target: "ssh:task".into(),
+                path: "/stale/task".into(),
+                read_only: false,
+            }),
+            Path::new("/attached/task"),
+            &executors,
+        )
+        .await
+        .unwrap();
+
+        assert!(prompt.contains("remote-agent-guide"));
+        assert!(prompt.contains("remote-task-guide"));
+        assert_eq!(
+            agent.reads.lock().unwrap()[0].workspace_path,
+            Path::new("/remote/agent")
+        );
+        assert_eq!(
+            task.reads.lock().unwrap()[0].workspace_path,
+            Path::new("/attached/task")
+        );
     }
 
     fn remote_effective_config(

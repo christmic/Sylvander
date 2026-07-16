@@ -1,10 +1,13 @@
-//! Local workspace instruction and Skill discovery for one immutable turn.
+//! Execution-target-neutral workspace instruction and Skill discovery.
 
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
 
-const MAX_DOCUMENT_BYTES: u64 = 16 * 1024;
+use crate::workspace_executor::{
+    WorkspaceEntryKind, WorkspaceExecutor, WorkspaceExecutorError, WorkspaceListRequest,
+    WorkspaceQueryLimits, WorkspaceTarget,
+};
+
+const MAX_DOCUMENT_BYTES: usize = 16 * 1024;
 const MAX_CONTEXT_BYTES: usize = 48 * 1024;
 const MAX_DOCUMENTS: usize = 24;
 const INSTRUCTION_NAMES: [&str; 3] = ["AGENTS.md", "AGENT.md", "agent.md"];
@@ -25,105 +28,174 @@ impl WorkspaceRole {
     }
 }
 
-/// Discover prompt context from the local Agent home and task workspace.
+pub(crate) struct WorkspaceContextSource<'a> {
+    pub executor: &'a dyn WorkspaceExecutor,
+    pub target: WorkspaceTarget,
+}
+
+/// Discover immutable prompt context through the workspace execution layer.
 ///
-/// A task path inside a Git repository inherits guides from the repository
-/// root down to the selected directory. Outside Git, the selected directory
-/// is the boundary. Task instructions are emitted after Agent-home
-/// instructions and therefore have the more specific precedence.
-pub(crate) fn discover(agent_home: Option<&Path>, task_workspace: Option<&Path>) -> Option<String> {
+/// The configured workspace root is the discovery boundary. Agent-home
+/// guidance is emitted before task guidance, and Skills follow instructions.
+pub(crate) async fn discover(
+    agent_home: Option<WorkspaceContextSource<'_>>,
+    task_workspace: Option<WorkspaceContextSource<'_>>,
+) -> Result<Option<String>, WorkspaceExecutorError> {
     let mut collector = Collector::default();
-    if let Some(path) = agent_home {
-        collector.instructions(WorkspaceRole::AgentHome, path);
+    if let Some(source) = agent_home.as_ref() {
+        collector
+            .instructions(WorkspaceRole::AgentHome, source)
+            .await?;
     }
-    if let Some(path) = task_workspace {
-        collector.instructions(WorkspaceRole::Task, path);
+    if let Some(source) = task_workspace.as_ref() {
+        collector.instructions(WorkspaceRole::Task, source).await?;
     }
-    if let Some(path) = agent_home {
-        collector.workspace_skills(WorkspaceRole::AgentHome, path);
+    if let Some(source) = agent_home.as_ref() {
+        collector
+            .workspace_skills(WorkspaceRole::AgentHome, source)
+            .await?;
     }
-    if let Some(path) = task_workspace {
-        collector.workspace_skills(WorkspaceRole::Task, path);
+    if let Some(source) = task_workspace.as_ref() {
+        collector
+            .workspace_skills(WorkspaceRole::Task, source)
+            .await?;
     }
-    collector.finish()
+    Ok(collector.finish())
 }
 
 #[derive(Default)]
 struct Collector {
     sections: Vec<String>,
-    seen: HashSet<PathBuf>,
+    seen: HashSet<String>,
     bytes: usize,
     documents: usize,
 }
 
 impl Collector {
-    fn instructions(&mut self, role: WorkspaceRole, selected: &Path) {
-        let Some(selected) = canonical_directory(selected) else {
-            return;
-        };
-        for directory in hierarchy(&selected) {
-            if let Some(path) = instruction_path(&directory) {
-                self.add(role, "instructions", &path);
+    async fn instructions(
+        &mut self,
+        role: WorkspaceRole,
+        source: &WorkspaceContextSource<'_>,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let listing = source
+            .executor
+            .list(
+                &source.target,
+                WorkspaceListRequest {
+                    relative_path: ".".into(),
+                    recursive: false,
+                    limits: discovery_limits(),
+                },
+            )
+            .await?;
+        for name in INSTRUCTION_NAMES {
+            if listing.entries.iter().any(|entry| {
+                entry.relative_path == name
+                    && entry.kind == WorkspaceEntryKind::File
+                    && entry.size <= MAX_DOCUMENT_BYTES as u64
+            }) {
+                self.add(role, "instructions", source, name).await?;
+                break;
             }
         }
+        Ok(())
     }
 
-    fn workspace_skills(&mut self, role: WorkspaceRole, selected: &Path) {
-        let Some(selected) = canonical_directory(selected) else {
-            return;
-        };
-        for directory in hierarchy(&selected) {
-            for relative in SKILL_ROOTS {
-                self.skills(role, &directory, &directory.join(relative));
-            }
-        }
-    }
-
-    fn skills(&mut self, role: WorkspaceRole, boundary: &Path, root: &Path) {
-        let Ok(entries) = fs::read_dir(root) else {
-            return;
-        };
-        let mut paths = entries
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join("SKILL.md"))
-            .filter(|path| path.is_file())
-            .collect::<Vec<_>>();
-        paths.sort();
-        for path in paths {
-            let Ok(canonical) = path.canonicalize() else {
-                continue;
+    async fn workspace_skills(
+        &mut self,
+        role: WorkspaceRole,
+        source: &WorkspaceContextSource<'_>,
+    ) -> Result<(), WorkspaceExecutorError> {
+        for root in SKILL_ROOTS {
+            let listing = match source
+                .executor
+                .list(
+                    &source.target,
+                    WorkspaceListRequest {
+                        relative_path: root.into(),
+                        recursive: false,
+                        limits: discovery_limits(),
+                    },
+                )
+                .await
+            {
+                Ok(listing) => listing,
+                Err(WorkspaceExecutorError::Unavailable(target)) => {
+                    return Err(WorkspaceExecutorError::Unavailable(target));
+                }
+                Err(WorkspaceExecutorError::Timeout(timeout)) => {
+                    return Err(WorkspaceExecutorError::Timeout(timeout));
+                }
+                Err(_) => continue,
             };
-            if canonical.starts_with(boundary) {
-                self.add(role, "skill", &canonical);
+            let mut directories = listing
+                .entries
+                .into_iter()
+                .filter(|entry| entry.kind == WorkspaceEntryKind::Directory)
+                .map(|entry| entry.relative_path)
+                .collect::<Vec<_>>();
+            directories.sort();
+            for directory in directories {
+                self.add(role, "skill", source, &format!("{directory}/SKILL.md"))
+                    .await?;
             }
         }
+        Ok(())
     }
 
-    fn add(&mut self, role: WorkspaceRole, kind: &str, path: &Path) {
-        if self.documents >= MAX_DOCUMENTS || !self.seen.insert(path.to_path_buf()) {
-            return;
+    async fn add(
+        &mut self,
+        role: WorkspaceRole,
+        kind: &str,
+        source: &WorkspaceContextSource<'_>,
+        relative_path: &str,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let key = format!(
+            "{}:{}:{relative_path}",
+            source.target.id,
+            source.target.workspace_path.display()
+        );
+        if self.documents >= MAX_DOCUMENTS || !self.seen.insert(key) {
+            return Ok(());
         }
-        let Ok(metadata) = fs::metadata(path) else {
-            return;
+        let read = match source
+            .executor
+            .read_file_bounded(&source.target, relative_path, MAX_DOCUMENT_BYTES)
+            .await
+        {
+            Ok(read) => read,
+            Err(WorkspaceExecutorError::Unavailable(target)) => {
+                return Err(WorkspaceExecutorError::Unavailable(target));
+            }
+            Err(WorkspaceExecutorError::Timeout(timeout)) => {
+                return Err(WorkspaceExecutorError::Timeout(timeout));
+            }
+            Err(_) => return Ok(()),
         };
-        if !metadata.is_file() || metadata.len() > MAX_DOCUMENT_BYTES {
-            return;
+        if read.truncated {
+            return Ok(());
         }
-        let Ok(content) = fs::read_to_string(path) else {
-            return;
+        let Ok(content) = String::from_utf8(read.bytes) else {
+            return Ok(());
         };
         let content = content.trim();
         if content.is_empty() {
-            return;
+            return Ok(());
         }
-        let header = format!("### {} {kind}: {}\n", role.label(), path.display());
+        let header = format!(
+            "### {} {kind}: {}:{}\n",
+            role.label(),
+            source.target.id,
+            relative_path
+        );
         let section_bytes = header.len() + content.len() + 2;
         if self.bytes + section_bytes > MAX_CONTEXT_BYTES {
-            return;
+            return Ok(());
         }
         self.sections.push(format!("{header}{content}"));
         self.bytes += section_bytes;
         self.documents += 1;
+        Ok(())
     }
 
     fn finish(self) -> Option<String> {
@@ -139,81 +211,83 @@ impl Collector {
     }
 }
 
-fn canonical_directory(path: &Path) -> Option<PathBuf> {
-    path.canonicalize().ok().filter(|path| path.is_dir())
-}
-
-fn hierarchy(selected: &Path) -> Vec<PathBuf> {
-    let mut ancestors = selected
-        .ancestors()
-        .map(Path::to_path_buf)
-        .collect::<Vec<_>>();
-    let boundary = ancestors
-        .iter()
-        .position(|path| path.join(".git").exists())
-        .unwrap_or(0);
-    ancestors.truncate(boundary + 1);
-    ancestors.reverse();
-    ancestors
-}
-
-fn instruction_path(directory: &Path) -> Option<PathBuf> {
-    INSTRUCTION_NAMES
-        .iter()
-        .map(|name| directory.join(name))
-        .find(|path| path.is_file())
-        .and_then(|path| path.canonicalize().ok())
-        .filter(|path| path.starts_with(directory))
+fn discovery_limits() -> WorkspaceQueryLimits {
+    WorkspaceQueryLimits {
+        max_results: 1_000,
+        max_line_chars: 1_000,
+        max_output_bytes: 256 * 1024,
+        timeout: std::time::Duration::from_secs(10),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_executor::LocalExecutor;
 
-    #[test]
-    fn task_hierarchy_alias_and_skills_have_deterministic_precedence() {
-        let repo = tempfile::TempDir::new().unwrap();
-        fs::create_dir(repo.path().join(".git")).unwrap();
-        fs::write(repo.path().join("AGENTS.md"), "root guidance").unwrap();
-        fs::create_dir_all(repo.path().join("skills/build")).unwrap();
-        fs::write(repo.path().join("skills/build/SKILL.md"), "build skill").unwrap();
-        let nested = repo.path().join("crates/app");
-        fs::create_dir_all(nested.join(".agents/skills/review")).unwrap();
-        fs::write(nested.join("agent.md"), "app guidance").unwrap();
-        fs::write(
-            nested.join(".agents/skills/review/SKILL.md"),
+    #[tokio::test]
+    async fn agent_task_alias_and_skills_have_deterministic_precedence() {
+        let agent = tempfile::TempDir::new().unwrap();
+        let task = tempfile::TempDir::new().unwrap();
+        std::fs::write(agent.path().join("AGENTS.md"), "agent guidance").unwrap();
+        std::fs::write(task.path().join("AGENTS.md"), "task guidance").unwrap();
+        std::fs::create_dir_all(task.path().join(".agents/skills/review")).unwrap();
+        std::fs::write(
+            task.path().join(".agents/skills/review/SKILL.md"),
             "review skill",
         )
         .unwrap();
 
-        let context = discover(None, Some(&nested)).unwrap();
-        let root = context.find("root guidance").unwrap();
-        let root_skill = context.find("build skill").unwrap();
-        let app = context.find("app guidance").unwrap();
+        let executor = LocalExecutor;
+        let context = discover(
+            Some(WorkspaceContextSource {
+                executor: &executor,
+                target: WorkspaceTarget::local(agent.path(), true),
+            }),
+            Some(WorkspaceContextSource {
+                executor: &executor,
+                target: WorkspaceTarget::local(task.path(), true),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let agent = context.find("agent guidance").unwrap();
+        let task = context.find("task guidance").unwrap();
         let skill = context.find("review skill").unwrap();
-        assert!(root < app && app < root_skill && root_skill < skill);
+        assert!(agent < task && task < skill);
         assert!(context.contains("task-workspace instructions"));
         assert!(context.contains("task-workspace skill"));
     }
 
-    #[test]
-    fn canonical_name_wins_and_oversized_or_escaping_skills_are_ignored() {
+    #[tokio::test]
+    async fn canonical_name_wins_and_oversized_or_escaping_skills_are_ignored() {
         let root = tempfile::TempDir::new().unwrap();
-        fs::write(root.path().join("AGENTS.md"), "canonical").unwrap();
-        fs::write(root.path().join("agent.md"), "alias").unwrap();
+        std::fs::write(root.path().join("AGENTS.md"), "canonical").unwrap();
+        std::fs::write(root.path().join("agent.md"), "alias").unwrap();
         let outside = tempfile::TempDir::new().unwrap();
-        fs::write(outside.path().join("SKILL.md"), "outside").unwrap();
-        fs::create_dir_all(root.path().join("skills")).unwrap();
+        std::fs::write(outside.path().join("SKILL.md"), "outside").unwrap();
+        std::fs::create_dir_all(root.path().join("skills")).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), root.path().join("skills/escape")).unwrap();
-        fs::create_dir_all(root.path().join("skills/huge")).unwrap();
-        fs::write(
+        std::fs::create_dir_all(root.path().join("skills/huge")).unwrap();
+        std::fs::write(
             root.path().join("skills/huge/SKILL.md"),
-            "x".repeat(MAX_DOCUMENT_BYTES as usize + 1),
+            "x".repeat(MAX_DOCUMENT_BYTES + 1),
         )
         .unwrap();
 
-        let context = discover(None, Some(root.path())).unwrap();
+        let executor = LocalExecutor;
+        let context = discover(
+            None,
+            Some(WorkspaceContextSource {
+                executor: &executor,
+                target: WorkspaceTarget::local(root.path(), true),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert!(context.contains("canonical"));
         assert!(!context.contains("alias"));
         assert!(!context.contains("outside"));
