@@ -45,6 +45,17 @@ fn test_model() -> ModelInfo {
         .expect("model build")
 }
 
+fn thinking_test_model() -> ModelInfo {
+    ModelInfo::builder()
+        .id("claude-sonnet-5-20260601")
+        .context_window(200_000)
+        .max_output_tokens(8192)
+        .capability(ModelCapabilities::TOOL_USE)
+        .capability(ModelCapabilities::EXTENDED_THINKING)
+        .build()
+        .expect("thinking model build")
+}
+
 fn read_context(root: &std::path::Path) -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
         .with_fs_root(root)
@@ -643,7 +654,7 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
 
     let loop_ = AgentLoop::builder()
         .client(mock_client(&server))
-        .model(test_model())
+        .model(thinking_test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
