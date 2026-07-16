@@ -162,6 +162,10 @@ let loop_ = AgentLoop::builder()
 
 ## Architecture
 
+Runtime contracts:
+
+- [Skill package format, activation, and health](docs/skills.md)
+
 ```
 src/
 ├── lib.rs          # crate root + prelude
