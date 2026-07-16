@@ -533,9 +533,16 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   Command and Git accept an explicit workspace reference. The turn prompt
   lists only logical names, roles, and allowed operations so the model can use
   the composition without depending on backend paths.
-- [ ] **P2.2 AGENTS.md resolver:** hierarchical discovery across Agent/task
+- [x] **P2.2 AGENTS.md resolver:** hierarchical discovery across Agent/task
   workspaces, precedence, aliases, size limits, provenance, cache invalidation,
   and prompt integration.
+
+  Agent-home instructions precede task instructions. Within either binding,
+  the resolver walks from the workspace root to its relative
+  `instruction_focus`; later, more specific documents win. `AGENTS.md`,
+  `AGENT.md`, and `agent.md` have deterministic alias priority. Every accepted
+  document is bounded, path-attributed in the prompt, reloaded per turn, and
+  cannot escape the executor-backed workspace root.
 - [ ] **P2.3 Skills runtime:** package format, discovery, trust, activation,
   instruction/resource loading, validation, health, and protocol inspection.
 - [ ] **P2.4 MCP runtime:** supervised transports, initialization, tool/resource

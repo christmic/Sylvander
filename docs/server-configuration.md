@@ -116,6 +116,7 @@ role = "dependency"
 execution_target = "local"
 path = "/srv/dependencies/shared-lib"
 read_only = true
+instruction_focus = "packages/api"
 
 [agents.workspace_mounts.capabilities]
 read = true
@@ -129,7 +130,8 @@ Unqualified file paths use the task workspace. Other mounts use
 references must be unique. Explicit dependency/artifact target-path overlap is
 rejected; Agent home and task may intentionally alias the same location. The
 effective session configuration exposes every mount and capability policy for
-UI inspection.
+UI inspection. `instruction_focus` is relative to the binding root; Sylvander
+loads one canonical instruction alias per ancestor from the root to that focus.
 
 ## Prompt resolution and privacy
 
