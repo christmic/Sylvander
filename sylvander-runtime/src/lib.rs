@@ -1658,12 +1658,16 @@ impl RuntimeUiService {
             |binding| binding.path.clone(),
         );
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let lease = if workspace_binding
-            .is_some_and(|binding| binding.execution_target == "local" && !binding.read_only)
-            && self
-                .worktrees
-                .as_ref()
-                .is_some_and(|manager| manager.is_git_workspace(&workspace))
+        let lease = if workspace_binding.is_some_and(|binding| {
+            !binding.read_only
+                && execution_target_supports_host_worktree(
+                    &agent.execution_targets,
+                    &binding.execution_target,
+                )
+        }) && self
+            .worktrees
+            .as_ref()
+            .is_some_and(|manager| manager.is_git_workspace(&workspace))
         {
             let manager = self.worktrees.as_ref().expect("checked above").clone();
             let requested = workspace.clone();
@@ -2093,6 +2097,19 @@ impl RuntimeUiService {
         };
         Ok((session, agent))
     }
+}
+
+fn execution_target_supports_host_worktree(
+    targets: &HashMap<String, config::ExecutionTransportConfig>,
+    target_id: &str,
+) -> bool {
+    matches!(
+        targets.get(target_id),
+        Some(
+            config::ExecutionTransportConfig::Local { .. }
+                | config::ExecutionTransportConfig::Container { .. }
+        )
+    )
 }
 
 fn sha256_text(value: &str) -> String {
@@ -3846,6 +3863,41 @@ mod tests {
     use tokio::sync::Notify;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn host_backed_targets_support_local_worktree_isolation() {
+        let targets = HashMap::from([
+            (
+                "local".into(),
+                config::ExecutionTransportConfig::Local { root: None },
+            ),
+            (
+                "container".into(),
+                config::ExecutionTransportConfig::Container {
+                    runtime: "docker".into(),
+                    image: "rust:latest".into(),
+                },
+            ),
+            (
+                "ssh".into(),
+                config::ExecutionTransportConfig::Ssh {
+                    host: "host".into(),
+                    port: 22,
+                    user: "user".into(),
+                    credential: config::SecretRef::Env {
+                        name: "SSH_KEY".into(),
+                    },
+                },
+            ),
+        ]);
+
+        assert!(execution_target_supports_host_worktree(&targets, "local"));
+        assert!(execution_target_supports_host_worktree(
+            &targets,
+            "container"
+        ));
+        assert!(!execution_target_supports_host_worktree(&targets, "ssh"));
+    }
 
     struct InstrumentedBus {
         inner: InProcessMessageBus,
