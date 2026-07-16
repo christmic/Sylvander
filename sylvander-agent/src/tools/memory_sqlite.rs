@@ -1,7 +1,7 @@
 //! SQLite-backed relationship memory with versioned, fail-closed migrations.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -24,7 +24,7 @@ pub use backup::{
 pub use integrity::{FileMemoryIntegrityAnchor, MemoryIntegrityConfig};
 
 const COMPONENT: &str = "relationship_memory";
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const MAX_IDENTIFIER_ATTEMPTS: usize = 8;
 const MAX_UNCONFIRMED_CLOCK_FORWARD_SECS: i64 = 31 * 24 * 60 * 60;
 const LEDGER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS memory_schema_migrations (component TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version > 0));";
@@ -117,6 +117,18 @@ CREATE TABLE IF NOT EXISTS relationship_memory_retention_batches (
   expired_count INTEGER NOT NULL CHECK (expired_count >= 0),
   superseded_count INTEGER NOT NULL CHECK (superseded_count >= 0)
 );
+CREATE TABLE IF NOT EXISTS relationship_memory_retention_policy_stage (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  stage_id TEXT NOT NULL UNIQUE,
+  base_policy_revision INTEGER CHECK (base_policy_revision >= 1),
+  staged_at INTEGER NOT NULL,
+  policy_revision INTEGER NOT NULL CHECK (policy_revision >= 1),
+  default_ttl_days INTEGER NOT NULL CHECK (default_ttl_days > 0),
+  max_ttl_days INTEGER NOT NULL CHECK (max_ttl_days >= default_ttl_days),
+  expiry_grace_days INTEGER NOT NULL CHECK (expiry_grace_days >= 0),
+  superseded_retention_days INTEGER NOT NULL CHECK (superseded_retention_days >= 0),
+  batch_limit INTEGER NOT NULL CHECK (batch_limit > 0)
+);
 ";
 const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, replacement.id, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted, m.retention_policy_revision, m.record_key, m.owner_user, m.owner_agent, m.id, m.kind_json, m.content, m.references_json, m.tags_json, m.importance, m.created_at, m.last_accessed, m.access_count, m.metadata_json, m.revision, m.updated_at, m.expires_at, m.superseded_by_record_key, m.origin_actor_kind, m.origin_user_id, m.origin_agent_id, m.origin_session_id, m.origin_trace_id, m.origin_source, m.provenance_trusted, m.retention_policy_revision, m.integrity_epoch, m.integrity_mac FROM relationship_memories m LEFT JOIN relationship_memories replacement ON replacement.record_key = m.superseded_by_record_key";
 
@@ -124,7 +136,9 @@ const ENTRY_SELECT: &str = "SELECT m.id, m.kind_json, m.content, m.references_js
 #[derive(Clone)]
 pub struct SqliteMemoryStore {
     connection: Arc<Mutex<Connection>>,
-    retention_policy: RelationshipMemoryRetentionPolicy,
+    active_retention_policy: Arc<RwLock<Option<RelationshipMemoryRetentionPolicy>>>,
+    desired_retention_policy: RelationshipMemoryRetentionPolicy,
+    staged_activation_id: Arc<Mutex<Option<String>>>,
     clock: Arc<dyn MemoryClock>,
     integrity: Option<Arc<integrity::IntegrityState>>,
 }
@@ -214,27 +228,31 @@ impl SqliteMemoryStore {
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(store_error)?;
         let integrity = Arc::new(integrity::IntegrityState::new(config));
-        if existed {
+        let active_policy = if existed {
             verify_schema(&connection)?;
             integrity.verify(&connection)?;
+            load_active_policy(&connection)?
         } else {
             migrate(&mut connection)?;
-            activate_policy(&mut connection, &policy, crate::session::now_secs())?;
             integrity.establish(&connection)?;
-        }
+            None
+        };
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
-            retention_policy: policy,
+            active_retention_policy: Arc::new(RwLock::new(active_policy)),
+            desired_retention_policy: policy,
+            staged_activation_id: Arc::new(Mutex::new(None)),
             clock: Arc::new(SystemMemoryClock),
             integrity: Some(integrity),
         };
-        if existed {
-            let now = store.clock.now_secs();
-            let policy = store.retention_policy.clone();
-            store.with_connection(|transaction| {
-                activate_policy_transaction(transaction, &policy, now)
-            })?;
-        }
+        let now = store.clock.now_secs();
+        let policy = store.desired_retention_policy.clone();
+        let stage_id = store
+            .with_connection(|transaction| stage_policy_transaction(transaction, &policy, now))?;
+        *store
+            .staged_activation_id
+            .lock()
+            .map_err(|_| store_failure())? = stage_id;
         Ok(store)
     }
 
@@ -271,7 +289,9 @@ impl SqliteMemoryStore {
         activate_policy(&mut connection, &retention_policy, clock.now_secs())?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
-            retention_policy,
+            active_retention_policy: Arc::new(RwLock::new(Some(retention_policy.clone()))),
+            desired_retention_policy: retention_policy,
+            staged_activation_id: Arc::new(Mutex::new(None)),
             clock,
             integrity: None,
         })
@@ -347,9 +367,55 @@ impl SqliteMemoryStore {
             store: self.clone(),
         }
     }
+
+    fn retention_policy(&self) -> Result<RelationshipMemoryRetentionPolicy, MemoryStoreError> {
+        self.active_retention_policy
+            .read()
+            .map_err(|_| store_failure())?
+            .clone()
+            .ok_or_else(retention_error)
+    }
 }
 
 impl SqliteMemoryMaintenance {
+    /// Returns whether this database already has an active retention policy.
+    /// A brand-new protected store remains unavailable until Runtime commits
+    /// its staged policy after every other startup readiness check succeeds.
+    pub fn has_active_retention_policy(&self) -> Result<bool, MemoryStoreError> {
+        Ok(self
+            .store
+            .active_retention_policy
+            .read()
+            .map_err(|_| store_failure())?
+            .is_some())
+    }
+
+    /// Atomically activates the policy staged when the protected store opened.
+    ///
+    /// The opaque stage identifier is compared in SQLite, so another startup
+    /// may safely replace a stale proposal without letting this process commit
+    /// it. Repeating activation after the same policy won the race is
+    /// idempotent.
+    pub fn activate_staged_retention_policy(&self) -> Result<(), MemoryStoreError> {
+        let stage_id = self
+            .store
+            .staged_activation_id
+            .lock()
+            .map_err(|_| store_failure())?
+            .clone();
+        let desired = self.store.desired_retention_policy.clone();
+        let now = self.store.clock.now_secs();
+        self.store.with_connection(|transaction| {
+            activate_staged_policy_transaction(transaction, &desired, stage_id.as_deref(), now)
+        })?;
+        *self
+            .store
+            .active_retention_policy
+            .write()
+            .map_err(|_| store_failure())? = Some(desired);
+        Ok(())
+    }
+
     pub fn purge(&self) -> Result<MemoryPurgeReport, MemoryStoreError> {
         self.purge_at(self.store.clock.now_secs())
     }
@@ -415,10 +481,11 @@ impl SqliteMemoryMaintenance {
         let expected_revision =
             i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?;
         let wall_now = self.store.clock.now_secs();
+        let policy = self.store.retention_policy()?;
         self.store.with_connection(|transaction| {
             let now = resolve_effective_now(
                 transaction,
-                self.store.retention_policy.revision(),
+                policy.revision(),
                 wall_now,
             )
             .map_err(|_| forget_error())?
@@ -492,7 +559,7 @@ impl SqliteMemoryMaintenance {
     }
 
     fn purge_at(&self, wall_now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
-        let policy = &self.store.retention_policy;
+        let policy = self.store.retention_policy()?;
         let result = self.store.with_connection(|transaction| {
             let clock = resolve_effective_now(transaction, policy.revision(), wall_now)?;
             if clock.quarantined {
@@ -534,7 +601,7 @@ impl SqliteMemoryMaintenance {
                     report.expired_count += 1;
                 }
             }
-            insert_retention_ledgers(transaction, policy, now, report)?;
+            insert_retention_ledgers(transaction, &policy, now, report)?;
             Ok(Some(report))
         })?;
         result.ok_or_else(retention_error)
@@ -549,15 +616,15 @@ impl MemoryStore for SqliteMemoryStore {
         append: MemoryAppend,
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
-        let append = self.retention_policy.apply_append(append)?;
+        let policy = self.retention_policy()?;
+        let append = policy.apply_append(append)?;
         validate_append(&append)?;
         let wall_now = self.clock.now_secs();
         let provenance = ctx.provenance();
         self.with_connection(move |transaction| {
-            let now =
-                resolve_effective_now(transaction, self.retention_policy.revision(), wall_now)
-                    .map_err(|_| store_failure())?
-                    .now;
+            let now = resolve_effective_now(transaction, policy.revision(), wall_now)
+                .map_err(|_| store_failure())?
+                .now;
             let MemoryOwner::Relationship { user_id, agent_id } = &owner else {
                 unreachable!("relationship constructor returned another scope")
             };
@@ -571,7 +638,7 @@ impl MemoryStore for SqliteMemoryStore {
                 owner,
                 append,
                 provenance,
-                self.retention_policy.revision(),
+                policy.revision(),
                 now,
             )?;
             insert_entry(transaction, &record_key, &entry)?;
@@ -608,6 +675,7 @@ impl MemoryStore for SqliteMemoryStore {
         };
         let query = query.to_lowercase();
         let wall_now = self.clock.now_secs();
+        let policy = self.retention_policy()?;
         self.with_read_connection(|connection| {
             let integrity_epoch = self
                 .integrity
@@ -619,7 +687,7 @@ impl MemoryStore for SqliteMemoryStore {
                 .map_err(search_error)?;
             let now = resolve_effective_now(
                 &transaction,
-                self.retention_policy.revision(),
+                policy.revision(),
                 wall_now,
             )
             .map_err(|_| search_error(rusqlite::Error::InvalidQuery))?
@@ -669,14 +737,15 @@ impl MemoryStore for SqliteMemoryStore {
         };
         validate_memory_id(id)?;
         validate_patch(&patch)?;
-        self.retention_policy.validate_patch(&patch)?;
+        let policy = self.retention_policy()?;
+        policy.validate_patch(&patch)?;
         let updates_expiry = patch.expiry.is_some();
         validate_revision(expected_revision)?;
         let wall_now = self.clock.now_secs();
         self.with_connection(|transaction| {
             let now = resolve_effective_now(
                 transaction,
-                self.retention_policy.revision(),
+                policy.revision(),
                 wall_now,
             )
             .map_err(|_| mutation_error())?
@@ -701,7 +770,7 @@ impl MemoryStore for SqliteMemoryStore {
                 .map_err(|_| mutation_error())?;
             apply_patch(&mut entry, patch, now)?;
             if updates_expiry {
-                entry.retention_policy_revision = self.retention_policy.revision();
+                entry.retention_policy_revision = policy.revision();
             }
             let changed = transaction
                 .execute(
@@ -726,7 +795,8 @@ impl MemoryStore for SqliteMemoryStore {
     ) -> Result<MemoryEntry, MemoryStoreError> {
         let owner = ctx.relationship_owner()?;
         validate_memory_id(id)?;
-        let replacement = self.retention_policy.apply_append(replacement)?;
+        let policy = self.retention_policy()?;
+        let replacement = policy.apply_append(replacement)?;
         validate_append(&replacement)?;
         validate_revision(expected_revision)?;
         let (user_id, agent_id) = match &owner {
@@ -736,7 +806,9 @@ impl MemoryStore for SqliteMemoryStore {
         let wall_now = self.clock.now_secs();
         let provenance = ctx.provenance();
         self.with_connection(move |transaction| {
-            let now = resolve_effective_now(transaction, self.retention_policy.revision(), wall_now).map_err(|_| mutation_error())?.now;
+            let now = resolve_effective_now(transaction, policy.revision(), wall_now)
+                .map_err(|_| mutation_error())?
+                .now;
             let replacement_id = allocate_identifier(
                 transaction,
                 IdentifierNamespace::Memory {
@@ -751,7 +823,7 @@ impl MemoryStore for SqliteMemoryStore {
                 owner,
                 replacement,
                 provenance,
-                self.retention_policy.revision(),
+                policy.revision(),
                 now,
             )?;
             let (record_key, revision) = select_active_record(transaction, &user_id, &agent_id, id, now)?.ok_or_else(memory_not_visible)?;
@@ -787,10 +859,11 @@ impl MemoryStore for SqliteMemoryStore {
         let expected_revision =
             i64::try_from(expected_revision).map_err(|_| MemoryStoreError::InvalidInput)?;
         let wall_now = self.clock.now_secs();
+        let policy = self.retention_policy()?;
         self.with_connection(|transaction| {
             let now = resolve_effective_now(
                 transaction,
-                self.retention_policy.revision(),
+                policy.revision(),
                 wall_now,
             )
             .map_err(|_| MemoryStoreError::Delete("memory delete failed".into()))?
@@ -842,6 +915,7 @@ impl MemoryStore for SqliteMemoryStore {
         };
         validate_memory_id(id)?;
         let wall_now = self.clock.now_secs();
+        let policy = self.retention_policy()?;
         self.with_read_connection(|connection| {
             let integrity_epoch = self
                 .integrity
@@ -853,7 +927,7 @@ impl MemoryStore for SqliteMemoryStore {
                 .map_err(store_error)?;
             let now = resolve_effective_now(
                 &transaction,
-                self.retention_policy.revision(),
+                policy.revision(),
                 wall_now,
             )
             .map_err(|_| store_failure())?
@@ -950,7 +1024,7 @@ fn verify_schema(connection: &Connection) -> Result<(), MemoryStoreError> {
 fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>, MemoryStoreError> {
     let mut statement = connection
         .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit', 'relationship_memory_retention_state', 'relationship_memory_retention_runs', 'relationship_memory_retention_batches')) ORDER BY type, name, tbl_name",
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL AND (name = 'memory_schema_migrations' OR tbl_name IN ('relationship_memories', 'relationship_memory_audit', 'relationship_memory_retention_state', 'relationship_memory_retention_runs', 'relationship_memory_retention_batches', 'relationship_memory_retention_policy_stage')) ORDER BY type, name, tbl_name",
         )
         .map_err(|_| schema_error())?;
     statement
@@ -1019,6 +1093,163 @@ fn activate_policy_transaction(
             "INSERT INTO relationship_memory_retention_state (singleton, clock_watermark, quarantined_forward_time, quarantined_observed_at, last_confirmed_forward_time, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, NULL, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![wall_now, policy_revision_sql, policy.default_ttl_days(), policy.max_ttl_days(), policy.expiry_grace_days(), policy.superseded_retention_days(), policy.batch_limit()],
         ).map_err(|_| retention_error())?;
+    }
+    Ok(())
+}
+
+fn load_active_policy(
+    connection: &Connection,
+) -> Result<Option<RelationshipMemoryRetentionPolicy>, MemoryStoreError> {
+    connection
+        .query_row(
+            "SELECT policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit FROM relationship_memory_retention_state WHERE singleton = 1",
+            [],
+            |row| {
+                RelationshipMemoryRetentionPolicy::new(
+                    read_revision(row, 0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                )
+                .map_err(|_| rusqlite::Error::InvalidQuery)
+            },
+        )
+        .optional()
+        .map_err(|_| retention_error())
+}
+
+fn stage_policy_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    desired: &RelationshipMemoryRetentionPolicy,
+    now: i64,
+) -> Result<Option<String>, MemoryStoreError> {
+    let active = load_active_policy(transaction)?;
+    if let Some(active) = &active {
+        if active.revision() > desired.revision()
+            || (active.revision() == desired.revision() && active != desired)
+        {
+            return Err(retention_error());
+        }
+        if active == desired {
+            transaction
+                .execute(
+                    "DELETE FROM relationship_memory_retention_policy_stage WHERE singleton = 1",
+                    [],
+                )
+                .map_err(|_| retention_error())?;
+            return Ok(None);
+        }
+    }
+
+    let base_revision = active
+        .as_ref()
+        .map(RelationshipMemoryRetentionPolicy::revision);
+    let existing: Option<(String, Option<u64>, RelationshipMemoryRetentionPolicy)> = transaction
+        .query_row(
+            "SELECT stage_id, base_policy_revision, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit FROM relationship_memory_retention_policy_stage WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<i64>>(1)?
+                        .map(u64::try_from)
+                        .transpose()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    RelationshipMemoryRetentionPolicy::new(
+                        read_revision(row, 2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| retention_error())?;
+    if let Some((stage_id, existing_base, existing_policy)) = existing
+        && existing_base == base_revision
+        && existing_policy == *desired
+    {
+        return Ok(Some(stage_id));
+    }
+
+    let stage_id = uuid::Uuid::new_v4().to_string();
+    let base_revision_sql = base_revision
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| retention_error())?;
+    let revision_sql = i64::try_from(desired.revision()).map_err(|_| retention_error())?;
+    transaction
+        .execute(
+            "INSERT INTO relationship_memory_retention_policy_stage (singleton, stage_id, base_policy_revision, staged_at, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(singleton) DO UPDATE SET stage_id = excluded.stage_id, base_policy_revision = excluded.base_policy_revision, staged_at = excluded.staged_at, policy_revision = excluded.policy_revision, default_ttl_days = excluded.default_ttl_days, max_ttl_days = excluded.max_ttl_days, expiry_grace_days = excluded.expiry_grace_days, superseded_retention_days = excluded.superseded_retention_days, batch_limit = excluded.batch_limit",
+            params![stage_id, base_revision_sql, now, revision_sql, desired.default_ttl_days(), desired.max_ttl_days(), desired.expiry_grace_days(), desired.superseded_retention_days(), desired.batch_limit()],
+        )
+        .map_err(|_| retention_error())?;
+    Ok(Some(stage_id))
+}
+
+fn activate_staged_policy_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    desired: &RelationshipMemoryRetentionPolicy,
+    stage_id: Option<&str>,
+    now: i64,
+) -> Result<(), MemoryStoreError> {
+    let active = load_active_policy(transaction)?;
+    if active.as_ref() == Some(desired) {
+        return Ok(());
+    }
+    let Some(stage_id) = stage_id else {
+        return Err(MemoryStoreError::Conflict);
+    };
+    let staged: Option<(String, Option<u64>, RelationshipMemoryRetentionPolicy)> = transaction
+        .query_row(
+            "SELECT stage_id, base_policy_revision, policy_revision, default_ttl_days, max_ttl_days, expiry_grace_days, superseded_retention_days, batch_limit FROM relationship_memory_retention_policy_stage WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get::<_, Option<i64>>(1)?
+                        .map(u64::try_from)
+                        .transpose()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    RelationshipMemoryRetentionPolicy::new(
+                        read_revision(row, 2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| retention_error())?;
+    let expected_base = active
+        .as_ref()
+        .map(RelationshipMemoryRetentionPolicy::revision);
+    let Some((actual_stage_id, actual_base, staged_policy)) = staged else {
+        return Err(MemoryStoreError::Conflict);
+    };
+    if actual_stage_id != stage_id || actual_base != expected_base || staged_policy != *desired {
+        return Err(MemoryStoreError::Conflict);
+    }
+    activate_policy_transaction(transaction, desired, now)?;
+    if transaction
+        .execute(
+            "DELETE FROM relationship_memory_retention_policy_stage WHERE singleton = 1 AND stage_id = ?1",
+            [stage_id],
+        )
+        .map_err(|_| retention_error())?
+        != 1
+    {
+        return Err(MemoryStoreError::Conflict);
     }
     Ok(())
 }
@@ -1442,6 +1673,9 @@ mod v2_tests;
 #[path = "memory_sqlite_hardening_tests.rs"]
 mod hardening_tests;
 
+#[cfg(test)]
+#[path = "memory_sqlite_policy_activation_tests.rs"]
+mod policy_activation_tests;
 #[cfg(test)]
 #[path = "memory_sqlite_retention_tests.rs"]
 mod retention_tests;

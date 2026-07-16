@@ -17,6 +17,7 @@ const TABLE_QUERIES: &[&str] = &[
     "SELECT record_key,owner_user,owner_agent,id,kind_json,content,references_json,tags_json,importance,created_at,last_accessed,access_count,metadata_json,revision,updated_at,expires_at,superseded_by_record_key,origin_actor_kind,origin_user_id,origin_agent_id,origin_session_id,origin_trace_id,origin_source,provenance_trusted,retention_policy_revision,integrity_epoch,integrity_mac FROM relationship_memories ORDER BY record_key",
     "SELECT sequence,event_id,occurred_at,operation,target_record_key,before_revision,after_revision,actor_kind,actor_user_id,actor_agent_id,session_id,trace_id,changed_mask FROM relationship_memory_audit ORDER BY sequence",
     "SELECT singleton,policy_revision,default_ttl_days,max_ttl_days,expiry_grace_days,superseded_retention_days,batch_limit FROM relationship_memory_retention_state ORDER BY singleton",
+    "SELECT singleton,stage_id,base_policy_revision,staged_at,policy_revision,default_ttl_days,max_ttl_days,expiry_grace_days,superseded_retention_days,batch_limit FROM relationship_memory_retention_policy_stage ORDER BY singleton",
     "SELECT run_id,started_at,completed_at,policy_revision,clock_watermark,expired_count,superseded_count FROM relationship_memory_retention_runs ORDER BY run_id",
     "SELECT batch_id,run_id,occurred_at,attempted_limit,expired_count,superseded_count FROM relationship_memory_retention_batches ORDER BY batch_id",
 ];
@@ -590,11 +591,13 @@ mod tests {
     }
 
     fn open(database: &Path, anchor: &Path) -> Result<SqliteMemoryStore, MemoryStoreError> {
-        SqliteMemoryStore::open_with_integrity(
+        let store = SqliteMemoryStore::open_with_integrity(
             database,
             RelationshipMemoryRetentionPolicy::default(),
             config(anchor),
-        )
+        )?;
+        store.maintenance().activate_staged_retention_policy()?;
+        Ok(store)
     }
 
     #[tokio::test]
