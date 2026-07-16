@@ -55,7 +55,7 @@ struct RegistryRevisionBindings {
 #[derive(Clone)]
 pub struct ConfiguredAgent {
     pub spec: AgentSpec,
-    pub run: AgentRun,
+    pub(crate) run: AgentRun,
     session_issuer: AgentSessionIssuer,
     pub models: BTreeMap<ModelSelection, ModelInfo>,
     pub approval_enabled: bool,
@@ -65,6 +65,34 @@ pub struct ConfiguredAgent {
     memory_store: Arc<dyn MemoryStore>,
     prompt_resolver: Arc<PromptResolver>,
     revision_bindings: Option<RegistryRevisionBindings>,
+}
+
+/// Redacted, read-only metadata exposed to transport composition.
+///
+/// This deliberately contains no `AgentRun`, session issuer, prompt source,
+/// credential binding, or mutable runtime control.
+#[derive(Clone)]
+pub struct ConfiguredAgentDescriptor {
+    pub id: sylvander_protocol::AgentId,
+    pub default_model: ModelSelection,
+    pub models: BTreeMap<ModelSelection, ModelInfo>,
+    pub approval_enabled: bool,
+    pub platform: sylvander_protocol::PlatformSnapshot,
+}
+
+impl ConfiguredAgent {
+    pub(crate) fn descriptor(&self) -> ConfiguredAgentDescriptor {
+        ConfiguredAgentDescriptor {
+            id: self.spec.id.clone(),
+            default_model: ModelSelection {
+                provider_id: self.spec.model.provider.clone(),
+                model_id: self.spec.model.model_name.clone(),
+            },
+            models: self.models.clone(),
+            approval_enabled: self.approval_enabled,
+            platform: self.run.platform_snapshot(),
+        }
+    }
 }
 
 /// Build every configured Agent without starting background tasks.

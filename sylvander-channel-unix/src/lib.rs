@@ -81,7 +81,6 @@ pub struct UnixChannel {
     instance_id: String,
     agent_id: AgentId,
     runtime: RuntimeInfo,
-    runtime_control: Option<sylvander_agent::run::AgentRun>,
     max_request_bytes: usize,
 }
 
@@ -113,7 +112,6 @@ impl UnixChannel {
                 max_attachment_bytes: 512 * 1024,
                 platform: sylvander_protocol::PlatformSnapshot::default(),
             },
-            runtime_control: None,
             max_request_bytes: 1024 * 1024,
         }
     }
@@ -125,11 +123,6 @@ impl UnixChannel {
 
     pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
         self.runtime = runtime;
-        self
-    }
-
-    pub fn with_runtime_control(mut self, run: sylvander_agent::run::AgentRun) -> Self {
-        self.runtime_control = Some(run);
         self
     }
 
@@ -252,7 +245,6 @@ impl Channel for UnixChannel {
             let ctx_clone = ctx.clone();
             let agent_id_clone = agent_id.clone();
             let runtime = self.runtime.clone();
-            let runtime_control = self.runtime_control.clone();
             let reader_hub = hub.clone();
             let client_id_clone = client_id;
             let instance_id = self.instance_id.clone();
@@ -336,7 +328,6 @@ impl Channel for UnixChannel {
                             agent_id: &agent_id_clone,
                             tx: &tx,
                             runtime: &runtime,
-                            runtime_control: runtime_control.as_ref(),
                             hub: &reader_hub,
                             client_id,
                             ui_protocol_version: negotiated_version
@@ -449,7 +440,6 @@ async fn handle_client_msg(
     agent_id: &AgentId,
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
-    runtime_control: Option<&sylvander_agent::run::AgentRun>,
 ) {
     let hub = Arc::new(Mutex::new(RelayHub::default()));
     hub.lock().await.clients.insert(0, tx.clone());
@@ -470,7 +460,6 @@ async fn handle_client_msg(
             agent_id,
             tx,
             runtime,
-            runtime_control,
             hub: &hub,
             client_id: 0,
             ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
@@ -485,7 +474,6 @@ struct ClientHandler<'a> {
     agent_id: &'a AgentId,
     tx: &'a mpsc::UnboundedSender<ServerMsg>,
     runtime: &'a RuntimeInfo,
-    runtime_control: Option<&'a sylvander_agent::run::AgentRun>,
     hub: &'a Arc<Mutex<RelayHub>>,
     client_id: u64,
     ui_protocol_version: u16,
@@ -498,7 +486,6 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         agent_id,
         tx,
         runtime,
-        runtime_control,
         hub,
         client_id,
         ui_protocol_version,
@@ -1322,60 +1309,47 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             }
         }
         ClientMsg::GetRuntimeInfo => {
-            let model_info = if let Some(control) = runtime_control {
-                control.runtime_model_info().await
-            } else {
-                sylvander_protocol::RuntimeModelInfo {
-                    current_model: runtime.model.clone(),
-                    reasoning_effort: runtime.reasoning_effort,
-                    models: runtime.models.clone(),
-                }
-            };
-            let permissions = if let Some(control) = runtime_control {
-                control.permission_profile().await
-            } else {
-                runtime.permissions.clone()
-            };
-            let capabilities = model_info
+            let capabilities = runtime
                 .models
                 .iter()
-                .find(|model| model.id == model_info.current_model)
+                .find(|model| model.id == runtime.model)
                 .map_or(runtime.capabilities, |model| model.capabilities);
-            let platform = runtime_control.map_or_else(
-                || runtime.platform.clone(),
-                sylvander_agent::run::AgentRun::platform_snapshot,
-            );
-            let model_selection =
-                unique_model_selection(&model_info.models, &model_info.current_model);
+            let model_selection = unique_model_selection(&runtime.models, &runtime.model);
             let _ = tx.send(ServerMsg::RuntimeInfo {
-                model: model_info.current_model,
+                model: runtime.model.clone(),
                 model_selection,
-                reasoning_effort: model_info.reasoning_effort,
-                models: model_info.models,
-                permissions,
+                reasoning_effort: runtime.reasoning_effort,
+                models: runtime.models.clone(),
+                permissions: runtime.permissions.clone(),
                 capabilities,
                 approval_enabled: runtime.approval_enabled,
                 max_attachment_bytes: runtime.max_attachment_bytes,
-                platform,
+                platform: runtime.platform.clone(),
             });
         }
         ClientMsg::GetContext { session_id } => {
-            let Some(control) = runtime_control else {
+            let (Some(ui), Some(session_id)) = (&ctx.ui, session_id.as_deref()) else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "context".into(),
-                    message: "runtime context reporting is unavailable".into(),
+                    message: "context requires an authenticated session".into(),
                 });
                 return;
             };
-            let session_id = session_id.as_deref().map(SessionId::new);
-            let report = control.context_report(session_id.as_ref()).await;
-            let _ = tx.send(ServerMsg::ContextReport { report });
+            match ui
+                .context_report(boundary, &SessionId::new(session_id))
+                .await
+            {
+                Ok(report) => {
+                    let _ = tx.send(ServerMsg::ContextReport { report });
+                }
+                Err(error) => boundary_denied(tx, error),
+            }
         }
         ClientMsg::Compact { session_id } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::OperationError {
                     operation: "compact".into(),
-                    message: "runtime compaction control is unavailable".into(),
+                    message: "UI service is unavailable".into(),
                 });
                 return;
             };
@@ -1383,8 +1357,8 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 session_id: session_id.clone(),
                 automatic: false,
             });
-            match control
-                .compact_session(&SessionId::new(session_id.clone()))
+            match ui
+                .compact_session(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
                 Ok(report) => {
@@ -1394,34 +1368,34 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                     let _ = tx.send(ServerMsg::CompactionFailed {
                         session_id,
                         automatic: false,
-                        reason,
+                        reason: reason.message,
                     });
                 }
             }
         }
         ClientMsg::PreviewWorkspaceRollback { session_id } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
-                    reason: "runtime workspace rollback is unavailable".into(),
+                    reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match control
-                .preview_workspace_rollback(&SessionId::new(session_id.clone()))
+            match ui
+                .preview_workspace_rollback(boundary, &SessionId::new(session_id.clone()))
                 .await
             {
                 Ok(preview) => {
                     let _ = tx.send(ServerMsg::WorkspaceRollbackPreview {
                         session_id,
-                        preview: sylvander_protocol::WorkspaceRollbackPreview {
-                            turn_id: preview.turn_id,
-                            files: preview.files,
-                        },
+                        preview,
                     });
                 }
                 Err(reason) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: reason.message,
+                    });
                 }
             }
         }
@@ -1429,28 +1403,29 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             session_id,
             expected_turn_id,
         } => {
-            let Some(control) = runtime_control else {
+            let Some(ui) = &ctx.ui else {
                 let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
                     session_id,
-                    reason: "runtime workspace rollback is unavailable".into(),
+                    reason: "UI service is unavailable".into(),
                 });
                 return;
             };
-            match control
-                .rollback_workspace_latest(&SessionId::new(session_id.clone()), &expected_turn_id)
+            match ui
+                .rollback_workspace(
+                    boundary,
+                    &SessionId::new(session_id.clone()),
+                    &expected_turn_id,
+                )
                 .await
             {
                 Ok(report) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted {
-                        session_id,
-                        report: sylvander_protocol::WorkspaceRollbackReport {
-                            turn_id: report.turn_id,
-                            restored: report.restored,
-                        },
-                    });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackCompleted { session_id, report });
                 }
                 Err(reason) => {
-                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed { session_id, reason });
+                    let _ = tx.send(ServerMsg::WorkspaceRollbackFailed {
+                        session_id,
+                        reason: reason.message,
+                    });
                 }
             }
         }
@@ -1692,6 +1667,9 @@ mod tests {
         allow_registry: bool,
         session_config: Option<sylvander_protocol::SessionConfigState>,
         chat_bus: Option<Arc<dyn MessageBus>>,
+        compaction: Option<sylvander_protocol::CompactionReport>,
+        rollback_preview: Option<sylvander_protocol::WorkspaceRollbackPreview>,
+        rollback_report: Option<sylvander_protocol::WorkspaceRollbackReport>,
     }
 
     #[tokio::test]
@@ -1882,6 +1860,40 @@ mod tests {
             _feedback: sylvander_protocol::RunFeedback,
         ) -> Result<String, sylvander_protocol::BoundaryError> {
             Ok("feedback-1".into())
+        }
+
+        async fn compact_session(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+        ) -> Result<sylvander_protocol::CompactionReport, sylvander_protocol::BoundaryError>
+        {
+            self.compaction.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "compact_session")
+            })
+        }
+
+        async fn preview_workspace_rollback(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+        ) -> Result<sylvander_protocol::WorkspaceRollbackPreview, sylvander_protocol::BoundaryError>
+        {
+            self.rollback_preview.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "preview_workspace_rollback")
+            })
+        }
+
+        async fn rollback_workspace(
+            &self,
+            boundary: &sylvander_protocol::BoundaryContext,
+            _session_id: &SessionId,
+            _expected_turn_id: &str,
+        ) -> Result<sylvander_protocol::WorkspaceRollbackReport, sylvander_protocol::BoundaryError>
+        {
+            self.rollback_report.clone().ok_or_else(|| {
+                sylvander_protocol::BoundaryError::forbidden(boundary, "rollback_workspace")
+            })
         }
 
         async fn registry_admin(
@@ -2098,7 +2110,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2142,7 +2153,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2165,7 +2175,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
         assert!(matches!(
@@ -2195,7 +2204,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2238,7 +2246,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -2298,7 +2305,6 @@ mod tests {
                 agent_id: &AgentId::new("agent-1"),
                 tx: &tx,
                 runtime: &runtime_info(),
-                runtime_control: None,
                 hub: &Arc::new(Mutex::new(RelayHub::default())),
                 client_id: 1,
                 ui_protocol_version: sylvander_protocol::UI_PROTOCOL_MAX_VERSION,
@@ -2565,36 +2571,11 @@ mod tests {
 
     #[tokio::test]
     async fn model_selection_without_session_fails_closed() {
-        use sylvander_llm_anthropic::api::client::AnthropicClient;
-        use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-
         let bus = Arc::new(InProcessMessageBus::new());
-        let spec = sylvander_agent::spec::AgentSpec::builder()
-            .id("agent-1")
-            .name("Agent")
-            .model_name("test-model")
-            .build()
-            .expect("spec");
-        let client = AnthropicClient::builder()
-            .api_key("test")
-            .build()
-            .expect("client");
-        let thinking = ModelInfo::builder()
-            .id("thinking-model")
-            .context_window(200_000)
-            .max_output_tokens(32_000)
-            .capability(ModelCapabilities::EXTENDED_THINKING)
-            .build()
-            .expect("model");
-        let run = sylvander_agent::run::AgentRun::builder(spec, client)
-            .bus(bus.clone())
-            .available_models(vec![thinking])
-            .build()
-            .expect("run");
         let context = ChannelContext::with_services(
             bus,
             Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
-            None,
+            Some(Arc::new(EmptyUiService::default())),
             None,
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2608,7 +2589,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
 
@@ -2631,7 +2611,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
@@ -2648,7 +2627,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
@@ -2664,61 +2642,29 @@ mod tests {
                 automatic: false,
                 reason,
                 ..
-            }) if reason == "session is unavailable for compaction"
+            }) if reason == "the principal is not allowed to access this resource"
         ));
     }
 
     #[tokio::test]
     async fn workspace_rollback_preview_and_confirmation_round_trip() {
-        use sylvander_llm_anthropic::api::client::AnthropicClient;
-        let workspace = tempfile::TempDir::new().unwrap();
-        let journal_dir = tempfile::TempDir::new().unwrap();
-        let file = workspace.path().join("file.txt");
-        std::fs::write(&file, "before").unwrap();
         let bus = Arc::new(InProcessMessageBus::new());
-        let spec = sylvander_agent::spec::AgentSpec::builder()
-            .id("agent-1")
-            .name("Agent")
-            .model_name("test-model")
-            .build()
-            .unwrap();
-        let client = AnthropicClient::builder().api_key("test").build().unwrap();
-        let (run, issuer) = sylvander_agent::run::AgentRun::builder(spec, client)
-            .bus(bus.clone())
-            .workspace_journal(journal_dir.path())
-            .build_with_session_issuer()
-            .unwrap();
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        run.attach_authenticated_session(
-            issuer
-                .issue(
-                    session_id.clone(),
-                    sylvander_agent::session::SessionMetadata {
-                        workspace: workspace.path().into(),
-                        name: "test".into(),
-                        user_id: "unix-client".into(),
-                    },
-                )
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-        let journal = sylvander_agent::workspace_journal::WorkspaceJournal::new(journal_dir.path());
-        let mutation = journal
-            .prepare(
-                &session_id.0,
-                "turn-1",
-                workspace.path(),
-                "file.txt",
-                b"after",
-            )
-            .unwrap();
-        std::fs::write(&file, "after").unwrap();
-        journal.commit(&mutation).unwrap();
+        let ui = EmptyUiService {
+            rollback_preview: Some(sylvander_protocol::WorkspaceRollbackPreview {
+                turn_id: "turn-1".into(),
+                files: vec!["file.txt".into()],
+            }),
+            rollback_report: Some(sylvander_protocol::WorkspaceRollbackReport {
+                turn_id: "turn-1".into(),
+                restored: vec!["file.txt".into()],
+            }),
+            ..EmptyUiService::default()
+        };
         let context = ChannelContext::with_services(
             bus,
             Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
-            None,
+            Some(Arc::new(ui)),
             None,
         );
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -2730,7 +2676,6 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         let turn_id = match rx.recv().await.unwrap() {
@@ -2746,14 +2691,12 @@ mod tests {
             &AgentId::new("agent-1"),
             &tx,
             &runtime_info(),
-            Some(&run),
         )
         .await;
         assert!(matches!(
             rx.recv().await,
             Some(ServerMsg::WorkspaceRollbackCompleted { .. })
         ));
-        assert_eq!(std::fs::read_to_string(file).unwrap(), "before");
     }
 
     #[tokio::test]
@@ -3217,7 +3160,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -3263,7 +3205,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -3308,7 +3249,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 
@@ -3359,7 +3299,6 @@ mod tests {
             &agent_id,
             &tx,
             &runtime_info(),
-            None,
         )
         .await;
 

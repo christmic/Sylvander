@@ -966,7 +966,7 @@ impl AgentRun {
     ///
     /// Chat messages are spawned as separate tasks so `run()` can
     /// concurrently process approval responses (M12).
-    pub async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
+    pub(crate) async fn run(self, mut inbox: mpsc::UnboundedReceiver<BusMessage>) {
         // Publish initial status
         let _ = self
             .inner

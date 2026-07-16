@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use sylvander_agent::bus::{
     ApprovalPolicy, FileAccess, ModelCapability, ModelDescriptor, ModelLifecycle, NetworkAccess,
-    PermissionProfile, PlatformSnapshot, ReasoningEffort,
+    PermissionProfile, ReasoningEffort,
 };
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
@@ -83,18 +83,17 @@ fn build_channels(
         .map(|channel| {
             let agent_id = AgentId::new(&channel.default_agent);
             let agent = runtime
-                .configured_agent(&agent_id)
+                .agent_descriptor(&agent_id)
                 .ok_or_else(|| ServerError::UnknownAgent(channel.default_agent.clone()))?;
             let result: Arc<dyn Channel> = match &channel.transport {
                 ChannelTransportConfig::Unix { path } => {
                     let primary = agent
                         .models
                         .iter()
-                        .find(|(selection, _)| {
-                            selection.provider_id == agent.spec.model.provider
-                                && selection.model_id == agent.spec.model.model_name
-                        })
-                        .ok_or_else(|| ServerError::UnknownModel(agent.spec.model.model_name.clone()))?;
+                        .find(|(selection, _)| *selection == &agent.default_model)
+                        .ok_or_else(|| {
+                            ServerError::UnknownModel(agent.default_model.model_id.clone())
+                        })?;
                     let models = agent
                         .models
                         .iter()
@@ -135,9 +134,8 @@ fn build_channels(
                                 capabilities: primary.1.capabilities.bits(),
                                 approval_enabled: agent.approval_enabled,
                                 max_attachment_bytes: 512 * 1024,
-                                platform: PlatformSnapshot::default(),
-                            })
-                            .with_runtime_control(agent.run.clone()),
+                                platform: agent.platform.clone(),
+                            }),
                     )
                 }
                 ChannelTransportConfig::Http {
