@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 use super::evaluation_types::{ScoringAdapterKind, ScoringAdapterRevision};
 use super::{EvidenceError, EvidenceStore, as_i64};
 
+mod dataset;
+
 impl EvidenceStore {
     /// Register an immutable scoring adapter revision. Repeating the exact
     /// revision is idempotent; changed content or skipped revisions fail.

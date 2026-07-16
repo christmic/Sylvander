@@ -1118,6 +1118,27 @@ CREATE TABLE IF NOT EXISTS evidence_scoring_adapters (
   CHECK (revision > 0),
   CHECK (kind IN ('boolean_validation', 'numeric_metric'))
 );
+CREATE TABLE IF NOT EXISTS evidence_evaluation_datasets (
+  id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT NOT NULL,
+  definition_digest_sha256 TEXT NOT NULL, created_at INTEGER NOT NULL,
+  PRIMARY KEY(id, revision),
+  CHECK (revision > 0)
+);
+CREATE TABLE IF NOT EXISTS evidence_evaluation_cases (
+  dataset_id TEXT NOT NULL, dataset_revision INTEGER NOT NULL,
+  id TEXT NOT NULL, position INTEGER NOT NULL, split TEXT NOT NULL,
+  input_locator TEXT NOT NULL, input_digest_sha256 TEXT NOT NULL,
+  expected_locator TEXT, expected_digest_sha256 TEXT,
+  scorer_id TEXT NOT NULL, scorer_revision INTEGER NOT NULL,
+  PRIMARY KEY(dataset_id, dataset_revision, id),
+  FOREIGN KEY(dataset_id, dataset_revision)
+    REFERENCES evidence_evaluation_datasets(id, revision),
+  FOREIGN KEY(scorer_id, scorer_revision)
+    REFERENCES evidence_scoring_adapters(id, revision),
+  CHECK (position >= 0),
+  CHECK (split IN ('fixture', 'held_out')),
+  CHECK ((expected_locator IS NULL) = (expected_digest_sha256 IS NULL))
+);
 CREATE TABLE IF NOT EXISTS authorization_denials (
   id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, request_id TEXT NOT NULL,
   principal_digest TEXT, channel_instance_id TEXT NOT NULL,

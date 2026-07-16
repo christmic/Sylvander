@@ -1,4 +1,8 @@
 use super::*;
+use crate::evidence::evaluation_types::{
+    EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
+};
+use sylvander_protocol::EvidenceReference;
 
 fn scorer(revision: u64, metric: &str) -> ScoringAdapterRevision {
     ScoringAdapterRevision {
@@ -58,4 +62,74 @@ async fn scoring_adapter_revisions_are_immutable_sequential_and_durable() {
             .unwrap(),
         Some(second)
     );
+}
+
+fn case(id: &str, split: EvaluationSplit, scorer_id: &str) -> EvaluationCase {
+    EvaluationCase {
+        id: id.into(),
+        split,
+        input: EvidenceReference {
+            locator: format!("fixture:{id}:input"),
+            digest_sha256: Some("b".repeat(64)),
+        },
+        expected: Some(EvidenceReference {
+            locator: format!("fixture:{id}:expected"),
+            digest_sha256: Some("c".repeat(64)),
+        }),
+        scorer_id: scorer_id.into(),
+        scorer_revision: 1,
+    }
+}
+
+#[tokio::test]
+async fn dataset_requires_registered_scorers_and_both_deterministic_splits() {
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    store
+        .register_scoring_adapter(scorer(1, "passed"))
+        .await
+        .unwrap();
+    let definition = EvaluationDatasetRevision {
+        id: "coding-core".into(),
+        revision: 1,
+        name: "Coding core".into(),
+        cases: vec![
+            case("held-z", EvaluationSplit::HeldOut, "validation"),
+            case("fixture-a", EvaluationSplit::Fixture, "validation"),
+        ],
+        created_at: 10,
+    };
+    let digest = store
+        .register_evaluation_dataset(definition.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.register_evaluation_dataset(definition).await.unwrap(),
+        digest
+    );
+    let stored = store
+        .evaluation_dataset("coding-core".into(), 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.digest_sha256, digest);
+    assert_eq!(stored.definition.cases[0].id, "fixture-a");
+    assert_eq!(stored.definition.cases[1].id, "held-z");
+
+    let unknown_scorer = EvaluationDatasetRevision {
+        id: "invalid".into(),
+        revision: 1,
+        name: "Invalid".into(),
+        cases: vec![
+            case("fixture", EvaluationSplit::Fixture, "missing"),
+            case("held", EvaluationSplit::HeldOut, "missing"),
+        ],
+        created_at: 11,
+    };
+    assert!(matches!(
+        store
+            .register_evaluation_dataset(unknown_scorer)
+            .await
+            .unwrap_err(),
+        EvidenceError::InvalidEvaluationDefinition
+    ));
 }
