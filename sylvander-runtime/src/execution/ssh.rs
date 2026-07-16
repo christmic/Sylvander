@@ -990,7 +990,7 @@ mod tests {
                 .run_command(&target(false), "ignored", Duration::from_secs(10))
                 .await
         });
-        for _ in 0..100 {
+        for _ in 0..500 {
             if ready.exists() {
                 break;
             }

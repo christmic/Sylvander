@@ -551,13 +551,17 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   Dropping an executor operation is the explicit cancellation boundary: local
   commands and SSH transport processes use kill-on-drop, so a user interrupt
   does not leave the owned process running detached.
-  Environment contracts, container/sandbox adapters, SSH pooling, explicit
-  host-key policy, and remote worktree review keep P3.1/P3.2/P3.3 open.
+  The first container adapter now runs every operation in a disposable,
+  network-disabled container with a bounded bind mount, read-only inspection,
+  live bounded command output, and daemon-side forced cleanup on cancellation.
+  Environment contracts, sandbox adapters, SSH pooling, explicit host-key
+  policy, container resource policy, and remote worktree review remain open.
 - [ ] **P3.3 SSH executor:** host-key policy, connection pooling, credential
   references, remote process-tree cancellation, upload/download semantics, and
   conformance tests.
-- [ ] **P3.4 Container and sandbox executors:** lifecycle, mounts, resource and
-  network policy, cleanup, and the same conformance tests.
+- [ ] **P3.4 Container and sandbox executors:** the disposable-container
+  baseline has lifecycle, mounts, network denial, cleanup, and conformance
+  tests; resource policy, reusable environments, and managed sandboxes remain.
 - [ ] **P3.5 Worktree manager:** default lease creation for Git coding,
   collision-free ownership, validation evidence, review/merge/abandon flow,
   recovery, and garbage collection.

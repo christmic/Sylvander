@@ -393,6 +393,23 @@ fn local_execution_root_must_be_absolute_and_normalized() {
 }
 
 #[test]
+fn container_runtime_and_image_are_single_non_option_arguments() {
+    for (runtime, image) in [
+        ("-runtime", "image"),
+        ("runtime", "-image"),
+        ("runtime", "image with space"),
+    ] {
+        let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+        config.execution_targets[0].transport = ExecutionTransportConfig::Container {
+            runtime: runtime.into(),
+            image: image.into(),
+        };
+        let errors = config.validate().unwrap_err().errors.join("\n");
+        assert!(errors.contains("container target local"), "{errors}");
+    }
+}
+
+#[test]
 fn validation_collects_duplicate_and_dangling_references() {
     let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
     config
