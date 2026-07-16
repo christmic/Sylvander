@@ -16,12 +16,17 @@ fn integrity(path: impl AsRef<Path>) -> MemoryIntegrityConfig {
 }
 
 fn protected_store(database: &Path, anchor: &Path) -> SqliteMemoryStore {
-    SqliteMemoryStore::open_with_integrity(
+    let store = SqliteMemoryStore::open_with_integrity(
         database,
         RelationshipMemoryRetentionPolicy::default(),
         integrity(anchor),
     )
-    .unwrap()
+    .unwrap();
+    store
+        .maintenance()
+        .activate_staged_retention_policy()
+        .unwrap();
+    store
 }
 
 async fn backup_fixture() -> (tempfile::TempDir, MemoryBackupArtifact) {
