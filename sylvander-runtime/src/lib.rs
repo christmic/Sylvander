@@ -2724,16 +2724,38 @@ id = "model-a"
         agent: &str,
         user: &str,
     ) -> sylvander_agent::run::AuthenticatedSession {
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal {
+                id: sylvander_protocol::PrincipalId::new(user),
+                kind: sylvander_protocol::PrincipalKind::System,
+                authentication: sylvander_protocol::AuthenticationMethod::UnixPeer,
+                roles: Vec::new(),
+            },
+            "memory-test",
+            "unix",
+            format!("memory-test-{}", uuid::Uuid::new_v4()),
+        );
+        let created = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionCreateRequest {
+                agent_id: AgentId::new(agent),
+                label: "memory-test".into(),
+                channel_id: Some("memory-test".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let stored = runtime
+            .session_store
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .unwrap();
         let configured = runtime.configured_agent(&AgentId::new(agent)).unwrap();
         configured
-            .attach_authenticated_session(
-                SessionId::new(uuid::Uuid::new_v4().to_string()),
-                SessionMetadata {
-                    workspace: PathBuf::from("/tmp"),
-                    name: "memory-test".into(),
-                    user_id: user.into(),
-                },
-            )
+            .attach_authenticated_session(created.session_id, stored.metadata)
             .await
             .unwrap()
     }
