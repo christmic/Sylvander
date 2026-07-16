@@ -279,6 +279,17 @@ impl SqliteMemoryMaintenance {
         backup::create_backup(&self.store, data_dir.as_ref())
     }
 
+    /// Publish one verified backup and then retain only the newest verified
+    /// database/manifest pairs. Incomplete, temporary, or invalid artifacts
+    /// never count toward the retention limit.
+    pub fn backup_and_rotate(
+        &self,
+        data_dir: impl AsRef<Path>,
+        retained_copies: u32,
+    ) -> Result<MemoryBackupArtifact, MemoryStoreError> {
+        backup::create_backup_and_rotate(&self.store, data_dir.as_ref(), retained_copies)
+    }
+
     fn purge_at(&self, wall_now: i64) -> Result<MemoryPurgeReport, MemoryStoreError> {
         let policy = &self.store.retention_policy;
         self.store.with_connection(|connection| {
