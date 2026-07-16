@@ -691,4 +691,42 @@ mod tests {
         assert_eq!(json["type"], "identity_binding");
         assert_eq!(json["response"]["result"], "not_linked");
     }
+
+    #[test]
+    fn mutated_client_frames_are_total_and_strict_shapes_fail_closed() {
+        let valid = br#"{"type":"chat","text":"hello","session_id":"session-1"}"#;
+        let strict_failures = [
+            Vec::new(),
+            b"null".to_vec(),
+            b"[]".to_vec(),
+            b"{}".to_vec(),
+            b"{".to_vec(),
+            vec![0xff, 0xfe, 0xfd],
+            br#"{"type":"chat","text":"hello","unknown":true}"#.to_vec(),
+            br#"{"type":"unknown","text":"hello"}"#.to_vec(),
+        ];
+        for frame in strict_failures {
+            assert!(
+                serde_json::from_slice::<UiClientMessage>(&frame).is_err(),
+                "invalid shape unexpectedly decoded: {frame:?}"
+            );
+        }
+
+        let mut corpus = Vec::new();
+        for index in 0..valid.len() {
+            let mut deleted = valid.to_vec();
+            deleted.remove(index);
+            corpus.push(deleted);
+
+            let mut replaced = valid.to_vec();
+            replaced[index] = 0xff;
+            corpus.push(replaced);
+        }
+
+        for frame in corpus {
+            let parsed =
+                std::panic::catch_unwind(|| serde_json::from_slice::<UiClientMessage>(&frame));
+            assert!(parsed.is_ok(), "parser panicked for {frame:?}");
+        }
+    }
 }

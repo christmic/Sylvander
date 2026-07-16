@@ -671,9 +671,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   worktree/run recovery.
 - [x] **P6.2 Operational controls:** health/readiness, metrics, tracing export,
   queue/backpressure limits, quotas, diagnostics, alerts, and runbooks.
-- [ ] **P6.3 Security verification:** threat model, secret scanning, dependency
-  audit, protocol fuzz/property tests, path/command injection tests, tenant
-  isolation, and data deletion verification.
+- [x] **P6.3 Security verification:** the repeatable release gate covers the
+  threat model, tracked-secret scan, locked RustSec dependency audit,
+  deterministic malformed/mutated protocol parsing, path and command-argument
+  injection, cross-owner isolation, credential redaction, and complete learned
+  data deletion. Environment-dependent limitations are recorded in
+  [`security-verification.md`](security-verification.md).
 - [ ] **P6.4 Performance verification:** concurrency, long sessions, large
   workspaces, slow remote execution, channel bursts, resource ceilings, and
   latency budgets.
