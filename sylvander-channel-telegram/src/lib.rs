@@ -163,16 +163,24 @@ impl Channel for TelegramChannel {
             .layer(DefaultBodyLimit::max(self.max_request_bytes))
             .with_state(state.clone());
 
-        let listener = tokio::net::TcpListener::bind(self.webhook_addr)
-            .await
-            .unwrap();
+        let listener = match tokio::net::TcpListener::bind(self.webhook_addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                warn!(%error, addr = %self.webhook_addr, "telegram channel bind failed");
+                outgoing.abort();
+                let _ = outgoing.await;
+                return;
+            }
+        };
         info!(addr = %self.webhook_addr, "telegram channel listening");
         state.ctx.mark_ready();
         let shutdown = state.ctx.clone();
-        axum::serve(listener, app)
+        if let Err(error) = axum::serve(listener, app)
             .with_graceful_shutdown(async move { shutdown.shutdown_requested().await })
             .await
-            .unwrap();
+        {
+            warn!(%error, "telegram channel server failed");
+        }
         outgoing.abort();
         let _ = outgoing.await;
     }
@@ -371,10 +379,16 @@ async fn find_by_chat_id(
 // ===========================================================================
 
 async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
-    let mut rx = ctx
-        .subscribe(SubscriptionFilter::all())
+    let mut rx = match ctx
+        .subscribe(SubscriptionFilter::for_agent(ch.agent_id.clone()))
         .await
-        .expect("subscribe");
+    {
+        Ok(receiver) => receiver,
+        Err(error) => {
+            warn!(%error, "telegram: outgoing subscribe failed");
+            return;
+        }
+    };
 
     while let Some(msg) = rx.recv().await {
         let MessageKind::Stream(ref ev) = msg.kind else {
@@ -400,8 +414,8 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
                 ..
             } => {
                 let icon = if *is_error { "❌" } else { "✅" };
-                let summary = if output.len() > 200 {
-                    format!("{}...", &output[..200])
+                let summary = if output.chars().count() > 200 {
+                    format!("{}...", output.chars().take(200).collect::<String>())
                 } else {
                     output.clone()
                 };
