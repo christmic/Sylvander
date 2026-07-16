@@ -2167,6 +2167,11 @@ impl Runtime {
         let memory_maintenance = Some(MemoryMaintenanceTask::start(
             memory_maintenance_handle,
             memory_policy,
+            config
+                .server
+                .data_dir
+                .clone()
+                .expect("resolved runtime data directory"),
         ));
         Ok(Self {
             engine,
@@ -3355,7 +3360,8 @@ model_name = "shared"
         let store =
             SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
                 .unwrap();
-        let maintenance = MemoryMaintenanceTask::start(store.maintenance(), policy);
+        let maintenance =
+            MemoryMaintenanceTask::start(store.maintenance(), policy, directory.path().into());
         rusqlite::Connection::open(&memory_db)
             .unwrap()
             .execute(
