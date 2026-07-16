@@ -188,6 +188,30 @@ The endpoint credentials and TLS references are not rendered in Debug output
 or validation errors. Read retries are bounded; compare-and-swap conflicts and
 ambiguous mutations fail closed instead of being blindly replayed.
 
+The remote service contract is deliberately small and strongly consistent:
+
+- `GET` returns `200`, the signed anchor JSON body, and a strong `ETag`; `404`
+  means the resource has never been created.
+- Bootstrap uses `PUT` with `If-None-Match: *`. An existing resource must return
+  `409` or `412`, never overwrite the current value.
+- Every transition uses `PUT` with the exact strong `ETag` in `If-Match` and
+  returns a new strong `ETag`. Stale revisions return `409` or `412`.
+- Successful writes return `200` or `201`. Writes are not automatically
+  retried after timeout because the commit result is ambiguous; the next
+  startup/read resolves a durable `Pending` state against the database root.
+
+The service must durably linearize the value and revision in one transaction.
+Do not place a cache, eventually-consistent object store, or CDN in this path.
+The optional client identity secret is one PEM document containing the client
+certificate chain and private key. Operate the service, its storage, and its
+credentials outside the database host's administrative rollback boundary.
+
+This defeats replay of the database, local file anchor, integrity key, and
+local configuration to an older valid snapshot. It does not defend against an
+administrator actively controlling both the live Sylvander process and the
+remote anchor service or its current write credentials; that is an operational
+separation and credential-lifecycle boundary.
+
 ## Storage
 
 If `server.data_dir` is omitted, it resolves to

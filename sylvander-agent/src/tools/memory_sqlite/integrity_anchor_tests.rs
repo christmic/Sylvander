@@ -160,6 +160,29 @@ async fn reads_retry_only_within_the_configured_bound() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn missing_or_weak_etag_is_never_accepted_as_a_cas_revision() {
+    for etag in [None, Some("W/\"v1\"")] {
+        let server = MockServer::start().await;
+        let mut response = ResponseTemplate::new(200).set_body_bytes(b"value".to_vec());
+        if let Some(etag) = etag {
+            response = response.insert_header("etag", etag);
+        }
+        Mock::given(path("/anchor"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let endpoint = format!("{}/anchor", server.uri());
+        let error = tokio::task::spawn_blocking(move || {
+            test_anchor(&endpoint, Duration::from_secs(1), 0).load()
+        })
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error, MemoryAnchorError::InvalidResponse);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn timeout_and_service_errors_fail_closed_without_response_content() {
     let state = Arc::new(Mutex::new(CasState {
         value: Some(b"value".to_vec()),

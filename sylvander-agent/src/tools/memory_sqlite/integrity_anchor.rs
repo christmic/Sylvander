@@ -202,7 +202,7 @@ impl fmt::Debug for HttpMemoryIntegrityAnchorConfig {
             .field("read_retries", &self.read_retries)
             .field("ca_certificate_pem", &self.ca_certificate_pem.is_some())
             .field("client_identity_pem", &self.client_identity_pem.is_some())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
