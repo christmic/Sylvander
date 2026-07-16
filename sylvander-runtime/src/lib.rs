@@ -596,104 +596,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         request: SessionCreateRequest,
     ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
-        let principal = require_principal(boundary, "create_session")?;
-        let label = request.label.trim().to_string();
-        if label.is_empty() || label.len() > 200 {
-            return Err(boundary_failure(
-                boundary,
-                "create_session",
-                "session label must contain 1..=200 bytes",
-            ));
-        }
-        if request
-            .channel_id
-            .as_deref()
-            .is_some_and(|id| id != boundary.channel_instance_id)
-        {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary,
-                "create_session",
-            ));
-        }
-        let agent = self
-            .active_agent(&request.agent_id, boundary, "create_session")
-            .await?;
-        if !self
-            .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
-            .await?
-        {
-            return Err(sylvander_protocol::BoundaryError::forbidden(
-                boundary,
-                "create_session",
-            ));
-        }
-        let effective = resolve_session_config(&agent, &request.overrides, None, None)
-            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
-        let workspace = effective
-            .user_workspace
-            .as_ref()
-            .or(effective.agent_workspace.as_ref())
-            .map_or_else(
-                || std::path::PathBuf::from("."),
-                |binding| binding.path.clone(),
-            );
-        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let metadata = SessionMetadata {
-            workspace,
-            name: label.clone(),
-            user_id: principal.id.0.clone(),
-        };
-        let mut session = StoredSession::new(
-            session_id.clone(),
-            &label,
-            SessionLifetime::Persistent,
-            metadata.clone(),
-            vec![request.agent_id.clone()],
-        );
-        session.config_overrides = request.overrides.clone();
-        session.effective_config = Some(effective.clone());
-        session.external_meta.insert(
-            "channel_id".into(),
-            serde_json::Value::String(boundary.channel_instance_id.clone()),
-        );
-        self.sessions
-            .save(&session)
+        self.create_session_with_metadata(boundary, request, BTreeMap::new())
             .await
-            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
-        if let Err(error) = agent
-            .attach_authenticated_session(session_id.clone(), metadata.clone())
-            .await
-        {
-            let _ = self.sessions.delete(&session_id).await;
-            return Err(boundary_failure(
-                boundary,
-                "create_session",
-                error.to_string(),
-            ));
-        }
-        if let Err(error) = self
-            .engine
-            .attach_session(
-                session_id.clone(),
-                &label,
-                metadata,
-                std::slice::from_ref(&request.agent_id),
-            )
-            .await
-        {
-            let _ = self.sessions.delete(&session_id).await;
-            return Err(boundary_failure(
-                boundary,
-                "create_session",
-                error.to_string(),
-            ));
-        }
-        Ok(SessionConfigState {
-            session_id,
-            revision: 0,
-            overrides: request.overrides,
-            effective,
-        })
     }
 
     async fn session_config(
@@ -843,7 +747,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
         self.authorize_message(boundary, &chat).await?;
         validate_external_metadata(boundary, &external_meta)?;
 
-        let session_id = if let Some(session_id) = existing_session {
+        let (session_id, created_agent) = if let Some(session_id) = existing_session {
             let session = self
                 .owned_session(boundary, &session_id, "submit_chat")
                 .await?;
@@ -853,7 +757,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     "submit_chat",
                 ));
             }
-            session_id
+            (session_id, None)
         } else {
             let create = SessionCreateRequest {
                 agent_id: agent_id.clone(),
@@ -868,56 +772,56 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 },
             )
             .await?;
-            let state = self.create_session(boundary, create).await?;
-            if !external_meta.is_empty() {
-                self.sessions
-                    .patch_metadata(
-                        &state.session_id,
-                        sylvander_agent::session_store::SessionMetadataPatch {
-                            name: None,
-                            external_meta: external_meta
-                                .into_iter()
-                                .map(|(key, value)| (key, serde_json::Value::String(value)))
-                                .collect(),
-                        },
-                    )
-                    .await
-                    .map_err(|_| {
-                        boundary_failure(
-                            boundary,
-                            "submit_chat",
-                            "session metadata persistence failed",
-                        )
-                    })?;
-            }
-            state.session_id
+            let created_agent = self
+                .active_agent(&agent_id, boundary, "submit_chat")
+                .await?;
+            let state = self
+                .create_session_with_metadata(boundary, create, external_meta)
+                .await?;
+            (state.session_id, Some(created_agent))
         };
 
-        let events = self
-            .bus
-            .subscribe(SubscriptionFilter {
-                session_ids: Some(vec![session_id.clone()]),
-                recipients: None,
-                kinds: None,
-            })
-            .await
-            .map_err(|_| boundary_failure(boundary, "submit_chat", "event relay unavailable"))?;
-        self.bus
-            .publish(BusMessage {
+        let submission = async {
+            let events = self
+                .bus
+                .subscribe(SubscriptionFilter {
+                    session_ids: Some(vec![session_id.clone()]),
+                    recipients: None,
+                    kinds: None,
+                })
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, "submit_chat", "event relay unavailable")
+                })?;
+            self.bus
+                .publish(BusMessage {
+                    session_id: session_id.clone(),
+                    sender: sylvander_agent::bus::Sender::User(
+                        require_principal(boundary, "submit_chat")?.id.0.clone(),
+                    ),
+                    recipient: Recipient::Agent(agent_id),
+                    kind: sylvander_agent::bus::MessageKind::Chat,
+                    payload: text,
+                    attachments,
+                    timestamp: sylvander_agent::session::now_secs(),
+                    id: sylvander_agent::bus::MessageId::new(),
+                })
+                .await
+                .map_err(|_| {
+                    boundary_failure(boundary, "submit_chat", "message dispatch failed")
+                })?;
+            Ok(sylvander_channel::SubmittedChat {
                 session_id: session_id.clone(),
-                sender: sylvander_agent::bus::Sender::User(
-                    require_principal(boundary, "submit_chat")?.id.0.clone(),
-                ),
-                recipient: Recipient::Agent(agent_id),
-                kind: sylvander_agent::bus::MessageKind::Chat,
-                payload: text,
-                attachments,
-                timestamp: sylvander_agent::session::now_secs(),
-                id: sylvander_agent::bus::MessageId::new(),
+                events,
             })
-            .await
-            .map_err(|_| boundary_failure(boundary, "submit_chat", "message dispatch failed"))?;
-        Ok(sylvander_channel::SubmittedChat { session_id, events })
+        }
+        .await;
+        if submission.is_err()
+            && let Some(agent) = created_agent
+        {
+            self.rollback_created_session(&agent, &session_id).await;
+        }
+        submission
     }
 
     async fn submit_control(
@@ -1256,6 +1160,125 @@ impl sylvander_channel::UiService for RuntimeUiService {
 }
 
 impl RuntimeUiService {
+    async fn create_session_with_metadata(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: SessionCreateRequest,
+        external_meta: BTreeMap<String, String>,
+    ) -> Result<SessionConfigState, sylvander_protocol::BoundaryError> {
+        let principal = require_principal(boundary, "create_session")?;
+        let label = request.label.trim().to_string();
+        if label.is_empty() || label.len() > 200 {
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                "session label must contain 1..=200 bytes",
+            ));
+        }
+        if request
+            .channel_id
+            .as_deref()
+            .is_some_and(|id| id != boundary.channel_instance_id)
+        {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ));
+        }
+        let agent = self
+            .active_agent(&request.agent_id, boundary, "create_session")
+            .await?;
+        if !self
+            .current_agent_access_allowed(&request.agent_id, boundary, "create_session")
+            .await?
+        {
+            return Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "create_session",
+            ));
+        }
+        let effective = resolve_session_config(&agent, &request.overrides, None, None)
+            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
+        let workspace = effective
+            .user_workspace
+            .as_ref()
+            .or(effective.agent_workspace.as_ref())
+            .map_or_else(
+                || std::path::PathBuf::from("."),
+                |binding| binding.path.clone(),
+            );
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
+        let metadata = SessionMetadata {
+            workspace,
+            name: label.clone(),
+            user_id: principal.id.0.clone(),
+        };
+        let mut session = StoredSession::new(
+            session_id.clone(),
+            &label,
+            SessionLifetime::Persistent,
+            metadata.clone(),
+            vec![request.agent_id.clone()],
+        );
+        session.config_overrides = request.overrides.clone();
+        session.effective_config = Some(effective.clone());
+        session.external_meta.extend(
+            external_meta
+                .into_iter()
+                .map(|(key, value)| (key, serde_json::Value::String(value))),
+        );
+        session.external_meta.insert(
+            "channel_id".into(),
+            serde_json::Value::String(boundary.channel_instance_id.clone()),
+        );
+        self.sessions
+            .save(&session)
+            .await
+            .map_err(|error| boundary_failure(boundary, "create_session", error.to_string()))?;
+        if let Err(error) = agent
+            .attach_authenticated_session(session_id.clone(), metadata.clone())
+            .await
+        {
+            let _ = self.sessions.delete(&session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
+        if let Err(error) = self
+            .engine
+            .attach_session(
+                session_id.clone(),
+                &label,
+                metadata,
+                std::slice::from_ref(&request.agent_id),
+            )
+            .await
+        {
+            self.rollback_created_session(&agent, &session_id).await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
+        Ok(SessionConfigState {
+            session_id,
+            revision: 0,
+            overrides: request.overrides,
+            effective,
+        })
+    }
+
+    async fn rollback_created_session(&self, agent: &ConfiguredAgent, session_id: &SessionId) {
+        self.engine.detach_session(session_id).await;
+        agent.detach_authenticated_session(session_id).await;
+        if let Err(error) = self.sessions.delete(session_id).await {
+            warn!(%error, %session_id, "failed to delete compensated session");
+        }
+    }
+
     async fn active_agent(
         &self,
         agent_id: &AgentId,
@@ -2796,6 +2819,68 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    struct InstrumentedBus {
+        inner: InProcessMessageBus,
+        operations: std::sync::Mutex<Vec<&'static str>>,
+        fail_subscribe: bool,
+        fail_chat_publish: bool,
+        fail_all_publish: bool,
+    }
+
+    impl InstrumentedBus {
+        fn new(fail_subscribe: bool, fail_chat_publish: bool) -> Self {
+            Self {
+                inner: InProcessMessageBus::new(),
+                operations: std::sync::Mutex::new(Vec::new()),
+                fail_subscribe,
+                fail_chat_publish,
+                fail_all_publish: false,
+            }
+        }
+
+        fn rejecting_publish() -> Self {
+            Self {
+                fail_all_publish: true,
+                ..Self::new(false, false)
+            }
+        }
+
+        fn operations(&self) -> Vec<&'static str> {
+            self.operations.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MessageBus for InstrumentedBus {
+        async fn publish(&self, message: BusMessage) -> Result<(), sylvander_agent::bus::BusError> {
+            let chat = matches!(message.kind, sylvander_agent::bus::MessageKind::Chat);
+            self.operations
+                .lock()
+                .unwrap()
+                .push(if chat { "publish_chat" } else { "publish" });
+            if self.fail_all_publish || (chat && self.fail_chat_publish) {
+                return Err(sylvander_agent::bus::BusError::SendFailed(
+                    "injected".into(),
+                ));
+            }
+            self.inner.publish(message).await
+        }
+
+        async fn subscribe(
+            &self,
+            filter: SubscriptionFilter,
+        ) -> Result<tokio::sync::mpsc::UnboundedReceiver<BusMessage>, sylvander_agent::bus::BusError>
+        {
+            self.operations.lock().unwrap().push("subscribe");
+            if self.fail_subscribe {
+                return Err(sylvander_agent::bus::BusError::SubscribeFailed(
+                    "injected".into(),
+                ));
+            }
+            self.inner.subscribe(filter).await
+        }
+    }
+
     struct BlockingChannel {
         started: Arc<Notify>,
         dropped: Arc<AtomicBool>,
@@ -2917,6 +3002,159 @@ id = "model-a"
             secret.display()
         ))
         .unwrap()
+    }
+
+    fn ui_service_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeUiService {
+        RuntimeUiService {
+            engine: runtime.ui_service.engine.clone(),
+            bus,
+            sessions: runtime.ui_service.sessions.clone(),
+            agents: runtime.ui_service.agents.clone(),
+            agent_registry: runtime.ui_service.agent_registry.clone(),
+            revision_provider: runtime.ui_service.revision_provider.clone(),
+            credential_resolver: runtime.ui_service.credential_resolver.clone(),
+            evidence: runtime.ui_service.evidence.clone(),
+            boundary: runtime.ui_service.boundary.clone(),
+        }
+    }
+
+    #[tokio::test]
+    async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = configured_memory_test_config(&directory, &["assistant"]);
+        config.agents[0].access.allow_authenticated = true;
+        let runtime = Runtime::boot_config(config).await.unwrap();
+        let boundary = sylvander_protocol::BoundaryContext::authenticated(
+            sylvander_protocol::AuthenticatedPrincipal::user(
+                "channel-user",
+                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
+            ),
+            "channel-a",
+            "test",
+            "request-1",
+        );
+        let request = |existing_session| sylvander_channel::ExternalChatRequest {
+            existing_session,
+            agent_id: AgentId::new("assistant"),
+            label: "authenticated chat".into(),
+            overrides: SessionConfigOverrides::default(),
+            text: "hello".into(),
+            attachments: Vec::new(),
+            external_meta: BTreeMap::from([("external_id".into(), "chat-1".into())]),
+        };
+        let agent = runtime
+            .configured_agent(&AgentId::new("assistant"))
+            .unwrap();
+        let initial_store = runtime.session_store.list_persistent().await.unwrap().len();
+        let initial_engine = runtime
+            .engine
+            .list_sessions()
+            .await
+            .into_iter()
+            .map(|session| session.id.0)
+            .collect::<BTreeSet<_>>();
+        let initial_agent = agent.run.list_sessions().await;
+
+        let join_bus = Arc::new(InstrumentedBus::rejecting_publish());
+        let mut join_failure = ui_service_with_bus(&runtime, Arc::new(InProcessMessageBus::new()));
+        join_failure.engine = Arc::new(AgentRunEngine::new(join_bus.clone()));
+        sylvander_channel::UiService::submit_chat(&join_failure, &boundary, request(None))
+            .await
+            .expect_err("engine attach failure must reject a new session");
+        assert_eq!(join_bus.operations(), ["publish"]);
+        assert!(join_failure.engine.list_sessions().await.is_empty());
+        assert_eq!(
+            runtime.session_store.list_persistent().await.unwrap().len(),
+            initial_store
+        );
+        assert_eq!(agent.run.list_sessions().await, initial_agent);
+
+        for (fail_subscribe, fail_publish, expected) in [
+            (true, false, vec!["subscribe"]),
+            (false, true, vec!["subscribe", "publish_chat"]),
+        ] {
+            let bus = Arc::new(InstrumentedBus::new(fail_subscribe, fail_publish));
+            let service = ui_service_with_bus(&runtime, bus.clone());
+            sylvander_channel::UiService::submit_chat(&service, &boundary, request(None))
+                .await
+                .expect_err("injected delivery failure must reject a new session");
+            assert_eq!(bus.operations(), expected);
+            assert_eq!(
+                runtime.session_store.list_persistent().await.unwrap().len(),
+                initial_store
+            );
+            assert_eq!(
+                runtime
+                    .engine
+                    .list_sessions()
+                    .await
+                    .into_iter()
+                    .map(|session| session.id.0)
+                    .collect::<BTreeSet<_>>(),
+                initial_engine
+            );
+            assert_eq!(agent.run.list_sessions().await, initial_agent);
+        }
+
+        let existing = sylvander_channel::UiService::create_session(
+            runtime.ui_service.as_ref(),
+            &boundary,
+            SessionCreateRequest {
+                agent_id: AgentId::new("assistant"),
+                label: "existing".into(),
+                channel_id: Some("channel-a".into()),
+                overrides: SessionConfigOverrides::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let failing_bus = Arc::new(InstrumentedBus::new(false, true));
+        let failing_service = ui_service_with_bus(&runtime, failing_bus);
+        sylvander_channel::UiService::submit_chat(
+            &failing_service,
+            &boundary,
+            request(Some(existing.session_id.clone())),
+        )
+        .await
+        .expect_err("existing-session publish failure must be reported");
+        assert!(
+            runtime
+                .session_store
+                .get(&existing.session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            runtime
+                .engine
+                .get_session(&existing.session_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            agent
+                .run
+                .list_sessions()
+                .await
+                .contains(&existing.session_id)
+        );
+
+        let success_bus = Arc::new(InstrumentedBus::new(false, false));
+        let success_service = ui_service_with_bus(&runtime, success_bus.clone());
+        let mut submitted =
+            sylvander_channel::UiService::submit_chat(&success_service, &boundary, request(None))
+                .await
+                .unwrap();
+        assert_eq!(success_bus.operations(), ["subscribe", "publish_chat"]);
+        let chat = submitted.events.recv().await.unwrap();
+        assert!(matches!(chat.kind, sylvander_agent::bus::MessageKind::Chat));
+        assert_eq!(chat.session_id, submitted.session_id);
+        assert!(matches!(
+            submitted.events.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        runtime.shutdown().await.unwrap();
     }
 
     async fn attach_memory_session(

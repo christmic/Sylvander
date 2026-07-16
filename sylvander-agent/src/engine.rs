@@ -542,6 +542,13 @@ impl AgentRunEngine {
         Ok(())
     }
 
+    /// Remove Runtime bookkeeping for a session during compensated creation.
+    /// Agent-local authorization is revoked separately by the Runtime-owned
+    /// session issuer path, so this method never publishes a public command.
+    pub async fn detach_session(&self, session_id: &SessionId) -> bool {
+        self.sessions.write().await.remove(session_id).is_some()
+    }
+
     /// Send a user message to an agent in a session.
     pub async fn send_message(
         &self,
