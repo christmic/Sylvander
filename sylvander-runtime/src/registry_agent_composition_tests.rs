@@ -252,6 +252,7 @@ exec "$@"
         execution_target: "container:test".into(),
         path: workspace.display().to_string(),
         read_only: true,
+        instruction_focus: None,
     });
     let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
     let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
@@ -274,6 +275,7 @@ exec "$@"
                 execution_target: "container:test".into(),
                 path: workspace,
                 read_only: true,
+                instruction_focus: None,
             }),
             ..SessionConfigOverrides::default()
         },

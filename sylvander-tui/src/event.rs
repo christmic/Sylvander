@@ -391,7 +391,7 @@ pub enum Action {
     RequestRuntimeInfo,
     DiscoverAgents,
     CreateSession {
-        request: sylvander_protocol::SessionCreateRequest,
+        request: Box<sylvander_protocol::SessionCreateRequest>,
     },
     RequestContext {
         session_id: Option<String>,

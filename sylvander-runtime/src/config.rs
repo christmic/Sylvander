@@ -578,6 +578,8 @@ pub struct WorkspaceBindingConfig {
     pub path: String,
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub instruction_focus: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1004,6 +1006,19 @@ fn validate_workspace(
         ));
     }
     require_text(&format!("{field} path"), &workspace.path, errors);
+    if let Some(focus) = &workspace.instruction_focus {
+        let focus = Path::new(focus);
+        if focus.is_absolute()
+            || focus.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            errors.push(format!("{field} instruction_focus must stay relative"));
+        }
+    }
 }
 
 fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<String>) {

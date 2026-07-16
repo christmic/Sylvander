@@ -1402,11 +1402,13 @@ mod tests {
                 execution_target: "local".into(),
                 path: "/agent".into(),
                 read_only: false,
+                instruction_focus: None,
             }),
             user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: "/project".into(),
                 read_only: false,
+                instruction_focus: None,
             }),
             workspace_mounts: Vec::new(),
             execution_target: "local".into(),

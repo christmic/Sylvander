@@ -412,6 +412,7 @@ impl AppState {
                 execution_target: "local".into(),
                 path: self.metadata.workspace.clone(),
                 read_only: false,
+                instruction_focus: None,
             }),
             ..Default::default()
         };
@@ -420,12 +421,12 @@ impl AppState {
             overrides.reasoning_effort = Some(*effort);
         }
         Some(Action::CreateSession {
-            request: sylvander_protocol::SessionCreateRequest {
+            request: Box::new(sylvander_protocol::SessionCreateRequest {
                 agent_id,
                 label: "New session".into(),
                 channel_id: None,
                 overrides,
-            },
+            }),
         })
     }
 
