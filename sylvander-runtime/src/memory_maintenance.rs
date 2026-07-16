@@ -14,7 +14,6 @@ pub(crate) struct RuntimeMemoryMaintenancePolicy {
     retention_interval: Duration,
     backup_interval: Duration,
     retained_backups: u32,
-    batch_size: u32,
     max_batches_per_run: u32,
 }
 
@@ -47,7 +46,6 @@ impl RuntimeMemoryMaintenancePolicy {
             retention_interval: Duration::from_secs(u64::from(settings.interval_seconds)),
             backup_interval: Duration::from_secs(u64::from(settings.backup.interval_seconds)),
             retained_backups: settings.backup.retained_copies,
-            batch_size: settings.batch_size,
             max_batches_per_run: settings.max_batches_per_run,
         })
     }
@@ -149,6 +147,12 @@ pub(crate) async fn catch_up(
     maintenance: &SqliteMemoryMaintenance,
     policy: &RuntimeMemoryMaintenancePolicy,
 ) -> Result<(), RuntimeError> {
+    if !maintenance
+        .has_active_retention_policy()
+        .map_err(|_| RuntimeError::Store("memory retention readiness failed".into()))?
+    {
+        return Ok(());
+    }
     run_bounded(maintenance, policy, None)
         .await
         .map_err(|_| RuntimeError::Store("memory retention catch-up failed".into()))
@@ -168,7 +172,7 @@ async fn run_bounded(
             .await
             .map_err(|_| "task_join")?
             .map_err(|_| "store")?;
-        if report.total_count() < policy.batch_size {
+        if report.total_count() == 0 {
             break;
         }
         tokio::task::yield_now().await;
