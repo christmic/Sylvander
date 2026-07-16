@@ -1,9 +1,9 @@
 use super::*;
 use crate::evidence::{
     EvaluationBaseline, EvaluationCase, EvaluationDatasetRevision, EvaluationSplit,
-    ExperimentPhase, HmacSha256EvidenceSigner, MetricMeasurement, ProposalTransition,
-    RecordExperimentEvidence, RegressionMetric, ScoreDirection, ScoringAdapterKind,
-    ScoringAdapterRevision, SelfChangeExperiment, SelfChangeExperimentStatus,
+    ExperimentPhase, ExperimentTransition, HmacSha256EvidenceSigner, MetricMeasurement,
+    ProposalTransition, RecordExperimentEvidence, RegressionMetric, ScoreDirection,
+    ScoringAdapterKind, ScoringAdapterRevision, SelfChangeExperiment, SelfChangeExperimentStatus,
     UnsignedExperimentEvidence, verify_experiment_evidence,
 };
 
@@ -249,9 +249,9 @@ async fn proposal_is_immutable_canonical_and_requires_real_evaluations() {
                 evidence: UnsignedExperimentEvidence {
                     experiment_id: "experiment-1".into(),
                     phase: ExperimentPhase::Candidate,
-                    proposal_digest_sha256: digest,
+                    proposal_digest_sha256: digest.clone(),
                     workspace_commit: "2".repeat(40),
-                    evaluations: vec![comparison],
+                    evaluations: vec![comparison.clone()],
                     artifacts: vec![],
                     recorded_at: 10,
                 },
@@ -271,4 +271,87 @@ async fn proposal_is_immutable_canonical_and_requires_real_evaluations() {
         SelfChangeExperimentStatus::CandidateEvaluated
     );
     assert_eq!(experiment.state_revision, 3);
+
+    let actor = "8".repeat(64);
+    assert!(matches!(
+        store
+            .record_experiment_merge(
+                ExperimentTransition {
+                    experiment_id: "experiment-1".into(),
+                    expected_state_revision: 3,
+                    principal_digest: actor.clone(),
+                    reason: Some("not approved".into()),
+                    occurred_at: 11,
+                },
+                "3".repeat(40),
+            )
+            .await
+            .unwrap_err(),
+        EvidenceError::ExperimentStateConflict
+    ));
+    let approved = store
+        .approve_experiment_merge(ExperimentTransition {
+            experiment_id: "experiment-1".into(),
+            expected_state_revision: 3,
+            principal_digest: actor.clone(),
+            reason: Some("Candidate evidence reviewed.".into()),
+            occurred_at: 12,
+        })
+        .await
+        .unwrap();
+    assert_eq!(approved.status, SelfChangeExperimentStatus::MergeApproved);
+    let merged = store
+        .record_experiment_merge(
+            ExperimentTransition {
+                experiment_id: "experiment-1".into(),
+                expected_state_revision: 4,
+                principal_digest: actor.clone(),
+                reason: Some("Reviewed worktree merged.".into()),
+                occurred_at: 13,
+            },
+            "3".repeat(40),
+        )
+        .await
+        .unwrap();
+    assert_eq!(merged.status, SelfChangeExperimentStatus::Merged);
+    let observing = store
+        .begin_experiment_observation(ExperimentTransition {
+            experiment_id: "experiment-1".into(),
+            expected_state_revision: 5,
+            principal_digest: actor.clone(),
+            reason: Some("Begin post-merge observation.".into()),
+            occurred_at: 14,
+        })
+        .await
+        .unwrap();
+    assert_eq!(observing.status, SelfChangeExperimentStatus::Observing);
+    store
+        .record_experiment_evidence(
+            RecordExperimentEvidence {
+                id: "experiment-1-observation".into(),
+                expected_state_revision: 6,
+                principal_digest: actor,
+                evidence: UnsignedExperimentEvidence {
+                    experiment_id: "experiment-1".into(),
+                    phase: ExperimentPhase::Observation,
+                    proposal_digest_sha256: digest,
+                    workspace_commit: "3".repeat(40),
+                    evaluations: vec![comparison],
+                    artifacts: vec![],
+                    recorded_at: 15,
+                },
+            },
+            &signer,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .improvement_proposal("proposal-1".into())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ImprovementProposalStatus::Completed
+    );
 }
