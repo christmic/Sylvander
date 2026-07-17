@@ -36,10 +36,6 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
-        with:
-          # Pin to a stable nix version. Don't bump casually — nix
-          # upgrades often break flakes.
-          nix_path: /nix/var/nix/profiles/default/bin
 
       - name: Cache Nix store (best-effort, local)
         uses: cachix/cachix-action@v15
@@ -49,14 +45,21 @@ jobs:
           # empty
 
       - name: Add shell-tools overlay (zig 0.15.2 + python + git)
+        env:
+          # The default nix profile lives under the runner user's
+          # home (`/Users/runner`), not `/root` (we're on macos-26
+          # not linux). Anchor an explicit profile under RUNNER_TEMP
+          # so the same PATH works on every runner user.
+          NIX_PROFILE: ${{ runner.temp }}/nix-profile
         run: |
-          nix profile install nixpkgs#zig_0_15
+          export NIX_PROFILE="$RUNNER_TEMP/nix-profile"
+          nix profile install --profile "$NIX_PROFILE" nixpkgs#zig_0_15
 
       - name: zig build (nix-shelled)
         working-directory: sylvander-ghostty
         env:
           # Make sure zig is the Nix one, not a system one.
-          PATH: /root/.nix-profile/bin:$PATH
+          PATH: ${{ env.NIX_PROFILE }}/bin:$PATH
         run: |
           zig version
           zig build -Dapp-runtime=none -Demit-xcframework=false -Demit-macos-app=false
@@ -64,5 +67,5 @@ jobs:
       - name: zig test (nix-shelled, lib only)
         working-directory: sylvander-ghostty
         env:
-          PATH: /root/.nix-profile/bin:$PATH
+          PATH: ${{ env.NIX_PROFILE }}/bin:$PATH
         run: zig build -Dapp-runtime=none test

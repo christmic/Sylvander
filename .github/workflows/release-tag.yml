@@ -65,6 +65,13 @@ jobs:
           sudo xcode-select -s "$xcode_path"
           xcodebuild -version
 
+      # HUMAN-DECISION (deferred): notarization and signing secrets
+      # must be added under Settings -> Secrets and variables ->
+      # Actions before the first release:
+      #   MACOS_CERTIFICATE_P12, MACOS_CERTIFICATE_PASSWORD,
+      #   MACOS_SIGNING_IDENTITY, APPLE_ID, APPLE_TEAM_ID,
+      #   APPLE_APP_PASSWORD.
+      # Until then this workflow will fail at the secret check.
       - name: Require distribution credentials
         env:
           CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
