@@ -1,0 +1,173 @@
+# Module Reference — `sylvander-protocol`
+
+> Wire-format protocol types for Sylvander's message bus.
+> Source: [`sylvander-protocol/src/`](../sylvander-protocol/src)
+
+## 1. Purpose
+
+`sylvander-protocol` defines the **language-neutral contract** between Sylvander's
+agents, channels, and bus. Every type derives `serde::Serialize`, `serde::Deserialize`,
+and `schemars::JsonSchema`. The JSON Schema output is the basis for TypeScript,
+Python, Swift, and other client code generation.
+
+The crate is split into two layers:
+
+- **Cross-language data definitions** (`types`, `boundary`, `identity_binding`,
+  `user_profile`, `ui`, `schema`, `agent_admin`, `registry_admin`) — wire-stable
+  DTOs with `JsonSchema` derives.
+- **Rust-only runtime types** (`bus_trait`, `in_process`, `session_context`) —
+  the in-process bus and the umbrella request context.
+
+## 2. Public surface (top-level types)
+
+```text
+mod agent_admin;       // AgentAdminRequest / AgentAdminResponse / AgentAdminError
+mod boundary;          // BoundaryContext, AuthenticatedPrincipal, BoundaryError
+mod bus_trait;         // MessageBus trait, SubscriptionFilter, BusDiagnostics
+mod identity_binding;  // IdentityBindingRequest / IdentityBindingResponse
+mod in_process;        // InProcessMessageBus (tokio mpsc-backed MessageBus)
+mod registry_admin;    // RegistryAdminRequest / RegistryAdminResponse
+mod schema;            // Generated JSON Schema helpers
+mod session_context;   // SessionContext, Identity, Origin, RequestMeta
+mod types;             // StreamEvent, BusMessage, AgentId, SessionId, UserId, ...
+mod ui;                // UiClientMessage, UiServerMessage
+mod user_profile;      // UserProfileRequest / UserProfileResponse
+```
+
+Re-exports from `lib.rs`:
+
+```rust
+pub use agent_admin::*;
+pub use boundary::*;
+pub use bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
+pub use identity_binding::*;
+pub use in_process::InProcessMessageBus;
+pub use registry_admin::*;
+pub use session_context::*;
+pub use types::*;
+pub use ui::*;
+pub use user_profile::*;
+```
+
+Selected verbatim signatures:
+
+```rust
+// types.rs
+pub const UI_PROTOCOL_MIN_VERSION: u16 = 1;
+pub const UI_PROTOCOL_MAX_VERSION: u16 = 3;
+
+pub enum StreamEvent { TextDelta{delta}, ThinkingDelta{delta}, ModelRetry{...},
+    ToolCall{call_id, tool_name, input}, ToolOutputDelta{...}, ToolResult{...},
+    IterationStart{iteration}, IterationEnd{...}, Done{text},
+    ToolApprovalRequired{batch_id, tools, allowed_scopes}, AskUser{...},
+    UserAnswer{...}, TurnInterrupted{reason}, PlanProposed{...},
+    TaskStarted{...}, TaskProgress{...}, TaskCompleted{...},
+    CompactionStarted{automatic}, CompactionCompleted{report}, ... }
+
+pub struct BusMessage { session_id, sender, recipient, kind, payload,
+                        attachments, timestamp, id }
+
+pub struct AgentId(pub String);
+pub struct SessionId(pub String);
+pub struct UserId(pub String);            // with UserId::system() sentinel
+
+// bus_trait.rs
+#[async_trait]
+pub trait MessageBus: Send + Sync {
+    async fn publish(&self, msg: BusMessage) -> Result<(), BusError>;
+    async fn subscribe(&self, filter: SubscriptionFilter)
+        -> Result<mpsc::Receiver<BusMessage>, BusError>;
+    async fn diagnostics(&self) -> BusDiagnostics { ... }
+}
+```
+
+## 3. Architecture
+
+```text
+             cross-language wire types          Rust runtime
+            +-----------------------------+  +-------------------+
+            | types                       |  | bus_trait         |
+            | boundary                    |  | in_process        |
+            | identity_binding            |  | session_context   |
+            | user_profile                |  +-------------------+
+            | ui                          |           |
+            | agent_admin                 |           v
+            | registry_admin              |    MessageBus trait
+            | schema (JSON Schema gen)    |    InProcessMessageBus
+            +-----------------------------+
+                       ^                          ^
+                       |                          |
+                       |                          |
+                 transports, agents           Sylvander runtime
+                 (channels, TUI,              (agents, services)
+                  CLI clients)
+```
+
+## 4. Lifecycle / data flow
+
+A typical request crosses these layers in order:
+
+1. **Ingress authentication.** A transport (channel) produces a
+   `BoundaryContext` containing the `AuthenticatedPrincipal` (or
+   `None` for unauthenticated requests), `channel_instance_id`,
+   `transport`, and `request_id`.
+2. **Envelope construction.** The transport wraps the user input in a
+   `UiClientMessage` (see `ui.rs`) and submits it through the
+   `Channel` trait into the bus.
+3. **Bus routing.** `InProcessMessageBus` matches each `BusMessage`
+   against subscriber `SubscriptionFilter`s (session / recipient /
+   kind) and fans out via `tokio::mpsc` channels. Backpressure is
+   enforced: `publish` returns `BusError::Backpressure` if any
+   matching subscriber is saturated.
+4. **Runtime work.** Agents consume messages, emit `StreamEvent`s
+   (through `MessageKind::Stream`), and finally write `Done{text}`.
+5. **Audit/inspection.** `agent_admin` and `registry_admin` envelopes
+   carry administrative operations; their responses redact secrets,
+   command arguments, and workspace paths before serialization.
+
+The `SessionContext` umbrella (`session_context.rs`) is the Rust-side
+"who/where/when/why" passed into agent and tool APIs. It carries
+`Identity`, `Origin`, `RequestMeta`, and a free-form `AttributeBag`
+that lets new fields land without changing call-site signatures.
+
+## 5. Configuration knobs
+
+The crate itself does not read environment variables. Configuration
+is owned by `sylvander-runtime`. Schema-generation helpers are
+exposed via the example binary:
+
+```bash
+cargo run -p sylvander-protocol --example generate_ui_schema
+```
+
+Each generated schema is also available programmatically through
+`crate::schema::{ui_protocol_schema, agent_admin_protocol_schema,
+registry_admin_protocol_schema, identity_binding_protocol_schema,
+user_profile_protocol_schema}`.
+
+## 6. Tests
+
+| Submodule | Test file | Coverage |
+|-----------|-----------|----------|
+| `types` | `sylvander-protocol/src/types.rs` (`mod tests`) | Round-trip, revision pins, prompt manifest, legacy compatibility, model selection resolution |
+| `boundary` | `sylvander-protocol/src/boundary.rs` (`mod tests`) | Credentials never appear in serialized context, `AuthenticationFailure` is content-free |
+| `identity_binding` | `sylvander-protocol/src/identity_binding/tests.rs` | Secret validation, serialization redaction, one-time-secret exhaustion |
+| `user_profile` | `sylvander-protocol/src/user_profile/tests.rs` | Privacy classifications, constraint count limit, owner-free envelopes |
+| `bus_trait` | exercised by `in_process/tests` | filter matching semantics |
+| `in_process` | `sylvander-protocol/src/in_process.rs` (`mod t`) | publish/subscribe, filter, backpressure rejection, concurrent publisher burst |
+| `session_context` | `sylvander-protocol/src/session_context.rs` (`mod tests`) | builder methods, attribute bag, system sentinel |
+| `schema` | `sylvander-protocol/src/schema.rs` (`mod tests`) | UI v3 schema exposes legacy + current operations, secrets redacted |
+| `ui` | `sylvander-protocol/src/ui.rs` (`mod tests`) | strict-shape parsing, registry/user-profile/identity-binding envelopes |
+| `agent_admin` | `sylvander-protocol/src/agent_admin.rs` (`mod tests`) | conflict errors, allowed_models round-trip, prompt redaction |
+| `registry_admin` | `sylvander-protocol/src/registry_admin/tests.rs` | generation reads, credential redaction |
+
+## 7. Related docs
+
+- [`docs/boundary-authorization.md`](boundary-authorization.md) — boundary contract, authentication methods, denial codes.
+- [`docs/identity-binding-protocol.md`](identity-binding-protocol.md) — identity link challenges, one-time secrets.
+- [`docs/user-profile-protocol.md`](user-profile-protocol.md) — owner-safe profile CRUD and privacy classes.
+- [`docs/sylvander-agent-platform.md`](sylvander-agent-platform.md) — Agent platform overview that consumes these types.
+- [`docs/server-configuration.md`](server-configuration.md) — how runtime configuration interacts with the wire protocol.
+- [`AGENTS.md`](../AGENTS.md) — project-wide agent guide.
+
+Co-Authored-By: 🦀 <oraculo@oraculo.ai>
