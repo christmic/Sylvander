@@ -104,8 +104,12 @@ jobs:
       # drift between minor runner rollouts.
       - name: Select Xcode 26
         run: |
-          set -e
-          xcode_path="$(ls -d /Applications/Xcode_26*.app | head -n 1)"
+          set -euo pipefail
+          xcode_path="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | head -n 1 || true)"
+          if [ -z "$xcode_path" ] || [ ! -d "$xcode_path" ]; then
+            echo "::error::No Xcode 26 app found under /Applications/"
+            exit 1
+          fi
           echo "Using $xcode_path"
           sudo xcode-select -s "$xcode_path"
           xcodebuild -version
@@ -123,16 +127,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
 
       - name: cargo build
         run: cargo build --workspace --locked
+
+      # Build the test binaries without running them so any compile
+      # error in #[cfg(test)] code surfaces before libtest's --skip
+      # filter can hide it.
+      - name: cargo test --no-run (build verification)
+        run: cargo test --workspace --locked --no-run
 
       - name: Verify macOS app helper contract
         run: |
@@ -169,7 +180,6 @@ jobs:
             --skip real_use_case \
             --skip single_iteration_end_turn_returns_final_message \
             --skip event_order_iteration_start_chunks_end \
-            --skip max_iterations_limit_enforced \
             --skip stream_wrong_content_type_errors
 
   # ---------------------------------------------------------------
@@ -210,11 +220,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
       - name: cargo fmt --all -- --check
@@ -230,11 +241,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
       - name: cargo clippy --workspace --all-targets -- -D warnings
@@ -251,9 +263,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
       - name: System dependencies
@@ -279,9 +292,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
       - name: System dependencies

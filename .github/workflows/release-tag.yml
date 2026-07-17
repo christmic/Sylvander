@@ -43,19 +43,24 @@ jobs:
           version: "0.15.2"
           cache: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: release-${{ runner.os }}-
           workspaces: |
             target -> target
 
       - name: Select Xcode 26
         run: |
-          set -e
-          xcode_path="$(ls -d /Applications/Xcode_26*.app | head -n 1)"
+          set -euo pipefail
+          xcode_path="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | head -n 1 || true)"
+          if [ -z "$xcode_path" ] || [ ! -d "$xcode_path" ]; then
+            echo "::error::No Xcode 26 app found under /Applications/"
+            exit 1
+          fi
           echo "Using $xcode_path"
           sudo xcode-select -s "$xcode_path"
           xcodebuild -version
