@@ -1,15 +1,20 @@
 name: CI
 
 # Verifies on every push to master and on PRs:
-#   1. The Sylvander Zig module compiles and its tests pass.
-#   2. The Ghostty fork still builds end-to-end with our patches
+#   1. The Ghostty fork still builds end-to-end with our patches
 #      (catches rebrand breakage, API drift after subtree pulls).
-#   3. The Sylvander Rust workspace still compiles and tests pass,
+#   2. The Sylvander Rust workspace still compiles and tests pass,
 #      is formatted, and passes clippy.
-#   4. The Rust workspace builds on Linux too (catches macOS-only
+#   3. The Rust workspace builds on Linux too (catches macOS-only
 #      assumptions before they reach release).
-#   5. macOS Swift files compile-check our rename (Sylvander-Info.plist,
+#   4. macOS Swift files compile-check our rename (Sylvander-Info.plist,
 #      Sylvander.sdef, Sylvander.xcodeproj) hasn't broken references.
+#
+# History: A prior "zig-module" job exercised a sylvander-ghostty/src/sylvander/
+# module that was added in F1 and removed again in F1.12 when we reverted
+# the subtree to upstream Ghostty main. That job is gone; the remaining
+# zig-checked + zig-full jobs cover upstream's own build surface, and a
+# new Sylvander-specific module job will return when F2-F6 work begins.
 #
 # Triggered on push to master, on pull requests, and manually via
 # the Actions tab ("Run workflow").
@@ -31,26 +36,7 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------
-  # 1. Sylvander Zig module — fast smoke test.
-  # ---------------------------------------------------------------
-  zig-module:
-    name: zig module
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: "0.15.2"
-          cache: false
-
-      - name: Sylvander module tests
-        working-directory: sylvander-ghostty/src/sylvander
-        run: zig build test --summary all
-
-  # ---------------------------------------------------------------
-  # 2a. Checked build — fast gate. Detects rebrand breakage, syntax
+  # 1a. Checked build — fast gate. Detects rebrand breakage, syntax
   # errors, API drift, .zon fingerprint mismatch. Single zig
   # invocation with minimal flags so it does not require macOS 26
   # SDK; only the default Xcode 16 SDK on macos-latest.
