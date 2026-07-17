@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   nix-build:
+    if: false   # DISABLED (2026-07-17): same Zig 0.15.2 ↔ GitHub Actions macOS image linker drift as ci.yml::zig-checked. Also gated by account billing on macos-26-xlarge. Re-enable when zig build (checked) is re-enabled.
     name: zig build inside nix develop
     runs-on: macos-26-xlarge   # nix-darwin needs a macOS runner
     timeout-minutes: 30

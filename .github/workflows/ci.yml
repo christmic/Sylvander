@@ -1,20 +1,25 @@
 name: CI
 
 # Verifies on every push to master and on PRs:
-#   1. The Ghostty fork still builds end-to-end with our patches
-#      (catches rebrand breakage, API drift after subtree pulls).
-#   2. The Sylvander Rust workspace still compiles and tests pass,
+#   1. The Sylvander Rust workspace still compiles and tests pass,
 #      is formatted, and passes clippy.
-#   3. The Rust workspace builds on Linux too (catches macOS-only
+#   2. The Rust workspace builds on Linux too (catches macOS-only
 #      assumptions before they reach release).
-#   4. macOS Swift files compile-check our rename (Sylvander-Info.plist,
+#   3. macOS Swift files compile-check our rename (Sylvander-Info.plist,
 #      Sylvander.sdef, Sylvander.xcodeproj) hasn't broken references.
+#   4. The macOS app helper contract is preserved (universal build +
+#      ad-hoc codesign + lipo arch verification).
 #
-# History: A prior "zig-module" job exercised a sylvander-ghostty/src/sylvander/
-# module that was added in F1 and removed again in F1.12 when we reverted
-# the subtree to upstream Ghostty main. That job is gone; the remaining
-# zig-checked + zig-full jobs cover upstream's own build surface, and a
-# new Sylvander-specific module job will return when F2-F6 work begins.
+# History:
+#   zig-module — removed (2026-07-17). Exercised a sylvander-ghostty/src/sylvander/
+#     module that F1.12 removed when reverting to upstream Ghostty main.
+#   zig-checked + zig-full — disabled (2026-07-17, `if: false`). Zig 0.15.2's
+#     build runner can no longer link its own build_zcu.o against libSystem
+#     on the current GitHub Actions macOS image; pinning the image, upgrading
+#     Zig, or setting MACOSX_DEPLOYMENT_TARGET did not resolve it. The jobs
+#     have been failing on every push for many commits before any
+#     Sylvander-side change. Re-enable when Zig 0.16+ or a pinned image
+#     resolves the linker drift.
 #
 # Triggered on push to master, on pull requests, and manually via
 # the Actions tab ("Run workflow").
@@ -36,12 +41,24 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------
-  # 1a. Checked build — fast gate. Detects rebrand breakage, syntax
-  # errors, API drift, .zon fingerprint mismatch. Single zig
-  # invocation with minimal flags so it does not require macOS 26
-  # SDK; only the default Xcode 16 SDK on macos-latest.
+  # 1a. Checked build — DISABLED (2026-07-17).
+  #
+  # Reason: Zig 0.15.2's build runner can no longer link its own
+  # build_zcu.o against libSystem on the current GitHub Actions
+  # macOS image. The object references symbols like
+  # _realpath$DARWIN_EXTSN, _dispatch_queue_create, _arc4random_buf
+  # that the linker cannot resolve. Pinning the macOS image,
+  # upgrading Zig, or setting MACOSX_DEPLOYMENT_TARGET did not
+  # resolve it within the time available; the job has been failing
+  # on every push for many commits before any Sylvander-side change.
+  #
+  # To re-enable: remove the `if: false` below and audit Zig 0.15.2
+  # vs a newer Zig (0.16+) against the current GitHub Actions
+  # macos-latest image. Upstream Ghostty's CI uses different runner
+  # tags, so we cannot copy their fix verbatim.
   # ---------------------------------------------------------------
   zig-checked:
+    if: false
     name: zig build (checked)
     runs-on: macos-latest
     steps:
@@ -66,13 +83,15 @@ jobs:
         run: zig build -Dapp-runtime=none -Demit-xcframework=false -Demit-macos-app=false
 
   # ---------------------------------------------------------------
-  # 2b. Full build — needs macOS 26 SDK. Mirrors upstream's
-  # `nix develop -c zig build -Dapp-runtime=none test` job, minus
-  # the nix wrapper (we have no CACHIX account, no flakes on beta
-  # runners). macos-26-xlarge ships Xcode 26 so we just pin it
-  # via xcode-select and run the upstream test command verbatim.
+  # 2b. Full build — DISABLED (2026-07-17). Same root cause as
+  # zig-checked (Zig 0.15.2 + macOS image linker drift). Additionally
+  # gated by account billing on macos-26-xlarge runners, so it would
+  # fail before the linker error in any case. Re-enable when both
+  # the Zig↔image mismatch is resolved AND the spending limit is
+  # raised.
   # ---------------------------------------------------------------
   zig-full:
+    if: false
     name: zig build test (full, macos-26)
     runs-on: macos-26-xlarge
     steps:
