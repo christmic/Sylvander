@@ -42,8 +42,7 @@ jobs:
         uses: cachix/cachix-action@v15
         # Intentionally no `cachix authToken` — we don't have a
         # CACHIX account. The step will silently no-op; that's fine.
-        with:
-          # empty
+        with: {}
 
       - name: Add shell-tools overlay (zig 0.15.2 + python + git)
         env:
