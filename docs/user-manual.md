@@ -371,3 +371,402 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:9527
 export SYLVANDER_MODEL=mock-fast
 RUST_LOG=debug ./target/release/sylvander
 ```
+## 9. Channels overview
+
+A **channel** is one ingress adapter instance. Every `[[channels]]`
+entry binds a stable instance id, a transport kind, a default Agent, a
+supervision policy, and secret references. The supported kinds are
+`unix`, `http`, `websocket`, `dingtalk`, `telegram`, and `wechat` —
+each documented in §10–§15. All share the same authenticated,
+default-deny Agent access policy, instance-scoped bus subscriptions,
+replay suppression, bounded restart/backoff, and cooperative drain.
+See [`channel-supervision.md`](../sylvander-runtime/docs/channel-supervision.md)
+and [`boundary-authorization.md`](boundary-authorization.md).
+
+## 10. Unix socket quickstart
+
+```toml
+[[channels]]
+id = "terminal"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "unix"
+path = "/tmp/sylvander.sock"
+```
+
+Connect the TUI:
+
+```sh
+cargo build --release -p sylvander-tui
+./target/release/sylvander-tui --socket /tmp/sylvander.sock
+```
+
+Protocol: one JSON object per line (NDJSON). Client → server messages
+include `{"type":"chat","text":"hi"}`,
+`{"type":"approve","call_id":"...","approved":true}`,
+`{"type":"list_sessions"}`, and `{"type":"ping"}`. Server → client
+pushed events include `text_delta`, `tool_call`, `tool_result`,
+`tool_rejected`, `approval_request`, `iteration_start`, `done`,
+`error`, `session_created`, and `pong`.
+
+## 11. HTTP quickstart
+
+The HTTP channel streams responses as Server-Sent Events:
+
+```toml
+[[channels]]
+id = "http-debug"
+enabled = false
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "http"
+bind = "127.0.0.1:8080"
+principal_id = "local-http-client"
+
+[channels.transport.bearer_token]
+source = "env"
+name = "SYLVANDER_HTTP_TOKEN"
+```
+
+```sh
+curl -N -X POST http://127.0.0.1:8080/chat \
+  -H "Authorization: Bearer ${SYLVANDER_HTTP_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"session_id":"demo","message":"hello"}'
+```
+
+`session_id` may be omitted; the server returns a `session_created`
+event with the assigned id. The HTTP surface is intentionally narrower
+than Unix/WebSocket — it accepts authenticated chat and decision
+answers, exposes `/health`, `/ready`, `/metrics`, but does **not**
+expose Agent administration or profile editing.
+
+## 12. WebSocket quickstart
+
+The WebSocket channel exposes the complete typed UI protocol,
+including Agent administration, User Profile, and Identity Binding
+when those capabilities are negotiated. Config:
+
+```toml
+[[channels]]
+id = "ws-desktop"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "websocket"
+bind = "127.0.0.1:8081"
+principal_id = "ws-desktop"
+
+[channels.transport.bearer_token]
+source = "env"
+name = "SYLVANDER_WS_TOKEN"
+```
+
+Minimal client:
+
+```js
+const ws = new WebSocket("ws://127.0.0.1:8081", {
+  headers: { Authorization: `Bearer ${token}` }
+});
+ws.onmessage = (event) => { /* text_delta, tool_call, done, ... */ };
+ws.onopen = () => ws.send(JSON.stringify({ type: "chat", text: "hi" }));
+```
+
+## 13. Telegram setup
+
+```toml
+[[channels]]
+id = "telegram-primary"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "telegram"
+bind = "127.0.0.1:8090"
+
+[channels.transport.token]
+source = "env"
+name = "TELEGRAM_PRIMARY_TOKEN"
+
+[channels.transport.webhook_secret]
+source = "env"
+name = "TELEGRAM_PRIMARY_WEBHOOK_SECRET"
+```
+
+Provision the webhook:
+
+```sh
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_PRIMARY_TOKEN}/setWebhook" \
+  --data-urlencode "url=https://your-host/telegram/webhook" \
+  --data-urlencode "secret_token=${TELEGRAM_PRIMARY_WEBHOOK_SECRET}"
+```
+
+The webhook secret must match the `X-Telegram-Bot-Api-Secret-Token`
+header on every request.
+
+## 14. DingTalk setup
+
+```toml
+[[channels]]
+id = "dingtalk-primary"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "dingtalk"
+
+[channels.transport.app_key]
+source = "env"
+name = "DINGTALK_APP_KEY"
+
+[channels.transport.app_secret]
+source = "env"
+name = "DINGTALK_APP_SECRET"
+```
+
+The channel is enabled when **both** `app_key` and `app_secret` are
+present. Sessions, principals, replay protection, interactive
+decisions, and bounded delivery retry are all instance-scoped; one bot
+failing does not affect others.
+
+## 15. WeChat setup
+
+```toml
+[[channels]]
+id = "wechat-primary"
+enabled = true
+default_agent = "sylvander"
+
+[channels.transport]
+kind = "wechat"
+bind = "127.0.0.1:8091"
+
+[channels.transport.corp_id]
+source = "env"
+name = "WECHAT_CORP_ID"
+
+[channels.transport.secret]
+source = "env"
+name = "WECHAT_SECRET"
+
+[channels.transport.token]
+source = "env"
+name = "WECHAT_TOKEN"
+
+[channels.transport.encoding_aes_key]
+source = "env"
+name = "WECHAT_ENCODING_AES_KEY"
+```
+
+Credentials are resolved at startup so the server fails fast before
+accepting traffic. The WeChat surface is intentionally narrower than
+Unix/WebSocket.
+
+## 16. Approval / AskUser flow
+
+Some Agent actions require an explicit per-session approval. The Agent
+emits an `approval_request` (or `tool_approval_required`) event with a
+`batch_id` and the list of tools in the batch. The connected client
+responds with
+`{"type":"approve","call_id":"<batch_id>","approved":true|false}`.
+Approvals match one batch and do not mutate the Agent or the
+persistent policy.
+
+Persistent approvals across restarts require both:
+
+```sh
+export SYLVANDER_APPROVAL=1
+export SYLVANDER_APPROVAL_STORE=/var/lib/sylvander/approvals.json
+```
+
+Without the store, the approval gate is session-scoped only.
+
+## 17. User Profile
+
+Sylvander owns one global User Profile per stable `UserId`, addressed
+through the public `user_profile_v1` capability. Unix and WebSocket
+clients negotiate the capability at hello time; HTTP and external
+chat channels do not currently expose the editing surface.
+
+The profile contains preferred language and locale; response detail
+(`concise`, `balanced`, `detailed`); communication tone (`direct`,
+`warm`, `formal`); accessibility preferences (screen-reader,
+reduced-motion, high-contrast); and at most 16 bounded user-owned
+interaction constraints. Each preference carries a `PrivacyClass`
+(`personal`, `sensitive`, `restricted`) — class is policy input, and
+Runtime enforces it; profile data and exports redact their `Debug`
+output regardless of class.
+
+Operations are `create`, `read`, `update`, `export`, `correct`,
+`delete`, and `set_do_not_learn`. Mutations require an optimistic
+`expected_revision` and fail with a typed conflict on staleness. The
+wire contract is in [`user-profile-protocol.md`](user-profile-protocol.md);
+storage placement, backup, and retention are in
+[`server-configuration.md`](server-configuration.md#global-user-profile).
+
+`do_not_learn = true` prohibits creating new learned profile facts,
+Relationship Memory observations, Agent private candidates derived
+from the user, or cross-user canonical memory derived from the user.
+Deletion preserves the durable opt-out as a tombstone; re-creating a
+profile inherits that marker until the owner changes it explicitly.
+The TUI negotiates `user_profile_v1` but does not yet expose an
+editing surface — use a protocol client until the TUI editor lands.
+
+## 18. Identity binding
+
+Stable identity binding links an authenticated external principal
+(Telegram user, DingTalk staff id, Unix peer credential) to a Sylvander
+`UserId`. The capability is `identity_binding_v1`; both peers must
+advertise it before any binding operation succeeds. Operations are
+`begin`, `confirm`, `resolve`, and `unlink`. Begin is initiated by a
+stable user (Unix/WebSocket); the external principal completes the
+link with `confirm` from the chat platform. The two-sided proof
+prevents an external account from claiming a known `UserId`.
+
+Trust boundary:
+
+```text
+authenticated transport ingress
+  -> BoundaryContext established by that transport
+  -> ChannelContext derives AuthenticatedTransportIdentity
+  -> Runtime UiService re-authorizes boundary + typed identity
+  -> Runtime-owned PrincipalBindingStore
+```
+
+Production Runtime enables the capability only when
+`server.identity.digest_key` and at least one `trusted_issuers` entry
+are configured. The store keeps only HMAC-keyed digests of external
+principal ids, revisions, and bounded challenge state; raw principal
+ids and link secrets are never persisted. See
+[`identity-binding-protocol.md`](identity-binding-protocol.md).
+
+## 19. Run evidence
+
+Every server-process lifetime produces one durable **run** in the
+evidence ledger. A run contains turns, steps, decisions, outcomes,
+and optional feedback. The ledger is the authoritative source for
+triage, evaluation, and the gated self-improvement pipeline — it is
+not a log archive and it does not authorise an Agent to modify or
+deploy itself.
+
+The recorder subscribes to the bus **before** configured Agents
+start, so no event is missed. On graceful shutdown it drains queued
+messages, marks active turns as `interrupted`, then closes the run.
+On restart, any remaining open run/turn/step is marked
+`interrupted`; evidence never converts an unknown result into success.
+
+Capture policies:
+
+| Policy         | What is stored                                              |
+|----------------|-------------------------------------------------------------|
+| `metadata_only`| Event types, timestamps, byte sizes, attachment counts, digests |
+| `redacted`     | Adds a structural envelope with payload replaced by `[REDACTED]` |
+| `full`         | Stores the serialized bus message; opt-in only              |
+
+`server.evidence.content = "metadata_only"` is the default and the
+recommended production setting. `full` requires an operator-defined
+privacy, access, backup, and deletion policy. Retention defaults to
+30 days; completed runs older than `retention_days` are deleted at
+startup. Active and crash-recovery records are retained.
+
+Query APIs return bounded turn summaries with step and failure
+counts; raw payloads are not part of those summaries. Cohort analysis
+requires an explicit half-open time window and bounded result limit;
+reports expose success rate, failure taxonomy, token usage, latency,
+tool activity, and feedback coverage — never raw prompt, response,
+tool payload, or memory content. See
+[`runtime-evidence.md`](runtime-evidence.md).
+
+## 20. TUI usage, health, logging, shutdown, FAQ
+
+### 20.1 TUI usage
+
+The TUI client (`sylvander-tui`) connects over the Unix socket
+channel. Useful slash commands: `/help`, `/sessions`, `/model`,
+`/permissions`, `/extensions`, `/hooks`, `/identity`, `/quit`.
+Session-level overrides live with the session, not the Agent.
+
+### 20.2 Health, readiness, metrics
+
+An enabled HTTP channel exposes three unauthenticated, content-free
+operations:
+
+```sh
+curl --fail http://127.0.0.1:8080/ready
+curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:8080/metrics
+```
+
+- `GET /health` returns the Runtime dependency snapshot (200/503).
+- `GET /ready` returns `{"ready":true|false}` (200/503).
+- `GET /metrics` returns Prometheus text for Agent/session/channel
+  counts, bounded message-bus capacity/subscribers, successful
+  publishes, and backpressure rejections.
+
+The snapshot never contains prompts, messages, tool inputs, external
+principal ids, credentials, paths, or memory content. Readiness must
+not be replaced with process liveness.
+
+### 20.3 Logging
+
+`RUST_LOG` selects the standard tracing-subscriber filter. Set
+`SYLVANDER_LOG_FORMAT=json` for one flattened JSON object per event:
+
+```sh
+RUST_LOG=sylvander_runtime=info,sylvander_agent=info \
+SYLVANDER_LOG_FORMAT=json \
+./target/release/sylvander
+```
+
+Logs are operational events, not transcript export. Credentials and
+raw provider secrets must never appear as fields.
+
+### 20.4 Shutdown
+
+Send `SIGINT` **once** to begin graceful shutdown. The Runtime stops
+accepting channel work, cooperatively drains channel tasks, stops
+Agent workers, closes active evidence turns, publishes the final
+maintenance state, and returns an error if any owned component
+failed to drain. Do not send a second signal unless the configured
+external supervisor has exceeded its termination deadline.
+
+### 20.5 FAQ / troubleshooting
+
+- **Startup fails with `ANTHROPIC_API_KEY must be set`.** Export it
+  in the same shell, or use a TOML `SecretRef` pointing to a file
+  containing the key.
+- **`ANTHROPIC_BASE_URL is set but empty`.** The variable is exported
+  but contains the empty string.
+- **`Anthropic API error (status 404): unknown: (no message)`.** The
+  gateway does not recognise `SYLVANDER_MODEL`. Check the id against
+  `/v1/models`.
+- **TUI connects but every chat returns `session_id required`.** Send
+  the first chat without `session_id`; the server returns
+  `session_created`.
+- **`/metrics` shows increasing
+  `sylvander_bus_backpressure_rejections_total`.** A subscription is
+  full. Identify the stalled channel or client from the structured
+  logs (use the stable `instance` field) before retrying submissions.
+- **Telegram bot stops receiving updates after a redeploy.** The
+  webhook secret changed or `setWebhook` was not reissued.
+- **DingTalk instance stops responding after a key rotation.** Update
+  the `SecretRef`, restart the channel; the new generation is used
+  for new sessions.
+- **HTTP channel returns 401 to a previously-working client.** The
+  bearer token was rotated; re-export the new value.
+- **Memory startup fails after a host migration.** Do **not** delete
+  or rewrite the database. Verify the configured integrity anchor is
+  reachable and follow the signed backup/restore procedure in
+  [`operations-runbook.md`](operations-runbook.md#incident-triage).
+- **Coding session lost edits after a SIGKILL.** The session
+  workspace is a worktree lease. Restart the server — boot validates
+  active leases and recovers worktrees left before manifest commit.
+- **TUI shows `user_profile_v1` but no editing controls.** Expected.
+  Use a Unix/WebSocket protocol client until the TUI editor lands.
+- **Bug reports.** Open an issue; include the server version, the
+  structured log line, the affected channel instance id, and (if
+  reproducible) a redacted turn summary from the evidence query API.
