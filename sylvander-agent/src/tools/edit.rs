@@ -8,8 +8,6 @@
 //! Failures are returned as `ToolOutput::err` so the model can
 //! react (e.g., "string not found, please re-read the file").
 
-use std::path::{Path, PathBuf};
-
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 
@@ -20,25 +18,15 @@ use crate::tool_context::ToolContext;
 
 const MAX_EDIT_FILE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Replace text in a file. Paths are resolved relative to `workdir`.
-#[derive(Debug, Clone)]
-pub struct EditTool {
-    workdir: PathBuf,
-}
+/// Replace text in a file inside the invocation's explicit workspace.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EditTool;
 
 impl EditTool {
-    /// Create an `EditTool` rooted at `workdir`.
+    /// Create a stateless edit tool.
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
-    }
-
-    /// Current working directory.
-    #[must_use]
-    pub fn workdir(&self) -> &Path {
-        &self.workdir
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -52,7 +40,7 @@ impl Tool for EditTool {
         "Replace a string in a file with a new string. By default, \
          the old_string must appear exactly once in the file (so the \
          replacement is unambiguous). Set replace_all to true to \
-         replace every occurrence. Paths are relative to the workdir."
+         replace every occurrence. Paths are relative to the current workspace."
     }
 
     fn input_schema(&self) -> InputSchema {
@@ -60,7 +48,7 @@ impl Tool for EditTool {
             json!({
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file, relative to the workdir"
+                    "description": "Path to the file, relative to the current workspace"
                 },
                 "old_string": {
                     "type": "string",
@@ -112,7 +100,10 @@ impl Tool for EditTool {
             )));
         }
 
-        let target = ctx.execution_target_for(&self.workdir);
+        let target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
                 "execution target `{}` is read-only",
@@ -121,7 +112,7 @@ impl Tool for EditTool {
         }
         let read = match ctx
             .executor
-            .read_file_bounded(&target, path_str, MAX_EDIT_FILE_BYTES)
+            .read_file_bounded(target, path_str, MAX_EDIT_FILE_BYTES)
             .await
         {
             Ok(read) => read,
@@ -178,7 +169,7 @@ impl Tool for EditTool {
 
         match ctx
             .executor
-            .write_file(&target, path_str, new_content.as_bytes())
+            .write_file(target, path_str, new_content.as_bytes())
             .await
         {
             Ok(()) => {

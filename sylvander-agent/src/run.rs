@@ -5,9 +5,11 @@
 //!
 //! # Memory: mechanism first, tools second
 //!
-//! Memory is agent infrastructure. The *read* path is exposed as a tool
-//! so the model can autonomously retrieve context. The *write* path is
-//! system-driven via [`AgentRun::remember`](crate::run::AgentRun::remember).
+//! Memory is agent infrastructure. The read path is exposed as a tool so the
+//! model can autonomously retrieve context. Model-proposed writes enter the
+//! Runtime-owned Guardian candidate flow.
+//! [`AgentRun::remember`](crate::run::AgentRun::remember) is a separate,
+//! synchronous relationship-only API for trusted application observations.
 //!
 //! # Session: engineering layer, model-invisible
 //!
@@ -33,7 +35,6 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tracing::{Instrument as _, info, warn};
 
-use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
 
@@ -43,10 +44,11 @@ use crate::approval_store::{
 };
 use crate::ask_user_gate::AskUserGate;
 use crate::bus::{
-    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
-    StreamEvent, SubscriptionFilter, SystemMessage, ToolCallInfo,
+    AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Sender, StreamEvent,
+    SubscriptionFilter, SystemMessage, ToolCallInfo,
 };
 use crate::compress::layer::CompressionLayer;
+use crate::curated_memory::{CuratedContextProvider, CuratedContextSubject, CuratedMemoryScope};
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
@@ -54,7 +56,7 @@ use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
-    StoredSession, TurnStart,
+    SessionStoreError, StoredSession, TurnStart,
 };
 use crate::spec::{AgentId, AgentSpec, SessionId};
 use crate::task_gate::TaskGate;
@@ -98,6 +100,7 @@ pub(crate) struct AgentRunInner {
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
+    curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
     turn_context_budgets: TurnContextBudgets,
     turn_context_manifests: RwLock<HashMap<SessionId, TurnContextManifest>>,
     /// Last provider-confirmed prompt usage for each session. This is window
@@ -207,25 +210,6 @@ struct ContextUsage {
 }
 
 impl RuntimeModels {
-    fn resolve_legacy_id(
-        &self,
-        model_id: &str,
-    ) -> Result<sylvander_protocol::ModelSelection, String> {
-        let matches = self
-            .available
-            .keys()
-            .filter(|selection| selection.model_id == model_id)
-            .cloned()
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [] => Err(format!("model `{model_id}` is not available")),
-            [selection] => Ok(selection.clone()),
-            _ => Err(format!(
-                "model `{model_id}` is ambiguous; select it with a provider id"
-            )),
-        }
-    }
-
     fn public_info(&self) -> sylvander_protocol::RuntimeModelInfo {
         let mut models = self
             .available
@@ -393,23 +377,6 @@ fn validate_identity_component(
 }
 
 impl AgentRun {
-    /// Start building an [`AgentRun`].
-    #[must_use]
-    pub fn builder(spec: AgentSpec, client: AnthropicClient) -> AgentRunBuilder {
-        AgentRunBuilder::new(spec, client)
-    }
-
-    /// Build a run around a provider-neutral backend. Alternate qualified
-    /// models remain fail-closed until the runtime catalog is provider-aware.
-    #[must_use]
-    pub fn provider_builder(
-        spec: AgentSpec,
-        provider: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
-    ) -> AgentRunBuilder {
-        AgentRunBuilder::new_single_provider(spec, provider, model)
-    }
-
     /// Build a run around an immutable provider-qualified router.
     #[must_use]
     pub fn qualified_router_builder(
@@ -429,23 +396,6 @@ impl AgentRun {
     pub async fn runtime_model_info(&self) -> sylvander_protocol::RuntimeModelInfo {
         let runtime = self.inner.runtime_models.read().await;
         runtime.public_info()
-    }
-
-    /// Select the model configuration used by subsequently started turns.
-    /// Existing turns continue with the immutable snapshot they started with.
-    pub async fn select_model(
-        &self,
-        model_id: &str,
-        reasoning_effort: sylvander_protocol::ReasoningEffort,
-    ) -> Result<sylvander_protocol::RuntimeModelInfo, String> {
-        let selection = self
-            .inner
-            .runtime_models
-            .read()
-            .await
-            .resolve_legacy_id(model_id)?;
-        self.select_qualified_model(selection, reasoning_effort)
-            .await
     }
 
     /// Select one exact provider-qualified model for subsequently started turns.
@@ -497,25 +447,30 @@ impl AgentRun {
         let mut features = self
             .inner
             .spec
-            .mcp_servers
+            .tools
             .iter()
-            .map(|server| PlatformFeature {
-                kind: PlatformFeatureKind::Mcp,
-                name: server.name.clone(),
-                status: PlatformFeatureStatus::Configured,
-                summary: "configured; MCP runtime health is not available".into(),
-                source: std::path::Path::new(&server.command)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_string),
-                trust: Some(PlatformTrust::External),
-                auth: if server.envs.is_empty() {
-                    PlatformAuthStatus::NotRequired
-                } else {
-                    PlatformAuthStatus::Configured
-                },
-                capabilities: Vec::new(),
-                reloadable: false,
+            .filter_map(|tool| {
+                let crate::spec::ToolRef::McpServer(server) = tool else {
+                    return None;
+                };
+                Some(PlatformFeature {
+                    kind: PlatformFeatureKind::Mcp,
+                    name: server.name.clone(),
+                    status: PlatformFeatureStatus::Configured,
+                    summary: "configured; MCP runtime health is not available".into(),
+                    source: std::path::Path::new(&server.command)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string),
+                    trust: Some(PlatformTrust::External),
+                    auth: if server.envs.is_empty() {
+                        PlatformAuthStatus::NotRequired
+                    } else {
+                        PlatformAuthStatus::Configured
+                    },
+                    capabilities: Vec::new(),
+                    reloadable: false,
+                })
             })
             .collect::<Vec<_>>();
 
@@ -869,10 +824,21 @@ impl AgentRun {
             .write()
             .await
             .insert(lease.session_id.clone());
-        let ctx = self
+        let ctx = match self
             .inner
             .restore_session_context(&lease.session_id, &lease.metadata)
-            .await;
+            .await
+        {
+            Ok(context) => context,
+            Err(error) => {
+                self.inner
+                    .authenticated_sessions
+                    .write()
+                    .await
+                    .remove(&lease.session_id);
+                return Err(error);
+            }
+        };
         self.inner
             .sessions
             .write()
@@ -998,16 +964,28 @@ impl AgentRun {
                         {
                             continue;
                         }
-                        let ctx = self
+                        let context = self
                             .inner
                             .restore_session_context(session_id, metadata)
                             .await;
-                        self.inner
-                            .sessions
-                            .write()
-                            .await
-                            .insert(session_id.clone(), ctx);
-                        info!(agent_id = %self.inner.id, %session_id, "joined session");
+                        match context {
+                            Ok(context) => {
+                                self.inner
+                                    .sessions
+                                    .write()
+                                    .await
+                                    .insert(session_id.clone(), context);
+                                info!(agent_id = %self.inner.id, %session_id, "joined session");
+                            }
+                            Err(error) => {
+                                warn!(
+                                    agent_id = %self.inner.id,
+                                    %session_id,
+                                    %error,
+                                    "failed to join persistent session"
+                                );
+                            }
+                        }
                     }
                     SystemMessage::LeaveSession { session_id } => {
                         // Runtime-authenticated sessions can be revoked only
@@ -1240,8 +1218,11 @@ impl AgentRun {
         Ok(MemoryExecutionContext::application_worker(&caller))
     }
 
-    /// System-driven memory write (NOT a tool). Ownership is derived from a
-    /// session already attached to this Agent application.
+    /// Trusted application relationship write (NOT a model tool).
+    ///
+    /// Ownership is derived from a session already attached to this Agent
+    /// application. Cross-scope/model-proposed learning must use the
+    /// Runtime-owned Guardian candidate flow instead.
     pub async fn remember(
         &self,
         session: &AuthenticatedSession,
@@ -1254,8 +1235,8 @@ impl AgentRun {
         self.remember_entry(session, append).await
     }
 
-    /// Persist a structured application-derived memory for an attached
-    /// session. Caller-controlled identity is deliberately absent.
+    /// Persist a structured, relationship-only application observation for an
+    /// attached session. Caller-controlled identity and scope are absent.
     pub async fn remember_entry(
         &self,
         session: &AuthenticatedSession,
@@ -1876,33 +1857,29 @@ impl AgentRunInner {
         session_id: &SessionId,
         history: &[sylvander_llm_anthropic::api::types::MessageParam],
         layers: &[crate::compress::layer::LayerReport],
-    ) -> Result<(), String> {
+    ) -> Result<(), AgentRunError> {
         let metadata = {
-            let mut sessions = self.sessions.write().await;
-            let Some(session) = sessions.get_mut(session_id) else {
-                return Err(format!("unknown session: {session_id}"));
+            let sessions = self.sessions.read().await;
+            let Some(session) = sessions.get(session_id) else {
+                return Err(AgentRunError::UnknownSession(session_id.clone()));
             };
-            session.history = history.to_vec();
-            session.updated_at = now_secs();
             session.metadata.clone()
         };
-        self.context_usage.write().await.remove(session_id);
-        let Some(summary) = compaction_summary(layers) else {
-            return Ok(());
-        };
-        let Some(store) = &self.session_store else {
-            return Ok(());
-        };
-        let caller = sylvander_protocol::SessionContext::new(
-            metadata.user_id,
-            self.id.clone(),
-            session_id.clone(),
-        );
-        let result = async {
+        if compaction_summary(layers).is_some()
+            && let Some(store) = &self.session_store
+        {
+            let caller = sylvander_protocol::SessionContext::new(
+                metadata.user_id,
+                self.id.clone(),
+                session_id.clone(),
+            );
             let mut replacement = Vec::with_capacity(history.len());
             for (index, message) in history.iter().enumerate() {
-                let content = serde_json::to_value(message).map_err(|error| {
-                    crate::session_store::SessionStoreError::Store(error.to_string())
+                let content = serde_json::to_value(message).map_err(|_| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::ReplaceHistory,
+                        SessionStoreError::Invalid("compacted history serialization failed".into()),
+                    )
                 })?;
                 let role = match message.role {
                     sylvander_llm_anthropic::api::types::MessageRole::User => {
@@ -1921,14 +1898,21 @@ impl AgentRunInner {
             store
                 .replace_active_history(&caller, session_id, replacement)
                 .await
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::ReplaceHistory,
+                        source,
+                    )
+                })?;
         }
-        .await;
-        if let Err(error) = result {
-            warn!(%session_id, %error, %summary, "failed to persist compacted history");
-            return Err(format!(
-                "compacted live context but failed to persist it: {error}"
-            ));
-        }
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(session_id)
+            .ok_or_else(|| AgentRunError::UnknownSession(session_id.clone()))?;
+        session.history = history.to_vec();
+        session.updated_at = now_secs();
+        drop(sessions);
+        self.context_usage.write().await.remove(session_id);
         Ok(())
     }
 
@@ -1936,10 +1920,10 @@ impl AgentRunInner {
         &self,
         session_id: &SessionId,
         metadata: &SessionMetadata,
-    ) -> SessionContext {
+    ) -> Result<SessionContext, AgentRunError> {
         let mut context = SessionContext::new(session_id.clone(), metadata.clone());
         let Some(store) = &self.session_store else {
-            return context;
+            return Ok(context);
         };
 
         match store.get(session_id).await {
@@ -1952,17 +1936,21 @@ impl AgentRunInner {
                     vec![self.id.clone()],
                 );
                 stored.effective_config = Some(self.direct_session_config(metadata).await);
-                if let Err(error) = store.save(&stored).await {
-                    warn!(%session_id, %error, "failed to persist joined session");
-                    return context;
-                }
+                store.save(&stored).await.map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::CreateSession,
+                        source,
+                    )
+                })?;
             }
             Ok(Some(stored)) => {
                 context.metadata = stored.metadata;
             }
-            Err(error) => {
-                warn!(%session_id, %error, "failed to inspect joined session");
-                return context;
+            Err(source) => {
+                return Err(AgentRunError::session_persistence(
+                    SessionPersistenceOperation::InspectSession,
+                    source,
+                ));
             }
         }
 
@@ -1971,23 +1959,25 @@ impl AgentRunInner {
             self.id.clone(),
             session_id.clone(),
         );
-        match store.read_history(&caller, session_id, false, None).await {
-            Ok(messages) => {
-                for stored in messages {
-                    match serde_json::from_value(stored.content) {
-                        Ok(message) => context.history.push(message),
-                        Err(error) => warn!(
-                            %session_id,
-                            seq = stored.seq,
-                            %error,
-                            "ignored malformed persisted message"
-                        ),
-                    }
-                }
-            }
-            Err(error) => warn!(%session_id, %error, "failed to restore session history"),
+        let messages = store
+            .read_history(&caller, session_id, false, None)
+            .await
+            .map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::RestoreHistory,
+                    source,
+                )
+            })?;
+        for stored in messages {
+            let message = serde_json::from_value(stored.content).map_err(|_| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::RestoreHistory,
+                    SessionStoreError::Invalid("malformed persisted message".into()),
+                )
+            })?;
+            context.history.push(message);
         }
-        context
+        Ok(context)
     }
 
     async fn direct_session_config(
@@ -2153,6 +2143,7 @@ impl AgentRunInner {
         F: std::future::Future,
     {
         let correlation = TurnCorrelation::new(&msg, turn_id);
+        let session_id = msg.session_id.clone();
         let span = tracing::info_span!(
             "agent_turn",
             agent_id = %self.id,
@@ -2166,6 +2157,15 @@ impl AgentRunInner {
             let result = self
                 .handle_message_with_interrupt(msg, interrupted, &correlation.turn)
                 .await;
+            if let Err(error @ AgentRunError::SessionPersistence { .. }) = &result {
+                self.publish_stream(
+                    &session_id,
+                    crate::bus::StreamEvent::Error {
+                        message: error.to_string(),
+                    },
+                )
+                .await;
+            }
             info!(succeeded = result.is_ok(), "turn finished");
             result
         }
@@ -2185,10 +2185,12 @@ impl AgentRunInner {
         let session_id = msg.session_id.clone();
         let user_message = Self::message_to_param(&msg);
         let stored_session = if let Some(store) = &self.session_store {
-            store
-                .get(&session_id)
-                .await
-                .map_err(|error| AgentRunError::Store(error.to_string()))?
+            store.get(&session_id).await.map_err(|source| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::InspectSession,
+                    source,
+                )
+            })?
         } else {
             None
         };
@@ -2374,6 +2376,72 @@ impl AgentRunInner {
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
             context_inputs.extend_retrieved(TurnContextLayerKind::RelationshipMemory, relationship);
         }
+        if let Some(provider) = self.curated_context_provider.as_ref()
+            && self
+                .authenticated_sessions
+                .read()
+                .await
+                .contains(&session_id)
+        {
+            let mut workspace_ids = std::collections::BTreeSet::new();
+            if let Some(config) = effective_config.as_ref() {
+                if let Some(binding) = config.agent_workspace.as_ref() {
+                    workspace_ids.insert(binding.execution_target.clone());
+                }
+                if let Some(binding) = config.user_workspace.as_ref() {
+                    workspace_ids.insert(binding.execution_target.clone());
+                }
+                workspace_ids.extend(
+                    config
+                        .workspace_mounts
+                        .iter()
+                        .map(|mount| mount.binding.execution_target.clone()),
+                );
+            }
+            let subject = CuratedContextSubject {
+                user_id: sylvander_protocol::UserId::new(&session_metadata.user_id),
+                agent_id: self.id.clone(),
+                session_id: session_id.clone(),
+                workspace_ids: workspace_ids.into_iter().collect(),
+            };
+            let max_items = self
+                .turn_context_budgets
+                .workspace_knowledge
+                .max_items
+                .saturating_add(self.turn_context_budgets.relationship_memory.max_items)
+                .min(64);
+            let entries = if max_items == 0 {
+                Vec::new()
+            } else {
+                provider
+                    .retrieve(&subject, &msg.payload, max_items)
+                    .await
+                    .map_err(|error| AgentRunError::Configuration(error.to_string()))?
+            };
+            for entry in entries {
+                let layer = match entry.scope {
+                    CuratedMemoryScope::Relationship => TurnContextLayerKind::RelationshipMemory,
+                    CuratedMemoryScope::UserProfile => TurnContextLayerKind::UserProfile,
+                    CuratedMemoryScope::AgentCanonical => TurnContextLayerKind::Agent,
+                    CuratedMemoryScope::WorkspaceKnowledge => {
+                        TurnContextLayerKind::WorkspaceKnowledge
+                    }
+                };
+                context_inputs.extend_retrieved(
+                    layer,
+                    [TurnContextCandidate::retrieved(
+                        entry.content,
+                        TurnContextProvenance::new(
+                            TurnContextSource::GuardianCurated,
+                            entry.reference,
+                        )
+                        .with_revision(entry.revision),
+                        u32::from(entry.relevance),
+                    )
+                    .with_expiry(entry.expires_at_unix_secs)],
+                );
+            }
+        }
 
         let composed = compose_turn_context(context_inputs, &self.turn_context_budgets, now_secs())
             .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
@@ -2398,8 +2466,12 @@ impl AgentRunInner {
                 self.id.clone(),
                 session_id.clone(),
             );
-            let user_content = serde_json::to_value(&user_message)
-                .map_err(|error| AgentRunError::Store(error.to_string()))?;
+            let user_content = serde_json::to_value(&user_message).map_err(|_| {
+                AgentRunError::session_persistence(
+                    SessionPersistenceOperation::BeginTurn,
+                    SessionStoreError::Invalid("user message serialization failed".into()),
+                )
+            })?;
             store
                 .begin_turn(
                     &caller,
@@ -2413,7 +2485,12 @@ impl AgentRunInner {
                     },
                 )
                 .await
-                .map_err(|error| AgentRunError::Store(error.to_string()))?;
+                .map_err(|source| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::BeginTurn,
+                        source,
+                    )
+                })?;
         }
         self.turn_context_manifests
             .write()
@@ -2684,7 +2761,7 @@ impl AgentRunInner {
                         .and_then(|pricing| usage_cost_nano_usd(pricing, &provider_usage));
                     let mut cost_nano_usd = iteration_cost;
                     if let Some(store) = &self.session_store {
-                        match store
+                        let total = store
                             .record_usage(
                                 &session_id,
                                 provider_usage.input_tokens,
@@ -2692,16 +2769,15 @@ impl AgentRunInner {
                                 iteration_cost,
                             )
                             .await
-                        {
-                            Ok(total) => {
-                                input_tokens = total.input_tokens;
-                                output_tokens = total.output_tokens;
-                                cost_nano_usd = total.cost_nano_usd;
-                            }
-                            Err(error) => {
-                                warn!(%session_id, %error, "failed to persist session usage");
-                            }
-                        }
+                            .map_err(|source| {
+                                AgentRunError::session_persistence(
+                                    SessionPersistenceOperation::RecordUsage,
+                                    source,
+                                )
+                            })?;
+                        input_tokens = total.input_tokens;
+                        output_tokens = total.output_tokens;
+                        cost_nano_usd = total.cost_nano_usd;
                     }
                     self.publish_stream(
                         &session_id,
@@ -2729,9 +2805,6 @@ impl AgentRunInner {
                 | crate::event::AgentEvent::PlanProposed { .. }
                 | crate::event::AgentEvent::PlanResolved { .. } => {}
                 crate::event::AgentEvent::HistoryCompacted { layers, history } => {
-                    let persisted = self
-                        .apply_compacted_history(&session_id, &history, &layers)
-                        .await;
                     if let Some(error) = crate::compress::layer::first_failure_error(&layers) {
                         self.publish_stream(
                             &session_id,
@@ -2741,27 +2814,36 @@ impl AgentRunInner {
                             },
                         )
                         .await;
-                    } else if persisted.is_err() {
-                        self.publish_stream(
-                            &session_id,
-                            crate::bus::StreamEvent::CompactionFailed {
-                                automatic: true,
-                                reason: crate::compress::error::CompactionError::new(
-                                    crate::compress::error::CompactionFailureCode::Persistence,
-                                )
-                                .compatibility_reason()
-                                .into(),
-                            },
-                        )
-                        .await;
                     } else {
-                        self.publish_stream(
-                            &session_id,
-                            crate::bus::StreamEvent::CompactionCompleted {
-                                report: public_compaction_report(true, &layers),
-                            },
-                        )
-                        .await;
+                        match self
+                            .apply_compacted_history(&session_id, &history, &layers)
+                            .await
+                        {
+                            Ok(()) => {
+                                self.publish_stream(
+                                    &session_id,
+                                    crate::bus::StreamEvent::CompactionCompleted {
+                                        report: public_compaction_report(true, &layers),
+                                    },
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                self.publish_stream(
+                                    &session_id,
+                                    crate::bus::StreamEvent::CompactionFailed {
+                                        automatic: true,
+                                        reason: crate::compress::error::CompactionError::new(
+                                            crate::compress::error::CompactionFailureCode::Persistence,
+                                        )
+                                        .compatibility_reason()
+                                        .into(),
+                                    },
+                                )
+                                .await;
+                                return Err(error);
+                            }
+                        }
                     }
                 }
                 crate::event::AgentEvent::UserAnswer { call_id, answer } => {
@@ -2797,21 +2879,29 @@ impl AgentRunInner {
                 let message = sylvander_llm_anthropic::api::types::MessageParam::assistant_blocks(
                     msg.content.clone(),
                 );
-                if let Ok(content) = serde_json::to_value(message)
-                    && let Err(error) = store
-                        .append_message(
-                            &caller,
-                            &session_id,
-                            StoredMessageRole::Assistant,
-                            content,
-                            Some(&msg.model),
-                            None,
-                            None,
+                let content = serde_json::to_value(message).map_err(|_| {
+                    AgentRunError::session_persistence(
+                        SessionPersistenceOperation::AppendAssistant,
+                        SessionStoreError::Invalid("assistant message serialization failed".into()),
+                    )
+                })?;
+                store
+                    .append_message(
+                        &caller,
+                        &session_id,
+                        StoredMessageRole::Assistant,
+                        content,
+                        Some(&msg.model),
+                        None,
+                        None,
+                    )
+                    .await
+                    .map_err(|source| {
+                        AgentRunError::session_persistence(
+                            SessionPersistenceOperation::AppendAssistant,
+                            source,
                         )
-                        .await
-                {
-                    warn!(%session_id, %error, "failed to persist assistant message");
-                }
+                    })?;
             }
             let mut sessions = self.sessions.write().await;
             if let Some(ctx) = sessions.get_mut(&session_id) {
@@ -2833,19 +2923,13 @@ impl AgentRunInner {
     }
 
     async fn publish_error(&self, session_id: &SessionId, err: &AgentLoopError) {
-        let _ = self
-            .bus
-            .publish(BusMessage {
-                session_id: session_id.clone(),
-                sender: Sender::Agent(self.id.clone()),
-                recipient: Recipient::Broadcast,
-                kind: MessageKind::Chat,
-                payload: format!("Error: {err}"),
-                attachments: Vec::new(),
-                timestamp: now_secs(),
-                id: crate::bus::MessageId::new(),
-            })
-            .await;
+        self.publish_stream(
+            session_id,
+            crate::bus::StreamEvent::Error {
+                message: err.to_string(),
+            },
+        )
+        .await;
     }
 
     fn message_to_param(msg: &BusMessage) -> sylvander_llm_anthropic::api::types::MessageParam {
@@ -3236,23 +3320,21 @@ fn select_workspace_binding<'a>(
 /// Builder for [`AgentRun`].
 pub struct AgentRunBuilder {
     spec: AgentSpec,
-    backend: AgentRunModelBackend,
+    router: Arc<dyn ModelProvider>,
+    model: ProviderModelInfo,
     bus: Option<Arc<dyn MessageBus>>,
     tool_overrides: Option<ToolRegistry>,
     compression_overrides: Option<crate::compress::pipeline::CompressionPipeline>,
     memory: Option<Arc<dyn MemoryStore>>,
     session_store: Option<Arc<dyn SessionStore>>,
-    model_capabilities: Option<sylvander_llm_anthropic::api::model::ModelCapabilities>,
-    available_models: Vec<ModelInfo>,
     available_provider_models: Vec<ProviderModelInfo>,
-    legacy_model_lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    legacy_model_pricing: HashMap<String, sylvander_protocol::ModelPricing>,
     qualified_model_lifecycles:
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
     qualified_model_pricing:
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
+    curated_context_provider: Option<Arc<dyn CuratedContextProvider>>,
     turn_context_budgets: TurnContextBudgets,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
@@ -3262,67 +3344,31 @@ pub struct AgentRunBuilder {
     invocation_gateway: Option<Arc<dyn crate::tool_invocation::ToolInvocationGateway>>,
 }
 
-enum AgentRunModelBackend {
-    Legacy(AnthropicClient),
-    SingleProvider {
-        provider: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
-    },
-    QualifiedRouter {
-        router: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
-    },
-}
-
 impl AgentRunBuilder {
-    fn new(spec: AgentSpec, client: AnthropicClient) -> Self {
-        Self::with_backend(spec, AgentRunModelBackend::Legacy(client))
-    }
-
-    fn new_single_provider(
-        spec: AgentSpec,
-        provider: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
-    ) -> Self {
-        Self::with_backend(
-            spec,
-            AgentRunModelBackend::SingleProvider { provider, model },
-        )
-    }
-
     fn new_qualified_router(
         spec: AgentSpec,
         router: Arc<dyn ModelProvider>,
         model: ProviderModelInfo,
     ) -> Self {
-        Self::with_backend(
-            spec,
-            AgentRunModelBackend::QualifiedRouter { router, model },
-        )
-    }
-
-    fn with_backend(spec: AgentSpec, backend: AgentRunModelBackend) -> Self {
         let workspace_executors = HashMap::from([(
             "local".to_owned(),
             Arc::new(LocalExecutor) as Arc<dyn WorkspaceExecutor>,
         )]);
         Self {
             spec,
-            backend,
+            router,
+            model,
             bus: None,
             tool_overrides: None,
             compression_overrides: None,
             memory: None,
             session_store: None,
-            model_capabilities: None,
-            available_models: Vec::new(),
             available_provider_models: Vec::new(),
-            legacy_model_lifecycles: HashMap::new(),
-            legacy_model_pricing: HashMap::new(),
             qualified_model_lifecycles: HashMap::new(),
             qualified_model_pricing: HashMap::new(),
             prompt_resolver: None,
             user_profile_provider: None,
+            curated_context_provider: None,
             turn_context_budgets: TurnContextBudgets::default(),
             approval_enabled: false,
             approval_rules: Vec::new(),
@@ -3368,38 +3414,11 @@ impl AgentRunBuilder {
         self
     }
 
-    #[must_use]
-    pub fn model_capabilities(
-        mut self,
-        caps: sylvander_llm_anthropic::api::model::ModelCapabilities,
-    ) -> Self {
-        self.model_capabilities = Some(caps);
-        self
-    }
-
-    /// Register alternate models reachable through the same configured
-    /// provider client. The spec model remains the initial selection.
-    #[must_use]
-    pub fn available_models(mut self, models: Vec<ModelInfo>) -> Self {
-        self.available_models = models;
-        self
-    }
-
     /// Register exact provider-qualified models. The configured provider
     /// adapter can route only entries belonging to its own provider.
     #[must_use]
     pub fn available_provider_models(mut self, models: Vec<ProviderModelInfo>) -> Self {
         self.available_provider_models = models;
-        self
-    }
-
-    /// Attach operator-supplied lifecycle truth to advertised models.
-    #[must_use]
-    pub fn model_lifecycles(
-        mut self,
-        lifecycles: HashMap<String, sylvander_protocol::ModelLifecycle>,
-    ) -> Self {
-        self.legacy_model_lifecycles = lifecycles;
         self
     }
 
@@ -3410,16 +3429,6 @@ impl AgentRunBuilder {
         lifecycles: HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelLifecycle>,
     ) -> Self {
         self.qualified_model_lifecycles = lifecycles;
-        self
-    }
-
-    /// Attach operator-supplied pricing snapshots to advertised models.
-    #[must_use]
-    pub fn model_pricing(
-        mut self,
-        pricing: HashMap<String, sylvander_protocol::ModelPricing>,
-    ) -> Self {
-        self.legacy_model_pricing = pricing;
         self
     }
 
@@ -3444,6 +3453,13 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn user_profile_provider(mut self, provider: Arc<dyn UserProfileProvider>) -> Self {
         self.user_profile_provider = Some(provider);
+        self
+    }
+
+    /// Inject committed Guardian output for bounded typed turn retrieval.
+    #[must_use]
+    pub fn curated_context_provider(mut self, provider: Arc<dyn CuratedContextProvider>) -> Self {
+        self.curated_context_provider = Some(provider);
         self
     }
 
@@ -3534,82 +3550,37 @@ impl AgentRunBuilder {
             None => (None, MemorySource::None),
         };
 
-        let provider_backend = !matches!(&self.backend, AgentRunModelBackend::Legacy(_));
-        let qualified_router =
-            matches!(&self.backend, AgentRunModelBackend::QualifiedRouter { .. });
-        let (mut model_info, primary_selection, primary_exact) = match &self.backend {
-            AgentRunModelBackend::Legacy(_) => {
-                let shadow = self.spec.to_model_info();
-                let selection = sylvander_protocol::ModelSelection {
-                    provider_id: self.spec.model.provider.clone(),
-                    model_id: shadow.id.clone(),
-                };
-                (shadow, selection, None)
-            }
-            AgentRunModelBackend::SingleProvider { model, .. }
-            | AgentRunModelBackend::QualifiedRouter { model, .. } => {
-                if model.reference.provider != self.spec.model.provider
-                    || model.reference.model != self.spec.model.model_name
-                {
-                    return Err(AgentRunError::Build(
-                        "provider model does not match the Agent specification".into(),
-                    ));
-                }
-                (
-                    crate::provider_compat::model_metadata_from_core(model),
-                    sylvander_protocol::ModelSelection {
-                        provider_id: model.reference.provider.clone(),
-                        model_id: model.reference.model.clone(),
-                    },
-                    Some(model.clone()),
-                )
-            }
-        };
-        if let Some(caps) = self.model_capabilities {
-            if provider_backend {
-                return Err(AgentRunError::Build(
-                    "legacy capability overrides are unavailable for provider models".into(),
-                ));
-            }
-            model_info.capabilities = caps;
-        }
-        if provider_backend && !self.available_models.is_empty() {
-            return Err(AgentRunError::Build(
-                "provider catalogs require exact provider model metadata".into(),
-            ));
-        }
-        if qualified_router
-            && (!self.legacy_model_lifecycles.is_empty() || !self.legacy_model_pricing.is_empty())
+        if self.model.reference.provider != self.spec.model.provider
+            || self.model.reference.model != self.spec.model.model_name
         {
             return Err(AgentRunError::Build(
-                "qualified routers require provider-qualified model metadata".into(),
+                "provider model does not match the Agent specification".into(),
             ));
         }
-        let mut catalog = Vec::new();
-        if provider_backend {
-            catalog.extend(self.available_provider_models.iter().map(|exact| {
+        let model_info = crate::provider_adapter::model_metadata_from_core(&self.model);
+        let primary_selection = sylvander_protocol::ModelSelection {
+            provider_id: self.model.reference.provider.clone(),
+            model_id: self.model.reference.model.clone(),
+        };
+        let mut catalog = self
+            .available_provider_models
+            .iter()
+            .map(|exact| {
                 (
                     sylvander_protocol::ModelSelection {
                         provider_id: exact.reference.provider.clone(),
                         model_id: exact.reference.model.clone(),
                     },
-                    crate::provider_compat::model_metadata_from_core(exact),
+                    crate::provider_adapter::model_metadata_from_core(exact),
                     Some(exact.clone()),
                 )
-            }));
-        } else {
-            catalog.extend(self.available_models.iter().cloned().map(|shadow| {
-                (
-                    sylvander_protocol::ModelSelection {
-                        provider_id: primary_selection.provider_id.clone(),
-                        model_id: shadow.id.clone(),
-                    },
-                    shadow,
-                    None,
-                )
-            }));
-        }
-        catalog.push((primary_selection.clone(), model_info.clone(), primary_exact));
+            })
+            .collect::<Vec<_>>();
+        catalog.push((
+            primary_selection.clone(),
+            model_info.clone(),
+            Some(self.model.clone()),
+        ));
         let available_models = catalog
             .into_iter()
             .map(|(selection, shadow, exact)| {
@@ -3617,14 +3588,9 @@ impl AgentRunBuilder {
                     lifecycle: self
                         .qualified_model_lifecycles
                         .get(&selection)
-                        .or_else(|| self.legacy_model_lifecycles.get(&selection.model_id))
                         .cloned()
                         .unwrap_or_default(),
-                    pricing: self
-                        .qualified_model_pricing
-                        .get(&selection)
-                        .or_else(|| self.legacy_model_pricing.get(&selection.model_id))
-                        .copied(),
+                    pricing: self.qualified_model_pricing.get(&selection).copied(),
                     selection: selection.clone(),
                     shadow,
                     exact,
@@ -3647,19 +3613,16 @@ impl AgentRunBuilder {
             },
         };
 
-        let mut loop_builder = match self.backend {
-            AgentRunModelBackend::Legacy(client) => {
-                AgentLoop::builder().client(client).model(model_info)
-            }
-            AgentRunModelBackend::SingleProvider { provider, model } => AgentLoop::builder()
-                .provider(provider)
-                .provider_model(model),
-            AgentRunModelBackend::QualifiedRouter { router, model } => AgentLoop::builder()
-                .qualified_router(router)
-                .provider_model(model),
-        }
-        .max_iterations(self.spec.behavior.max_iterations)
-        .max_retries(self.spec.behavior.max_retries);
+        let mut loop_builder = AgentLoop::builder()
+            .qualified_router(self.router)
+            .provider_model(self.model)
+            // `AgentRun` is built before a session exists. This inert template
+            // is rejected by `run_stream`; `handle_message_interruptible`
+            // replaces it with the authenticated per-turn context before the
+            // loop is ever polled.
+            .tool_context(ToolContext::inert_agent_run_template())
+            .max_iterations(self.spec.behavior.max_iterations)
+            .max_retries(self.spec.behavior.max_retries);
 
         if !self.spec.persona.system_prompt.is_empty() {
             loop_builder = loop_builder.system_prompt(&self.spec.persona.system_prompt);
@@ -3694,6 +3657,7 @@ impl AgentRunBuilder {
                 runtime_permissions: RwLock::new(runtime_permissions),
                 prompt_resolver: self.prompt_resolver,
                 user_profile_provider: self.user_profile_provider,
+                curated_context_provider: self.curated_context_provider,
                 turn_context_budgets: self.turn_context_budgets,
                 turn_context_manifests: RwLock::new(HashMap::new()),
                 context_usage: RwLock::new(HashMap::new()),
@@ -3731,6 +3695,31 @@ fn prompt_integrity_error() -> AgentRunError {
     AgentRunError::Configuration("prompt integrity verification failed".into())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPersistenceOperation {
+    InspectSession,
+    CreateSession,
+    RestoreHistory,
+    BeginTurn,
+    RecordUsage,
+    AppendAssistant,
+    ReplaceHistory,
+}
+
+impl std::fmt::Display for SessionPersistenceOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InspectSession => "inspect_session",
+            Self::CreateSession => "create_session",
+            Self::RestoreHistory => "restore_history",
+            Self::BeginTurn => "begin_turn",
+            Self::RecordUsage => "record_usage",
+            Self::AppendAssistant => "append_assistant",
+            Self::ReplaceHistory => "replace_history",
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentRunError {
     #[error("unknown session: {0}")]
@@ -3743,8 +3732,21 @@ pub enum AgentRunError {
     Build(String),
     #[error("session configuration error: {0}")]
     Configuration(String),
-    #[error("session store error: {0}")]
-    Store(String),
+    #[error("session persistence failed during {operation}")]
+    SessionPersistence {
+        operation: SessionPersistenceOperation,
+        #[source]
+        source: SessionStoreError,
+    },
+}
+
+impl AgentRunError {
+    fn session_persistence(
+        operation: SessionPersistenceOperation,
+        source: SessionStoreError,
+    ) -> Self {
+        Self::SessionPersistence { operation, source }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -6,13 +6,11 @@
 //!
 //! # Path safety
 //!
-//! Paths are resolved relative to the configured `workdir`. Symlink
-//! traversal outside `workdir` is blocked by checking the
+//! Paths are resolved relative to the invocation's explicit workspace.
+//! Symlink traversal outside that workspace is blocked by checking the
 //! canonicalized path. The `ToolError::Other` variant is used for
 //! all filesystem failures — they terminate the loop with the error
 //! surfaced to the caller.
-
-use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
@@ -24,26 +22,15 @@ use crate::tool_context::ToolContext;
 
 const MAX_READ_FILE_BYTES: usize = 1024 * 1024;
 
-/// Read a file from disk. Paths are resolved relative to `workdir`.
-#[derive(Debug, Clone)]
-pub struct ReadTool {
-    workdir: PathBuf,
-}
+/// Read a file from the invocation's explicit workspace.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadTool;
 
 impl ReadTool {
-    /// Create a `ReadTool` rooted at `workdir`. Files outside this
-    /// directory (after symlink resolution) are rejected.
+    /// Create a stateless read tool.
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
-    }
-
-    /// Current working directory.
-    #[must_use]
-    pub fn workdir(&self) -> &Path {
-        &self.workdir
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -54,8 +41,8 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read the contents of a file at the given path (relative to workdir). \
-         Returns the file's text content. Rejects paths that escape the workdir."
+        "Read the contents of a file at the given path (relative to the current workspace). \
+         Returns the file's text content. Rejects paths that escape the workspace."
     }
 
     fn input_schema(&self) -> InputSchema {
@@ -63,7 +50,7 @@ impl Tool for ReadTool {
             json!({
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file, relative to the workdir"
+                    "description": "Path to the file, relative to the current workspace"
                 }
             }),
             &["file_path"],
@@ -86,16 +73,19 @@ impl Tool for ReadTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `file_path`".into()))?;
 
-        let target = ctx.execution_target_for(&self.workdir);
+        let target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         let read = match ctx
             .executor
-            .read_file_bounded(&target, path_str, MAX_READ_FILE_BYTES)
+            .read_file_bounded(target, path_str, MAX_READ_FILE_BYTES)
             .await
         {
             Ok(read) => read,
             Err(crate::workspace_executor::WorkspaceExecutorError::InvalidPath(_)) => {
                 return Err(ToolError::Other(format!(
-                    "path `{path_str}` escapes workdir"
+                    "path `{path_str}` escapes workspace"
                 )));
             }
             Err(crate::workspace_executor::WorkspaceExecutorError::Io(error)) => {

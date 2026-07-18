@@ -1,7 +1,6 @@
 //! Workspace-scoped command execution for coding tasks.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
@@ -21,17 +20,13 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_mins(2);
 const MAX_MODEL_BYTES_PER_STREAM: usize = 4 * 1024;
 
 /// Run a shell command inside the invocation's effective workspace.
-#[derive(Debug, Clone)]
-pub struct CommandTool {
-    workdir: PathBuf,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandTool;
 
 impl CommandTool {
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -103,10 +98,11 @@ impl CommandTool {
             .ok_or_else(|| ToolError::Other("missing required field `command`".into()))?;
         let workspace = input.get("workspace").and_then(JsonValue::as_str);
         let environment = parse_environment(input.get("environment"))?;
-        let target = match ctx
-            .executor
-            .select_mount_target(&ctx.execution_target_for(&self.workdir), workspace)
-        {
+        let base_target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
+        let target = match ctx.executor.select_mount_target(base_target, workspace) {
             Ok(target) => target,
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };

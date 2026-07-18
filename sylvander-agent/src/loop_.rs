@@ -26,10 +26,7 @@ use std::sync::Arc;
 use futures_util::{Stream, StreamExt};
 use tracing::{Instrument as _, warn};
 
-use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_llm_anthropic::api::error::AnthropicError;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
-use sylvander_llm_anthropic::api::request::CreateMessageRequest;
 use sylvander_llm_anthropic::api::types::{
     ContentBlock, Message, MessageParam, MessageRole, StopReason, ToolResultBlock, ToolUseBlock,
     Usage, UserContentBlock,
@@ -37,7 +34,7 @@ use sylvander_llm_anthropic::api::types::{
 use sylvander_llm_core::{
     ModelEventStream, ModelInfo as ProviderModelInfo, ModelProvider, ModelRequest,
 };
-use sylvander_protocol::ModelSelection;
+use sylvander_protocol::{AgentHookPhase, ModelSelection};
 
 use super::error::AgentLoopError;
 use super::event::AgentEvent;
@@ -49,7 +46,8 @@ use super::tool_context::ToolContext;
 /// [`run_stream`], and [`run_with_events`].
 #[derive(Clone)]
 pub struct AgentLoop {
-    backend: ModelBackend,
+    router: Arc<dyn ModelProvider>,
+    provider_model: ProviderModelInfo,
     pub(crate) model: ModelInfo,
     pub(crate) reasoning_effort: sylvander_protocol::ReasoningEffort,
     pub(crate) tools: ToolRegistry,
@@ -67,8 +65,6 @@ pub struct AgentLoop {
     /// Optional isolated background-task executor.
     pub(crate) task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
     /// Invocation context handed to every tool call.
-    /// Defaults to a placeholder (system user) if the caller doesn't
-    /// supply one — keeps tests / examples working unchanged.
     pub(crate) tool_context: ToolContext,
     /// Central authorization/audit gateway. Every ordinary executable tool
     /// enters through this boundary after approval and before execution.
@@ -77,30 +73,9 @@ pub struct AgentLoop {
     pub(crate) invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
 }
 
-#[derive(Clone)]
-enum ModelBackend {
-    LegacyAnthropic {
-        client: AnthropicClient,
-    },
-    Provider {
-        provider: Arc<dyn ModelProvider>,
-        model: ProviderModelInfo,
-        routing: ProviderRouting,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderRouting {
-    Single,
-    Qualified,
-}
-
-enum LoopModelStream {
-    Legacy(sylvander_llm_anthropic::prelude::MessageStream),
-    Provider {
-        stream: ModelEventStream,
-        expected_model: sylvander_llm_core::ModelRef,
-    },
+struct LoopModelStream {
+    stream: ModelEventStream,
+    expected_model: sylvander_llm_core::ModelRef,
 }
 
 impl std::fmt::Debug for AgentLoop {
@@ -133,11 +108,8 @@ pub struct AgentLoopResult {
 
 /// Builder for [`AgentLoop`].
 pub struct AgentLoopBuilder {
-    client: Option<AnthropicClient>,
-    model: Option<ModelInfo>,
-    provider: Option<Arc<dyn ModelProvider>>,
+    router: Option<Arc<dyn ModelProvider>>,
     provider_model: Option<ProviderModelInfo>,
-    provider_routing: Option<ProviderRouting>,
     reasoning_effort: sylvander_protocol::ReasoningEffort,
     tools: ToolRegistry,
     compression_pipeline: Option<Arc<super::compress::pipeline::CompressionPipeline>>,
@@ -155,11 +127,8 @@ pub struct AgentLoopBuilder {
 impl Default for AgentLoopBuilder {
     fn default() -> Self {
         Self {
-            client: None,
-            model: None,
-            provider: None,
+            router: None,
             provider_model: None,
-            provider_routing: None,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             tools: ToolRegistry::new(),
             compression_pipeline: None,
@@ -179,11 +148,8 @@ impl Default for AgentLoopBuilder {
 impl std::fmt::Debug for AgentLoopBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentLoopBuilder")
-            .field("legacy_client_set", &self.client.is_some())
-            .field("model", &self.model)
-            .field("provider_set", &self.provider.is_some())
+            .field("qualified_router_set", &self.router.is_some())
             .field("provider_model", &self.provider_model)
-            .field("provider_routing", &self.provider_routing)
             .field("tools", &self.tools)
             .field("max_iterations", &self.max_iterations)
             .field("max_retries", &self.max_retries)
@@ -198,39 +164,13 @@ impl AgentLoopBuilder {
         Self::default()
     }
 
-    /// Set the Anthropic client (required).
-    #[must_use]
-    pub fn client(mut self, client: AnthropicClient) -> Self {
-        self.client = Some(client);
-        self
-    }
-
-    /// Set the resolved model metadata (required). Caller-built via
-    /// `ModelInfo::builder()` — see C11 architecture.
-    #[must_use]
-    pub fn model(mut self, model: ModelInfo) -> Self {
-        self.model = Some(model);
-        self
-    }
-
-    /// Set a provider-neutral model adapter.
-    #[must_use]
-    pub fn provider(mut self, provider: Arc<dyn ModelProvider>) -> Self {
-        self.provider = Some(provider);
-        self.provider_routing = Some(ProviderRouting::Single);
-        self
-    }
-
     /// Set a provider-neutral router that accepts exact qualified models.
     ///
-    /// Unlike [`Self::provider`], this explicitly permits a runtime model
-    /// selection to cross Provider boundaries. The router remains responsible
-    /// for enforcing its immutable qualified allowlist; the loop never falls
-    /// back to another route.
+    /// The router remains responsible for enforcing its immutable qualified
+    /// allowlist; the loop never falls back to another route.
     #[must_use]
     pub fn qualified_router(mut self, router: Arc<dyn ModelProvider>) -> Self {
-        self.provider = Some(router);
-        self.provider_routing = Some(ProviderRouting::Qualified);
+        self.router = Some(router);
         self
     }
 
@@ -261,7 +201,7 @@ impl AgentLoopBuilder {
         self
     }
 
-    /// Set the M3 compression pipeline. If not called, defaults to
+    /// Set the compression pipeline. If not called, defaults to
     /// [`CompressionPipeline::default_for_model`](crate::compress::pipeline::CompressionPipeline::default_for_model) (L1 + L2 + L3).
     /// Opt in to L0 or L4 by building a custom pipeline.
     #[must_use]
@@ -330,44 +270,16 @@ impl AgentLoopBuilder {
     /// Build the [`AgentLoop`].
     ///
     /// # Errors
-    /// Returns [`AgentLoopError::Builder`] when one backend is incomplete,
-    /// backends are mixed, or provider execution is not enabled yet.
+    /// Returns [`AgentLoopError::Builder`] when the exact qualified route is
+    /// incomplete or no explicit tool context was supplied.
     pub fn build(self) -> Result<AgentLoop, AgentLoopError> {
-        let legacy_set = self.client.is_some() || self.model.is_some();
-        let provider_set = self.provider.is_some() || self.provider_model.is_some();
-        if legacy_set && provider_set {
-            return Err(AgentLoopError::Builder(
-                "legacy and provider model backends cannot be mixed".into(),
-            ));
-        }
-        let (backend, model) = if provider_set {
-            let provider = self
-                .provider
-                .ok_or_else(|| AgentLoopError::Builder("provider is required".into()))?;
-            let model = self
-                .provider_model
-                .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
-            let routing = self.provider_routing.ok_or_else(|| {
-                AgentLoopError::Builder("provider routing mode is required".into())
-            })?;
-            let shadow = crate::provider_compat::model_metadata_from_core(&model);
-            (
-                ModelBackend::Provider {
-                    provider,
-                    model,
-                    routing,
-                },
-                shadow,
-            )
-        } else {
-            let client = self
-                .client
-                .ok_or_else(|| AgentLoopError::Builder("client is required".into()))?;
-            let model = self
-                .model
-                .ok_or_else(|| AgentLoopError::Builder("model is required".into()))?;
-            (ModelBackend::LegacyAnthropic { client }, model)
-        };
+        let router = self
+            .router
+            .ok_or_else(|| AgentLoopError::Builder("qualified router is required".into()))?;
+        let provider_model = self
+            .provider_model
+            .ok_or_else(|| AgentLoopError::Builder("provider model is required".into()))?;
+        let model = crate::provider_adapter::model_metadata_from_core(&provider_model);
         // Default pipeline = L1 + L2 + L3 (cheap, no LLM cost).
         // Opt-in to L0 (disk offload) or L4 (LLM summary) by
         // building a custom pipeline.
@@ -375,13 +287,9 @@ impl AgentLoopBuilder {
             Arc::new(super::compress::pipeline::CompressionPipeline::default_for_model(&model))
         });
 
-        // Default tool context = system user, agent named after the
-        // model id, no session. Production code should call
-        // `.tool_context(...)` on the builder; this fallback keeps
-        // tests and the M2 quickstart working unchanged.
         let tool_context = self
             .tool_context
-            .unwrap_or_else(|| crate::tool_context::defaults::model_tool_context(&model));
+            .ok_or_else(|| AgentLoopError::Builder("tool context is required".into()))?;
         let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
             crate::tool_invocation::RegistryBoundToolGateway::new(
                 self.tools.invocation_descriptors(),
@@ -390,7 +298,8 @@ impl AgentLoopBuilder {
         let invocation_snapshot = invocation_gateway.snapshot();
 
         Ok(AgentLoop {
-            backend,
+            router,
+            provider_model,
             model,
             reasoning_effort: self.reasoning_effort,
             tools: self.tools,
@@ -408,8 +317,7 @@ impl AgentLoopBuilder {
         })
     }
 
-    /// Set the tool invocation context. If not called, a placeholder
-    /// system context is used (see [`Self::build`] for details).
+    /// Set the explicit tool invocation context.
     #[must_use]
     pub fn tool_context(mut self, ctx: ToolContext) -> Self {
         self.tool_context = Some(ctx);
@@ -483,6 +391,8 @@ impl AgentLoop {
 /// Event order within an iteration:
 /// `IterationStart → [Compressed] → [TextChunk* / ThinkingChunk*] →
 /// [ToolCallStart → ToolCallEnd]* → IterationEnd → [repeat] → Done | Error`
+/// A configured before-turn hook executes once before this sequence; a
+/// configured after-turn hook executes once before the successful `Done`.
 ///
 /// On error (capability mismatch, LLM failure after retries,
 /// max iterations reached), yields an `AgentEvent::Error(_)` and
@@ -492,6 +402,15 @@ pub fn run_stream(
     initial_messages: Vec<MessageParam>,
 ) -> impl Stream<Item = AgentEvent> + Send + '_ {
     async_stream::stream! {
+        // `AgentRun` stores a construction-only template before a session
+        // exists. A turn must replace it with authenticated identity and an
+        // explicit workspace before *any* hook, model request, or tool runs.
+        if config.tool_context.is_inert_agent_run_template() {
+            yield AgentEvent::Error(AgentLoopError::Tool(
+                "agent run tool context was not initialized for this turn".into(),
+            ));
+            return;
+        }
         let mut messages = initial_messages;
         let mut cumulative_usage = Usage {
             input_tokens: 0,
@@ -501,6 +420,15 @@ pub fn run_stream(
         };
         let mut last_provider_usage = cumulative_usage.clone();
         let mut final_message: Option<Message> = None;
+
+        if let Err(blocked) = config
+            .tools
+            .run_turn_hooks(AgentHookPhase::BeforeTurn, &config.tool_context)
+            .await
+        {
+            yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
+            return;
+        }
 
         for iteration in 1..=config.max_iterations {
             yield AgentEvent::IterationStart { iteration };
@@ -548,14 +476,7 @@ pub fn run_stream(
                 }
             }
 
-            // 2. Build request
-            let request = config.build_request(&messages);
-
-            // 3. Validate capabilities (errors terminate the stream)
-            if let Err(e) = config.validate_capabilities(&request) {
-                yield AgentEvent::Error(e);
-                break;
-            }
+            // 2. Build and validate one exact provider-qualified request.
             let provider_request = match config.build_provider_request(&messages) {
                 Ok(request) => request,
                 Err(error) => {
@@ -568,7 +489,7 @@ pub fn run_stream(
             //    provider adapters never retry and a failed streaming
             //    request is never replayed as a buffered request.
             let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
-            let call = config.call_model_with_retry(&request, provider_request, retry_tx);
+            let call = config.call_model_with_retry(provider_request, retry_tx);
             tokio::pin!(call);
             let call_result = loop {
                 tokio::select! {
@@ -587,38 +508,14 @@ pub fn run_stream(
 
             // 5. Consume the stream in a spawned task — events flow
             //    through an mpsc channel into the outer event stream.
-            use futures_util::StreamExt;
-            use sylvander_llm_anthropic::api::types::event::ContentDelta;
-            use sylvander_llm_anthropic::api::types::RawStreamEvent;
-
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
             let (done_tx, done_rx) =
                 tokio::sync::oneshot::channel::<Result<Message, AgentLoopError>>();
 
             let consumer_task = tokio::spawn(async move {
-                let result = match llm_stream {
-                    LoopModelStream::Legacy(mut stream) => {
-                        let mut stream_err = None;
-                        while let Some(event_result) = stream.next().await {
-                            match event_result {
-                                Ok(RawStreamEvent::ContentBlockDelta { delta, .. }) => match delta {
-                                    ContentDelta::TextDelta { text } => { let _ = tx.send(AgentEvent::TextChunk(text)); }
-                                    ContentDelta::ThinkingDelta { thinking } => { let _ = tx.send(AgentEvent::ThinkingChunk(thinking)); }
-                                    _ => {}
-                                },
-                                Ok(_) => {}
-                                Err(source) => { stream_err = Some(AgentLoopError::Llm { retries: 0, source }); break; }
-                            }
-                        }
-                        match stream_err {
-                            Some(error) => Err(error),
-                            None => stream.final_message().ok_or_else(|| AgentLoopError::Validation("stream ended without final message".into())),
-                        }
-                    }
-                    LoopModelStream::Provider { stream, expected_model } => {
-                        consume_provider_stream(stream, expected_model, &tx).await
-                    }
-                };
+                let result =
+                    consume_provider_stream(llm_stream.stream, llm_stream.expected_model, &tx)
+                        .await;
                 drop(tx);
                 let _ = done_tx.send(result);
             }
@@ -1202,9 +1099,21 @@ pub fn run_stream(
             }
         }
 
-        // Final event: Done or MaxIterationsReached error.
+        // Final event: a blocking after-turn hook can reject completion;
+        // otherwise publish Done or MaxIterationsReached.
         match final_message {
-            Some(msg) => yield AgentEvent::Done(msg),
+            Some(msg) => {
+                match config
+                    .tools
+                    .run_turn_hooks(AgentHookPhase::AfterTurn, &config.tool_context)
+                    .await
+                {
+                    Ok(()) => yield AgentEvent::Done(msg),
+                    Err(blocked) => {
+                        yield AgentEvent::Error(AgentLoopError::Tool(blocked.to_string()));
+                    }
+                }
+            }
             None => {
                 yield AgentEvent::Error(AgentLoopError::MaxIterationsReached(
                     config.max_iterations,
@@ -1219,7 +1128,7 @@ pub fn run_stream(
 ///
 /// # Errors
 /// - [`AgentLoopError::MaxIterationsReached`] — loop hit cap
-/// - [`AgentLoopError::Llm`] — LLM call failed (after retries)
+/// - [`AgentLoopError::Provider`] — qualified provider call failed (after retries)
 /// - [`AgentLoopError::Tool`] — non-recoverable tool failure
 /// - [`AgentLoopError::IncompatibleModel`] — request requires
 ///   capability the model doesn't have
@@ -1268,7 +1177,7 @@ where
     }
 
     let final_message =
-        final_message.ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
+        final_message.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))?;
 
     Ok(AgentLoopResult {
         final_message,
@@ -1422,18 +1331,6 @@ async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> Too
 // Internal helpers on AgentLoop (private methods used by run_stream)
 // =====================================================================
 
-fn retry_cause(error: &AnthropicError) -> sylvander_protocol::RetryCause {
-    match error {
-        AnthropicError::Api { status: 429, .. } => sylvander_protocol::RetryCause::RateLimit,
-        AnthropicError::Api { status, .. } if *status >= 500 => {
-            sylvander_protocol::RetryCause::Server
-        }
-        AnthropicError::Http(_) => sylvander_protocol::RetryCause::Network,
-        AnthropicError::SseParse { .. } => sylvander_protocol::RetryCause::Stream,
-        _ => sylvander_protocol::RetryCause::Other,
-    }
-}
-
 fn provider_retry_cause(
     error: &sylvander_llm_core::ProviderError,
 ) -> sylvander_protocol::RetryCause {
@@ -1495,126 +1392,77 @@ async fn consume_provider_stream(
     }
     let response =
         completed.ok_or_else(|| provider_protocol("provider stream ended without completion"))?;
-    crate::provider_compat::response_from_core(response)
+    crate::provider_adapter::response_from_core(response)
         .map_err(|error| AgentLoopError::Validation(error.to_string()))
 }
 
 impl AgentLoop {
     pub(crate) fn auto_compact_llm(
         &self,
-    ) -> super::compress::auto_compact_llm::BackendAutoCompactLlm {
-        match &self.backend {
-            ModelBackend::LegacyAnthropic { client } => {
-                super::compress::auto_compact_llm::BackendAutoCompactLlm::Legacy(
-                    super::compress::AgentLoopAutoCompactLlm::new(client.clone()),
-                )
-            }
-            ModelBackend::Provider {
-                provider, model, ..
-            } => super::compress::auto_compact_llm::BackendAutoCompactLlm::Provider(
-                super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
-                    provider.clone(),
-                    model.clone(),
-                ),
-            ),
-        }
+    ) -> super::compress::auto_compact_llm::ProviderAutoCompactLlm {
+        super::compress::auto_compact_llm::ProviderAutoCompactLlm::new(
+            self.router.clone(),
+            self.provider_model.clone(),
+        )
     }
 
     /// Apply one exact qualified model to an immutable turn snapshot.
     ///
-    /// Single-Provider backends retain their original routing boundary.
-    /// Qualified routers may cross that boundary, but only when the selection,
-    /// exact provider metadata, and compatibility shadow identify the same
-    /// model. Neither mode performs fallback.
+    /// The exact provider metadata and Anthropic-shaped internal shadow must
+    /// identify the same model. The qualified router remains the only route
+    /// and never performs fallback.
     pub(crate) fn apply_runtime_model(
         &mut self,
         selection: &ModelSelection,
         shadow: &ModelInfo,
         exact: Option<&ProviderModelInfo>,
     ) -> Result<(), AgentLoopError> {
-        match &mut self.backend {
-            ModelBackend::LegacyAnthropic { .. } => {
-                if exact.is_some() {
-                    return Err(AgentLoopError::IncompatibleModel(
-                        "provider metadata cannot be routed by a legacy backend".into(),
-                    ));
-                }
-            }
-            ModelBackend::Provider { model, routing, .. } => {
-                let exact = exact.ok_or_else(|| {
-                    AgentLoopError::IncompatibleModel(
-                        "provider-backed model selection lacks exact metadata".into(),
-                    )
-                })?;
-                let exact_matches = exact.reference.provider == selection.provider_id
-                    && exact.reference.model == selection.model_id
-                    && shadow.id == selection.model_id;
-                let route_matches = *routing == ProviderRouting::Qualified
-                    || model.reference.provider == selection.provider_id;
-                if !exact_matches || !route_matches {
-                    return Err(AgentLoopError::IncompatibleModel(format!(
-                        "model `{}/{}` is not routed by this Agent",
-                        selection.provider_id, selection.model_id
-                    )));
-                }
-                *model = exact.clone();
-            }
+        let exact = exact.ok_or_else(|| {
+            AgentLoopError::IncompatibleModel(
+                "provider-backed model selection lacks exact metadata".into(),
+            )
+        })?;
+        let exact_matches = exact.reference.provider == selection.provider_id
+            && exact.reference.model == selection.model_id
+            && shadow.id == selection.model_id;
+        if !exact_matches {
+            return Err(AgentLoopError::IncompatibleModel(format!(
+                "model `{}/{}` is not routed by this Agent",
+                selection.provider_id, selection.model_id
+            )));
         }
+        self.provider_model = exact.clone();
         self.model = shadow.clone();
         Ok(())
     }
 
-    /// Call the LLM with retry/backoff on transient errors. Returns
-    /// a [`MessageStream`]. A provider may normalize a valid buffered
-    /// response into a stream, but an error never triggers a second request
-    /// using another transport mode.
+    /// Call the exact qualified router with retry/backoff on transient open
+    /// failures. A failed streaming request is never replayed through another
+    /// provider or transport.
     async fn call_model_with_retry(
         &self,
-        request: &CreateMessageRequest,
-        provider_request: Option<ModelRequest>,
+        provider_request: ModelRequest,
         retry_events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<LoopModelStream, AgentLoopError> {
-        match &self.backend {
-            ModelBackend::LegacyAnthropic { .. } => self.validate_capabilities(request)?,
-            ModelBackend::Provider { model, .. } => {
-                let provider_request = provider_request.as_ref().ok_or_else(|| {
-                    AgentLoopError::Validation("provider request was not built".into())
-                })?;
-                sylvander_llm_core::validate_model_request_capabilities(
-                    provider_request,
-                    model.capabilities,
-                )
-                .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
-            }
-        }
+        sylvander_llm_core::validate_model_request_capabilities(
+            &provider_request,
+            self.provider_model.capabilities,
+        )
+        .map_err(|error| AgentLoopError::IncompatibleModel(error.to_string()))?;
         let max_attempts = self.max_retries + 1;
         for attempt in 0..max_attempts {
-            let result = match &self.backend {
-                ModelBackend::LegacyAnthropic { client } => client
-                    .messages()
-                    .stream(request)
-                    .await
-                    .map(LoopModelStream::Legacy)
-                    .map_err(|source| AgentLoopError::Llm {
-                        retries: attempt,
-                        source,
-                    }),
-                ModelBackend::Provider {
-                    provider, model, ..
-                } => provider
-                    .complete_stream(provider_request.clone().ok_or_else(|| {
-                        AgentLoopError::Validation("provider request was not built".into())
-                    })?)
-                    .await
-                    .map(|stream| LoopModelStream::Provider {
-                        stream,
-                        expected_model: model.reference.clone(),
-                    })
-                    .map_err(|source| AgentLoopError::Provider {
-                        attempts: attempt + 1,
-                        source,
-                    }),
-            };
+            let result = self
+                .router
+                .complete_stream(provider_request.clone())
+                .await
+                .map(|stream| LoopModelStream {
+                    stream,
+                    expected_model: self.provider_model.reference.clone(),
+                })
+                .map_err(|source| AgentLoopError::Provider {
+                    attempts: attempt + 1,
+                    source,
+                });
             match result {
                 Ok(stream) => return Ok(stream),
                 Err(e) => {
@@ -1629,7 +1477,6 @@ impl AgentLoop {
                         "LLM stream open failed, retrying"
                     );
                     let cause = match &e {
-                        AgentLoopError::Llm { source, .. } => retry_cause(source),
                         AgentLoopError::Provider { source, .. } => provider_retry_cause(source),
                         _ => sylvander_protocol::RetryCause::Other,
                     };
@@ -1650,21 +1497,18 @@ impl AgentLoop {
     fn build_provider_request(
         &self,
         messages: &[MessageParam],
-    ) -> Result<Option<ModelRequest>, AgentLoopError> {
-        let ModelBackend::Provider { model, .. } = &self.backend else {
-            return Ok(None);
-        };
+    ) -> Result<ModelRequest, AgentLoopError> {
         let messages = messages
             .iter()
-            .map(crate::provider_compat::message_to_core)
+            .map(crate::provider_adapter::message_to_core)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
         let definitions = tool_definitions_for_model(&self.tools, &self.model);
-        let tools = crate::provider_compat::tools_to_core(&definitions)
+        let tools = crate::provider_adapter::tools_to_core(&definitions)
             .map_err(|error| AgentLoopError::Validation(error.to_string()))?;
-        Ok(Some(ModelRequest {
+        Ok(ModelRequest {
             request_id: uuid::Uuid::new_v4().to_string(),
-            model: model.reference.clone(),
+            model: self.provider_model.reference.clone(),
             system: self
                 .system_prompt
                 .iter()
@@ -1679,143 +1523,14 @@ impl AgentLoop {
                 .collect(),
             messages,
             tools,
-            max_output_tokens: model.max_output_tokens,
+            max_output_tokens: self.provider_model.max_output_tokens,
             reasoning: self.reasoning_effort.budget_tokens().map(|budget_tokens| {
                 sylvander_llm_core::ReasoningConfig {
-                    budget_tokens: budget_tokens.min(model.max_output_tokens),
+                    budget_tokens: budget_tokens.min(self.provider_model.max_output_tokens),
                 }
             }),
             output_schema: None,
-        }))
-    }
-
-    /// Validate the request against the model's capabilities.
-    fn validate_capabilities(&self, request: &CreateMessageRequest) -> Result<(), AgentLoopError> {
-        use sylvander_llm_anthropic::api::types::{
-            SystemBlock, SystemPrompt, UserContent, UserContentBlock,
-        };
-
-        let mut history_tool = false;
-        let mut history_thinking = false;
-        let mut image = false;
-        for message in &request.messages {
-            let UserContent::Blocks(blocks) = &message.content else {
-                continue;
-            };
-            for block in blocks {
-                match block {
-                    UserContentBlock::ToolResult(_) => history_tool = true,
-                    UserContentBlock::Image(_) => image = true,
-                    UserContentBlock::Other(value) => {
-                        match value.get("type").and_then(serde_json::Value::as_str) {
-                            Some("tool_use") => history_tool = true,
-                            Some("thinking") => history_thinking = true,
-                            _ => {}
-                        }
-                    }
-                    UserContentBlock::Text(_) => {}
-                }
-            }
-        }
-        let cached_system = matches!(
-            &request.system,
-            Some(SystemPrompt::Blocks(blocks))
-                if blocks.iter().any(|block| matches!(
-                    block,
-                    SystemBlock::Text(text) if text.cache_control.is_some()
-                ))
-        );
-        let cached_tool = request
-            .tools
-            .iter()
-            .any(|tool| tool.cache_control.is_some());
-
-        if (!request.tools.is_empty() || history_tool)
-            && !self
-                .model
-                .capabilities
-                .contains(ModelCapabilities::TOOL_USE)
-        {
-            return Err(AgentLoopError::IncompatibleModel(
-                "legacy request requires unsupported TOOL_USE capability".into(),
-            ));
-        }
-
-        if (request.thinking.is_some() || history_thinking)
-            && !self
-                .model
-                .capabilities
-                .contains(ModelCapabilities::EXTENDED_THINKING)
-        {
-            return Err(AgentLoopError::IncompatibleModel(
-                "legacy request requires unsupported EXTENDED_THINKING capability".into(),
-            ));
-        }
-
-        if request.output_config.is_some()
-            && !self
-                .model
-                .capabilities
-                .contains(ModelCapabilities::STRUCTURED_OUTPUT)
-        {
-            return Err(AgentLoopError::IncompatibleModel(
-                "legacy request requires unsupported STRUCTURED_OUTPUT capability".into(),
-            ));
-        }
-
-        if (cached_system || cached_tool)
-            && !self
-                .model
-                .capabilities
-                .contains(ModelCapabilities::PROMPT_CACHING)
-        {
-            return Err(AgentLoopError::IncompatibleModel(
-                "legacy request requires unsupported PROMPT_CACHING capability".into(),
-            ));
-        }
-
-        if image && !self.model.capabilities.contains(ModelCapabilities::VISION) {
-            return Err(AgentLoopError::IncompatibleModel(
-                "legacy request requires unsupported VISION capability".into(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Build a `CreateMessageRequest` for the current iteration.
-    fn build_request(&self, messages: &[MessageParam]) -> CreateMessageRequest {
-        let mut builder = CreateMessageRequest::builder()
-            .model(self.model.id.clone())
-            .max_tokens(self.model.max_output_tokens)
-            .messages(messages.to_vec());
-
-        if let Some(sp) = &self.system_prompt {
-            use sylvander_llm_anthropic::api::types::{SystemBlock, SystemPrompt, SystemTextBlock};
-            let mut block = SystemTextBlock::new(sp.clone());
-            if self
-                .model
-                .capabilities
-                .contains(ModelCapabilities::PROMPT_CACHING)
-            {
-                use sylvander_llm_anthropic::api::types::CacheControl;
-                block = block.with_cache_control(CacheControl::ephemeral());
-            }
-            builder = builder.system(SystemPrompt::Blocks(vec![SystemBlock::Text(block)]));
-        }
-
-        if let Some(budget) = self.reasoning_effort.budget_tokens() {
-            builder = builder.thinking(budget.min(self.model.max_output_tokens));
-        }
-
-        let definitions = tool_definitions_for_model(&self.tools, &self.model);
-        if !definitions.is_empty() {
-            builder = builder.tools(definitions);
-        }
-
-        builder
-            .build()
-            .expect("CreateMessageRequest builder fields are pre-validated")
+        })
     }
 }
 
@@ -1874,7 +1589,7 @@ async fn consume_stream_to_run(
     }
 
     let final_message =
-        final_message.ok_or_else(|| AgentLoopError::MaxIterationsReached(max_iterations))?;
+        final_message.ok_or(AgentLoopError::MaxIterationsReached(max_iterations))?;
     Ok(AgentLoopResult {
         final_message,
         iterations,

@@ -36,7 +36,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_protocol::SessionContext;
 
 use crate::workspace_executor::{
@@ -72,6 +71,12 @@ pub struct ToolContext {
     /// Runtime-derived identity used by every memory-store operation. It is
     /// intentionally not replaceable through a public builder or model input.
     memory_context: crate::tools::memory::MemoryExecutionContext,
+
+    /// `AgentRun` needs an `AgentLoop` value before any session exists. That
+    /// construction-only template is deliberately unusable: `run_stream`
+    /// rejects it before hooks, model requests, or tools can execute. Every
+    /// real turn replaces it with a Runtime-derived context.
+    inert_agent_run_template: bool,
 }
 
 impl ToolContext {
@@ -91,6 +96,7 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
+            inert_agent_run_template: false,
         }
     }
 
@@ -106,7 +112,31 @@ impl ToolContext {
             execution_target: WorkspaceTarget::local(PathBuf::new(), false),
             workspace_journal: None,
             memory_context,
+            inert_agent_run_template: false,
         }
+    }
+
+    /// Create the construction-only context stored by `AgentRun` before a
+    /// session turn resolves its authenticated identity and workspace.
+    ///
+    /// This stays crate-private so embeddings cannot opt into a placeholder
+    /// identity. `AgentLoop::run_stream` refuses to run with this sentinel.
+    #[must_use]
+    pub(crate) fn inert_agent_run_template() -> Self {
+        let mut context = Self::new(SessionContext::system());
+        context.executor = Arc::new(UnavailableExecutor::new("__inert_agent_run_template__"));
+        context.execution_target = WorkspaceTarget {
+            id: "__inert_agent_run_template__".into(),
+            workspace_path: PathBuf::new(),
+            read_only: true,
+        };
+        context.inert_agent_run_template = true;
+        context
+    }
+
+    #[must_use]
+    pub(crate) fn is_inert_agent_run_template(&self) -> bool {
+        self.inert_agent_run_template
     }
 
     /// Builder-style: attach a file-system root to the surface.
@@ -153,15 +183,30 @@ impl ToolContext {
         self
     }
 
-    /// Effective target, retaining legacy tool constructors only as a fallback
-    /// when no runtime workspace binding was supplied.
-    #[must_use]
-    pub fn execution_target_for(&self, fallback: &std::path::Path) -> WorkspaceTarget {
-        let mut target = self.execution_target.clone();
-        if target.workspace_path.as_os_str().is_empty() {
-            target.workspace_path = fallback.to_path_buf();
+    /// Return the explicit Runtime-selected workspace target.
+    ///
+    /// An empty target never means the process working directory and never
+    /// falls back to a value captured by a tool. Filesystem and command tools
+    /// call this before touching an executor so missing workspace composition
+    /// fails closed.
+    pub(crate) fn require_execution_target(
+        &self,
+    ) -> Result<&WorkspaceTarget, crate::workspace_executor::WorkspaceExecutorError> {
+        if self.execution_target.id.trim().is_empty() {
+            return Err(
+                crate::workspace_executor::WorkspaceExecutorError::InvalidRequest(
+                    "execution target id is required".into(),
+                ),
+            );
         }
-        target
+        if self.execution_target.workspace_path.as_os_str().is_empty() {
+            return Err(
+                crate::workspace_executor::WorkspaceExecutorError::InvalidPath(
+                    "workspace path is required".into(),
+                ),
+            );
+        }
+        Ok(&self.execution_target)
     }
 
     /// Builder-style: attach an execution budget.
@@ -324,44 +369,13 @@ impl ToolContext {
 /// caller has not supplied one. Kept in their own module so callers
 /// don't have to scroll past struct definitions.
 pub mod defaults {
-    use super::{ModelInfo, SessionContext, ToolContext};
-    use sylvander_protocol::types::SessionId;
+    use super::{SessionContext, ToolContext};
 
-    /// Build a placeholder `ToolContext` for system-originated
-    /// actions (cron, internal tasks, model-defaulted loop setup).
+    /// Build an explicit `ToolContext` for trusted system-originated actions
+    /// and tests that do not execute workspace tools.
     #[must_use]
     pub fn system_tool_context() -> ToolContext {
         ToolContext::new(SessionContext::system())
-    }
-
-    /// Build a `ToolContext` for a model-derived agent that has no
-    /// real user / session. Used as a fallback by `AgentLoop::build`
-    /// when the caller doesn't pass an explicit context.
-    #[must_use]
-    pub fn model_tool_context(model: &ModelInfo) -> ToolContext {
-        let session = SessionContext::new(
-            crate::tool_context::defaults::system_user(),
-            crate::tool_context::defaults::model_agent(model),
-            crate::tool_context::defaults::ephemeral_session(),
-        );
-        ToolContext::new(session)
-    }
-
-    // Re-export the inner helpers so existing callers
-    // (`crate::tool_context::defaults::system_user()`) keep working.
-    #[must_use]
-    pub fn system_user() -> sylvander_protocol::types::UserId {
-        sylvander_protocol::types::UserId::system()
-    }
-
-    #[must_use]
-    pub fn model_agent(model: &ModelInfo) -> sylvander_protocol::types::AgentId {
-        sylvander_protocol::types::AgentId::new(format!("model:{}", model.id))
-    }
-
-    #[must_use]
-    pub fn ephemeral_session() -> SessionId {
-        SessionId::new("__ephemeral__")
     }
 }
 
