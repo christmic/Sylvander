@@ -17,8 +17,9 @@ The contract provides:
 - a separate structured read-only command boundary used by Git inspection.
 
 Read/Write/Edit/List/Search/Command/Git all receive the effective executor and
-target through `ToolContext`. Unknown targets fail explicitly and never fall
-back to a same-named host path.
+target through `ToolContext`. Their constructors are zero-argument and retain
+no path state. An empty workspace or unknown target fails explicitly and never
+falls back to the process directory or a same-named host path.
 
 Command environment overrides are limited to 64 entries. Names must use shell
 identifier syntax, names are at most 128 bytes, values are at most 8 KiB, and
