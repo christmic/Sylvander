@@ -16,7 +16,7 @@
 //!       │  normalize external messages → BusMessage
 //!       ▼
 //! ┌──────────────────┐
-//! │  sylvander-runtime│  boot / shutdown / create_ephemeral_session
+//! │  sylvander-runtime│  durable boot / session lifecycle / shutdown
 //! ├──────────────────┤
 //! │  sylvander-agent  │  AgentRunEngine / AgentRun / AgentLoop
 //! └──────────────────┘
@@ -24,27 +24,29 @@
 
 mod agent_admin;
 #[cfg(test)]
+#[path = "../tests/unit/agent_admin_runtime_v3.rs"]
 mod agent_admin_runtime_v3_tests;
 /// Versioned Agent definitions and active-revision lookup.
 pub mod agent_registry;
-#[allow(dead_code)] // immutable runtime bindings consumed by registry composition
-mod agent_registry_snapshot;
-#[cfg(test)]
-mod agent_registry_snapshot_tests;
 #[allow(dead_code)] // versioned contract staged before SQL composition wiring
 mod agent_registry_snapshot_v3;
 #[cfg(test)]
+#[path = "../tests/unit/agent_registry_snapshot_v3_contract.rs"]
 mod agent_registry_snapshot_v3_tests;
 mod boundary;
+mod capability_runtime;
 /// Target-aware local and remote coding-session isolation.
 pub mod coding_worktree;
 /// Builds configured Agent revisions, prompt layers, providers, and tools.
 pub mod composition;
 /// Latest-version server configuration and secret-reference contracts.
 pub mod config;
+/// Durable, content-safe Provider and Channel credential operation audit.
+pub mod credential_audit;
 #[allow(dead_code)] // internal API consumed by credential administration batches
 mod credential_registry;
 #[cfg(test)]
+#[path = "../tests/unit/credential_registry.rs"]
 mod credential_registry_tests;
 /// Content-safe runtime evidence, feedback, and authorization records.
 pub mod evidence;
@@ -52,47 +54,59 @@ pub mod evidence;
 pub mod execution;
 /// Isolated local Git worktree lease lifecycle for coding sessions.
 pub mod git_worktree;
+mod guardian_curation;
+mod guardian_runtime;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
 mod identity_binding_service;
 #[cfg(test)]
+#[path = "../tests/unit/identity_binding_service.rs"]
 mod identity_binding_service_tests;
 mod memory_maintenance;
 #[allow(dead_code)] // internal API consumed by model routing/admin batches
 mod model_registry;
 #[cfg(test)]
+#[path = "../tests/unit/model_registry.rs"]
 mod model_registry_tests;
 /// Stable user mapping for authenticated transport principals.
 pub mod principal_binding;
 #[cfg(test)]
+#[path = "../tests/unit/principal_binding.rs"]
 mod principal_binding_tests;
 /// Controlled synchronization of provider model catalogs into the registry.
 pub mod provider_catalog_sync;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
 #[cfg(test)]
+#[path = "../tests/unit/provider_registry.rs"]
 mod provider_registry_tests;
 #[allow(dead_code)] // production handler wiring follows the audited transport seam
 mod registry_admin;
 #[allow(dead_code)] // pure bootstrap plan; executor wiring follows registry snapshots
 mod registry_bootstrap;
 #[cfg(test)]
+#[path = "../tests/unit/registry_bootstrap.rs"]
 mod registry_bootstrap_tests;
-#[allow(dead_code)] // composed by the registry-backed Runtime revision provider
-mod registry_composition;
-#[cfg(test)]
-mod registry_composition_tests;
 #[allow(dead_code)] // versioned composition is wired into Agent construction next
 mod registry_composition_v3;
 #[cfg(test)]
+#[path = "../tests/unit/registry_composition_v3.rs"]
 mod registry_composition_v3_tests;
 #[allow(dead_code)] // consumed by the staged registry mutation batches
 mod registry_domain;
 #[cfg(test)]
+#[path = "../tests/unit/registry_domain.rs"]
 mod registry_domain_tests;
 /// Durable executor-backed Git worktree leases for remote coding sessions.
 pub mod remote_git_worktree;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
+#[cfg(test)]
+#[path = "../tests/unit/runtime_external_provider.rs"]
+mod runtime_external_provider_tests;
+pub use request_scoped_provider::{
+    ExternalSecretLease, ExternalSecretLeaseError, ExternalSecretLeaseFuture,
+    MAX_EXTERNAL_SECRET_LEASE_SECONDS, RenewableExternalSecretProvider, SecretLeaseMetadata,
+};
 /// Evidence-backed, human-gated self-change experiments.
 pub mod self_change;
 #[allow(dead_code)] // Runtime-owned profile dispatch is integrated in the next bounded batch
@@ -112,29 +126,42 @@ use sylvander_agent::bus::{
     BusDiagnostics, BusMessage, InProcessMessageBus, MessageBus, Recipient, SubscriptionFilter,
 };
 use sylvander_agent::engine::{AgentRunEngine, RevisionedAgentRunProvider};
+use sylvander_agent::mcp_stdio::McpResultArtifactSink;
+#[cfg(test)]
 use sylvander_agent::run::AgentRun;
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::{
-    SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
+    SESSION_SCHEMA_OBJECT_NAMES, SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
-use sylvander_agent::spec::{AgentId, AgentSpec, SessionId};
+#[cfg(test)]
+use sylvander_agent::spec::AgentSpec;
+use sylvander_agent::spec::{AgentId, SessionId};
+#[cfg(test)]
+use sylvander_agent::tools::InMemoryMemoryStore;
 use sylvander_agent::tools::{
-    HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, InMemoryMemoryStore,
-    MemoryIntegrityConfig, MemoryStore, SqliteMemoryStore,
+    HttpMemoryIntegrityAnchor, HttpMemoryIntegrityAnchorConfig, MemoryIntegrityConfig, MemoryStore,
+    SqliteMemoryStore,
 };
 use sylvander_channel::{
     AuthenticatedTransportIdentity, Channel, ChannelContext, ChannelReadiness,
 };
-use sylvander_llm_anthropic::api::client::AnthropicClient;
+#[cfg(test)]
+use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
+#[cfg(test)]
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 use sylvander_protocol::{
     AgentAdminError, AgentAdminErrorCode, AgentAdminRequest, AgentAdminResponse, AgentAdminResult,
     AgentDescriptor, IdentityBindingCapabilities, IdentityBindingError, IdentityBindingErrorCode,
-    IdentityBindingRequest, IdentityBindingResponse, ModelSelection, RegistryAdminError,
-    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionEffectiveConfig, SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UserId,
-    UserProfileAction, UserProfileCapabilities, UserProfileError, UserProfileErrorCode,
-    UserProfileOperation, UserProfileRequest, UserProfileResponse,
+    IdentityBindingRequest, IdentityBindingResponse, MemoryConfirmationErrorCode,
+    MemoryConfirmationRequest, MemoryConfirmationResponse, MemoryConfirmationValidationError,
+    ModelSelection, RegistryAdminError, RegistryAdminErrorCode, RegistryAdminRequest,
+    RegistryAdminResponse, RunFeedback, SessionConfigOverrides, SessionConfigState,
+    SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig,
+    SessionRevisionPinError, USER_PROFILE_PROTOCOL_VERSION, UserId, UserProfileAction,
+    UserProfileCapabilities, UserProfileError, UserProfileErrorCode, UserProfileOperation,
+    UserProfileRequest, UserProfileResponse,
 };
 
 use crate::agent_admin::{
@@ -142,15 +169,23 @@ use crate::agent_admin::{
     redact_revision,
 };
 use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
+#[cfg(test)]
+use crate::composition::default_tools;
 use crate::composition::{
-    ConfiguredAgent, build_registry_agent_versioned_with_resolver, default_tools,
-    resolve_session_config,
+    ConfiguredAgent, build_registry_agent_versioned_with_resolver, resolve_session_config,
 };
 use crate::config::{
     MemoryIntegrityBackend, SecretResolver, ServerConfig, ServerMode, SystemSecretResolver,
 };
+use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::credential_registry::CredentialSecretResolver;
-use crate::evidence::{AdministrationAudit, AuthorizationDenial, EvidenceRecorder, EvidenceStore};
+use crate::evidence::{
+    AdministrationAudit, AuthorizationDenial, EvidenceArtifactSink, EvidenceEncryption,
+    EvidenceGovernance, EvidenceRecorder, EvidenceStore,
+};
+use crate::guardian_runtime::{
+    GuardianRuntime, GuardianRuntimeError, GuardianRuntimeSettings, WorkerToolGatewayFactory,
+};
 use crate::identity_binding_service::{
     IdentityBindingService, IdentityIngress, TrustedIdentityIssuer,
 };
@@ -160,15 +195,66 @@ use crate::memory_maintenance::{
 use crate::principal_binding::{PrincipalBindingError, PrincipalBindingStore, PrincipalDigestKey};
 use crate::registry_admin::{CredentialRegistryMutationService, RegistryAdminService};
 use crate::user_profile_store::{UserProfileStore, UserProfileStoreError};
-use agent_registry::AgentRegistry;
+use agent_registry::{AgentRegistry, REGISTRY_SCHEMA_OBJECT_NAMES};
 use boundary::BoundaryGuard;
 
 fn bind_effective_workspace(effective: &mut SessionEffectiveConfig, workspace: &std::path::Path) {
-    if let Some(binding) = effective.user_workspace.as_mut() {
+    let canonical_mount = if let Some(binding) = effective.user_workspace.as_mut() {
         binding.path = workspace.to_path_buf();
+        Some("task")
     } else if let Some(binding) = effective.agent_workspace.as_mut() {
         binding.path = workspace.to_path_buf();
+        Some("agent")
+    } else {
+        None
+    };
+    if let Some(mount) = canonical_mount.and_then(|reference| {
+        effective
+            .workspace_mounts
+            .iter_mut()
+            .find(|mount| mount.reference == reference)
+    }) {
+        mount.binding.path = workspace.to_path_buf();
     }
+}
+
+fn ensure_remote_mutation_mounts_are_transactional(
+    effective: &SessionEffectiveConfig,
+    worktrees: &coding_worktree::CodingWorktreeService,
+) -> Result<(), String> {
+    let canonical_mount = if effective.user_workspace.is_some() {
+        Some("task")
+    } else if effective.agent_workspace.is_some() {
+        Some("agent")
+    } else {
+        None
+    };
+    ensure_remote_mutation_mounts_are_transactional_with(
+        &effective.workspace_mounts,
+        canonical_mount,
+        |target| worktrees.is_remote_target(target),
+    )
+}
+
+fn ensure_remote_mutation_mounts_are_transactional_with(
+    mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    canonical_mount: Option<&str>,
+    is_remote: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    for mount in mounts {
+        let can_mutate =
+            !mount.binding.read_only && (mount.capabilities.write || mount.capabilities.command);
+        if can_mutate
+            && is_remote(&mount.binding.execution_target)
+            && canonical_mount != Some(mount.reference.as_str())
+        {
+            return Err(format!(
+                "writable remote workspace mount `@{}` requires its own worktree transaction",
+                mount.reference
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn ensure_workspace_update_is_static(
@@ -190,17 +276,61 @@ fn ensure_workspace_update_is_static(
 // SystemConfig
 // ---------------------------------------------------------------------------
 
-/// System bootstrap configuration.
+/// Test-only in-memory bootstrap configuration.
 ///
-/// Constructed in code for now; TOML file loading is a future concern.
+/// Production always boots from validated [`ServerConfig`] so sessions,
+/// evidence, memory, credentials, and Guardian state remain durable.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct SystemConfig {
+pub(crate) struct SystemConfig {
     /// Human-readable system name.
     pub name: String,
     /// Agents to spawn at boot.
     pub agents: Vec<AgentSpec>,
     /// Pre-defined persistent sessions to load/create at boot.
     pub sessions: Vec<StoredSession>,
+}
+
+/// Runtime dependencies for live Provider credential acquisition.
+///
+/// `resolver` supports registry preflight and non-model execution credentials.
+/// `lease_provider` owns acquire/renew against the external secret service.
+/// Neither dependency is formatted by this wrapper.
+#[derive(Clone)]
+pub struct ProviderCredentialSources {
+    resolver: Arc<dyn CredentialSecretResolver>,
+    lease_provider: Arc<dyn RenewableExternalSecretProvider>,
+}
+
+impl ProviderCredentialSources {
+    /// Construct an injectable Provider credential boundary.
+    pub fn new(
+        resolver: Arc<dyn SecretResolver>,
+        lease_provider: Arc<dyn RenewableExternalSecretProvider>,
+    ) -> Self {
+        Self {
+            resolver: Arc::new(SecretResolverBridge(resolver)),
+            lease_provider,
+        }
+    }
+}
+
+impl fmt::Debug for ProviderCredentialSources {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderCredentialSources")
+            .field("resolver", &"[REDACTED]")
+            .field("lease_provider", &"[REDACTED]")
+            .finish()
+    }
+}
+
+struct SecretResolverBridge(Arc<dyn SecretResolver>);
+
+impl CredentialSecretResolver for SecretResolverBridge {
+    fn resolve_credential(&self, reference: &config::SecretRef) -> Result<config::SecretValue, ()> {
+        self.0.resolve(reference).map_err(|_| ())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +345,6 @@ pub struct Runtime {
     pub session_store: Arc<dyn SessionStore>,
     /// Runtime-owned long-term memory shared by every Agent revision.
     pub memory_store: Arc<dyn MemoryStore>,
-    /// Ephemeral sessions (tracked in memory, not persisted).
-    ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     /// Shared message bus.
     bus: Arc<dyn MessageBus>,
     /// Fully configured runs retained for protocol control operations.
@@ -224,6 +352,8 @@ pub struct Runtime {
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     ui_service: Arc<RuntimeUiService>,
     evidence: Option<EvidenceRecorder>,
+    credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
+    guardian: Option<Arc<GuardianRuntime>>,
     memory_maintenance: Option<MemoryMaintenanceTask>,
     channels: tokio::sync::Mutex<Vec<ChannelTask>>,
     channel_exit_tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -321,10 +451,17 @@ pub struct RuntimeOperationalSnapshot {
     pub ready: bool,
     pub agent_count: usize,
     pub persistent_session_count: usize,
-    pub ephemeral_session_count: usize,
     pub channels: Vec<ChannelHealth>,
     pub bus: BusDiagnostics,
     pub evidence: Option<evidence::EvidenceCounts>,
+    pub health_issues: Vec<RuntimeHealthIssue>,
+}
+
+/// Content-safe durable subsystem failures that make Runtime unready.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeHealthIssue {
+    EvidenceRecorder,
+    GuardianSupervisor,
 }
 
 struct RuntimeUiService {
@@ -335,7 +472,10 @@ struct RuntimeUiService {
     agent_registry: Option<AgentRegistry>,
     revision_provider: Option<Arc<RuntimeRevisionProvider>>,
     credential_resolver: Option<Arc<dyn CredentialSecretResolver>>,
+    credential_audit: Option<Arc<CredentialOperationAuditLedger>>,
     evidence: Option<EvidenceStore>,
+    evidence_run_id: Option<String>,
+    guardian: Option<Arc<GuardianRuntime>>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
     user_profiles: Option<UserProfileStore>,
     worktrees: Option<Arc<coding_worktree::CodingWorktreeService>>,
@@ -349,8 +489,11 @@ struct RuntimeRevisionProvider {
     sessions: Arc<dyn SessionStore>,
     memory: Arc<dyn MemoryStore>,
     user_profiles: Arc<dyn sylvander_agent::user_profile_provider::UserProfileProvider>,
-    ephemeral: Arc<RwLock<HashMap<SessionId, StoredSession>>>,
     credential_resolver: Arc<dyn CredentialSecretResolver>,
+    external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
+    credential_audit: Arc<CredentialOperationAuditLedger>,
+    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    tool_gateway_factory: WorkerToolGatewayFactory,
     configured: RwLock<HashMap<(AgentId, u64), ConfiguredAgent>>,
 }
 
@@ -374,6 +517,10 @@ impl RuntimeRevisionProvider {
             self.memory.clone(),
             Some(self.user_profiles.clone()),
             self.credential_resolver.clone(),
+            self.external_secret_provider.clone(),
+            self.credential_audit.clone(),
+            self.result_artifacts.clone(),
+            Some(self.tool_gateway_factory.clone()),
         )
         .await
         .map_err(|error| RuntimeError::Composition(error.to_string()))
@@ -425,22 +572,13 @@ impl RuntimeRevisionProvider {
         agent_id: &AgentId,
         session_id: &SessionId,
     ) -> Result<u64, RuntimeError> {
-        if let Some(session) = self
+        let session = self
             .sessions
             .get(session_id)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
-        {
-            return self.bound_stored_revision(agent_id, &session).await;
-        }
-        let ephemeral = self
-            .ephemeral
-            .read()
-            .await
-            .get(session_id)
-            .cloned()
             .ok_or_else(|| RuntimeError::Config(format!("session {session_id} is not bound")))?;
-        self.bound_stored_revision(agent_id, &ephemeral).await
+        self.bound_stored_revision(agent_id, &session).await
     }
 
     async fn bound_stored_revision(
@@ -471,34 +609,17 @@ impl RuntimeRevisionProvider {
 }
 
 fn active_snapshot_selection(
-    config: &ServerConfig,
     definition: &crate::config::AgentDefinitionConfig,
-) -> Result<AgentSnapshotSelectionV3, RuntimeError> {
+) -> AgentSnapshotSelectionV3 {
     let provider_id = &definition.spec.model.provider;
-    let allowed_models = if definition.spec.model.allowed_models.is_empty() {
-        let provider = config
-            .model_providers
-            .iter()
-            .find(|candidate| &candidate.id == provider_id)
-            .ok_or_else(|| RuntimeError::Config(format!("unknown Provider `{provider_id}`")))?;
-        provider
-            .models
-            .iter()
-            .map(|model| ModelSelection {
-                provider_id: provider_id.clone(),
-                model_id: model.id.clone(),
-            })
-            .collect::<BTreeSet<_>>()
-    } else {
-        definition
-            .spec
-            .model
-            .allowed_models
-            .iter()
-            .cloned()
-            .collect()
-    };
-    Ok(AgentSnapshotSelectionV3 {
+    let allowed_models = definition
+        .spec
+        .model
+        .allowed_models
+        .iter()
+        .cloned()
+        .collect();
+    AgentSnapshotSelectionV3 {
         agent_id: definition.spec.id.to_string(),
         agent_revision: definition.revision,
         default_model: ModelSelection {
@@ -506,7 +627,7 @@ fn active_snapshot_selection(
             model_id: definition.spec.model.model_name.clone(),
         },
         allowed_models,
-    })
+    }
 }
 
 struct SessionPinClosure {
@@ -517,12 +638,12 @@ struct SessionPinClosure {
 async fn close_session_revision_pins(
     registry: &AgentRegistry,
     session: &StoredSession,
-    active_agent: &ConfiguredAgent,
+    _active_agent: &ConfiguredAgent,
 ) -> Result<SessionPinClosure, SessionBindingError> {
     let [member] = session.agents.as_slice() else {
         return Err(SessionBindingError::InvalidMembership(session.id.clone()));
     };
-    let (mut effective, mut changed) = if let Some(effective) = &session.effective_config {
+    let effective = if let Some(effective) = &session.effective_config {
         if member != &effective.agent_id {
             return Err(SessionBindingError::AgentMismatch {
                 session_id: session.id.clone(),
@@ -530,35 +651,9 @@ async fn close_session_revision_pins(
                 actual: effective.agent_id.clone(),
             });
         }
-        (effective.clone(), false)
+        effective.clone()
     } else {
-        if member != &active_agent.spec.id {
-            return Err(SessionBindingError::AgentMismatch {
-                session_id: session.id.clone(),
-                expected: member.clone(),
-                actual: active_agent.spec.id.clone(),
-            });
-        }
-        let active = registry
-            .load_active(member)
-            .await
-            .map_err(|_| SessionBindingError::Registry)?
-            .ok_or_else(|| SessionBindingError::MissingActiveAgent(member.clone()))?;
-        if active.definition.revision != active_agent.definition.revision {
-            return Err(SessionBindingError::ActiveAgentMismatch {
-                agent_id: member.clone(),
-                expected: active.definition.revision,
-                actual: active_agent.definition.revision,
-            });
-        }
-        let effective = resolve_session_config(
-            active_agent,
-            &session.config_overrides,
-            None,
-            Some(&session.metadata.workspace),
-        )
-        .map_err(|_| SessionBindingError::Resolution)?;
-        (effective, true)
+        return Err(SessionBindingError::UnresolvedPins(session.id.clone()));
     };
     let snapshot = registry
         .load_agent_snapshot_versioned(&effective.agent_id.0, effective.agent_revision)
@@ -605,36 +700,25 @@ async fn close_session_revision_pins(
             provider_id: effective.provider_id.clone(),
             model_id: effective.model_id.clone(),
         })?;
-    match effective.provider_revision {
-        Some(actual) if actual != provider_revision => {
-            return Err(SessionBindingError::ProviderRevisionMismatch {
-                expected: provider_revision,
-                actual,
-            });
-        }
-        None => {
-            effective.provider_revision = Some(provider_revision);
-            changed = true;
-        }
-        Some(_) => {}
+    if effective.provider_revision != provider_revision {
+        return Err(SessionBindingError::ProviderRevisionMismatch {
+            expected: provider_revision,
+            actual: effective.provider_revision,
+        });
     }
-    match effective.model_revision {
-        Some(actual) if actual != model.revision => {
-            return Err(SessionBindingError::ModelRevisionMismatch {
-                expected: model.revision,
-                actual,
-            });
-        }
-        None => {
-            effective.model_revision = Some(model.revision);
-            changed = true;
-        }
-        Some(_) => {}
+    if effective.model_revision != model.revision {
+        return Err(SessionBindingError::ModelRevisionMismatch {
+            expected: model.revision,
+            actual: effective.model_revision,
+        });
     }
     effective
         .require_revision_pins()
         .map_err(SessionBindingError::InvalidPins)?;
-    Ok(SessionPinClosure { effective, changed })
+    Ok(SessionPinClosure {
+        effective,
+        changed: false,
+    })
 }
 
 #[async_trait::async_trait]
@@ -887,6 +971,13 @@ impl sylvander_channel::UiService for RuntimeUiService {
         feedback: RunFeedback,
     ) -> Result<String, sylvander_protocol::BoundaryError> {
         let principal = require_principal(boundary, "submit_feedback")?;
+        if !feedback.target.is_well_formed() {
+            return Err(boundary_failure(
+                boundary,
+                "submit_feedback",
+                "feedback target is not a server-issued SHA-256 handle",
+            ));
+        }
         if feedback.note.as_ref().is_some_and(|note| note.len() > 4096)
             || feedback
                 .correction
@@ -928,7 +1019,7 @@ impl sylvander_channel::UiService for RuntimeUiService {
             )
         })?;
         let session_id = store
-            .feedback_session(feedback.run_id.clone(), feedback.turn_id.clone())
+            .feedback_session(feedback.target.clone())
             .await
             .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?
             .ok_or_else(|| {
@@ -938,9 +1029,14 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     "feedback must identify one attributable session",
                 )
             })?;
-        self.owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
+        let session = self
+            .owned_session(boundary, &SessionId::new(session_id), "submit_feedback")
             .await?;
-        store
+        let feedback_digest = serde_json::to_string(&feedback)
+            .map(|encoded| format!("sha256:{}", sha256_text(&encoded)))
+            .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?;
+        let recorded_at = sylvander_agent::session::now_secs();
+        let feedback_id = store
             .record_feedback(
                 feedback,
                 crate::evidence::FeedbackAttribution {
@@ -948,10 +1044,22 @@ impl sylvander_channel::UiService for RuntimeUiService {
                     channel_instance_id: boundary.channel_instance_id.clone(),
                     transport: boundary.transport.clone(),
                 },
-                sylvander_agent::session::now_secs(),
+                recorded_at,
             )
             .await
-            .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))
+            .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?;
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian
+                .enqueue_feedback(&session, &feedback_id, &feedback_digest, recorded_at)
+                .await
+        {
+            warn!(
+                %error,
+                feedback_id,
+                "failed to enqueue persisted feedback for Guardian curation"
+            );
+        }
+        Ok(feedback_id)
     }
 
     fn identity_binding_capabilities(&self) -> IdentityBindingCapabilities {
@@ -1137,6 +1245,84 @@ impl sylvander_channel::UiService for RuntimeUiService {
         response
     }
 
+    async fn memory_confirmation(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        request: MemoryConfirmationRequest,
+    ) -> MemoryConfirmationResponse {
+        let operation = request.operation();
+        let message = sylvander_protocol::UiClientMessage::MemoryConfirmation {
+            request: request.clone(),
+        };
+        if let Err(error) = self.boundary.check(boundary, &message, operation).await {
+            let code = match error.code {
+                sylvander_protocol::BoundaryErrorCode::Unauthenticated => {
+                    MemoryConfirmationErrorCode::Unauthenticated
+                }
+                sylvander_protocol::BoundaryErrorCode::PayloadTooLarge => {
+                    MemoryConfirmationErrorCode::InvalidRequest
+                }
+                sylvander_protocol::BoundaryErrorCode::Forbidden
+                | sylvander_protocol::BoundaryErrorCode::InvalidScope
+                | sylvander_protocol::BoundaryErrorCode::RateLimited => {
+                    MemoryConfirmationErrorCode::Forbidden
+                }
+            };
+            return memory_confirmation_error(operation, code);
+        }
+        if let Err(error) = request.validate() {
+            return memory_confirmation_error(
+                operation,
+                match error {
+                    MemoryConfirmationValidationError::UnsupportedVersion => {
+                        MemoryConfirmationErrorCode::UnsupportedVersion
+                    }
+                    MemoryConfirmationValidationError::InvalidRequest => {
+                        MemoryConfirmationErrorCode::InvalidRequest
+                    }
+                },
+            );
+        }
+        let session_id = SessionId::new(request.session_id());
+        let Ok(session) = self.owned_session(boundary, &session_id, operation).await else {
+            return memory_confirmation_error(operation, MemoryConfirmationErrorCode::Forbidden);
+        };
+        let Some(guardian) = &self.guardian else {
+            return MemoryConfirmationResponse::service_unavailable(operation);
+        };
+        let now = sylvander_agent::session::now_secs();
+        match request {
+            MemoryConfirmationRequest::List { session_id, .. } => {
+                match guardian.pending_confirmations(&session, now).await {
+                    Ok(confirmations) => MemoryConfirmationResponse::Pending {
+                        version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                        session_id,
+                        confirmations,
+                    },
+                    Err(error) => memory_confirmation_runtime_error(operation, &error),
+                }
+            }
+            MemoryConfirmationRequest::Decide {
+                session_id,
+                candidate_id,
+                expected_revision,
+                decision,
+                ..
+            } => match guardian
+                .resolve_confirmation(&session, &candidate_id, expected_revision, decision, now)
+                .await
+            {
+                Ok(()) => MemoryConfirmationResponse::Recorded {
+                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                    session_id,
+                    candidate_id,
+                    decision,
+                },
+                Err(error) => memory_confirmation_runtime_error(operation, &error),
+            },
+        }
+    }
+
     async fn identity_binding(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
@@ -1257,25 +1443,27 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 .map_err(|_| {
                     boundary_failure(boundary, "submit_chat", "event relay unavailable")
                 })?;
-            self.bus
-                .publish(BusMessage {
-                    session_id: session_id.clone(),
-                    sender: sylvander_agent::bus::Sender::User(
-                        self.effective_user_id(boundary, "submit_chat").await?.0,
-                    ),
-                    recipient: Recipient::Agent(agent_id),
-                    kind: sylvander_agent::bus::MessageKind::Chat,
-                    payload: text,
-                    attachments,
-                    timestamp: sylvander_agent::session::now_secs(),
-                    id: sylvander_agent::bus::MessageId::new(),
-                })
-                .await
-                .map_err(|_| {
-                    boundary_failure(boundary, "submit_chat", "message dispatch failed")
-                })?;
+            let message = BusMessage {
+                session_id: session_id.clone(),
+                sender: sylvander_agent::bus::Sender::User(
+                    self.effective_user_id(boundary, "submit_chat").await?.0,
+                ),
+                recipient: Recipient::Agent(agent_id),
+                kind: sylvander_agent::bus::MessageKind::Chat,
+                payload: text,
+                attachments,
+                timestamp: sylvander_agent::session::now_secs(),
+                id: sylvander_agent::bus::MessageId::new(),
+            };
+            let feedback_target = self.evidence_run_id.as_ref().map(|run_id| {
+                crate::evidence::feedback_target(run_id, &format!("turn:{}", message.id.0))
+            });
+            self.bus.publish(message).await.map_err(|_| {
+                boundary_failure(boundary, "submit_chat", "message dispatch failed")
+            })?;
             Ok(sylvander_channel::SubmittedChat {
                 session_id: session_id.clone(),
+                feedback_target,
                 events,
             })
         }
@@ -1499,7 +1687,50 @@ impl sylvander_channel::UiService for RuntimeUiService {
         agent.detach_authenticated_session(session_id).await;
         self.sessions.delete(&session.id).await.map_err(|error| {
             boundary_failure(boundary, "discard_coding_session", error.to_string())
-        })
+        })?;
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian
+                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .await
+        {
+            warn!(
+                %error,
+                session_id = %session.id,
+                "failed to enqueue closed session for Guardian curation"
+            );
+        }
+        Ok(())
+    }
+
+    async fn delete_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        session_id: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        let (session, agent) = self
+            .owned_session_agent(boundary, session_id, "delete_session")
+            .await?;
+        self.engine.detach_session(session_id).await;
+        agent.detach_authenticated_session(session_id).await;
+        self.sessions
+            .delete(session_id)
+            .await
+            .map_err(|error| boundary_failure(boundary, "delete_session", error.to_string()))?;
+        let target = coding_worktree_target(&session)
+            .map_err(|error| boundary_failure(boundary, "delete_session", error))?;
+        self.discard_worktree(session_id, target).await;
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian
+                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .await
+        {
+            warn!(
+                %error,
+                %session_id,
+                "failed to enqueue deleted session for Guardian curation"
+            );
+        }
+        Ok(())
     }
 
     async fn agent_admin(
@@ -1562,8 +1793,9 @@ impl sylvander_channel::UiService for RuntimeUiService {
             AgentAdminDispatch::Update {
                 expected_active_revision,
                 definition,
-            } => match active_snapshot_selection(&provider.config, &definition) {
-                Ok(selection) => match registry
+            } => {
+                let selection = active_snapshot_selection(&definition);
+                match registry
                     .stage_agent_revision_v3(expected_active_revision, *definition, selection)
                     .await
                 {
@@ -1595,12 +1827,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
                         AgentAdminErrorCode::InvalidDefinition,
                         "Agent revision could not be composed",
                     ),
-                },
-                Err(_) => agent_admin_error(
-                    AgentAdminErrorCode::InvalidDefinition,
-                    "Agent revision could not be composed",
-                ),
-            },
+                }
+            }
             AgentAdminDispatch::Activate {
                 agent_id,
                 revision,
@@ -1726,7 +1954,13 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 );
             }
             let response = if let Some(resolver) = credential_resolver {
-                CredentialRegistryMutationService::new(registry, resolver)
+                let Some(audit) = self.credential_audit.as_deref() else {
+                    return registry_admin_error(
+                        RegistryAdminErrorCode::StorageUnavailable,
+                        "Credential operation audit is unavailable",
+                    );
+                };
+                CredentialRegistryMutationService::new(registry, resolver, audit)
                     .dispatch(Some(principal), request)
                     .await
             } else {
@@ -1813,6 +2047,10 @@ impl RuntimeUiService {
             .user_workspace
             .as_ref()
             .or(effective.agent_workspace.as_ref());
+        if let Some(worktrees) = self.worktrees.as_ref() {
+            ensure_remote_mutation_mounts_are_transactional(&effective, worktrees)
+                .map_err(|error| boundary_failure(boundary, "create_session", error))?;
+        }
         let worktree_target = workspace_binding
             .filter(|binding| !binding.read_only)
             .map(|binding| binding.execution_target.clone());
@@ -1917,6 +2155,23 @@ impl RuntimeUiService {
                 error.to_string(),
             ));
         }
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian
+                .audit_worker_session_binding(&session, sylvander_agent::session::now_secs())
+                .await
+        {
+            self.rollback_created_session(
+                &agent,
+                &session_id,
+                lease.as_ref().and_then(|lease| lease.target_id.clone()),
+            )
+            .await;
+            return Err(boundary_failure(
+                boundary,
+                "create_session",
+                error.to_string(),
+            ));
+        }
         Ok(SessionConfigState {
             session_id,
             revision: 0,
@@ -1943,11 +2198,11 @@ impl RuntimeUiService {
                 _ => None,
             },
         };
-        self.discard_worktree(session_id, target_id.as_deref())
-            .await;
         if let Err(error) = self.sessions.delete(session_id).await {
             warn!(%error, %session_id, "failed to delete compensated session");
         }
+        self.discard_worktree(session_id, target_id.as_deref())
+            .await;
     }
 
     async fn discard_worktree(&self, session_id: &SessionId, target_id: Option<&str>) {
@@ -2080,7 +2335,7 @@ impl RuntimeUiService {
                 )
             })?;
             let session_id = store
-                .feedback_session(feedback.run_id.clone(), feedback.turn_id.clone())
+                .feedback_session(feedback.target.clone())
                 .await
                 .map_err(|error| boundary_failure(boundary, "submit_feedback", error.to_string()))?
                 .ok_or_else(|| {
@@ -2445,6 +2700,53 @@ fn boundary_failure(
         request_id: boundary.request_id.clone(),
         message: message.into(),
         retry_after_ms: None,
+    }
+}
+
+fn memory_confirmation_runtime_error(
+    operation: &str,
+    error: &GuardianRuntimeError,
+) -> MemoryConfirmationResponse {
+    let code = match error {
+        GuardianRuntimeError::Curation(guardian_curation::GuardianCurationError::AccessDenied) => {
+            MemoryConfirmationErrorCode::Forbidden
+        }
+        GuardianRuntimeError::Curation(
+            guardian_curation::GuardianCurationError::Conflict
+            | guardian_curation::GuardianCurationError::IdempotencyConflict,
+        ) => MemoryConfirmationErrorCode::Conflict,
+        GuardianRuntimeError::Curation(guardian_curation::GuardianCurationError::InvalidInput)
+        | GuardianRuntimeError::InvalidConfiguration => MemoryConfirmationErrorCode::InvalidRequest,
+        _ => MemoryConfirmationErrorCode::ServiceUnavailable,
+    };
+    memory_confirmation_error(operation, code)
+}
+
+fn memory_confirmation_error(
+    operation: &str,
+    code: MemoryConfirmationErrorCode,
+) -> MemoryConfirmationResponse {
+    let message = match code {
+        MemoryConfirmationErrorCode::UnsupportedVersion => {
+            "memory confirmation protocol version is unsupported"
+        }
+        MemoryConfirmationErrorCode::InvalidRequest => "memory confirmation request is invalid",
+        MemoryConfirmationErrorCode::Unauthenticated => {
+            "memory confirmation requires authentication"
+        }
+        MemoryConfirmationErrorCode::Forbidden => {
+            "memory confirmation is unavailable for this session"
+        }
+        MemoryConfirmationErrorCode::Conflict => "memory confirmation is stale or already resolved",
+        MemoryConfirmationErrorCode::ServiceUnavailable => {
+            "memory confirmation service is unavailable"
+        }
+    };
+    MemoryConfirmationResponse::Error {
+        version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+        operation: operation.into(),
+        code,
+        message: message.into(),
     }
 }
 
@@ -2913,6 +3215,7 @@ fn ui_operation(message: &sylvander_protocol::UiClientMessage) -> &'static str {
         Message::GetSessionConfig { .. } => "get_session_config",
         Message::UpdateSessionConfig { .. } => "update_session_config",
         Message::SubmitFeedback { .. } => "submit_feedback",
+        Message::MemoryConfirmation { request } => request.operation(),
         Message::AgentAdmin { .. } => "agent_admin",
         Message::RegistryAdmin { .. } => "registry_admin",
         Message::UserProfile { .. } => "user_profile",
@@ -2966,6 +3269,7 @@ fn ui_session_id(message: &sylvander_protocol::UiClientMessage) -> Option<&str> 
         | Message::AcceptCodingSession { session_id }
         | Message::DiscardCodingSession { session_id } => Some(session_id),
         Message::UpdateSessionConfig { request } => Some(&request.session_id.0),
+        Message::MemoryConfirmation { request } => Some(request.session_id()),
         _ => None,
     }
 }
@@ -2982,7 +3286,7 @@ impl Drop for ChannelExitSignal {
 }
 
 impl Runtime {
-    /// Bootstrap the system.
+    /// Bootstrap an isolated in-memory Runtime for unit tests.
     ///
     /// # Flow
     ///
@@ -2992,7 +3296,8 @@ impl Runtime {
     /// 4. Load persistent sessions → re-create in engine
     /// 5. Spawn each agent from config
     /// 6. Create sessions defined in config
-    pub async fn boot(
+    #[cfg(test)]
+    pub(crate) async fn boot(
         config: SystemConfig,
         default_client: AnthropicClient,
     ) -> Result<Self, RuntimeError> {
@@ -3007,15 +3312,27 @@ impl Runtime {
 
         // Spawn agents
         for spec in &config.agents {
-            let run = AgentRun::builder(spec.clone(), default_client.clone())
-                .bus(bus.clone())
-                .session_store(session_store.clone())
-                .memory(memory_store.clone())
-                .override_tools(default_tools(memory_store.clone()))
-                .build()
-                .map_err(|error| {
-                    RuntimeError::Engine(format!("build {} failed: {error}", spec.id))
-                })?;
+            let provider_id = spec.model.provider.clone();
+            let model = spec
+                .to_model_info()
+                .map_err(|error| RuntimeError::Engine(error.to_string()))?;
+            let exact = ProviderModelInfo {
+                reference: ModelRef::new(&provider_id, model.id),
+                context_window: model.context_window,
+                max_output_tokens: model.max_output_tokens,
+                capabilities: ProviderModelCapabilities::TOOL_USE,
+            };
+            let run = AgentRun::qualified_router_builder(
+                spec.clone(),
+                Arc::new(AnthropicProvider::new(provider_id, default_client.clone())),
+                exact,
+            )
+            .bus(bus.clone())
+            .session_store(session_store.clone())
+            .memory(memory_store.clone())
+            .override_tools(default_tools(memory_store.clone()))
+            .build()
+            .map_err(|error| RuntimeError::Engine(format!("build {} failed: {error}", spec.id)))?;
             engine
                 .spawn_run(spec.clone(), run)
                 .await
@@ -3072,7 +3389,10 @@ impl Runtime {
             agent_registry: None,
             revision_provider: None,
             credential_resolver: None,
+            credential_audit: None,
             evidence: None,
+            evidence_run_id: None,
+            guardian: None,
             identity_bindings: None,
             user_profiles: None,
             worktrees: None,
@@ -3082,12 +3402,13 @@ impl Runtime {
             engine,
             session_store,
             memory_store,
-            ephemeral: Arc::new(RwLock::new(HashMap::new())),
             bus,
             configured_agents,
             revision_provider: None,
             ui_service,
             evidence: None,
+            credential_audit: None,
+            guardian: None,
             memory_maintenance: None,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
@@ -3097,6 +3418,25 @@ impl Runtime {
 
     /// Bootstrap the production runtime from validated server configuration.
     pub async fn boot_config(config: ServerConfig) -> Result<Self, RuntimeError> {
+        Self::boot_config_with_provider_sources(config, None).await
+    }
+
+    /// Bootstrap with an injected renewable Provider credential service.
+    ///
+    /// The injected source is used by every initial and lazily recomposed
+    /// Agent revision. Channel credentials remain independently owned by the
+    /// server composition root.
+    pub async fn boot_config_with_provider_credentials(
+        config: ServerConfig,
+        sources: ProviderCredentialSources,
+    ) -> Result<Self, RuntimeError> {
+        Self::boot_config_with_provider_sources(config, Some(sources)).await
+    }
+
+    async fn boot_config_with_provider_sources(
+        config: ServerConfig,
+        sources: Option<ProviderCredentialSources>,
+    ) -> Result<Self, RuntimeError> {
         config
             .validate()
             .map_err(|error| RuntimeError::Config(error.to_string()))?;
@@ -3144,11 +3484,36 @@ impl Runtime {
         let user_profiles = UserProfileStore::open(&user_profile_db)
             .await
             .map_err(|_| RuntimeError::Store("open user profile store failed".into()))?;
+        let credential_audit = Arc::new(
+            CredentialOperationAuditLedger::open(
+                config
+                    .server
+                    .data_dir
+                    .as_ref()
+                    .expect("resolved runtime data directory")
+                    .join("credential-operations.db"),
+            )
+            .await
+            .map_err(|_| RuntimeError::Store("open credential audit ledger failed".into()))?,
+        );
 
-        let agent_registry = AgentRegistry::open(session_db)
+        let session_store: Arc<dyn SessionStore> = Arc::new(
+            SqliteSessionStore::open_shared(session_db, REGISTRY_SCHEMA_OBJECT_NAMES)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?,
+        );
+        let agent_registry = AgentRegistry::open_shared(session_db, SESSION_SCHEMA_OBJECT_NAMES)
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?;
-        let credential_resolver: Arc<dyn CredentialSecretResolver> = Arc::new(SystemSecretResolver);
+        let (credential_resolver, external_secret_provider) = sources.map_or_else(
+            || {
+                (
+                    Arc::new(SystemSecretResolver) as Arc<dyn CredentialSecretResolver>,
+                    None,
+                )
+            },
+            |sources| (sources.resolver, Some(sources.lease_provider)),
+        );
         agent_registry
             .bootstrap_registries(&config)
             .await
@@ -3185,7 +3550,7 @@ impl Runtime {
                 .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?;
             if existing.is_none() {
-                let selection = active_snapshot_selection(&config, definition)?;
+                let selection = active_snapshot_selection(definition);
                 agent_registry
                     .stage_agent_snapshot_v3(selection)
                     .await
@@ -3193,11 +3558,6 @@ impl Runtime {
             }
         }
 
-        let session_store: Arc<dyn SessionStore> = Arc::new(
-            SqliteSessionStore::open(session_db)
-                .await
-                .map_err(|error| RuntimeError::Store(error.to_string()))?,
-        );
         let memory_policy =
             RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)?;
         let retention_policy = memory_policy.retention.clone();
@@ -3318,27 +3678,62 @@ impl Runtime {
                 message: error.to_string(),
             })?;
         }
-        // Security denials are always durable even when optional run-content
-        // evidence collection is disabled by the operator.
-        let security_audit = EvidenceStore::open(evidence_path)
-            .await
-            .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
-        let identity_bindings = open_identity_binding_service(&config).await?;
-        let evidence = if config.server.evidence.enabled {
-            Some(
-                EvidenceRecorder::start(
-                    bus.clone(),
-                    security_audit.clone(),
-                    config.server.name.clone(),
-                    config.server.evidence.content,
-                    config.server.evidence.retention_days,
-                )
-                .await
-                .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
+        // Security denials and runtime facts share one always-on durable
+        // evidence boundary. Content policy controls payload capture; it
+        // never disables the operational record.
+        let security_audit = if let Some(encryption) = &config.server.evidence.encryption {
+            let secret = SystemSecretResolver
+                .resolve(&encryption.key)
+                .map_err(|_| RuntimeError::Config("evidence encryption key unavailable".into()))?;
+            let encryption =
+                EvidenceEncryption::from_secret(encryption.key_id.clone(), secret.as_bytes())
+                    .map_err(|error| RuntimeError::Config(error.to_string()))?;
+            let governance = EvidenceGovernance::new(
+                config.server.evidence.tenant_id.clone(),
+                config.server.evidence.retention_days,
+                encryption,
             )
+            .map_err(|error| RuntimeError::Config(error.to_string()))?;
+            EvidenceStore::open_governed(evidence_path, governance).await
         } else {
-            None
-        };
+            EvidenceStore::open(evidence_path).await
+        }
+        .map_err(|error| RuntimeError::Evidence(error.to_string()))?;
+        let result_artifacts: Option<Arc<dyn McpResultArtifactSink>> =
+            if security_audit.governance_enabled() {
+                Some(Arc::new(
+                    EvidenceArtifactSink::new(security_audit.clone())
+                        .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
+                ))
+            } else {
+                None
+            };
+        let identity_bindings = open_identity_binding_service(&config).await?;
+        let evidence = Some(
+            EvidenceRecorder::start(
+                bus.clone(),
+                security_audit.clone(),
+                config.server.name.clone(),
+                config.server.evidence.content,
+                config.server.evidence.retention_days,
+            )
+            .await
+            .map_err(|error| RuntimeError::Evidence(error.to_string()))?,
+        );
+        let guardian_now = sylvander_agent::session::now_secs();
+        let guardian_settings = GuardianRuntimeSettings::for_runtime(
+            config
+                .server
+                .data_dir
+                .as_deref()
+                .expect("resolved runtime data directory"),
+            &config.server.name,
+            guardian_now,
+        );
+        let tool_gateway_factory =
+            WorkerToolGatewayFactory::open(&guardian_settings, guardian_now, user_profiles.clone())
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?;
         let mut agents = Vec::with_capacity(config.agents.len());
         for definition in &config.agents {
             let snapshot = agent_registry
@@ -3355,12 +3750,15 @@ impl Runtime {
                     memory_store.clone(),
                     Some(Arc::new(user_profiles.clone())),
                     credential_resolver.clone(),
+                    external_secret_provider.clone(),
+                    credential_audit.clone(),
+                    result_artifacts.clone(),
+                    Some(tool_gateway_factory.clone()),
                 )
                 .await
                 .map_err(|error| RuntimeError::Composition(error.to_string()))?,
             );
         }
-        let ephemeral = Arc::new(RwLock::new(HashMap::new()));
         let mut configured_agents = HashMap::new();
         for agent in agents {
             configured_agents.insert(agent.spec.id.clone(), agent);
@@ -3372,8 +3770,11 @@ impl Runtime {
             sessions: session_store.clone(),
             memory: memory_store.clone(),
             user_profiles: Arc::new(user_profiles.clone()),
-            ephemeral: ephemeral.clone(),
             credential_resolver: credential_resolver.clone(),
+            external_secret_provider,
+            credential_audit: credential_audit.clone(),
+            result_artifacts,
+            tool_gateway_factory,
             configured: RwLock::new(
                 configured_agents
                     .values()
@@ -3476,6 +3877,29 @@ impl Runtime {
             .await
             .map_err(|_| RuntimeError::Store("memory retention activation failed".into()))?
             .map_err(|_| RuntimeError::Store("memory retention activation failed".into()))?;
+        let guardian = Arc::new(
+            GuardianRuntime::start(
+                guardian_settings,
+                guardian_now,
+                Arc::new(user_profiles.clone()),
+            )
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?,
+        );
+        for session in session_store
+            .list_persistent()
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+        {
+            guardian
+                .audit_worker_session_binding(&session, guardian_now)
+                .await
+                .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        }
+        guardian
+            .drain_once(guardian_now)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
 
         info!(
             name = %config.server.name,
@@ -3491,7 +3915,12 @@ impl Runtime {
             agent_registry: Some(agent_registry.clone()),
             revision_provider: Some(revision_provider.clone()),
             credential_resolver: Some(credential_resolver),
+            credential_audit: Some(credential_audit.clone()),
             evidence: Some(security_audit),
+            evidence_run_id: evidence
+                .as_ref()
+                .map(|recorder| recorder.run_id().to_string()),
+            guardian: Some(guardian.clone()),
             identity_bindings,
             user_profiles: Some(user_profiles),
             worktrees: Some(worktrees),
@@ -3511,12 +3940,13 @@ impl Runtime {
             engine,
             session_store,
             memory_store,
-            ephemeral,
             bus,
             configured_agents,
             revision_provider: Some(revision_provider),
             ui_service,
             evidence,
+            credential_audit: Some(credential_audit),
+            guardian: Some(guardian),
             memory_maintenance,
             channels: tokio::sync::Mutex::new(Vec::new()),
             channel_exit_tx,
@@ -3530,6 +3960,14 @@ impl Runtime {
         self.configured_agents
             .get(id)
             .map(ConfiguredAgent::descriptor)
+    }
+
+    /// Return the Runtime-owned credential operation ledger for Channel
+    /// composition. Legacy in-memory bootstrap intentionally has no durable
+    /// ledger and therefore returns `None`.
+    #[must_use]
+    pub fn credential_audit_ledger(&self) -> Option<Arc<CredentialOperationAuditLedger>> {
+        self.credential_audit.clone()
     }
 
     /// Inspect all tracked and untracked changes in an isolated coding session.
@@ -3602,7 +4040,19 @@ impl Runtime {
         self.session_store
             .delete(session_id)
             .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))
+            .map_err(|error| RuntimeError::Store(error.to_string()))?;
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian
+                .enqueue_session_closed(&session, sylvander_agent::session::now_secs())
+                .await
+        {
+            warn!(
+                %error,
+                %session_id,
+                "failed to enqueue closed session for Guardian curation"
+            );
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -3788,7 +4238,6 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .len();
-        let ephemeral_session_count = self.ephemeral.read().await.len();
         let channels = self.channel_health().await;
         let evidence = if let Some(recorder) = &self.evidence {
             Some(
@@ -3801,18 +4250,30 @@ impl Runtime {
         } else {
             None
         };
+        let mut health_issues = Vec::new();
+        if let Some(recorder) = &self.evidence
+            && recorder.last_error().await.is_some()
+        {
+            health_issues.push(RuntimeHealthIssue::EvidenceRecorder);
+        }
+        if let Some(guardian) = &self.guardian
+            && guardian.last_error().await.is_some()
+        {
+            health_issues.push(RuntimeHealthIssue::GuardianSupervisor);
+        }
         let ready = agent_count == self.configured_agents.len()
             && channels
                 .iter()
-                .all(|channel| channel.status == ChannelStatus::Ready);
+                .all(|channel| channel.status == ChannelStatus::Ready)
+            && health_issues.is_empty();
         Ok(RuntimeOperationalSnapshot {
             ready,
             agent_count,
             persistent_session_count,
-            ephemeral_session_count,
             channels,
             bus: self.bus.diagnostics().await,
             evidence,
+            health_issues,
         })
     }
 
@@ -3824,80 +4285,6 @@ impl Runtime {
     /// Wait until an Agent task exits without a matching shutdown request.
     pub async fn wait_for_agent_exit(&self) -> Option<AgentId> {
         self.engine.wait_for_agent_exit().await
-    }
-
-    // -- ephemeral sessions --
-
-    /// Create a temporary session.
-    ///
-    /// This is the primary entry point for channels creating
-    /// per-conversation sessions (new TUI window, new Telegram chat).
-    pub async fn create_ephemeral_session(
-        &self,
-        name: impl Into<String>,
-        metadata: SessionMetadata,
-        agents: &[AgentId],
-        external_meta: HashMap<String, serde_json::Value>,
-    ) -> Result<SessionId, RuntimeError> {
-        let name = name.into();
-        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let session_name = metadata.name.clone();
-        if self.revision_provider.is_some() && agents.len() != 1 {
-            return Err(RuntimeError::Config(
-                "revisioned ephemeral sessions require exactly one Agent".into(),
-            ));
-        }
-        let mut stored = StoredSession::new(
-            session_id.clone(),
-            session_name,
-            SessionLifetime::Ephemeral,
-            metadata.clone(),
-            agents.to_vec(),
-        );
-        stored.external_meta = external_meta;
-        if let Some(provider) = &self.revision_provider {
-            let agent_id = agents.first().ok_or_else(|| {
-                RuntimeError::Config("ephemeral session requires one Agent".into())
-            })?;
-            let agent = provider.active_agent(agent_id).await?;
-            stored.effective_config = Some(
-                resolve_session_config(
-                    &agent,
-                    &stored.config_overrides,
-                    None,
-                    Some(&stored.metadata.workspace),
-                )
-                .map_err(|error| RuntimeError::Composition(error.to_string()))?,
-            );
-        }
-
-        self.ephemeral
-            .write()
-            .await
-            .insert(session_id.clone(), stored);
-
-        if let Err(error) = self
-            .engine
-            .attach_session(session_id.clone(), name, metadata, agents)
-            .await
-        {
-            self.ephemeral.write().await.remove(&session_id);
-            return Err(RuntimeError::Engine(format!("create ephemeral: {error}")));
-        }
-
-        Ok(session_id)
-    }
-
-    /// Look up external metadata for an ephemeral session.
-    pub async fn get_external_meta(
-        &self,
-        session_id: &SessionId,
-    ) -> Option<HashMap<String, serde_json::Value>> {
-        self.ephemeral
-            .read()
-            .await
-            .get(session_id)
-            .map(|s| s.external_meta.clone())
     }
 
     // -- shutdown --
@@ -3917,6 +4304,16 @@ impl Runtime {
                     RuntimeError::Engine(format!("despawn {} failed: {error}", handle.id))
                 });
             }
+        }
+        if let Some(guardian) = &self.guardian
+            && let Err(error) = guardian.shutdown().await
+        {
+            first_error.get_or_insert_with(|| RuntimeError::Store(error.to_string()));
+        }
+        if let Some(guardian) = &self.guardian
+            && let Some(error) = guardian.last_error().await
+        {
+            warn!(%error, "Guardian supervisor stopped after a recorded error");
         }
         if let Some(evidence) = &self.evidence
             && let Err(error) = evidence.shutdown().await
@@ -4100,8 +4497,6 @@ pub enum SessionBindingError {
     ProviderRevisionMismatch { expected: u64, actual: u64 },
     #[error("session Model revision is {actual}, not snapshot revision {expected}")]
     ModelRevisionMismatch { expected: u64, actual: u64 },
-    #[error("failed to resolve legacy session configuration")]
-    Resolution,
     #[error("Agent registry unavailable while closing session pins")]
     Registry,
     #[error("invalid immutable Agent snapshot")]
@@ -4151,18 +4546,24 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         message: error.to_string(),
     })?;
     config.server.data_dir = Some(data_dir.clone());
-    config
-        .server
-        .session_db
-        .get_or_insert_with(|| data_dir.join("sessions.db"));
-    config
-        .server
-        .memory_db
-        .get_or_insert_with(|| data_dir.join("memory.db"));
-    config
-        .server
-        .user_profile_db
-        .get_or_insert_with(|| data_dir.join("user-profiles.db"));
+    config.server.session_db = Some(resolve_durable_database_path(
+        "server.session_db",
+        config.server.session_db.take(),
+        &data_dir,
+        "sessions.db",
+    )?);
+    config.server.memory_db = Some(resolve_durable_database_path(
+        "server.memory_db",
+        config.server.memory_db.take(),
+        &data_dir,
+        "memory.db",
+    )?);
+    config.server.user_profile_db = Some(resolve_durable_database_path(
+        "server.user_profile_db",
+        config.server.user_profile_db.take(),
+        &data_dir,
+        "user-profiles.db",
+    )?);
     if let Some(MemoryIntegrityBackend::File { anchor_path }) =
         config.server.memory_maintenance.integrity.backend.as_ref()
     {
@@ -4172,11 +4573,12 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
         .server
         .workspace_journal
         .get_or_insert_with(|| data_dir.join("workspace-journal"));
-    config
-        .server
-        .evidence
-        .path
-        .get_or_insert_with(|| data_dir.join("evidence.db"));
+    config.server.evidence.path = Some(resolve_durable_database_path(
+        "server.evidence.path",
+        config.server.evidence.path.take(),
+        &data_dir,
+        "evidence.db",
+    )?);
     if config.server.identity.digest_key.is_some() {
         config
             .server
@@ -4185,6 +4587,25 @@ fn with_resolved_paths(mut config: ServerConfig) -> Result<ServerConfig, Runtime
             .get_or_insert_with(|| data_dir.join("identity.db"));
     }
     Ok(config)
+}
+
+fn resolve_durable_database_path(
+    field: &str,
+    configured: Option<std::path::PathBuf>,
+    data_dir: &std::path::Path,
+    default_name: &str,
+) -> Result<std::path::PathBuf, RuntimeError> {
+    let path = match configured {
+        Some(path) if path.is_relative() => data_dir.join(path),
+        Some(path) => path,
+        None => data_dir.join(default_name),
+    };
+    let mut errors = Vec::new();
+    crate::config::validate_durable_database_path(field, &path, true, &mut errors);
+    if let Some(message) = errors.into_iter().next() {
+        return Err(RuntimeError::Config(message));
+    }
+    Ok(path)
 }
 
 async fn open_identity_binding_service(
@@ -4321,3689 +4742,5 @@ pub(crate) fn configure_test_memory_integrity(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use sylvander_agent::tool::Tool;
-    use sylvander_agent::tool_context::{Cap, ToolContext};
-    use sylvander_agent::tools::memory::MemoryFilter;
-    use sylvander_agent::tools::{
-        CommandTool, MemoryActorKind, MemoryAppend, MemoryProvenanceSource,
-    };
-    use sylvander_agent::workspace_executor::{WorkspaceExecutor, WorkspaceTarget};
-    use sylvander_protocol::SessionContext;
-    use tokio::sync::Notify;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[test]
-    fn host_backed_targets_support_local_worktree_isolation() {
-        let targets = HashMap::from([
-            (
-                "local".into(),
-                config::ExecutionTransportConfig::Local { root: None },
-            ),
-            (
-                "container".into(),
-                config::ExecutionTransportConfig::Container {
-                    runtime: "docker".into(),
-                    image: "rust:latest".into(),
-                    resources: config::ContainerResourceSettings::default(),
-                },
-            ),
-            (
-                "ssh".into(),
-                config::ExecutionTransportConfig::Ssh {
-                    host: "host".into(),
-                    port: 22,
-                    user: "user".into(),
-                    credential: config::SecretRef::Env {
-                        name: "SSH_KEY".into(),
-                    },
-                    known_hosts: PathBuf::from("/tmp/sylvander-known-hosts"),
-                    control_path: PathBuf::from("/tmp/sylvander-ssh-control"),
-                    worktree_root: PathBuf::from("/tmp/sylvander-worktrees"),
-                },
-            ),
-        ]);
-
-        assert!(execution_target_supports_host_worktree(&targets, "local"));
-        assert!(execution_target_supports_host_worktree(
-            &targets,
-            "container"
-        ));
-        assert!(!execution_target_supports_host_worktree(&targets, "ssh"));
-    }
-
-    struct InstrumentedBus {
-        inner: InProcessMessageBus,
-        operations: std::sync::Mutex<Vec<&'static str>>,
-        fail_subscribe: bool,
-        fail_chat_publish: bool,
-        fail_all_publish: bool,
-    }
-
-    impl InstrumentedBus {
-        fn new(fail_subscribe: bool, fail_chat_publish: bool) -> Self {
-            Self {
-                inner: InProcessMessageBus::new(),
-                operations: std::sync::Mutex::new(Vec::new()),
-                fail_subscribe,
-                fail_chat_publish,
-                fail_all_publish: false,
-            }
-        }
-
-        fn rejecting_publish() -> Self {
-            Self {
-                fail_all_publish: true,
-                ..Self::new(false, false)
-            }
-        }
-
-        fn operations(&self) -> Vec<&'static str> {
-            self.operations.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl MessageBus for InstrumentedBus {
-        async fn publish(&self, message: BusMessage) -> Result<(), sylvander_agent::bus::BusError> {
-            let chat = matches!(message.kind, sylvander_agent::bus::MessageKind::Chat);
-            self.operations
-                .lock()
-                .unwrap()
-                .push(if chat { "publish_chat" } else { "publish" });
-            if self.fail_all_publish || (chat && self.fail_chat_publish) {
-                return Err(sylvander_agent::bus::BusError::SendFailed(
-                    "injected".into(),
-                ));
-            }
-            self.inner.publish(message).await
-        }
-
-        async fn subscribe(
-            &self,
-            filter: SubscriptionFilter,
-        ) -> Result<tokio::sync::mpsc::Receiver<BusMessage>, sylvander_agent::bus::BusError>
-        {
-            self.operations.lock().unwrap().push("subscribe");
-            if self.fail_subscribe {
-                return Err(sylvander_agent::bus::BusError::SubscribeFailed(
-                    "injected".into(),
-                ));
-            }
-            self.inner.subscribe(filter).await
-        }
-    }
-
-    struct BlockingChannel {
-        started: Arc<Notify>,
-        dropped: Arc<AtomicBool>,
-    }
-
-    struct ExitingChannel;
-
-    struct ReadyThenExitChannel {
-        exit: Arc<Notify>,
-    }
-
-    struct RestartOnceChannel {
-        attempts: Arc<AtomicUsize>,
-    }
-
-    fn channel_registration(
-        instance_id: &str,
-        channel: impl Channel + 'static,
-    ) -> ChannelRegistration {
-        ChannelRegistration::new(instance_id, Arc::new(channel))
-    }
-
-    #[async_trait::async_trait]
-    impl Channel for ExitingChannel {
-        fn name(&self) -> &'static str {
-            "exiting-test"
-        }
-
-        async fn run(self: Arc<Self>, _ctx: ChannelContext) {}
-    }
-
-    #[async_trait::async_trait]
-    impl Channel for ReadyThenExitChannel {
-        fn name(&self) -> &'static str {
-            "ready-then-exit-test"
-        }
-
-        async fn run(self: Arc<Self>, ctx: ChannelContext) {
-            ctx.mark_ready();
-            self.exit.notified().await;
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Channel for RestartOnceChannel {
-        fn name(&self) -> &'static str {
-            "restart-once-test"
-        }
-
-        async fn run(self: Arc<Self>, ctx: ChannelContext) {
-            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-            ctx.mark_ready();
-            if attempt > 0 {
-                ctx.shutdown_requested().await;
-            }
-        }
-    }
-
-    struct DropSignal(Arc<AtomicBool>);
-
-    impl Drop for DropSignal {
-        fn drop(&mut self) {
-            self.0.store(true, Ordering::SeqCst);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Channel for BlockingChannel {
-        fn name(&self) -> &'static str {
-            "blocking-test"
-        }
-
-        async fn run(self: Arc<Self>, ctx: ChannelContext) {
-            let _drop_signal = DropSignal(self.dropped.clone());
-            ctx.mark_ready();
-            self.started.notify_one();
-            ctx.shutdown_requested().await;
-        }
-    }
-
-    fn test_spec(id: &str) -> AgentSpec {
-        AgentSpec::builder()
-            .id(id)
-            .name(format!("Agent {id}"))
-            .model_name("claude-sonnet-5-20260601")
-            .build()
-            .expect("spec")
-    }
-
-    fn test_client() -> AnthropicClient {
-        AnthropicClient::builder()
-            .api_key("test-key")
-            .build()
-            .expect("client")
-    }
-
-    fn test_metadata() -> SessionMetadata {
-        SessionMetadata {
-            workspace: PathBuf::from("/tmp"),
-            name: "test".into(),
-            user_id: "user-1".into(),
-        }
-    }
-
-    fn configured_memory_test_config(
-        directory: &tempfile::TempDir,
-        agent_ids: &[&str],
-    ) -> ServerConfig {
-        let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "0123456789abcdef0123456789abcdef").unwrap();
-        let data_dir = directory.path().join("runtime-data");
-        let anchor_dir = directory.path().join("integrity-anchor");
-        std::fs::create_dir_all(&anchor_dir).unwrap();
-        let agents = agent_ids.iter().fold(String::new(), |mut output, id| {
-            use std::fmt::Write as _;
-            write!(
-                output,
-                r#"
-[[agents]]
-[agents.spec]
-id = "{id}"
-name = "Agent {id}"
-[agents.spec.model]
-provider = "primary"
-model_name = "model-a"
-"#
-            )
-            .expect("write Agent test configuration");
-            output
-        });
-        ServerConfig::from_toml(&format!(
-            r#"
-schema_version = 1
-[server]
-data_dir = "{}"
-
-[server.memory_maintenance.integrity]
-[server.memory_maintenance.integrity.key]
-source = "file"
-path = "{}"
-[server.memory_maintenance.integrity.backend]
-kind = "file"
-anchor_path = "{}"
-
-[[model_providers]]
-id = "primary"
-base_url = "https://models.invalid"
-[model_providers.api_key]
-source = "file"
-path = "{}"
-[[model_providers.models]]
-id = "model-a"
-{agents}
-"#,
-            data_dir.display(),
-            secret.display(),
-            anchor_dir.join("anchor.json").display(),
-            secret.display()
-        ))
-        .unwrap()
-    }
-
-    fn git(repository: &std::path::Path, arguments: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(arguments)
-            .current_dir(repository)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {arguments:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[cfg(unix)]
-    fn fake_container_runtime(directory: &std::path::Path) -> std::path::PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
-        let executable = directory.join("fake-container-runtime");
-        std::fs::write(
-            &executable,
-            r#"#!/bin/sh
-if [ "$1" = rm ]; then exit 0; fi
-[ "$1" = run ] || exit 90
-shift
-mount=
-while [ "$#" -gt 0 ]; do
-  case $1 in
-    --rm|--network=none|--interactive|--read-only) shift ;;
-    --name|--memory|--cpus|--pids-limit|--tmpfs|--security-opt|--cap-drop) shift 2 ;;
-    --mount) mount=$2; shift 2 ;;
-    --workdir) shift 2 ;;
-    *) shift; break ;;
-  esac
-done
-workspace=$(printf '%s' "$mount" | sed -n 's/.*source=\([^,]*\),target=.*/\1/p')
-[ -n "$workspace" ] || exit 91
-cd "$workspace" || exit 92
-exec "$@"
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        executable
-    }
-
-    #[tokio::test]
-    async fn coding_session_binds_effective_prompt_and_tools_to_one_worktree() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("project");
-        std::fs::create_dir(&repository).unwrap();
-        git(&repository, &["init", "-b", "master"]);
-        git(&repository, &["config", "user.email", "test@example.com"]);
-        git(&repository, &["config", "user.name", "Sylvander Test"]);
-        std::fs::write(repository.join("AGENTS.md"), "worktree instructions").unwrap();
-        git(&repository, &["add", "AGENTS.md"]);
-        git(&repository, &["commit", "-m", "initial"]);
-
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "workspace-owner",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "tui-local",
-            "unix",
-            "request-worktree",
-        );
-        let requested_workspace = sylvander_protocol::SessionWorkspaceBinding {
-            execution_target: "local".into(),
-            path: repository.clone(),
-            read_only: false,
-            instruction_focus: None,
-        };
-        let initial_overrides = SessionConfigOverrides {
-            user_workspace: Some(requested_workspace.clone()),
-            ..SessionConfigOverrides::default()
-        };
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "isolated coding".into(),
-                channel_id: Some("tui-local".into()),
-                overrides: initial_overrides.clone(),
-            },
-        )
-        .await
-        .unwrap();
-        let effective_workspace = created
-            .effective
-            .user_workspace
-            .as_ref()
-            .unwrap()
-            .path
-            .clone();
-        assert_ne!(effective_workspace, repository);
-        assert!(effective_workspace.join("AGENTS.md").is_file());
-
-        let stored = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.metadata.workspace, effective_workspace);
-        assert_eq!(stored.effective_config, Some(created.effective.clone()));
-        let attached = runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .get_session(&created.session_id)
-            .await
-            .unwrap();
-        assert_eq!(attached.metadata.workspace, effective_workspace);
-
-        let updated = sylvander_channel::UiService::update_session_config(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionConfigUpdateRequest {
-                session_id: created.session_id.clone(),
-                expected_revision: created.revision,
-                overrides: SessionConfigOverrides {
-                    permissions: Some(sylvander_protocol::PermissionProfile {
-                        file_access: sylvander_protocol::FileAccess::ReadOnly,
-                        network_access: sylvander_protocol::NetworkAccess::Denied,
-                        approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
-                    }),
-                    ..initial_overrides.clone()
-                },
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            updated.effective.user_workspace.unwrap().path,
-            effective_workspace
-        );
-
-        let changed_workspace = directory.path().join("different");
-        std::fs::create_dir(&changed_workspace).unwrap();
-        let error = sylvander_channel::UiService::update_session_config(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionConfigUpdateRequest {
-                session_id: created.session_id.clone(),
-                expected_revision: updated.revision,
-                overrides: SessionConfigOverrides {
-                    user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
-                        path: changed_workspace,
-                        ..requested_workspace
-                    }),
-                    ..initial_overrides
-                },
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("cannot change after session creation")
-        );
-
-        runtime
-            .discard_coding_session(&created.session_id)
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn coding_tool_review_and_resume_survive_runtime_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("project");
-        std::fs::create_dir(&repository).unwrap();
-        git(&repository, &["init", "-b", "master"]);
-        git(&repository, &["config", "user.email", "test@example.com"]);
-        git(&repository, &["config", "user.name", "Sylvander Test"]);
-        std::fs::write(repository.join("tracked.txt"), "before\n").unwrap();
-        git(&repository, &["add", "tracked.txt"]);
-        git(&repository, &["commit", "-m", "initial"]);
-
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        let boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "workspace-owner",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "tui-local",
-            "unix",
-            "coding-lifecycle",
-        );
-        let overrides = SessionConfigOverrides {
-            model: Some(ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "model-a".into(),
-            }),
-            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
-                execution_target: "local".into(),
-                path: repository.clone(),
-                read_only: false,
-                instruction_focus: None,
-            }),
-            ..SessionConfigOverrides::default()
-        };
-
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "restartable coding".into(),
-                channel_id: Some("tui-local".into()),
-                overrides: overrides.clone(),
-            },
-        )
-        .await
-        .unwrap();
-        let worktree = created
-            .effective
-            .user_workspace
-            .as_ref()
-            .unwrap()
-            .path
-            .clone();
-        assert_ne!(worktree, repository);
-
-        let tool_context = ToolContext::new(SessionContext::new(
-            UserId::new("workspace-owner"),
-            AgentId::new("assistant"),
-            created.session_id.clone(),
-        ))
-        .with_fs_root(&worktree)
-        .with_capability(Cap::Spawn);
-        let output = CommandTool::new("/")
-            .execute(
-                &tool_context,
-                json!({"command": "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt"}),
-            )
-            .await
-            .unwrap();
-        assert!(!output.is_error, "{}", output.content);
-        assert_eq!(
-            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
-            "before\n"
-        );
-
-        let diff = sylvander_channel::UiService::inspect_coding_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert!(diff.status.contains("M tracked.txt"));
-        assert!(diff.status.contains("?? generated.txt"));
-        assert!(diff.patch.contains("+accepted"));
-        assert!(diff.patch.contains("+generated"));
-        sylvander_channel::UiService::accept_coding_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
-            "accepted\n"
-        );
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let restarted = Runtime::boot_config(config).await.unwrap();
-        let resumed = sylvander_channel::UiService::session_config(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(resumed.effective.agent_id, AgentId::new("assistant"));
-        assert_eq!(resumed.effective.provider_id, "primary");
-        assert_eq!(resumed.effective.model_id, "model-a");
-        assert_eq!(resumed.effective.user_workspace.unwrap().path, worktree);
-        assert_eq!(resumed.overrides, overrides);
-        let clean = sylvander_channel::UiService::inspect_coding_session(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert!(clean.status.is_empty());
-        assert!(clean.patch.is_empty());
-
-        let output = CommandTool::new("/")
-            .execute(
-                &tool_context,
-                json!({"command": "printf 'discarded\\n' > tracked.txt"}),
-            )
-            .await
-            .unwrap();
-        assert!(!output.is_error, "{}", output.content);
-        let pending = sylvander_channel::UiService::inspect_coding_session(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert!(pending.patch.contains("+discarded"));
-        sylvander_channel::UiService::discard_coding_session(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
-            "accepted\n"
-        );
-        assert!(!worktree.exists());
-        assert!(
-            restarted
-                .session_store
-                .get(&created.session_id)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        restarted.shutdown().await.unwrap();
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn container_coding_session_runs_in_worktree_and_survives_restart() {
-        use crate::execution::container::ContainerExecutor;
-
-        let directory = tempfile::tempdir().unwrap();
-        let repository = directory.path().join("project");
-        std::fs::create_dir(&repository).unwrap();
-        git(&repository, &["init", "-b", "master"]);
-        git(&repository, &["config", "user.email", "test@example.com"]);
-        git(&repository, &["config", "user.name", "Sylvander Test"]);
-        std::fs::write(repository.join("tracked.txt"), "before\n").unwrap();
-        git(&repository, &["add", "tracked.txt"]);
-        git(&repository, &["commit", "-m", "initial"]);
-        let container_runtime = fake_container_runtime(directory.path());
-
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        config
-            .execution_targets
-            .push(config::ExecutionTargetConfig {
-                id: "container".into(),
-                transport: config::ExecutionTransportConfig::Container {
-                    runtime: container_runtime.display().to_string(),
-                    image: "sylvander/test:latest".into(),
-                    resources: config::ContainerResourceSettings::default(),
-                },
-            });
-        let boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "container-owner",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "tui-local",
-            "unix",
-            "container-coding",
-        );
-        let overrides = SessionConfigOverrides {
-            user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
-                execution_target: "container".into(),
-                path: repository.clone(),
-                read_only: false,
-                instruction_focus: None,
-            }),
-            ..SessionConfigOverrides::default()
-        };
-
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "container coding".into(),
-                channel_id: Some("tui-local".into()),
-                overrides,
-            },
-        )
-        .await
-        .unwrap();
-        let worktree = created
-            .effective
-            .user_workspace
-            .as_ref()
-            .unwrap()
-            .path
-            .clone();
-        assert_ne!(worktree, repository);
-
-        let executor = ContainerExecutor::new(&container_runtime, "sylvander/test:latest").unwrap();
-        let target = WorkspaceTarget {
-            id: "container".into(),
-            workspace_path: worktree.clone(),
-            read_only: false,
-        };
-        let output = executor
-            .run_command(
-                &target,
-                "printf 'accepted\\n' > tracked.txt; printf 'generated\\n' > generated.txt",
-                std::time::Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        assert!(output.success);
-        let diff = sylvander_channel::UiService::inspect_coding_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert!(diff.patch.contains("+accepted"));
-        assert!(diff.patch.contains("+generated"));
-        sylvander_channel::UiService::accept_coding_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
-            "accepted\n"
-        );
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let restarted = Runtime::boot_config(config).await.unwrap();
-        let resumed = sylvander_channel::UiService::session_config(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(resumed.effective.user_workspace.unwrap().path, worktree);
-        executor
-            .run_command(
-                &target,
-                "printf 'discarded\\n' > tracked.txt",
-                std::time::Duration::from_secs(5),
-            )
-            .await
-            .unwrap();
-        sylvander_channel::UiService::discard_coding_session(
-            restarted.ui_service.as_ref(),
-            &boundary,
-            &created.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
-            "accepted\n"
-        );
-        assert!(!worktree.exists());
-        restarted.shutdown().await.unwrap();
-    }
-
-    fn ui_service_with_bus(runtime: &Runtime, bus: Arc<dyn MessageBus>) -> RuntimeUiService {
-        RuntimeUiService {
-            engine: runtime.ui_service.engine.clone(),
-            bus,
-            sessions: runtime.ui_service.sessions.clone(),
-            agents: runtime.ui_service.agents.clone(),
-            agent_registry: runtime.ui_service.agent_registry.clone(),
-            revision_provider: runtime.ui_service.revision_provider.clone(),
-            credential_resolver: runtime.ui_service.credential_resolver.clone(),
-            evidence: runtime.ui_service.evidence.clone(),
-            identity_bindings: runtime.ui_service.identity_bindings.clone(),
-            user_profiles: runtime.ui_service.user_profiles.clone(),
-            worktrees: runtime.ui_service.worktrees.clone(),
-            boundary: runtime.ui_service.boundary.clone(),
-        }
-    }
-
-    #[tokio::test]
-    async fn authenticated_chat_submission_is_ordered_and_compensates_new_sessions() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "channel-user",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "channel-a",
-            "test",
-            "request-1",
-        );
-        let request = |existing_session| sylvander_channel::ExternalChatRequest {
-            existing_session,
-            agent_id: AgentId::new("assistant"),
-            label: "authenticated chat".into(),
-            overrides: SessionConfigOverrides::default(),
-            text: "hello".into(),
-            attachments: Vec::new(),
-            external_meta: BTreeMap::from([("external_id".into(), "chat-1".into())]),
-        };
-        let agent = runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap();
-        let initial_store = runtime.session_store.list_persistent().await.unwrap().len();
-        let initial_engine = runtime
-            .engine
-            .list_sessions()
-            .await
-            .into_iter()
-            .map(|session| session.id.0)
-            .collect::<BTreeSet<_>>();
-        let initial_agent = agent.run.list_sessions().await;
-
-        let join_bus = Arc::new(InstrumentedBus::rejecting_publish());
-        let mut join_failure = ui_service_with_bus(&runtime, Arc::new(InProcessMessageBus::new()));
-        join_failure.engine = Arc::new(AgentRunEngine::new(join_bus.clone()));
-        sylvander_channel::UiService::submit_chat(&join_failure, &boundary, request(None))
-            .await
-            .expect_err("engine attach failure must reject a new session");
-        assert_eq!(join_bus.operations(), ["publish"]);
-        assert!(join_failure.engine.list_sessions().await.is_empty());
-        assert_eq!(
-            runtime.session_store.list_persistent().await.unwrap().len(),
-            initial_store
-        );
-        assert_eq!(agent.run.list_sessions().await, initial_agent);
-
-        for (fail_subscribe, fail_publish, expected) in [
-            (true, false, vec!["subscribe"]),
-            (false, true, vec!["subscribe", "publish_chat"]),
-        ] {
-            let bus = Arc::new(InstrumentedBus::new(fail_subscribe, fail_publish));
-            let service = ui_service_with_bus(&runtime, bus.clone());
-            sylvander_channel::UiService::submit_chat(&service, &boundary, request(None))
-                .await
-                .expect_err("injected delivery failure must reject a new session");
-            assert_eq!(bus.operations(), expected);
-            assert_eq!(
-                runtime.session_store.list_persistent().await.unwrap().len(),
-                initial_store
-            );
-            assert_eq!(
-                runtime
-                    .engine
-                    .list_sessions()
-                    .await
-                    .into_iter()
-                    .map(|session| session.id.0)
-                    .collect::<BTreeSet<_>>(),
-                initial_engine
-            );
-            assert_eq!(agent.run.list_sessions().await, initial_agent);
-        }
-
-        let existing = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "existing".into(),
-                channel_id: Some("channel-a".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        let failing_bus = Arc::new(InstrumentedBus::new(false, true));
-        let failing_service = ui_service_with_bus(&runtime, failing_bus);
-        sylvander_channel::UiService::submit_chat(
-            &failing_service,
-            &boundary,
-            request(Some(existing.session_id.clone())),
-        )
-        .await
-        .expect_err("existing-session publish failure must be reported");
-        assert!(
-            runtime
-                .session_store
-                .get(&existing.session_id)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            runtime
-                .engine
-                .get_session(&existing.session_id)
-                .await
-                .is_some()
-        );
-        assert!(
-            agent
-                .run
-                .list_sessions()
-                .await
-                .contains(&existing.session_id)
-        );
-
-        let selected_agent_bus = Arc::new(InstrumentedBus::new(false, false));
-        let selected_agent_service = ui_service_with_bus(&runtime, selected_agent_bus);
-        let mut existing_request = request(Some(existing.session_id.clone()));
-        existing_request.agent_id = AgentId::new("different-channel-default");
-        let mut selected_submission = sylvander_channel::UiService::submit_chat(
-            &selected_agent_service,
-            &boundary,
-            existing_request,
-        )
-        .await
-        .expect("the durable session Agent must override the channel creation default");
-        let selected_chat = selected_submission.events.recv().await.unwrap();
-        assert_eq!(
-            selected_chat.recipient,
-            Recipient::Agent(AgentId::new("assistant"))
-        );
-
-        let success_bus = Arc::new(InstrumentedBus::new(false, false));
-        let success_service = ui_service_with_bus(&runtime, success_bus.clone());
-        let mut submitted =
-            sylvander_channel::UiService::submit_chat(&success_service, &boundary, request(None))
-                .await
-                .unwrap();
-        assert_eq!(success_bus.operations(), ["subscribe", "publish_chat"]);
-        let chat = submitted.events.recv().await.unwrap();
-        assert!(matches!(chat.kind, sylvander_agent::bus::MessageKind::Chat));
-        assert_eq!(chat.session_id, submitted.session_id);
-        assert!(matches!(
-            submitted.events.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn runtime_controls_reject_foreign_session_ownership_before_agent_access() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let owner = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "owner",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "channel-a",
-            "test",
-            "owner-request",
-        );
-        let session = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "owned".into(),
-                channel_id: Some("channel-a".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        let owner_context = sylvander_channel::UiService::context_report(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &session.session_id,
-        )
-        .await
-        .expect("owner may inspect its context");
-        assert_eq!(owner_context.model, "model-a");
-        let attacker = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "attacker",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "channel-a",
-            "test",
-            "attacker-request",
-        );
-
-        let context = sylvander_channel::UiService::context_report(
-            runtime.ui_service.as_ref(),
-            &attacker,
-            &session.session_id,
-        )
-        .await
-        .expect_err("foreign context inspection must be rejected");
-        assert_eq!(
-            context.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let compact = sylvander_channel::UiService::compact_session(
-            runtime.ui_service.as_ref(),
-            &attacker,
-            &session.session_id,
-        )
-        .await
-        .expect_err("foreign compaction must be rejected");
-        assert_eq!(
-            compact.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let preview = sylvander_channel::UiService::preview_workspace_rollback(
-            runtime.ui_service.as_ref(),
-            &attacker,
-            &session.session_id,
-        )
-        .await
-        .expect_err("foreign rollback preview must be rejected");
-        assert_eq!(
-            preview.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let rollback = sylvander_channel::UiService::rollback_workspace(
-            runtime.ui_service.as_ref(),
-            &attacker,
-            &session.session_id,
-            "turn-1",
-        )
-        .await
-        .expect_err("foreign rollback must be rejected");
-        assert_eq!(
-            rollback.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-
-        runtime.shutdown().await.unwrap();
-    }
-
-    async fn attach_memory_session(
-        runtime: &Runtime,
-        agent: &str,
-        user: &str,
-    ) -> sylvander_agent::run::AuthenticatedSession {
-        let boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal {
-                id: sylvander_protocol::PrincipalId::new(user),
-                kind: sylvander_protocol::PrincipalKind::System,
-                authentication: sylvander_protocol::AuthenticationMethod::UnixPeer,
-                roles: Vec::new(),
-            },
-            "memory-test",
-            "unix",
-            format!("memory-test-{}", uuid::Uuid::new_v4()),
-        );
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &boundary,
-            SessionCreateRequest {
-                agent_id: AgentId::new(agent),
-                label: "memory-test".into(),
-                channel_id: Some("memory-test".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        let stored = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        let configured = runtime.configured_agent(&AgentId::new(agent)).unwrap();
-        configured
-            .attach_authenticated_session(created.session_id, stored.metadata)
-            .await
-            .unwrap()
-    }
-
-    #[test]
-    fn resolved_paths_default_and_preserve_memory_database() {
-        let directory = tempfile::tempdir().unwrap();
-        let data_dir = directory.path().join("data");
-        let anchor_dir = directory.path().join("anchor");
-        std::fs::create_dir_all(&anchor_dir).unwrap();
-        let mut config = ServerConfig {
-            schema_version: crate::config::CONFIG_SCHEMA_VERSION,
-            server: crate::config::ServerSettings {
-                data_dir: Some(data_dir.clone()),
-                ..crate::config::ServerSettings::default()
-            },
-            model_providers: Vec::new(),
-            execution_targets: Vec::new(),
-            agents: Vec::new(),
-            channels: Vec::new(),
-        };
-        config.server.memory_maintenance.integrity.backend = Some(MemoryIntegrityBackend::File {
-            anchor_path: anchor_dir.join("state.json"),
-        });
-
-        let resolved = with_resolved_paths(config.clone()).unwrap();
-        assert_eq!(resolved.server.memory_db, Some(data_dir.join("memory.db")));
-        assert_eq!(
-            resolved.server.user_profile_db,
-            Some(data_dir.join("user-profiles.db"))
-        );
-
-        let explicit = directory.path().join("stores/custom-memory.db");
-        config.server.memory_db = Some(explicit.clone());
-        let resolved = with_resolved_paths(config).unwrap();
-        assert_eq!(resolved.server.memory_db, Some(explicit));
-    }
-
-    #[tokio::test]
-    async fn configured_runtime_exposes_two_sided_identity_binding_end_to_end() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.agents[0].access.allow_authenticated = true;
-        let identity_key = directory.path().join("identity.key");
-        std::fs::write(&identity_key, "abcdef0123456789abcdef0123456789").unwrap();
-        config.server.identity.digest_key =
-            Some(crate::config::SecretRef::File { path: identity_key });
-        config.server.identity.trusted_issuers = vec![crate::config::IdentityIssuerSettings {
-            transport: "unix".into(),
-            channel_instance_id: "terminal".into(),
-            principal_id: "local-alice".into(),
-            user_id: "alice".into(),
-        }];
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let context = ChannelContext::with_runtime_services(
-            runtime.bus(),
-            runtime.session_store.clone(),
-            runtime.ui_service.clone(),
-            None,
-        );
-        assert_eq!(
-            context.identity_binding_capabilities(),
-            IdentityBindingCapabilities::current()
-        );
-
-        let local = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "local-alice",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "terminal",
-            "unix",
-            "identity-begin",
-        );
-        let issued = context
-            .submit_identity_binding(
-                &local,
-                IdentityBindingRequest {
-                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                    action: sylvander_protocol::IdentityBindingAction::Begin {},
-                },
-            )
-            .await;
-        let IdentityBindingResponse::ChallengeIssued {
-            challenge_id,
-            secret,
-            ..
-        } = issued
-        else {
-            panic!("configured identity service did not issue a challenge: {issued:?}");
-        };
-
-        let external = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "telegram-42",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "bot-primary",
-            "telegram",
-            "identity-confirm",
-        );
-        let confirmed = context
-            .submit_identity_binding(
-                &external,
-                IdentityBindingRequest {
-                    version: sylvander_protocol::IDENTITY_BINDING_PROTOCOL_VERSION,
-                    action: sylvander_protocol::IdentityBindingAction::Confirm {
-                        challenge_id,
-                        proof: secret.into_confirmation_proof(),
-                    },
-                },
-            )
-            .await;
-        assert!(matches!(
-            confirmed,
-            IdentityBindingResponse::Resolved { binding, .. }
-                if binding.user_id == UserId::new("alice") && binding.revision == 1
-        ));
-        let profile_created = sylvander_channel::UiService::user_profile(
-            runtime.ui_service.as_ref(),
-            &local,
-            UserProfileRequest {
-                version: USER_PROFILE_PROTOCOL_VERSION,
-                action: UserProfileAction::Create {
-                    profile: sylvander_protocol::UserProfileData::default(),
-                },
-            },
-        )
-        .await;
-        assert!(matches!(
-            profile_created,
-            UserProfileResponse::Created { profile, .. } if profile.revision == 1
-        ));
-        let profile_from_external = sylvander_channel::UiService::user_profile(
-            runtime.ui_service.as_ref(),
-            &external,
-            UserProfileRequest {
-                version: USER_PROFILE_PROTOCOL_VERSION,
-                action: UserProfileAction::Read {},
-            },
-        )
-        .await;
-        assert!(matches!(
-            profile_from_external,
-            UserProfileResponse::Read { profile, .. } if profile.revision == 1
-        ));
-        let profile_audits = runtime
-            .ui_service
-            .evidence
-            .as_ref()
-            .unwrap()
-            .administration_audits(10)
-            .await
-            .unwrap();
-        assert!(profile_audits.iter().any(|audit| {
-            audit.operation == "user_profile_create"
-                && audit.resource_kind == "user_profile"
-                && audit.outcome == "succeeded"
-        }));
-        assert!(profile_audits.iter().any(|audit| {
-            audit.operation == "user_profile_read"
-                && audit.resource_kind == "user_profile"
-                && audit.outcome == "succeeded"
-        }));
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &local,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "stable user across channels".into(),
-                channel_id: Some("terminal".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        let from_external = sylvander_channel::UiService::session_config(
-            runtime.ui_service.as_ref(),
-            &external,
-            &created.session_id,
-        )
-        .await
-        .expect("a linked external principal must resolve to the same stable user");
-        assert_eq!(from_external.session_id, created.session_id);
-        let stored = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.metadata.user_id, "alice");
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn boot_spawns_agents() {
-        let config = SystemConfig {
-            name: "test-runtime".into(),
-            agents: vec![test_spec("agent-1"), test_spec("agent-2")],
-            sessions: vec![],
-        };
-
-        let rt = Runtime::boot(config, test_client()).await.expect("boot");
-        assert_eq!(rt.engine.list_agents().await.len(), 2);
-        rt.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn shutdown_cancels_owned_channel_tasks_before_returning() {
-        let runtime = Runtime::boot(
-            SystemConfig {
-                name: "test-runtime".into(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-            },
-            test_client(),
-        )
-        .await
-        .unwrap();
-        let started = Arc::new(Notify::new());
-        let dropped = Arc::new(AtomicBool::new(false));
-        runtime
-            .start_channels(vec![channel_registration(
-                "blocking-1",
-                BlockingChannel {
-                    started: started.clone(),
-                    dropped: dropped.clone(),
-                },
-            )])
-            .await
-            .unwrap();
-        started.notified().await;
-
-        runtime.shutdown().await.unwrap();
-        assert!(dropped.load(Ordering::SeqCst));
-    }
-
-    #[tokio::test]
-    async fn channel_exit_before_readiness_fails_startup() {
-        let runtime = Runtime::boot(
-            SystemConfig {
-                name: "test-runtime".into(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-            },
-            test_client(),
-        )
-        .await
-        .unwrap();
-
-        let error = runtime
-            .start_channels(vec![channel_registration("exiting-1", ExitingChannel)])
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("before becoming ready"));
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn startup_failure_drains_channels_that_are_already_ready() {
-        let runtime = Runtime::boot(
-            SystemConfig {
-                name: "test-runtime".into(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-            },
-            test_client(),
-        )
-        .await
-        .unwrap();
-        let dropped = Arc::new(AtomicBool::new(false));
-
-        let error = runtime
-            .start_channels(vec![
-                channel_registration(
-                    "blocking-1",
-                    BlockingChannel {
-                        started: Arc::new(Notify::new()),
-                        dropped: dropped.clone(),
-                    },
-                ),
-                channel_registration("exiting-1", ExitingChannel),
-            ])
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("before becoming ready"));
-        assert!(dropped.load(Ordering::SeqCst));
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn channel_exit_after_readiness_is_reported() {
-        let runtime = Runtime::boot(
-            SystemConfig {
-                name: "test-runtime".into(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-            },
-            test_client(),
-        )
-        .await
-        .unwrap();
-        let exit = Arc::new(Notify::new());
-        runtime
-            .start_channels(vec![
-                channel_registration("ready-exit-1", ReadyThenExitChannel { exit: exit.clone() })
-                    .with_restart_policy(ChannelRestartPolicy {
-                        max_attempts: 0,
-                        initial_backoff: Duration::ZERO,
-                        max_backoff: Duration::ZERO,
-                    }),
-            ])
-            .await
-            .unwrap();
-
-        exit.notify_one();
-        let channel = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            runtime.wait_for_channel_exit(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(channel.as_deref(), Some("ready-exit-1"));
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn ready_channel_is_restarted_and_health_is_instance_scoped() {
-        let runtime = Runtime::boot(
-            SystemConfig {
-                name: "test-runtime".into(),
-                agents: Vec::new(),
-                sessions: Vec::new(),
-            },
-            test_client(),
-        )
-        .await
-        .unwrap();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        runtime
-            .start_channels(vec![
-                channel_registration(
-                    "restart-1",
-                    RestartOnceChannel {
-                        attempts: attempts.clone(),
-                    },
-                )
-                .with_restart_policy(ChannelRestartPolicy {
-                    max_attempts: 2,
-                    initial_backoff: Duration::from_millis(1),
-                    max_backoff: Duration::from_millis(1),
-                }),
-            ])
-            .await
-            .unwrap();
-
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while attempts.load(Ordering::SeqCst) < 2 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        let health = runtime.channel_health().await;
-        assert_eq!(health.len(), 1);
-        assert_eq!(health[0].instance_id, "restart-1");
-        assert_eq!(health[0].kind, "restart-once-test");
-        assert_eq!(health[0].status, ChannelStatus::Ready);
-        assert_eq!(health[0].restart_count, 1);
-        let snapshot = runtime.operational_snapshot().await.unwrap();
-        assert!(snapshot.ready);
-        assert_eq!(snapshot.agent_count, 0);
-        assert_eq!(snapshot.persistent_session_count, 0);
-        assert!(snapshot.bus.bounded);
-        assert_eq!(snapshot.bus.subscription_capacity, 256);
-        assert_eq!(snapshot.channels, health);
-
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn boot_loads_persistent_sessions() {
-        let config = SystemConfig {
-            name: "test-runtime".into(),
-            agents: vec![test_spec("agent-1")],
-            sessions: vec![StoredSession::new(
-                SessionId::new("persistent-1"),
-                "persistent-chat",
-                SessionLifetime::Persistent,
-                test_metadata(),
-                vec![AgentId::new("agent-1")],
-            )],
-        };
-
-        let rt = Runtime::boot(config, test_client()).await.expect("boot");
-        assert_eq!(rt.engine.list_sessions().await.len(), 1);
-        assert!(
-            rt.engine
-                .get_session(&SessionId::new("persistent-1"))
-                .await
-                .is_some()
-        );
-        rt.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn production_boot_closes_pins_from_a_qualified_versioned_snapshot() {
-        let directory = tempfile::tempdir().unwrap();
-        let database = directory.path().join("qualified.db");
-        let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "0123456789abcdef0123456789abcdef").unwrap();
-        let data_dir = directory.path().join("runtime-data");
-        let anchor_dir = directory.path().join("integrity-anchor");
-        std::fs::create_dir_all(&anchor_dir).unwrap();
-        let input = format!(
-            r#"
-schema_version = 1
-[server]
-data_dir = "{}"
-session_db = "{}"
-
-[server.memory_maintenance.integrity]
-[server.memory_maintenance.integrity.key]
-source = "file"
-path = "{}"
-[server.memory_maintenance.integrity.backend]
-kind = "file"
-anchor_path = "{}"
-
-[[model_providers]]
-id = "alpha"
-base_url = "https://alpha.invalid"
-[model_providers.api_key]
-source = "file"
-path = "{}"
-[[model_providers.models]]
-id = "shared"
-
-[[model_providers]]
-id = "beta"
-base_url = "https://beta.invalid"
-[model_providers.api_key]
-source = "file"
-path = "{}"
-[[model_providers.models]]
-id = "shared"
-
-[[agents]]
-[agents.spec]
-id = "assistant"
-name = "Assistant"
-[agents.spec.model]
-provider = "alpha"
-model_name = "shared"
-"#,
-            data_dir.display(),
-            database.display(),
-            secret.display(),
-            anchor_dir.join("anchor.json").display(),
-            secret.display(),
-            secret.display()
-        );
-        let mut config = ServerConfig::from_toml(&input).unwrap();
-        config.agents[0].spec.model.allowed_models = vec![
-            ModelSelection {
-                provider_id: "alpha".into(),
-                model_id: "shared".into(),
-            },
-            ModelSelection {
-                provider_id: "beta".into(),
-                model_id: "shared".into(),
-            },
-        ];
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let agent = runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap();
-        let mut effective = resolve_session_config(
-            agent,
-            &SessionConfigOverrides {
-                model: Some(ModelSelection {
-                    provider_id: "beta".into(),
-                    model_id: "shared".into(),
-                }),
-                ..SessionConfigOverrides::default()
-            },
-            None,
-            None,
-        )
-        .unwrap();
-        effective.provider_revision = None;
-        effective.model_revision = None;
-        let mut session = StoredSession::new(
-            SessionId::new("qualified-pins"),
-            "qualified pins",
-            SessionLifetime::Persistent,
-            test_metadata(),
-            vec![AgentId::new("assistant")],
-        );
-        session.effective_config = Some(effective);
-
-        let closed = close_session_revision_pins(
-            runtime.ui_service.agent_registry.as_ref().unwrap(),
-            &session,
-            agent,
-        )
-        .await
-        .unwrap();
-
-        assert!(closed.changed);
-        assert_eq!(closed.effective.provider_id, "beta");
-        let pins = closed.effective.require_revision_pins().unwrap();
-        assert_eq!(pins.provider_revision, 1);
-        assert_eq!(pins.model_revision, 1);
-    }
-
-    #[tokio::test]
-    async fn production_boot_rejects_old_and_unknown_memory_schemas_without_fallback() {
-        for version in [1_i64, 999_i64] {
-            let directory = tempfile::tempdir().unwrap();
-            let memory_db = directory.path().join("memory.db");
-            let connection = rusqlite::Connection::open(&memory_db).unwrap();
-            connection
-                .execute_batch(
-                    "CREATE TABLE memory_schema_migrations (\
-                     component TEXT PRIMARY KEY, version INTEGER NOT NULL);",
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT INTO memory_schema_migrations(component, version) \
-                     VALUES ('relationship_memory', ?1)",
-                    [version],
-                )
-                .unwrap();
-            drop(connection);
-            let mut config = configured_memory_test_config(&directory, &["assistant"]);
-            config.server.memory_db = Some(memory_db.clone());
-
-            let error = match Runtime::boot_config(config).await {
-                Ok(runtime) => {
-                    runtime.shutdown().await.unwrap();
-                    panic!("unsupported memory schema must fail production boot")
-                }
-                Err(error) => error,
-            };
-            assert!(matches!(error, RuntimeError::Store(_)));
-            assert_eq!(
-                error.to_string(),
-                "store error: store error: unsupported relationship memory schema"
-            );
-            assert!(!error.to_string().contains(&memory_db.display().to_string()));
-        }
-    }
-
-    #[tokio::test]
-    async fn production_boot_requires_anchor_outside_data_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        let data_dir = config.server.data_dir.clone().unwrap();
-        std::fs::create_dir_all(data_dir.join("anchor")).unwrap();
-        config.server.memory_maintenance.integrity.backend = Some(MemoryIntegrityBackend::File {
-            anchor_path: data_dir.join("anchor/state.json"),
-        });
-
-        let error = match Runtime::boot_config(config).await {
-            Ok(runtime) => {
-                runtime.shutdown().await.unwrap();
-                panic!("anchor within data directory must fail production boot")
-            }
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.to_string(),
-            "configuration error: memory integrity anchor must be outside the runtime data directory"
-        );
-    }
-
-    #[tokio::test]
-    async fn production_restart_rejects_database_writer_tampering() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = configured_memory_test_config(&directory, &["assistant"]);
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let session = attach_memory_session(&runtime, "assistant", "alice").await;
-        runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .remember_entry(&session, MemoryAppend::new("trusted"))
-            .await
-            .unwrap();
-        runtime.shutdown().await.unwrap();
-
-        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
-        let connection = rusqlite::Connection::open(memory_db).unwrap();
-        connection
-            .execute("UPDATE relationship_memories SET content = 'forged'", [])
-            .unwrap();
-        drop(connection);
-        let error = match Runtime::boot_config(config).await {
-            Ok(runtime) => {
-                runtime.shutdown().await.unwrap();
-                panic!("tampered memory database must fail production restart")
-            }
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.to_string(),
-            "store error: store error: memory integrity verification failed"
-        );
-    }
-
-    #[tokio::test]
-    async fn production_memory_isolates_same_user_across_agent_owners() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = configured_memory_test_config(&directory, &["agent-a", "agent-b"]);
-        let runtime = Runtime::boot_config(config).await.unwrap();
-        let session_a = attach_memory_session(&runtime, "agent-a", "same-user").await;
-        let session_b = attach_memory_session(&runtime, "agent-b", "same-user").await;
-        let agent_a = &runtime
-            .configured_agent(&AgentId::new("agent-a"))
-            .unwrap()
-            .run;
-        let agent_b = &runtime
-            .configured_agent(&AgentId::new("agent-b"))
-            .unwrap()
-            .run;
-
-        let entry_a = agent_a
-            .remember_entry(&session_a, MemoryAppend::new("agent A only"))
-            .await
-            .unwrap();
-        let entry_b = agent_b
-            .remember_entry(&session_b, MemoryAppend::new("agent B only"))
-            .await
-            .unwrap();
-
-        assert!(
-            runtime
-                .configured_agent(&AgentId::new("agent-a"))
-                .unwrap()
-                .uses_memory_store(&runtime.memory_store)
-        );
-        assert!(
-            runtime
-                .configured_agent(&AgentId::new("agent-b"))
-                .unwrap()
-                .uses_memory_store(&runtime.memory_store)
-        );
-        assert_eq!(
-            agent_a
-                .recall(&session_a, "agent A only", MemoryFilter::default())
-                .await
-                .unwrap()
-                .first()
-                .unwrap()
-                .content,
-            "agent A only"
-        );
-        assert_eq!(
-            agent_b
-                .recall(&session_b, "agent B only", MemoryFilter::default())
-                .await
-                .unwrap()
-                .first()
-                .unwrap()
-                .content,
-            "agent B only"
-        );
-        assert!(
-            agent_a
-                .recall(&session_a, "agent B only", MemoryFilter::default())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            agent_b
-                .recall(&session_b, "agent A only", MemoryFilter::default())
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert_ne!(entry_a.owner, entry_b.owner);
-        runtime.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn production_memory_preserves_revision_provenance_and_expiry_across_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = configured_memory_test_config(&directory, &["assistant"]);
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let session_id = attach_memory_session(&runtime, "assistant", "user-a").await;
-        let entry = runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .remember_entry(
-                &session_id,
-                MemoryAppend::new("restart field fidelity").with_ttl(3600),
-            )
-            .await
-            .unwrap();
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let restarted = Runtime::boot_config(config).await.unwrap();
-        let restarted_session = attach_memory_session(&restarted, "assistant", "user-a").await;
-        let restored = restarted
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .recall(
-                &restarted_session,
-                "restart field fidelity",
-                MemoryFilter::default(),
-            )
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(restored.revision, 1);
-        assert_eq!(restored.revision, entry.revision);
-        assert_eq!(restored.expires_at, entry.expires_at);
-        assert!(restored.expires_at.is_some());
-        assert_eq!(restored.provenance.actor, MemoryActorKind::Worker);
-        assert!(
-            restored
-                .provenance
-                .user_id
-                .as_ref()
-                .unwrap()
-                .0
-                .starts_with("unlinked:v1:")
-        );
-        assert_eq!(
-            restored.provenance.agent_id.as_ref().unwrap().0,
-            "assistant"
-        );
-        assert_eq!(restored.provenance.session_id, entry.provenance.session_id);
-        assert_eq!(restored.provenance.trace_id, None);
-        assert_eq!(restored.provenance.source, MemoryProvenanceSource::Runtime);
-        assert!(restored.provenance.trusted);
-        assert_eq!(restored.provenance, entry.provenance);
-        restarted.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn production_memory_catch_up_is_bounded_restart_safe_and_idempotent() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config.server.memory_maintenance.batch_size = 1;
-        config.server.memory_maintenance.max_batches_per_run = 2;
-        config
-            .server
-            .memory_maintenance
-            .retention
-            .expired_grace_days = 0;
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        assert!(runtime.memory_maintenance.is_some());
-        let session = attach_memory_session(&runtime, "assistant", "user").await;
-        let run = &runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run;
-        for content in ["one", "two", "three"] {
-            run.remember_entry(&session, MemoryAppend::new(content).with_ttl(1))
-                .await
-                .unwrap();
-        }
-        runtime.shutdown().await.unwrap();
-        assert!(
-            runtime
-                .memory_maintenance
-                .as_ref()
-                .unwrap()
-                .is_stopped()
-                .await
-        );
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
-        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
-
-        let restarted = Runtime::boot_config(config.clone()).await.unwrap();
-        restarted.shutdown().await.unwrap();
-        drop(restarted);
-        let counts = || {
-            let connection = rusqlite::Connection::open(&memory_db).unwrap();
-            connection
-                .query_row(
-                    "SELECT (SELECT COUNT(*) FROM relationship_memories), (SELECT COUNT(*) FROM relationship_memory_audit WHERE operation = 'purge_expired')",
-                    [],
-                    |row| Ok((row.get::<_, u32>(0)?, row.get::<_, u32>(1)?)),
-                )
-                .unwrap()
-        };
-        assert_eq!(counts(), (1, 2));
-
-        let restarted = Runtime::boot_config(config.clone()).await.unwrap();
-        restarted.shutdown().await.unwrap();
-        drop(restarted);
-        assert_eq!(counts(), (0, 3));
-        let restarted = Runtime::boot_config(config).await.unwrap();
-        restarted.shutdown().await.unwrap();
-        drop(restarted);
-        assert_eq!(counts(), (0, 3));
-    }
-
-    #[tokio::test]
-    async fn startup_failure_leaves_policy_staged_and_previous_revision_restartable() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = configured_memory_test_config(&directory, &["assistant"]);
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let mut failed_rollout = config.clone();
-        failed_rollout.server.memory_maintenance.retention.revision = 2;
-        let invalid_evidence_path = directory.path().join("evidence-is-a-directory");
-        std::fs::create_dir_all(&invalid_evidence_path).unwrap();
-        failed_rollout.server.evidence.path = Some(invalid_evidence_path);
-        let error = match Runtime::boot_config(failed_rollout).await {
-            Ok(runtime) => {
-                runtime.shutdown().await.unwrap();
-                panic!("failed rollout must not complete startup")
-            }
-            Err(error) => error,
-        };
-        assert!(matches!(error, RuntimeError::Evidence(_)));
-
-        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
-        let revisions = || {
-            rusqlite::Connection::open(&memory_db)
-                .unwrap()
-                .query_row(
-                    "SELECT (SELECT policy_revision FROM relationship_memory_retention_state WHERE singleton = 1), (SELECT policy_revision FROM relationship_memory_retention_policy_stage WHERE singleton = 1)",
-                    [],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-                )
-                .unwrap()
-        };
-        assert_eq!(revisions(), (1, 2));
-
-        let previous = Runtime::boot_config(config.clone()).await.unwrap();
-        previous.shutdown().await.unwrap();
-        drop(previous);
-
-        let mut retry = config;
-        retry.server.memory_maintenance.retention.revision = 2;
-        let activated = Runtime::boot_config(retry).await.unwrap();
-        activated.shutdown().await.unwrap();
-        drop(activated);
-        let connection = rusqlite::Connection::open(memory_db).unwrap();
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT policy_revision FROM relationship_memory_retention_state WHERE singleton = 1",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM relationship_memory_retention_policy_stage",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn maintenance_failure_keeps_the_concrete_durable_store_content_safely() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config
-            .server
-            .memory_maintenance
-            .retention
-            .expired_grace_days = 0;
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let session = attach_memory_session(&runtime, "assistant", "user").await;
-        runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .remember_entry(&session, MemoryAppend::new("must remain durable"))
-            .await
-            .unwrap();
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-        let memory_db = config.server.data_dir.as_ref().unwrap().join("memory.db");
-        let policy =
-            RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
-                .unwrap();
-        let store =
-            SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
-                .unwrap();
-        let connection = rusqlite::Connection::open(&memory_db).unwrap();
-        connection
-            .execute_batch(
-                "UPDATE relationship_memories SET expires_at = unixepoch() - 1; \
-                 CREATE TRIGGER reject_runtime_purge BEFORE INSERT ON relationship_memory_audit \
-                 WHEN NEW.operation LIKE 'purge_%' BEGIN SELECT RAISE(ABORT, 'private'); END;",
-            )
-            .unwrap();
-        drop(connection);
-
-        let error = memory_maintenance_catch_up(&store.maintenance(), &policy)
-            .await
-            .err()
-            .unwrap();
-        assert_eq!(
-            error.to_string(),
-            "store error: memory retention catch-up failed"
-        );
-        assert!(!error.to_string().contains("private"));
-        let count: u32 = rusqlite::Connection::open(memory_db)
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn periodic_memory_maintenance_runs_and_shutdown_joins_the_single_worker() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut config = configured_memory_test_config(&directory, &["assistant"]);
-        config
-            .server
-            .memory_maintenance
-            .retention
-            .expired_grace_days = 0;
-        config.server.memory_maintenance.batch_size = 1;
-        config.server.memory_maintenance.max_batches_per_run = 100;
-        let memory_db = directory.path().join("periodic-memory.db");
-        config.server.memory_db = Some(memory_db.clone());
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let session = attach_memory_session(&runtime, "assistant", "user").await;
-        let run = &runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run;
-        for index in 0..25 {
-            run.remember_entry(&session, MemoryAppend::new(format!("periodic-{index}")))
-                .await
-                .unwrap();
-        }
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let policy =
-            RuntimeMemoryMaintenancePolicy::from_settings(&config.server.memory_maintenance)
-                .unwrap()
-                .with_interval(std::time::Duration::from_millis(10));
-        let store =
-            SqliteMemoryStore::open_with_retention_policy(&memory_db, policy.retention.clone())
-                .unwrap();
-        let maintenance =
-            MemoryMaintenanceTask::start(store.maintenance(), policy, directory.path().into());
-        rusqlite::Connection::open(&memory_db)
-            .unwrap()
-            .execute(
-                "UPDATE relationship_memories SET expires_at = unixepoch() - 1",
-                [],
-            )
-            .unwrap();
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                let count: u32 = rusqlite::Connection::open(&memory_db)
-                    .unwrap()
-                    .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap();
-                if count < 25 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        maintenance.shutdown().await;
-        assert!(maintenance.is_stopped().await);
-        let remaining: u32 = rusqlite::Connection::open(&memory_db)
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM relationship_memories", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert!((1..25).contains(&remaining));
-        maintenance.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn configured_memory_is_shared_across_recomposition_and_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "test-secret").unwrap();
-        let mut config = ServerConfig::from_toml(&format!(
-            r#"
-schema_version = 1
-[server]
-data_dir = "{}"
-
-[[model_providers]]
-id = "primary"
-base_url = "https://models.invalid"
-[model_providers.api_key]
-source = "file"
-path = "{}"
-[[model_providers.models]]
-id = "model-a"
-
-[[agents]]
-[agents.spec]
-id = "assistant"
-name = "Sylvander"
-[agents.spec.model]
-provider = "primary"
-model_name = "model-a"
-"#,
-            directory.path().display(),
-            secret.display()
-        ))
-        .unwrap();
-        configure_test_memory_integrity(&mut config, directory.path(), &secret);
-        let runtime = Runtime::boot_config(config.clone()).await.unwrap();
-        let provider = runtime.revision_provider.as_ref().unwrap();
-        assert!(Arc::ptr_eq(&runtime.memory_store, &provider.memory));
-        assert!(
-            runtime
-                .configured_agent(&AgentId::new("assistant"))
-                .unwrap()
-                .uses_memory_store(&runtime.memory_store)
-        );
-        let session_id = attach_memory_session(&runtime, "assistant", "user-a").await;
-        runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap()
-            .run
-            .remember_entry(&session_id, MemoryAppend::new("durable shared memory"))
-            .await
-            .unwrap();
-        provider.configured.write().await.clear();
-        assert!(
-            provider
-                .configured_revision(&AgentId::new("assistant"), 1)
-                .await
-                .unwrap()
-                .uses_memory_store(&runtime.memory_store)
-        );
-        assert!(
-            provider
-                .revalidate_revision(&AgentId::new("assistant"), 1)
-                .await
-                .unwrap()
-                .uses_memory_store(&runtime.memory_store)
-        );
-        runtime.shutdown().await.unwrap();
-        drop(runtime);
-
-        let restarted = Runtime::boot_config(config).await.unwrap();
-        let restarted_session = attach_memory_session(&restarted, "assistant", "user-a").await;
-        assert_eq!(
-            restarted
-                .configured_agent(&AgentId::new("assistant"))
-                .unwrap()
-                .run
-                .recall(
-                    &restarted_session,
-                    "durable shared memory",
-                    MemoryFilter::default(),
-                )
-                .await
-                .unwrap()
-                .first()
-                .unwrap()
-                .content,
-            "durable shared memory"
-        );
-        restarted.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn configured_boot_restores_database_session_after_agent_spawn() {
-        let model_server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": "msg_revision_probe",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "configured revision"}],
-                "model": "model-a",
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 4, "output_tokens": 2}
-            })))
-            .mount(&model_server)
-            .await;
-        let directory = tempfile::TempDir::new().unwrap();
-        let database = directory.path().join("sessions.db");
-        let secret = directory.path().join("provider.key");
-        std::fs::write(&secret, "test-secret").unwrap();
-        let store = SqliteSessionStore::open(&database).await.unwrap();
-        store
-            .save(&StoredSession::new(
-                SessionId::new("restored-session"),
-                "restored",
-                SessionLifetime::Persistent,
-                test_metadata(),
-                vec![AgentId::new("assistant")],
-            ))
-            .await
-            .unwrap();
-        drop(store);
-
-        let input = format!(
-            r#"
-schema_version = 1
-
-[server]
-data_dir = "{}"
-session_db = "{}"
-
-[[model_providers]]
-id = "primary"
-base_url = "{}"
-
-[model_providers.api_key]
-source = "file"
-path = "{}"
-
-[[model_providers.models]]
-id = "model-a"
-capabilities = ["tool_use"]
-
-[[model_providers.models]]
-id = "model-b"
-capabilities = ["tool_use"]
-
-[[agents]]
-allow_session_prompt = false
-
-[agents.access]
-allowed_principals = ["test-user", "telegram:bot-a:42"]
-
-[agents.spec]
-id = "assistant"
-name = "Sylvander"
-
-[agents.spec.model]
-provider = "primary"
-model_name = "model-a"
-"#,
-            directory.path().display(),
-            database.display(),
-            model_server.uri(),
-            secret.display()
-        );
-        let mut config = ServerConfig::from_toml(&input).unwrap();
-        configure_test_memory_integrity(&mut config, directory.path(), &secret);
-        let mut explicit_definition = config.agents[0].clone();
-        explicit_definition.spec.model.allowed_models = vec![sylvander_protocol::ModelSelection {
-            provider_id: "primary".into(),
-            model_id: "model-a".into(),
-        }];
-        let explicit_selection = active_snapshot_selection(&config, &explicit_definition).unwrap();
-        assert_eq!(
-            explicit_selection.allowed_models,
-            BTreeSet::from([ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "model-a".into(),
-            }])
-        );
-        config.agents[0].spec.persona.system_prompt = "revision one prompt".into();
-        let restart_config = config.clone();
-        let runtime = Runtime::boot_config(config).await.unwrap();
-
-        assert!(
-            runtime
-                .engine
-                .get_session(&SessionId::new("restored-session"))
-                .await
-                .is_some()
-        );
-        assert!(
-            runtime
-                .configured_agent(&AgentId::new("assistant"))
-                .is_some()
-        );
-        let migrated = runtime
-            .session_store
-            .get(&SessionId::new("restored-session"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(migrated.config_revision, 1);
-        let effective = migrated.effective_config.unwrap();
-        assert_eq!(effective.agent_id, AgentId::new("assistant"));
-        assert_eq!(effective.model_id, "model-a");
-        let pins = effective.require_revision_pins().unwrap();
-        assert_eq!(pins.provider_revision, 1);
-        assert_eq!(pins.model_revision, 1);
-        assert_eq!(effective.execution_target, "local");
-        assert_eq!(
-            effective.provenance.user_workspace.kind,
-            sylvander_protocol::SessionConfigSourceKind::LegacyMigration
-        );
-        let registry = runtime.ui_service.agent_registry.as_ref().unwrap();
-        let active_agent = runtime
-            .configured_agent(&AgentId::new("assistant"))
-            .unwrap();
-        let mut legacy = StoredSession::new(
-            SessionId::new("legacy-pin-probe"),
-            "legacy pin probe",
-            SessionLifetime::Persistent,
-            test_metadata(),
-            vec![AgentId::new("assistant")],
-        );
-        let mut unpinned = effective.clone();
-        unpinned.provider_revision = None;
-        unpinned.model_revision = None;
-        legacy.effective_config = Some(unpinned);
-        let closed = close_session_revision_pins(registry, &legacy, active_agent)
-            .await
-            .unwrap();
-        assert!(closed.changed);
-        assert_eq!(closed.effective.require_revision_pins().unwrap(), pins);
-        runtime.session_store.save(&legacy).await.unwrap();
-        assert!(
-            runtime
-                .revision_provider
-                .as_ref()
-                .unwrap()
-                .revision_for_session(&AgentId::new("assistant"), &legacy.id)
-                .await
-                .is_err(),
-            "execution routing must not repair unresolved pins on demand"
-        );
-        runtime.session_store.delete(&legacy.id).await.unwrap();
-
-        legacy.effective_config = Some(effective.clone());
-        let already_closed = close_session_revision_pins(registry, &legacy, active_agent)
-            .await
-            .unwrap();
-        assert!(!already_closed.changed);
-
-        let mut mismatched = legacy;
-        let mut invalid = effective.clone();
-        invalid.model_revision = Some(99);
-        mismatched.effective_config = Some(invalid);
-        assert!(matches!(
-            close_session_revision_pins(registry, &mismatched, active_agent).await,
-            Err(SessionBindingError::ModelRevisionMismatch {
-                expected: 1,
-                actual: 99
-            })
-        ));
-        let (revision, updated) = runtime
-            .update_session_config(
-                &SessionId::new("restored-session"),
-                1,
-                SessionConfigOverrides {
-                    model_id: Some("model-a".into()),
-                    ..SessionConfigOverrides::default()
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(revision, 2);
-        assert_eq!(
-            updated.provenance.model.kind,
-            sylvander_protocol::SessionConfigSourceKind::SessionOverride
-        );
-        assert!(
-            runtime
-                .update_session_config(
-                    &SessionId::new("restored-session"),
-                    1,
-                    SessionConfigOverrides::default(),
-                )
-                .await
-                .is_err(),
-            "a stale client must not overwrite a newer configuration"
-        );
-        let owner = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "test-user",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "tui-local",
-            "unix",
-            "request-create",
-        );
-        let before_invalid_create = runtime.session_store.list_persistent().await.unwrap().len();
-        let invalid_create = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "invalid prompt must not persist".into(),
-                channel_id: Some("tui-local".into()),
-                overrides: SessionConfigOverrides {
-                    system_prompt: Some(String::new()),
-                    ..SessionConfigOverrides::default()
-                },
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            invalid_create
-                .message
-                .contains("prompt configuration is invalid")
-        );
-        assert_eq!(
-            runtime.session_store.list_persistent().await.unwrap().len(),
-            before_invalid_create,
-            "invalid session prompt must fail before session persistence"
-        );
-        let created = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "created through UI service".into(),
-                channel_id: Some("tui-local".into()),
-                overrides: SessionConfigOverrides {
-                    model_id: Some("model-a".into()),
-                    ..SessionConfigOverrides::default()
-                },
-            },
-        )
-        .await
-        .unwrap();
-        assert!(created.effective.require_revision_pins().is_ok());
-        let stored = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .expect("created session must be durable");
-        assert_eq!(stored.effective_config, Some(created.effective));
-        assert!(stored.metadata.user_id.starts_with("unlinked:v1:"));
-        assert_eq!(stored.external_meta["channel_id"], "tui-local");
-        let invalid_update = sylvander_channel::UiService::update_session_config(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionConfigUpdateRequest {
-                session_id: created.session_id.clone(),
-                expected_revision: created.revision,
-                overrides: SessionConfigOverrides {
-                    system_prompt: Some("private\0prompt".into()),
-                    ..SessionConfigOverrides::default()
-                },
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            invalid_update
-                .message
-                .contains("prompt configuration is invalid")
-        );
-        assert!(!invalid_update.message.contains("private"));
-        let unchanged = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(unchanged.config_revision, created.revision);
-        assert!(unchanged.config_overrides.system_prompt.is_none());
-        assert!(
-            runtime
-                .revision_provider
-                .as_ref()
-                .unwrap()
-                .revision_for_session(&AgentId::new("different-agent"), &created.session_id)
-                .await
-                .is_err(),
-            "a session revision binding must never be reused for another Agent"
-        );
-        let peer = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionCreateRequest {
-                agent_id: AgentId::new("assistant"),
-                label: "unmodified peer session".into(),
-                channel_id: Some("tui-local".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        let restricted = sylvander_protocol::PermissionProfile {
-            file_access: sylvander_protocol::FileAccess::ReadOnly,
-            network_access: sylvander_protocol::NetworkAccess::Denied,
-            approval_policy: sylvander_protocol::ApprovalPolicy::Deny,
-        };
-        let selected = sylvander_channel::UiService::update_session_config(
-            runtime.ui_service.as_ref(),
-            &owner,
-            SessionConfigUpdateRequest {
-                session_id: created.session_id.clone(),
-                expected_revision: created.revision,
-                overrides: SessionConfigOverrides {
-                    model_id: Some("model-a".into()),
-                    permissions: Some(restricted.clone()),
-                    ..SessionConfigOverrides::default()
-                },
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(selected.effective.permissions, restricted);
-        let peer_after = sylvander_channel::UiService::session_config(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &peer.session_id,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            peer_after, peer,
-            "one session override must not leak to another"
-        );
-        let missing_session = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &sylvander_protocol::UiClientMessage::SelectModel {
-                session_id: None,
-                model: "model-a".into(),
-                reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
-            },
-        )
-        .await
-        .expect_err("legacy selection without session identity must fail closed");
-        assert_eq!(
-            missing_session.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let other_terminal = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "test-user",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "other-terminal",
-            "unix",
-            "request-cross-instance",
-        );
-        let denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &other_terminal,
-            &sylvander_protocol::UiClientMessage::GetSessionConfig {
-                session_id: created.session_id.0.clone(),
-            },
-        )
-        .await
-        .expect_err("the same principal from another channel instance must be denied");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let platform_boundary = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "telegram:bot-a:42",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "bot-a",
-            "telegram",
-            "telegram-update-1",
-        );
-        let channel_context = ChannelContext::with_runtime_services(
-            runtime.bus(),
-            runtime.session_store.clone(),
-            runtime.ui_service.clone(),
-            None,
-        );
-        let mut platform_submission = sylvander_channel::submit_external_chat(
-            &channel_context,
-            &platform_boundary,
-            sylvander_channel::ExternalChatRequest {
-                existing_session: None,
-                agent_id: AgentId::new("assistant"),
-                label: "telegram-42".into(),
-                overrides: SessionConfigOverrides::default(),
-                text: "hello from Telegram".into(),
-                attachments: Vec::new(),
-                external_meta: std::collections::BTreeMap::from([
-                    ("channel_instance_id".into(), "bot-a".into()),
-                    ("chat_id".into(), "42".into()),
-                ]),
-            },
-        )
-        .await
-        .expect("an allowed platform principal may create and use its session");
-        let platform_session = platform_submission.session_id.clone();
-        let routed = platform_submission
-            .events
-            .recv()
-            .await
-            .expect("the authenticated user message must be routed");
-        assert_eq!(routed.session_id, platform_session);
-        assert_eq!(
-            routed.recipient,
-            sylvander_agent::bus::Recipient::Agent(AgentId::new("assistant"))
-        );
-        let platform_stored = runtime
-            .session_store
-            .get(&platform_session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            routed.sender,
-            sylvander_agent::bus::Sender::User(platform_stored.metadata.user_id.clone())
-        );
-        assert!(platform_stored.metadata.user_id.starts_with("unlinked:v1:"));
-        assert_eq!(
-            platform_stored.external_meta["channel_instance_id"],
-            "bot-a"
-        );
-        assert!(platform_stored.effective_config.is_some());
-        let other_bot = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "telegram:bot-b:42",
-                sylvander_protocol::AuthenticationMethod::PlatformIdentity,
-            ),
-            "bot-b",
-            "telegram",
-            "telegram-update-2",
-        );
-        let mut victim_inbox = runtime
-            .bus()
-            .subscribe(SubscriptionFilter {
-                session_ids: Some(vec![platform_session.clone()]),
-                recipients: Some(vec![Recipient::Agent(AgentId::new("assistant"))]),
-                kinds: None,
-            })
-            .await
-            .unwrap();
-        let control_denial = channel_context
-            .submit_control(
-                &other_bot,
-                sylvander_protocol::UiClientMessage::Approve {
-                    session_id: platform_session.0.clone(),
-                    call_id: "victim-call".into(),
-                    approved: true,
-                    scope: sylvander_protocol::ApprovalScope::Once,
-                    reason: None,
-                },
-            )
-            .await
-            .expect_err("an external channel must not control a victim session");
-        assert_eq!(
-            control_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        assert!(matches!(
-            victim_inbox.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        let denial = sylvander_channel::submit_external_chat(
-            &channel_context,
-            &other_bot,
-            sylvander_channel::ExternalChatRequest {
-                existing_session: Some(platform_session),
-                agent_id: AgentId::new("assistant"),
-                label: "telegram-42".into(),
-                overrides: SessionConfigOverrides::default(),
-                text: "cross-instance attempt".into(),
-                attachments: Vec::new(),
-                external_meta: std::collections::BTreeMap::new(),
-            },
-        )
-        .await
-        .expect_err("another channel instance must not reuse the session");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let stranger = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal::user(
-                "other-user",
-                sylvander_protocol::AuthenticationMethod::UnixPeer,
-            ),
-            "tui-local",
-            "unix",
-            "request-read",
-        );
-        assert!(
-            sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &stranger,)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        let denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &stranger,
-            &sylvander_protocol::UiClientMessage::CreateSession {
-                request: SessionCreateRequest {
-                    agent_id: AgentId::new("assistant"),
-                    label: "unauthorized".into(),
-                    channel_id: Some("tui-local".into()),
-                    overrides: SessionConfigOverrides::default(),
-                },
-            },
-        )
-        .await
-        .expect_err("an Agent allowlist must be enforced before creation");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let denial = sylvander_channel::UiService::session_config(
-            runtime.ui_service.as_ref(),
-            &stranger,
-            &created.session_id,
-        )
-        .await
-        .expect_err("a different principal must not read the session");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let chat_denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &stranger,
-            &sylvander_protocol::UiClientMessage::Chat {
-                text: "cross-session attempt".into(),
-                attachments: Vec::new(),
-                session_id: Some(created.session_id.0.clone()),
-                workspace: None,
-            },
-        )
-        .await
-        .expect_err("message dispatch must enforce the same ownership boundary");
-        assert_eq!(
-            chat_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let unauthenticated = sylvander_protocol::BoundaryContext::unauthenticated(
-            "websocket",
-            "websocket",
-            "request-ping",
-        );
-        let denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &unauthenticated,
-            &sylvander_protocol::UiClientMessage::Ping,
-        )
-        .await
-        .expect_err("an unauthenticated transport must fail closed");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Unauthenticated
-        );
-        let authentication_boundary = sylvander_protocol::BoundaryContext::unauthenticated(
-            "websocket",
-            "websocket",
-            "request-authentication-failure",
-        );
-        let authentication_denial = sylvander_channel::UiService::reject_authentication(
-            runtime.ui_service.as_ref(),
-            &authentication_boundary,
-            sylvander_protocol::AuthenticationFailure::new(
-                sylvander_protocol::AuthenticationMethod::BearerToken,
-            ),
-        )
-        .await;
-        assert_eq!(
-            authentication_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Unauthenticated
-        );
-        assert!(
-            runtime
-                .engine
-                .get_session(&created.session_id)
-                .await
-                .is_some()
-        );
-        let evidence = runtime
-            .evidence_store()
-            .expect("evidence enabled by default");
-        evidence
-            .start_run("feedback-auth-run".into(), "test".into(), 10)
-            .await
-            .unwrap();
-        evidence
-            .start_turn(crate::evidence::TurnStart {
-                id: "feedback-auth-turn".into(),
-                run_id: "feedback-auth-run".into(),
-                session_id: created.session_id.0.clone(),
-                agent_id: Some("assistant".into()),
-                started_at: 11,
-                input_bytes: 0,
-                input_digest: None,
-            })
-            .await
-            .unwrap();
-        let feedback = RunFeedback {
-            run_id: "feedback-auth-run".into(),
-            turn_id: Some("feedback-auth-turn".into()),
-            rating: sylvander_protocol::FeedbackRating::Positive,
-            note: None,
-            correction: Some("prefer the verified result".into()),
-            tags: Vec::new(),
-            task_result: Some(sylvander_protocol::FeedbackTaskResult::Succeeded),
-            artifacts: Vec::new(),
-            validations: vec![sylvander_protocol::EvidenceReference {
-                locator: "test:runtime-controls".into(),
-                digest_sha256: Some("a".repeat(64)),
-            }],
-            privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
-        };
-        let feedback_message = sylvander_protocol::UiClientMessage::SubmitFeedback {
-            feedback: feedback.clone(),
-        };
-        let feedback_id = sylvander_channel::UiService::submit_feedback(
-            runtime.ui_service.as_ref(),
-            &owner,
-            feedback,
-        )
-        .await
-        .expect("the session owner may submit feedback");
-        let stored_feedback = evidence
-            .feedback(feedback_id)
-            .await
-            .unwrap()
-            .expect("submitted feedback must be readable from the evidence ledger");
-        assert_eq!(
-            stored_feedback.attribution.principal_digest,
-            sha256_text("test-user")
-        );
-        assert_eq!(stored_feedback.attribution.channel_instance_id, "tui-local");
-        assert_eq!(stored_feedback.attribution.transport, "unix");
-        assert_eq!(
-            stored_feedback.correction.as_deref(),
-            Some("prefer the verified result")
-        );
-        assert_eq!(
-            stored_feedback.task_result,
-            Some(sylvander_protocol::FeedbackTaskResult::Succeeded)
-        );
-        let denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &stranger,
-            &feedback_message,
-        )
-        .await
-        .expect_err("another principal must not submit feedback for the turn");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        evidence
-            .finish_run("feedback-auth-run".into(), 12, "succeeded")
-            .await
-            .unwrap();
-        let denials = evidence.authorization_denials(10).await.unwrap();
-        assert_eq!(denials.len(), 9);
-        let authentication_audit = denials
-            .iter()
-            .find(|denial| denial.operation == "authenticate_bearer_token")
-            .expect("authentication rejection must be audited by the runtime");
-        assert!(authentication_audit.principal_digest.is_none());
-        assert!(authentication_audit.resource_digest.is_none());
-        assert!(denials.iter().all(|denial| denial.principal_digest.is_some()
-            || denial.code == "unauthenticated"));
-        assert!(
-            denials
-                .iter()
-                .all(|denial| denial.resource_digest.as_deref()
-                    != Some(created.session_id.0.as_str()))
-        );
-        let original_revision = restart_config.agents[0].revision;
-        let mut next_definition = restart_config.agents[0].clone();
-        next_definition.revision += 1;
-        next_definition.spec.name = "Sylvander revised".into();
-        next_definition.spec.model.model_name = "model-b".into();
-        next_definition.spec.model.allowed_models = vec![
-            ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "model-a".into(),
-            },
-            ModelSelection {
-                provider_id: "primary".into(),
-                model_id: "model-b".into(),
-            },
-        ];
-        next_definition.spec.persona.system_prompt = "revision two prompt".into();
-        next_definition.access = crate::config::AgentAccessConfig::default();
-        let administrator = sylvander_protocol::BoundaryContext::authenticated(
-            sylvander_protocol::AuthenticatedPrincipal {
-                id: sylvander_protocol::PrincipalId::new("operator"),
-                kind: sylvander_protocol::PrincipalKind::User,
-                authentication: sylvander_protocol::AuthenticationMethod::Internal,
-                roles: vec!["admin".into()],
-            },
-            "admin-console",
-            "internal",
-            "hot-activate",
-        );
-        let mut uncomposable = next_definition.clone();
-        uncomposable.prompt_profiles = vec![crate::config::PromptProfileConfig {
-            id: "wrong-provider".into(),
-            qualified_models: Vec::new(),
-            providers: vec!["another-provider".into()],
-            models: Vec::new(),
-            system_prompt: "must not persist".into(),
-        }];
-        uncomposable.default_prompt_profile = Some("wrong-provider".into());
-        let rejected = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::UpdateDefinition {
-                expected_active_revision: original_revision,
-                definition: Box::new(
-                    crate::agent_admin::draft_from_definition(&uncomposable).unwrap(),
-                ),
-            },
-        )
-        .await;
-        assert!(
-            matches!(
-                rejected,
-                sylvander_protocol::AgentAdminResponse::Error {
-                    error: sylvander_protocol::AgentAdminError {
-                        code: sylvander_protocol::AgentAdminErrorCode::InvalidDefinition,
-                        ..
-                    }
-                }
-            ),
-            "unexpected rejection response: {rejected:?}"
-        );
-        let inspected = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::ListRevisions {
-                agent_id: next_definition.spec.id.clone(),
-                before_revision: None,
-                limit: 10,
-            },
-        )
-        .await;
-        assert!(matches!(
-            inspected,
-            sylvander_protocol::AgentAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::AgentAdminResult::RevisionsListed {
-                        active_revision,
-                        revisions,
-                        ..
-                    } if *active_revision == original_revision && revisions.len() == 1
-                )
-        ));
-        let update_request = sylvander_protocol::AgentAdminRequest::UpdateDefinition {
-            expected_active_revision: original_revision,
-            definition: Box::new(
-                crate::agent_admin::draft_from_definition(&next_definition).unwrap(),
-            ),
-        };
-        let update_message = sylvander_protocol::UiClientMessage::AgentAdmin {
-            request: update_request.clone(),
-        };
-        let denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &update_message,
-        )
-        .await
-        .expect_err("ordinary session owners must not administer Agents");
-        assert_eq!(
-            denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            &update_message,
-        )
-        .await
-        .expect("administrators may reach the Agent administration service");
-        let registry_request = sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
-            provider_id: "primary".into(),
-            revision: 1,
-        };
-        let registry_message = sylvander_protocol::UiClientMessage::RegistryAdmin {
-            request: registry_request.clone(),
-        };
-        assert!(
-            sylvander_channel::UiService::authorize_message(
-                runtime.ui_service.as_ref(),
-                &owner,
-                &registry_message,
-            )
-            .await
-            .is_err()
-        );
-        sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            &registry_message,
-        )
-        .await
-        .expect("administrators may reach the registry administration seam");
-        let unauthorized_registry = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &owner,
-            registry_request.clone(),
-        )
-        .await;
-        assert!(matches!(
-            unauthorized_registry,
-            sylvander_protocol::RegistryAdminResponse::Error { error }
-                if error.code == sylvander_protocol::RegistryAdminErrorCode::Unauthorized
-        ));
-        let inspected_provider = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            registry_request,
-        )
-        .await;
-        assert!(matches!(
-            inspected_provider,
-            sylvander_protocol::RegistryAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::RegistryAdminResult::ProviderRevisionInspected {
-                        revision
-                    } if revision.definition.provider_id == "primary"
-                        && revision.definition.revision == 1
-                )
-        ));
-        let missing_provider_revision = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::InspectProviderRevision {
-                provider_id: "primary".into(),
-                revision: 99,
-            },
-        )
-        .await;
-        assert!(matches!(
-            missing_provider_revision,
-            sylvander_protocol::RegistryAdminResponse::Error { error }
-                if error.code == sylvander_protocol::RegistryAdminErrorCode::UnknownRevision
-        ));
-        let primary_binding = runtime
-            .revision_provider
-            .as_ref()
-            .unwrap()
-            .registry
-            .load_active_provider("primary")
-            .await
-            .unwrap()
-            .unwrap()
-            .definition
-            .credential_binding_id;
-        let create_provider = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::CreateProvider {
-                provider_id: "secondary".into(),
-                definition: sylvander_protocol::ProviderDefinitionDraft {
-                    kind: "anthropic_compatible".into(),
-                    base_url: model_server.uri(),
-                    credential_binding_id: primary_binding,
-                },
-            },
-        )
-        .await;
-        assert!(matches!(
-            create_provider,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let create_model = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::CreateModel {
-                provider_id: "secondary".into(),
-                model_id: "model-c".into(),
-                definition: sylvander_protocol::ModelDefinitionDraft {
-                    context_window: 100_000,
-                    max_output_tokens: 4096,
-                    capabilities: vec!["tool_use".into()],
-                    lifecycle: sylvander_protocol::ModelLifecycleDraft::Active {},
-                    pricing: None,
-                },
-            },
-        )
-        .await;
-        assert!(matches!(
-            create_model,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let binding_id = "credential/runtime-audit";
-        let create_credential = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::CreateCredentialBinding {
-                binding_id: binding_id.into(),
-                reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
-                    path: secret.display().to_string(),
-                },
-            },
-        )
-        .await;
-        assert!(matches!(
-            create_credential,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let stage_credential = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::StageCredentialGeneration {
-                binding_id: binding_id.into(),
-                generation: 2,
-                expected_active_generation: 1,
-                reference: sylvander_protocol::CredentialSecretReferenceDraft::File {
-                    path: secret.display().to_string(),
-                },
-            },
-        )
-        .await;
-        assert!(matches!(
-            stage_credential,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let activate_credential = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::ActivateCredentialGeneration {
-                binding_id: binding_id.into(),
-                generation: 2,
-                expected_active_generation: 1,
-            },
-        )
-        .await;
-        assert!(matches!(
-            activate_credential,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let conflict = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
-                binding_id: binding_id.into(),
-                target_generation: 1,
-                expected_active_generation: 1,
-            },
-        )
-        .await;
-        assert!(matches!(
-            conflict,
-            sylvander_protocol::RegistryAdminResponse::Error { error }
-                if error.code
-                    == sylvander_protocol::RegistryAdminErrorCode::ActiveGenerationConflict
-        ));
-        let rollback_credential = sylvander_channel::UiService::registry_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::RegistryAdminRequest::RollbackCredentialGeneration {
-                binding_id: binding_id.into(),
-                target_generation: 1,
-                expected_active_generation: 2,
-            },
-        )
-        .await;
-        assert!(matches!(
-            rollback_credential,
-            sylvander_protocol::RegistryAdminResponse::Success { .. }
-        ));
-        let registry_audits = evidence.administration_audits(20).await.unwrap();
-        assert!(registry_audits.iter().any(|audit| {
-            audit.operation == "inspect_provider_revision"
-                && audit.resource_kind == "provider"
-                && audit.resource_digest != "primary"
-                && audit.version == Some(1)
-                && audit.outcome == "succeeded"
-        }));
-        assert!(registry_audits.iter().any(|audit| {
-            audit.operation == "inspect_provider_revision"
-                && audit.version == Some(99)
-                && audit.outcome == "failed"
-                && audit.error_code.as_deref() == Some("unknown_revision")
-        }));
-        for (operation, resource_kind, version) in [
-            ("create_provider", "provider", 1),
-            ("create_model", "model", 1),
-        ] {
-            assert!(registry_audits.iter().any(|audit| {
-                audit.operation == operation
-                    && audit.resource_kind == resource_kind
-                    && audit.version == Some(version)
-                    && audit.outcome == "succeeded"
-            }));
-        }
-        for (operation, version, outcome) in [
-            ("create_credential_binding", 1, "succeeded"),
-            ("stage_credential_generation", 2, "succeeded"),
-            ("activate_credential_generation", 2, "succeeded"),
-            ("rollback_credential_generation", 1, "succeeded"),
-        ] {
-            assert!(registry_audits.iter().any(|audit| {
-                audit.operation == operation
-                    && audit.resource_kind == "credential"
-                    && audit.resource_digest != binding_id
-                    && audit.version == Some(version)
-                    && audit.outcome == outcome
-            }));
-        }
-        assert!(registry_audits.iter().any(|audit| {
-            audit.operation == "rollback_credential_generation"
-                && audit.version == Some(1)
-                && audit.outcome == "failed"
-                && audit.error_code.as_deref() == Some("active_generation_conflict")
-        }));
-        assert!(
-            registry_audits
-                .iter()
-                .all(|audit| audit.outcome != "pending")
-        );
-        let admin_denials = evidence.authorization_denials(20).await.unwrap();
-        assert!(
-            admin_denials
-                .iter()
-                .any(|denial| denial.operation == "agent_admin")
-        );
-        assert!(
-            admin_denials
-                .iter()
-                .any(|denial| denial.operation == "registry_admin")
-        );
-        let updated = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            update_request,
-        )
-        .await;
-        assert!(matches!(
-            updated,
-            sylvander_protocol::AgentAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::AgentAdminResult::DefinitionUpdated { revision }
-                        if revision.definition.revision == next_definition.revision
-                            && !revision.active
-                )
-        ));
-        let activated = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::ActivateRevision {
-                agent_id: next_definition.spec.id.clone(),
-                revision: next_definition.revision,
-                expected_active_revision: original_revision,
-            },
-        )
-        .await;
-        assert!(matches!(
-            activated,
-            sylvander_protocol::AgentAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::AgentAdminResult::RevisionActivated {
-                        active_revision,
-                        ..
-                    } if *active_revision == next_definition.revision
-                )
-        ));
-        let discovered = sylvander_channel::UiService::discover_agents(
-            runtime.ui_service.as_ref(),
-            &administrator,
-        )
-        .await
-        .unwrap();
-        assert_eq!(discovered[0].revision, next_definition.revision);
-        assert_eq!(discovered[0].name, next_definition.spec.name);
-        let activated_session = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            SessionCreateRequest {
-                agent_id: next_definition.spec.id.clone(),
-                label: "hot activated revision".into(),
-                channel_id: Some("admin-console".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            activated_session.effective.agent_revision, next_definition.revision,
-            "new sessions must bind the hot-activated revision"
-        );
-        let provider = runtime.revision_provider.as_ref().unwrap();
-        let original_run = provider
-            .configured_revision(&next_definition.spec.id, original_revision)
-            .await
-            .unwrap()
-            .run;
-        let activated_run = provider
-            .configured_revision(&next_definition.spec.id, next_definition.revision)
-            .await
-            .unwrap()
-            .run;
-        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
-            loop {
-                if original_run
-                    .get_session(&created.session_id)
-                    .await
-                    .is_some()
-                    && activated_run
-                        .get_session(&activated_session.session_id)
-                        .await
-                        .is_some()
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("revision workers must receive only their bound sessions");
-        assert!(
-            activated_run
-                .get_session(&created.session_id)
-                .await
-                .is_none(),
-            "an existing session must not drift to the activated revision"
-        );
-        let original_user = runtime
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .metadata
-            .user_id;
-        let activated_user = runtime
-            .session_store
-            .get(&activated_session.session_id)
-            .await
-            .unwrap()
-            .unwrap()
-            .metadata
-            .user_id;
-        let mut original_probe = sylvander_protocol::BusMessage::user_chat(
-            created.session_id.clone(),
-            original_user,
-            "revision-one-probe",
-        );
-        original_probe.recipient =
-            sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
-        runtime.bus().publish(original_probe).await.unwrap();
-        let mut activated_probe = sylvander_protocol::BusMessage::user_chat(
-            activated_session.session_id.clone(),
-            activated_user,
-            "revision-two-probe",
-        );
-        activated_probe.recipient =
-            sylvander_protocol::Recipient::Agent(next_definition.spec.id.clone());
-        runtime.bus().publish(activated_probe).await.unwrap();
-        let revision_requests = tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
-            loop {
-                let observed = model_server
-                    .received_requests()
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .filter_map(|request| {
-                        let body: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
-                        let encoded = body.to_string();
-                        let probe = ["revision-one-probe", "revision-two-probe"]
-                            .into_iter()
-                            .find(|probe| encoded.contains(probe))?;
-                        let model = body.get("model")?.as_str()?.to_owned();
-                        let prompt = body
-                            .get("system")?
-                            .as_array()?
-                            .first()?
-                            .get("text")?
-                            .as_str()?
-                            .to_owned();
-                        Some((probe.to_owned(), model, prompt))
-                    })
-                    .collect::<Vec<_>>();
-                if observed.len() == 2 {
-                    break observed;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("both revision-bound requests must reach the model provider");
-        for (probe, model, configured_prompt) in [
-            ("revision-one-probe", "model-a", "revision one prompt"),
-            ("revision-two-probe", "model-b", "revision two prompt"),
-        ] {
-            let expected_prefix = format!(
-                "{}\n\n{configured_prompt}",
-                sylvander_agent::prompt::SHARED_SAFETY_PROMPT
-            );
-            assert!(revision_requests.iter().any(|request| {
-                request.0 == probe && request.1 == model && request.2.starts_with(&expected_prefix)
-            }));
-        }
-
-        let stale_activation = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::ActivateRevision {
-                agent_id: next_definition.spec.id.clone(),
-                revision: original_revision,
-                expected_active_revision: original_revision,
-            },
-        )
-        .await;
-        assert!(matches!(
-            stale_activation,
-            sylvander_protocol::AgentAdminResponse::Error {
-                error: sylvander_protocol::AgentAdminError {
-                    code: sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
-                    ..
-                }
-            }
-        ));
-        let after_conflict = sylvander_channel::UiService::discover_agents(
-            runtime.ui_service.as_ref(),
-            &administrator,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            after_conflict[0].revision, next_definition.revision,
-            "an optimistic conflict must not move the active revision"
-        );
-
-        let rolled_back = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::RollbackRevision {
-                agent_id: next_definition.spec.id.clone(),
-                target_revision: original_revision,
-                expected_active_revision: next_definition.revision,
-            },
-        )
-        .await;
-        assert!(matches!(
-            rolled_back,
-            sylvander_protocol::AgentAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::AgentAdminResult::RevisionRolledBack {
-                        active_revision,
-                        ..
-                    } if *active_revision == original_revision
-                )
-        ));
-        let rolled_back_session = sylvander_channel::UiService::create_session(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            SessionCreateRequest {
-                agent_id: next_definition.spec.id.clone(),
-                label: "hot rolled back revision".into(),
-                channel_id: Some("admin-console".into()),
-                overrides: SessionConfigOverrides::default(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            rolled_back_session.effective.agent_revision, original_revision,
-            "rollback must affect new sessions without restarting"
-        );
-        let reactivated = sylvander_channel::UiService::agent_admin(
-            runtime.ui_service.as_ref(),
-            &administrator,
-            sylvander_protocol::AgentAdminRequest::ActivateRevision {
-                agent_id: next_definition.spec.id.clone(),
-                revision: next_definition.revision,
-                expected_active_revision: original_revision,
-            },
-        )
-        .await;
-        assert!(matches!(
-            reactivated,
-            sylvander_protocol::AgentAdminResponse::Success { result }
-                if matches!(
-                    result.as_ref(),
-                    sylvander_protocol::AgentAdminResult::RevisionActivated {
-                        active_revision,
-                        ..
-                    } if *active_revision == next_definition.revision
-                )
-        ));
-        let administration_audits = evidence.agent_administration_audits(10).await.unwrap();
-        assert_eq!(administration_audits.len(), 6);
-        assert!(
-            administration_audits
-                .iter()
-                .all(|audit| audit.principal_digest != "operator"
-                    && audit.agent_digest != "assistant")
-        );
-        assert_eq!(
-            administration_audits
-                .iter()
-                .filter(|audit| audit.outcome == "succeeded")
-                .count(),
-            4
-        );
-        assert_eq!(
-            administration_audits
-                .iter()
-                .filter(|audit| audit.outcome == "failed")
-                .count(),
-            2
-        );
-        assert!(administration_audits.iter().any(|audit| {
-            audit.operation == "activate_revision"
-                && audit.revision == original_revision
-                && audit.expected_active_revision == original_revision
-                && audit.outcome == "failed"
-                && audit.error_code.as_deref()
-                    == Some(
-                        agent_admin_error_code(
-                            sylvander_protocol::AgentAdminErrorCode::RevisionConflict,
-                        )
-                        .as_str(),
-                    )
-        }));
-        let owner_denial = sylvander_channel::UiService::authorize_message(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &sylvander_protocol::UiClientMessage::GetSessionConfig {
-                session_id: created.session_id.0.clone(),
-            },
-        )
-        .await
-        .expect_err("activating a restrictive Agent policy must revoke existing access");
-        assert_eq!(
-            owner_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        assert!(
-            sylvander_channel::UiService::discover_agents(runtime.ui_service.as_ref(), &owner)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        let direct_denial = sylvander_channel::UiService::session_config(
-            runtime.ui_service.as_ref(),
-            &owner,
-            &created.session_id,
-        )
-        .await
-        .expect_err("direct session reads must enforce the active Agent policy");
-        assert_eq!(
-            direct_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-        let feedback_denial = sylvander_channel::UiService::submit_feedback(
-            runtime.ui_service.as_ref(),
-            &owner,
-            RunFeedback {
-                run_id: "feedback-auth-run".into(),
-                turn_id: Some("feedback-auth-turn".into()),
-                rating: sylvander_protocol::FeedbackRating::Positive,
-                note: None,
-                correction: None,
-                tags: Vec::new(),
-                task_result: None,
-                artifacts: Vec::new(),
-                validations: Vec::new(),
-                privacy_class: sylvander_protocol::FeedbackPrivacyClass::Private,
-            },
-        )
-        .await
-        .expect_err("direct feedback writes must enforce the active Agent policy");
-        assert_eq!(
-            feedback_denial.code,
-            sylvander_protocol::BoundaryErrorCode::Forbidden
-        );
-
-        for principal in [
-            sylvander_protocol::AuthenticatedPrincipal {
-                id: sylvander_protocol::PrincipalId::new("operator"),
-                kind: sylvander_protocol::PrincipalKind::User,
-                authentication: sylvander_protocol::AuthenticationMethod::Internal,
-                roles: vec!["admin".into()],
-            },
-            sylvander_protocol::AuthenticatedPrincipal {
-                id: sylvander_protocol::PrincipalId::new("runtime"),
-                kind: sylvander_protocol::PrincipalKind::System,
-                authentication: sylvander_protocol::AuthenticationMethod::Internal,
-                roles: Vec::new(),
-            },
-        ] {
-            let privileged = sylvander_protocol::BoundaryContext::authenticated(
-                principal,
-                "internal-control",
-                "internal",
-                uuid::Uuid::new_v4().to_string(),
-            );
-            sylvander_channel::UiService::authorize_message(
-                runtime.ui_service.as_ref(),
-                &privileged,
-                &sylvander_protocol::UiClientMessage::GetSessionConfig {
-                    session_id: created.session_id.0.clone(),
-                },
-            )
-            .await
-            .expect("admin and system principals retain emergency access");
-        }
-        runtime.shutdown().await.unwrap();
-        let counts = evidence.counts().await.unwrap();
-        assert_eq!(counts.runs, 2);
-        assert!(counts.events >= 1, "Agent lifecycle must reach evidence");
-
-        let restarted = Runtime::boot_config(restart_config).await.unwrap();
-        assert_eq!(
-            restarted
-                .configured_agent(&AgentId::new("assistant"))
-                .unwrap()
-                .definition
-                .revision,
-            next_definition.revision
-        );
-        let preserved = restarted
-            .session_store
-            .get(&created.session_id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            preserved.effective_config.unwrap().agent_revision,
-            original_revision,
-            "activation must not migrate an existing session"
-        );
-        let (_, updated) = restarted
-            .update_session_config(
-                &created.session_id,
-                preserved.config_revision,
-                SessionConfigOverrides::default(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(updated.agent_revision, original_revision);
-        restarted.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn create_ephemeral_session_with_external_meta() {
-        let config = SystemConfig {
-            name: "test-runtime".into(),
-            agents: vec![test_spec("agent-1")],
-            sessions: vec![],
-        };
-
-        let rt = Runtime::boot(config, test_client()).await.expect("boot");
-
-        let mut meta = HashMap::new();
-        meta.insert("chat_id".into(), serde_json::json!("-100xxx"));
-
-        let sid = rt
-            .create_ephemeral_session(
-                "ephemeral",
-                test_metadata(),
-                &[AgentId::new("agent-1")],
-                meta,
-            )
-            .await
-            .expect("create");
-
-        let stored = rt.get_external_meta(&sid).await.expect("should exist");
-        assert_eq!(
-            stored.get("chat_id").unwrap(),
-            &serde_json::json!("-100xxx")
-        );
-
-        rt.shutdown().await.expect("shutdown");
-    }
-
-    #[tokio::test]
-    async fn external_meta_not_in_engine() {
-        // Protocol metadata stays in the runtime layer — the engine
-        // (and agents) never see it.
-        let config = SystemConfig {
-            name: "test-runtime".into(),
-            agents: vec![test_spec("agent-1")],
-            sessions: vec![],
-        };
-
-        let rt = Runtime::boot(config, test_client()).await.expect("boot");
-
-        let mut meta = HashMap::new();
-        meta.insert("secret".into(), serde_json::json!("hidden"));
-
-        rt.create_ephemeral_session("test", test_metadata(), &[AgentId::new("agent-1")], meta)
-            .await
-            .expect("create");
-
-        // Engine sessions have no external_meta field
-        let engine_sessions = rt.engine.list_sessions().await;
-        assert_eq!(engine_sessions.len(), 1);
-        // SessionMeta (engine-level) has no external_meta
-
-        rt.shutdown().await.expect("shutdown");
-    }
-}
+#[path = "../tests/unit/runtime.rs"]
+mod tests;

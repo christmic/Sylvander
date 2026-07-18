@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sylvander_agent::bus::MessageBus;
+use sylvander_agent::curated_memory::MemoryCandidateSink;
 use sylvander_agent::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
@@ -18,8 +19,9 @@ use sylvander_agent::tools::{
 };
 use sylvander_agent::user_profile_provider::UserProfileProvider;
 use sylvander_agent::workspace_executor::WorkspaceExecutor;
-use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
+#[cfg(test)]
+use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
 use sylvander_llm_core::{
     ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelProvider,
     ModelRef,
@@ -32,16 +34,13 @@ use sylvander_protocol::{
     WorkspaceCapabilityPolicy, WorkspaceMountRole,
 };
 
+use crate::config::{AgentDefinitionConfig, ExecutionTransportConfig, ServerConfig};
 #[cfg(test)]
-use crate::config::SystemSecretResolver;
-use crate::config::{
-    AgentDefinitionConfig, ExecutionTransportConfig, ModelDefinitionConfig, ModelProviderConfig,
-    SecretResolver, ServerConfig,
-};
+use crate::config::{ModelDefinitionConfig, ModelProviderConfig, SecretResolver};
+use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::credential_registry::CredentialSecretResolver;
 use crate::execution::{ContainerExecutor, ContainerResourcePolicy, SshExecutor};
-#[cfg(test)]
-use crate::registry_composition::RegistryCompositionSnapshot;
+use crate::guardian_runtime::WorkerToolGatewayFactory;
 use crate::registry_composition_v3::VersionedRegistryCompositionSnapshot;
 #[doc(hidden)]
 pub use crate::registry_domain::ModelCapabilityIssue;
@@ -113,7 +112,8 @@ impl ConfiguredAgent {
 }
 
 /// Build every configured Agent without starting background tasks.
-pub fn build_agents(
+#[cfg(test)]
+pub(crate) fn build_agents(
     config: &ServerConfig,
     bus: Arc<dyn MessageBus>,
     sessions: Arc<dyn SessionStore>,
@@ -138,6 +138,7 @@ pub fn build_agents(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn build_agent(
     config: &ServerConfig,
     definition: &AgentDefinitionConfig,
@@ -165,6 +166,7 @@ pub(crate) fn build_agent(
             .map_err(|error| CompositionError::Client(provider.id.clone(), error.to_string()))?;
 
     let model_list = model_catalog(provider)?;
+    let provider_models = exact_model_catalog(provider)?;
     let models = model_list
         .iter()
         .cloned()
@@ -190,26 +192,31 @@ pub(crate) fn build_agent(
         provider_id: provider.id.clone(),
         model_id: definition.spec.model.model_name.clone(),
     };
-    let primary = models
-        .get(&default_selection)
-        .ok_or_else(|| CompositionError::MissingModel {
-            provider: provider.id.clone(),
-            model: definition.spec.model.model_name.clone(),
-        })?;
     let prompt_resolver = configured_prompt_resolver(definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, definition, &default_selection, &mut spec)?;
 
     let tools = default_tools(memory.clone());
 
-    let mut builder = AgentRun::builder(spec.clone(), client)
-        .bus(bus)
-        .session_store(sessions)
-        .memory(memory.clone())
-        .override_tools(tools)
-        .available_models(model_list)
-        .prompt_resolver(prompt_resolver.clone())
-        .model_capabilities(primary.capabilities);
+    let primary_exact = provider_models
+        .iter()
+        .find(|model| model.reference.model == default_selection.model_id)
+        .cloned()
+        .ok_or_else(|| CompositionError::MissingModel {
+            provider: provider.id.clone(),
+            model: definition.spec.model.model_name.clone(),
+        })?;
+    let mut builder = AgentRun::qualified_router_builder(
+        spec.clone(),
+        Arc::new(AnthropicProvider::new(&provider.id, client)),
+        primary_exact,
+    )
+    .bus(bus)
+    .session_store(sessions)
+    .memory(memory.clone())
+    .override_tools(tools)
+    .available_provider_models(provider_models)
+    .prompt_resolver(prompt_resolver.clone());
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
     }
@@ -235,121 +242,6 @@ pub(crate) fn build_agent(
     })
 }
 
-/// Build one immutable registry revision while keeping credentials live.
-#[cfg(test)]
-pub(crate) fn build_registry_agent(
-    config: &ServerConfig,
-    snapshot: RegistryCompositionSnapshot,
-    registry: crate::agent_registry::AgentRegistry,
-    bus: Arc<dyn MessageBus>,
-    sessions: Arc<dyn SessionStore>,
-    memory: Arc<dyn MemoryStore>,
-) -> Result<ConfiguredAgent, CompositionError> {
-    build_registry_agent_with_resolver(
-        config,
-        snapshot,
-        registry,
-        bus,
-        sessions,
-        memory,
-        None,
-        Arc::new(SystemSecretResolver),
-    )
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)] // explicit composition dependencies stay type-visible
-pub(crate) fn build_registry_agent_with_resolver(
-    config: &ServerConfig,
-    snapshot: RegistryCompositionSnapshot,
-    registry: crate::agent_registry::AgentRegistry,
-    bus: Arc<dyn MessageBus>,
-    sessions: Arc<dyn SessionStore>,
-    memory: Arc<dyn MemoryStore>,
-    user_profiles: Option<Arc<dyn UserProfileProvider>>,
-    resolver: Arc<dyn CredentialSecretResolver>,
-) -> Result<ConfiguredAgent, CompositionError> {
-    let RegistryCompositionSnapshot {
-        agent: definition,
-        provider,
-        models: definitions,
-        default_model_id,
-        credential_binding_id,
-    } = snapshot;
-    let revision_bindings = registry_revision_bindings(&provider, &definitions)?;
-    if credential_binding_id != provider.credential_binding_id {
-        return Err(CompositionError::RegistryBindingMismatch);
-    }
-    for model in &definitions {
-        AnthropicProviderFactory
-            .preflight(&provider, model)
-            .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
-    }
-    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver.clone()));
-    let provider_adapter = AnthropicProviderFactory
-        .create(provider.clone(), credentials)
-        .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
-    let (models, provider_models) = registry_model_catalog(&definitions)?;
-    let primary = provider_models
-        .iter()
-        .find(|model| model.reference.model == default_model_id)
-        .cloned()
-        .ok_or_else(|| CompositionError::MissingModel {
-            provider: provider.id.clone(),
-            model: default_model_id.clone(),
-        })?;
-    let default_selection = ModelSelection {
-        provider_id: provider.id.clone(),
-        model_id: default_model_id.clone(),
-    };
-    let prompt_resolver = configured_prompt_resolver(&definition)?;
-    let mut spec = definition.spec.clone();
-    apply_default_prompt(&prompt_resolver, &definition, &default_selection, &mut spec)?;
-
-    let tools = default_tools(memory.clone());
-    let lifecycles = definitions
-        .iter()
-        .map(|model| (model.model_id.clone(), model.lifecycle.clone()))
-        .collect::<HashMap<_, _>>();
-    let pricing = definitions
-        .iter()
-        .filter_map(|model| model.pricing.map(|value| (model.model_id.clone(), value)))
-        .collect::<HashMap<_, _>>();
-    let mut builder = AgentRun::provider_builder(spec.clone(), provider_adapter, primary)
-        .bus(bus)
-        .session_store(sessions)
-        .memory(memory.clone())
-        .override_tools(tools)
-        .available_provider_models(provider_models)
-        .model_lifecycles(lifecycles)
-        .model_pricing(pricing)
-        .prompt_resolver(prompt_resolver.clone());
-    if let Some(provider) = user_profiles {
-        builder = builder.user_profile_provider(provider);
-    }
-    builder = apply_execution_targets(config, builder, |reference| {
-        resolver.resolve_credential(reference)
-    })?;
-    builder = apply_server_run_settings(config, builder);
-    let (run, session_issuer) = builder
-        .build_with_session_issuer()
-        .map_err(|error| CompositionError::Agent(spec.id.to_string(), error.to_string()))?;
-
-    Ok(ConfiguredAgent {
-        spec,
-        run,
-        session_issuer,
-        models,
-        approval_enabled: config.server.approval.enabled,
-        definition,
-        execution_targets: execution_targets(config),
-        #[cfg(test)]
-        memory_store: memory,
-        prompt_resolver,
-        revision_bindings,
-    })
-}
-
 /// Build one complete versioned registry closure around an immutable router.
 #[allow(dead_code)] // wired into revision composition after the staged router batches
 #[allow(clippy::too_many_arguments)] // explicit composition dependencies stay type-visible
@@ -363,7 +255,9 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
     resolver: Arc<dyn CredentialSecretResolver>,
     external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
+    credential_audit: Arc<CredentialOperationAuditLedger>,
     result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    tool_gateway_factory: Option<WorkerToolGatewayFactory>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let VersionedRegistryCompositionSnapshot {
         agent: definition,
@@ -381,8 +275,10 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
             .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
     }
     let credentials = Arc::new(match external_secret_provider {
-        Some(provider) => RegistryCredentialSource::with_external_provider(registry, provider),
-        None => RegistryCredentialSource::new(registry, resolver.clone()),
+        Some(provider) => {
+            RegistryCredentialSource::with_external_provider(registry, provider, credential_audit)
+        }
+        None => RegistryCredentialSource::new(registry, resolver.clone(), credential_audit),
     });
     let mut adapters_by_provider =
         HashMap::<String, Arc<dyn ModelProvider>>::with_capacity(providers.len());
@@ -419,7 +315,21 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
-    let tools = configured_tools(&spec, memory.clone(), result_artifacts).await?;
+    let candidate_sink = tool_gateway_factory
+        .as_ref()
+        .map(WorkerToolGatewayFactory::candidate_sink);
+    let curated_context = tool_gateway_factory
+        .as_ref()
+        .map(WorkerToolGatewayFactory::curated_context_provider);
+    let tools = configured_tools(&spec, memory.clone(), result_artifacts, candidate_sink).await?;
+    let invocation_gateway = match tool_gateway_factory {
+        Some(factory) => Some(
+            factory
+                .build(spec.id.clone(), tools.invocation_descriptors())
+                .map_err(|_| CompositionError::CapabilityRouter)?,
+        ),
+        None => None,
+    };
     let lifecycles = definitions
         .iter()
         .map(|model| {
@@ -457,6 +367,12 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         .prompt_resolver(prompt_resolver.clone());
     if let Some(provider) = user_profiles {
         builder = builder.user_profile_provider(provider);
+    }
+    if let Some(provider) = curated_context {
+        builder = builder.curated_context_provider(provider);
+    }
+    if let Some(gateway) = invocation_gateway {
+        builder = builder.invocation_gateway(gateway);
     }
     builder = apply_execution_targets(config, builder, |reference| {
         resolver.resolve_credential(reference)
@@ -805,28 +721,41 @@ fn workspace_binding(workspace: &crate::config::WorkspaceBindingConfig) -> Sessi
     }
 }
 
+#[cfg(test)]
 pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
-    ToolRegistry::new()
-        .register(ReadTool::new("/"))
-        .register(ListTool::new("/"))
-        .register(SearchTool::new("/"))
-        .register(WriteTool::new("/"))
-        .register(EditTool::new("/"))
-        .register(CommandTool::new("/"))
-        .register(GitTool::new("/"))
+    default_tools_with_candidate(memory, None)
+}
+
+fn default_tools_with_candidate(
+    memory: Arc<dyn MemoryStore>,
+    candidate_sink: Option<Arc<dyn MemoryCandidateSink>>,
+) -> ToolRegistry {
+    let registry = ToolRegistry::new()
+        .register(ReadTool::new())
+        .register(ListTool::new())
+        .register(SearchTool::new())
+        .register(WriteTool::new())
+        .register(EditTool::new())
+        .register(CommandTool::new())
+        .register(GitTool::new())
         .register(MemoryReadTool::new(memory))
         .register(AskUserTool::new())
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new())
-        .register(StartBackgroundTaskTool::new())
+        .register(StartBackgroundTaskTool::new());
+    match candidate_sink {
+        Some(sink) => registry.register(sylvander_agent::tools::MemoryWriteTool::candidate(sink)),
+        None => registry,
+    }
 }
 
 async fn configured_tools(
     spec: &AgentSpec,
     memory: Arc<dyn MemoryStore>,
     result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
+    candidate_sink: Option<Arc<dyn MemoryCandidateSink>>,
 ) -> Result<ToolRegistry, CompositionError> {
-    let mut registry = default_tools(memory);
+    let mut registry = default_tools_with_candidate(memory, candidate_sink);
     for reference in &spec.tools {
         let ToolRef::McpServer(config) = reference else {
             continue;
@@ -887,8 +816,6 @@ fn configured_prompt_resolver(
             .map(|profile| PromptProfile {
                 id: profile.id.clone(),
                 qualified_models: profile.qualified_models.clone(),
-                providers: profile.providers.clone(),
-                models: profile.models.clone(),
                 system_prompt: profile.system_prompt.clone(),
             })
             .collect(),
@@ -1020,46 +947,6 @@ fn apply_execution_targets(
         builder = builder.workspace_executor(target.id.clone(), executor);
     }
     Ok(builder)
-}
-
-#[cfg(test)]
-fn registry_revision_bindings(
-    provider: &ProviderDefinition,
-    models: &[ModelDefinition],
-) -> Result<RegistryRevisionBindings, CompositionError> {
-    if provider.id.trim().is_empty() || provider.revision == 0 {
-        return Err(CompositionError::InvalidRegistryRevisionBinding);
-    }
-    let mut model_revisions = HashMap::with_capacity(models.len());
-    for model in models {
-        if model.model_id.trim().is_empty() || model.revision == 0 {
-            return Err(CompositionError::InvalidRegistryRevisionBinding);
-        }
-        if model.provider_id != provider.id {
-            return Err(CompositionError::RegistryModelProviderMismatch {
-                provider: provider.id.clone(),
-                model: model.model_id.clone(),
-                model_provider: model.provider_id.clone(),
-            });
-        }
-        let selection = ModelSelection {
-            provider_id: model.provider_id.clone(),
-            model_id: model.model_id.clone(),
-        };
-        if model_revisions
-            .insert(selection.clone(), model.revision)
-            .is_some()
-        {
-            return Err(CompositionError::DuplicateRegistryModelBinding {
-                provider: selection.provider_id,
-                model: selection.model_id,
-            });
-        }
-    }
-    Ok(RegistryRevisionBindings {
-        provider_revisions: HashMap::from([(provider.id.clone(), provider.revision)]),
-        model_revisions,
-    })
 }
 
 fn versioned_registry_revision_bindings(
@@ -1246,6 +1133,7 @@ fn map_prompt_error(
     }
 }
 
+#[cfg(test)]
 fn model_catalog(provider: &ModelProviderConfig) -> Result<Vec<ModelInfo>, CompositionError> {
     provider
         .models
@@ -1262,6 +1150,31 @@ fn model_catalog(provider: &ModelProviderConfig) -> Result<Vec<ModelInfo>, Compo
         .collect()
 }
 
+#[cfg(test)]
+fn exact_model_catalog(
+    provider: &ModelProviderConfig,
+) -> Result<Vec<ProviderModelInfo>, CompositionError> {
+    provider
+        .models
+        .iter()
+        .map(|model| {
+            let capabilities = parse_model_capabilities(&model.capabilities).map_err(|error| {
+                CompositionError::InvalidModelCapability {
+                    model: model.id.clone(),
+                    issue: error.issue(),
+                }
+            })?;
+            Ok(ProviderModelInfo {
+                reference: ModelRef::new(&provider.id, &model.id),
+                context_window: model.context_window,
+                max_output_tokens: model.max_output_tokens,
+                capabilities: canonical_model_capability_bits(capabilities).1,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn model_capabilities(
     model: &ModelDefinitionConfig,
 ) -> Result<ModelCapabilities, CompositionError> {
@@ -1316,18 +1229,10 @@ pub enum CompositionError {
     Secret(String, String),
     #[error("failed to create client for provider `{0}`: {1}")]
     Client(String, String),
-    #[error("registry credential binding does not match the pinned Provider")]
-    RegistryBindingMismatch,
     #[error("registry revision binding contains an empty identity or zero revision")]
     InvalidRegistryRevisionBinding,
     #[error("registry Provider binding does not match the selected Provider")]
     RegistryProviderBindingMismatch,
-    #[error("model `{model}` belongs to Provider `{model_provider}`, not `{provider}`")]
-    RegistryModelProviderMismatch {
-        provider: String,
-        model: String,
-        model_provider: String,
-    },
     #[error("registry Model binding `{provider}/{model}` is duplicated")]
     DuplicateRegistryModelBinding { provider: String, model: String },
     #[error("registry Model binding `{provider}/{model}` is missing")]
@@ -1338,6 +1243,8 @@ pub enum CompositionError {
     ProviderRouter(String),
     #[error("failed to start MCP server `{0}`: {1}")]
     Mcp(String, String),
+    #[error("failed to build Agent capability router")]
+    CapabilityRouter,
     #[error("failed to resolve MCP server `{0}` environment `{1}`")]
     McpSecret(String, String),
     #[error("model `{0}` has invalid metadata")]
