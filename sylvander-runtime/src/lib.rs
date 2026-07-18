@@ -751,6 +751,50 @@ impl sylvander_channel::UiService for RuntimeUiService {
         Ok(agents)
     }
 
+    async fn list_sessions(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+    ) -> Result<Vec<sylvander_protocol::UiSessionInfo>, sylvander_protocol::BoundaryError> {
+        require_principal(boundary, "list_sessions")?;
+        let user_id = self.effective_user_id(boundary, "list_sessions").await?;
+        let sessions = self
+            .sessions
+            .list_persistent()
+            .await
+            .map_err(|error| boundary_failure(boundary, "list_sessions", error.to_string()))?;
+        let now = sylvander_agent::session::now_secs();
+        let mut visible = Vec::new();
+        for session in sessions {
+            if session.metadata.user_id != user_id.0 && !privileged_principal(boundary) {
+                continue;
+            }
+            let mut allowed = true;
+            for agent_id in &session.agents {
+                if !self
+                    .current_agent_access_allowed(agent_id, boundary, "list_sessions")
+                    .await?
+                {
+                    allowed = false;
+                    break;
+                }
+            }
+            if !allowed || session.agents.is_empty() {
+                continue;
+            }
+            visible.push(sylvander_protocol::UiSessionInfo {
+                id: session.id.0,
+                label: if session.name.is_empty() {
+                    "untitled session".into()
+                } else {
+                    session.name
+                },
+                workspace: session.metadata.workspace.display().to_string(),
+                last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+            });
+        }
+        Ok(visible)
+    }
+
     async fn create_session(
         &self,
         boundary: &sylvander_protocol::BoundaryContext,
