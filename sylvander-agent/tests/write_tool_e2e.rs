@@ -5,6 +5,8 @@
 //! write a modified version, then read it back. The agent must
 //! drive Read + Write + Read across two iterations.
 
+mod support;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -13,6 +15,8 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::qualified_anthropic_loop_builder;
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -47,7 +51,13 @@ async fn write_tool_e2e() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read notes.md then write notes2.md with the same content"}]
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Read notes.md then write notes2.md with the same content"
+                }]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
@@ -110,9 +120,7 @@ async fn write_tool_e2e() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(ReadTool::new(tmp.path()))
         .tool(WriteTool::new(tmp.path()))
         .tool_context(write_context(tmp.path()))
@@ -166,7 +174,10 @@ async fn write_creates_nested_dirs() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "write to deep/nested/file.txt"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "write to deep/nested/file.txt"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
@@ -206,9 +217,7 @@ async fn write_creates_nested_dirs() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(WriteTool::new(tmp.path()))
         .tool_context(write_context(tmp.path()))
         .max_iterations(3)

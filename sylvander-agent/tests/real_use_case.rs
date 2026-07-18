@@ -11,6 +11,8 @@
 //!
 //! All against `wiremock`, no real API key needed.
 
+mod support;
+
 use std::sync::Arc;
 
 use serde_json::Value as JsonValue;
@@ -20,6 +22,8 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::qualified_anthropic_loop_builder;
 
 /// Simulated file system: tool name → canned file content.
 #[derive(Clone)]
@@ -113,7 +117,10 @@ async fn real_use_case_read_and_summarize() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Summarize /tmp/notes.md"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Summarize /tmp/notes.md"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_step1",
@@ -157,9 +164,7 @@ async fn real_use_case_read_and_summarize() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .max_iterations(5)
         .build()
@@ -271,7 +276,10 @@ async fn real_use_case_tool_error_recovery() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read /nonexistent"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Read /nonexistent"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_e1",
@@ -314,9 +322,7 @@ async fn real_use_case_tool_error_recovery() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .max_iterations(5)
         .build()

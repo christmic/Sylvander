@@ -7,10 +7,75 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
+use sylvander_agent::prelude::{AgentLoop, AgentLoopBuilder};
 use sylvander_agent::tool::{Tool, ToolError, ToolOutput};
 use sylvander_agent::tool_context::ToolContext;
-use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
-use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_llm_anthropic::{
+    AnthropicProvider,
+    api::{
+        client::AnthropicClient,
+        model::{ModelCapabilities as AnthropicModelCapabilities, ModelInfo as AnthropicModelInfo},
+        types::InputSchema,
+    },
+};
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
+
+/// Build an Agent loop through the sole current provider-qualified API.
+pub(crate) fn qualified_anthropic_loop_builder(
+    client: AnthropicClient,
+    model: AnthropicModelInfo,
+) -> AgentLoopBuilder {
+    assert!(
+        model.cache_ttl.is_empty(),
+        "provider-neutral test models cannot carry Anthropic-only cache TTL metadata"
+    );
+
+    let mut capabilities = ProviderModelCapabilities::empty();
+    for (anthropic, provider) in [
+        (
+            AnthropicModelCapabilities::EXTENDED_THINKING,
+            ProviderModelCapabilities::REASONING,
+        ),
+        (
+            AnthropicModelCapabilities::PROMPT_CACHING,
+            ProviderModelCapabilities::PROMPT_CACHING,
+        ),
+        (
+            AnthropicModelCapabilities::STRUCTURED_OUTPUT,
+            ProviderModelCapabilities::STRUCTURED_OUTPUT,
+        ),
+        (
+            AnthropicModelCapabilities::TOOL_USE,
+            ProviderModelCapabilities::TOOL_USE,
+        ),
+        (
+            AnthropicModelCapabilities::VISION,
+            ProviderModelCapabilities::VISION,
+        ),
+        (
+            AnthropicModelCapabilities::DOCUMENT_INPUT,
+            ProviderModelCapabilities::DOCUMENT_INPUT,
+        ),
+    ] {
+        if model.capabilities.contains(anthropic) {
+            capabilities = capabilities | provider;
+        }
+    }
+
+    let provider_model = ProviderModelInfo {
+        reference: ModelRef::new("anthropic", model.id),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        capabilities,
+    };
+
+    AgentLoop::builder()
+        .qualified_router(Arc::new(AnthropicProvider::new("anthropic", client)))
+        .provider_model(provider_model)
+}
 
 /// In-memory tool double for public-contract integration tests.
 #[derive(Debug, Clone)]

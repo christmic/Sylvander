@@ -11,6 +11,8 @@
 //!   single-iteration `tool_use` response shape. The wiremock tests
 //!   cover the full multi-turn flow.
 
+mod support;
+
 use std::fs;
 use std::sync::Arc;
 
@@ -21,6 +23,8 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use tempfile::TempDir;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::qualified_anthropic_loop_builder;
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -63,7 +67,10 @@ async fn read_e2e_wiremock() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read notes.md and summarize"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Read notes.md and summarize"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_r1",
@@ -106,9 +113,7 @@ async fn read_e2e_wiremock() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(dir.path()))
         .max_iterations(5)
@@ -157,7 +162,10 @@ async fn read_e2e_wiremock_missing_file() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read missing.txt"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Read missing.txt"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_m1",
@@ -193,9 +201,7 @@ async fn read_e2e_wiremock_missing_file() {
 
     let read_tool = ReadTool::new(dir.path());
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(dir.path()))
         .max_iterations(5)
@@ -270,9 +276,7 @@ async fn read_e2e_real_api_single_iteration() {
     }
 
     let read_tool = ReadTool::new("/tmp");
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .tool(read_tool)
         .tool_context(read_context(std::path::Path::new("/tmp")))
         .max_iterations(3) // proxy breaks on iter 2 — use 3 to be safe

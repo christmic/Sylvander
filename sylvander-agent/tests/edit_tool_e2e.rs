@@ -3,6 +3,8 @@
 //! Verifies the LLM can call Edit through the agent loop, find a
 //! unique string, replace it, and the file is actually modified.
 
+mod support;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -11,6 +13,8 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::qualified_anthropic_loop_builder;
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -45,7 +49,10 @@ async fn edit_tool_e2e() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "change foo to bar in file.txt"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "change foo to bar in file.txt"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
@@ -91,9 +98,7 @@ async fn edit_tool_e2e() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(EditTool::new(tmp.path()))
         .tool_context(edit_context(tmp.path()))
         .max_iterations(3)
@@ -140,7 +145,10 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "replace x in file.txt"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "replace x in file.txt"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
@@ -186,9 +194,7 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(EditTool::new(tmp.path()))
         .tool_context(edit_context(tmp.path()))
         .max_iterations(3)

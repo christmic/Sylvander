@@ -10,7 +10,7 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use support::MockTool;
+use support::{MockTool, qualified_anthropic_loop_builder};
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -37,9 +37,7 @@ async fn tools_set_without_tool_use_capability_errors() {
     let model = model_with(ModelCapabilities::default()); // no capabilities
     let tool = MockTool::new("foo", "foo", ToolOutput::ok("bar"));
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .tool(tool)
         .build()
         .expect("build");
@@ -68,9 +66,7 @@ async fn thinking_without_extended_thinking_capability_errors() {
     //
     // For now, we just verify that the basic flow works (no crash).
     // Thinking-capability path is exercised via the lib unit tests.
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .build()
         .expect("build");
 
@@ -93,16 +89,17 @@ async fn llm_400_and_401_propagate_after_one_request() {
             .mount(&server)
             .await;
 
-        let loop_ = AgentLoop::builder()
-            .client(mock_client(&server))
-            .model(model_with(ModelCapabilities::default()))
-            .max_retries(3)
-            .build()
-            .expect("build");
+        let loop_ = qualified_anthropic_loop_builder(
+            mock_client(&server),
+            model_with(ModelCapabilities::default()),
+        )
+        .max_retries(3)
+        .build()
+        .expect("build");
         let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
         assert!(matches!(
             result,
-            Err(AgentLoopError::Llm { retries: 0, .. })
+            Err(AgentLoopError::Provider { attempts: 1, .. })
         ));
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -121,17 +118,18 @@ async fn invalid_buffered_response_does_not_trigger_a_second_request() {
         .mount(&server)
         .await;
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model_with(ModelCapabilities::default()))
-        .max_retries(3)
-        .build()
-        .expect("build");
+    let loop_ = qualified_anthropic_loop_builder(
+        mock_client(&server),
+        model_with(ModelCapabilities::default()),
+    )
+    .max_retries(3)
+    .build()
+    .expect("build");
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
 
     assert!(matches!(
         result,
-        Err(AgentLoopError::Llm { retries: 0, .. })
+        Err(AgentLoopError::Provider { attempts: 1, .. })
     ));
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
@@ -159,12 +157,13 @@ async fn truncated_stream_reports_once_without_replaying_visible_delta() {
         .mount(&server)
         .await;
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model_with(ModelCapabilities::default()))
-        .max_retries(3)
-        .build()
-        .expect("build");
+    let loop_ = qualified_anthropic_loop_builder(
+        mock_client(&server),
+        model_with(ModelCapabilities::default()),
+    )
+    .max_retries(3)
+    .build()
+    .expect("build");
     let observed = Arc::new(Mutex::new((Vec::new(), 0usize)));
     let events = observed.clone();
     let result = sylvander_agent::prelude::run_with_events(
@@ -178,7 +177,10 @@ async fn truncated_stream_reports_once_without_replaying_visible_delta() {
     )
     .await;
 
-    assert!(matches!(result, Err(AgentLoopError::Llm { .. })));
+    assert!(matches!(
+        result,
+        Err(AgentLoopError::Provider { attempts: 1, .. })
+    ));
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     assert_eq!(observed.lock().unwrap().0.as_slice(), &["visible once"]);
     assert_eq!(observed.lock().unwrap().1, 0);
@@ -199,9 +201,7 @@ async fn llm_5xx_retries_then_propagates_after_max() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .max_retries(2)
         .build()
         .expect("build");
@@ -219,10 +219,10 @@ async fn llm_5xx_retries_then_propagates_after_max() {
     )
     .await;
     match result {
-        Err(AgentLoopError::Llm { retries, .. }) => {
-            assert_eq!(retries, 2);
+        Err(AgentLoopError::Provider { attempts, .. }) => {
+            assert_eq!(attempts, 3);
         }
-        other => panic!("expected Llm error, got {other:?}"),
+        other => panic!("expected provider error, got {other:?}"),
     }
     assert_eq!(server.received_requests().await.unwrap().len(), 3);
     assert_eq!(retries.lock().unwrap().as_slice(), &[1, 2]);
@@ -259,9 +259,7 @@ async fn llm_5xx_succeeds_after_retry() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .max_retries(3)
         .build()
         .expect("build");
@@ -322,9 +320,7 @@ async fn llm_429_retries_and_succeeds() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .max_retries(2)
         .build()
         .expect("build");
@@ -361,17 +357,15 @@ async fn zero_max_retries_means_no_retry() {
         .await;
 
     let model = model_with(ModelCapabilities::default());
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .max_retries(0) // disable retry
         .build()
         .expect("build");
 
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     match result {
-        Err(AgentLoopError::Llm { retries, .. }) => assert_eq!(retries, 0),
-        other => panic!("expected Llm error, got {other:?}"),
+        Err(AgentLoopError::Provider { attempts, .. }) => assert_eq!(attempts, 1),
+        other => panic!("expected provider error, got {other:?}"),
     }
 }
 
@@ -397,9 +391,7 @@ async fn tool_use_capability_passes_validation() {
     let model = model_with(ModelCapabilities::TOOL_USE);
     let tool = MockTool::new("foo", "foo", ToolOutput::ok("bar"));
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .tool(tool)
         .build()
         .expect("build");
@@ -429,9 +421,7 @@ async fn thinking_capability_passes_validation() {
         .await;
 
     let model = model_with(ModelCapabilities::EXTENDED_THINKING);
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), model)
         .max_iterations(1)
         .build()
         .expect("build");

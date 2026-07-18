@@ -17,7 +17,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::InMemoryToolResultDisk;
+use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder};
 use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
@@ -73,7 +73,10 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Summarize notes.md"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Summarize notes.md"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_step1",
@@ -131,9 +134,7 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(tmp.path()))
         .compression_pipeline(pipeline)
@@ -305,9 +306,7 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(read_context(tmp.path()))
         .compression_pipeline(pipeline)
@@ -404,9 +403,7 @@ async fn real_use_case_l1_drops_orphan_tool_results() {
         .layer(AutoCompactLayer::new())
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -559,9 +556,7 @@ async fn real_use_case_l2_condenses_old_tool_results() {
         .layer(ContextCollapseLayer::new())
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -655,9 +650,7 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
         )
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(thinking_test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), thinking_test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -782,9 +775,7 @@ async fn real_use_case_l4_summarizes_at_high_usage() {
         )
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(tiny_model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), tiny_model)
         .compression_pipeline(pipeline)
         .max_iterations(3)
         .build()
