@@ -338,7 +338,7 @@ struct RuntimeUiService {
     evidence: Option<EvidenceStore>,
     identity_bindings: Option<Arc<IdentityBindingService>>,
     user_profiles: Option<UserProfileStore>,
-    worktrees: Option<Arc<git_worktree::GitWorktreeManager>>,
+    worktrees: Option<Arc<coding_worktree::CodingWorktreeService>>,
     boundary: BoundaryGuard,
 }
 
@@ -1283,7 +1283,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
         if submission.is_err()
             && let Some(agent) = created_agent
         {
-            self.rollback_created_session(&agent, &session_id).await;
+            self.rollback_created_session(&agent, &session_id, None)
+                .await;
         }
         submission
     }
@@ -1428,7 +1429,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         session_id: &SessionId,
     ) -> Result<sylvander_protocol::CodingSessionDiff, sylvander_protocol::BoundaryError> {
-        self.owned_session(boundary, session_id, "inspect_coding_session")
+        let session = self
+            .owned_session(boundary, session_id, "inspect_coding_session")
             .await?;
         let manager = self.worktrees.clone().ok_or_else(|| {
             boundary_failure(
@@ -1437,20 +1439,12 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "coding worktrees are unavailable",
             )
         })?;
-        let id = session_id.0.clone();
-        let diff = tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.inspect(&lease)
-        })
-        .await
-        .map_err(|_| {
-            boundary_failure(
-                boundary,
-                "inspect_coding_session",
-                "worktree inspection stopped",
-            )
-        })?
-        .map_err(|error| boundary_failure(boundary, "inspect_coding_session", error))?;
+        let target = coding_worktree_target(&session)
+            .map_err(|error| boundary_failure(boundary, "inspect_coding_session", error))?;
+        let diff = manager
+            .inspect(&session_id.0, target)
+            .await
+            .map_err(|error| boundary_failure(boundary, "inspect_coding_session", error))?;
         Ok(sylvander_protocol::CodingSessionDiff {
             status: diff.status,
             patch: diff.patch,
@@ -1462,7 +1456,8 @@ impl sylvander_channel::UiService for RuntimeUiService {
         boundary: &sylvander_protocol::BoundaryContext,
         session_id: &SessionId,
     ) -> Result<(), sylvander_protocol::BoundaryError> {
-        self.owned_session(boundary, session_id, "accept_coding_session")
+        let session = self
+            .owned_session(boundary, session_id, "accept_coding_session")
             .await?;
         let manager = self.worktrees.clone().ok_or_else(|| {
             boundary_failure(
@@ -1471,14 +1466,12 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "coding worktrees are unavailable",
             )
         })?;
-        let id = session_id.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.accept(&lease)
-        })
-        .await
-        .map_err(|_| boundary_failure(boundary, "accept_coding_session", "worktree merge stopped"))?
-        .map_err(|error| boundary_failure(boundary, "accept_coding_session", error))
+        let target = coding_worktree_target(&session)
+            .map_err(|error| boundary_failure(boundary, "accept_coding_session", error))?;
+        manager
+            .accept(&session_id.0, target)
+            .await
+            .map_err(|error| boundary_failure(boundary, "accept_coding_session", error))
     }
 
     async fn discard_coding_session(
@@ -1496,20 +1489,12 @@ impl sylvander_channel::UiService for RuntimeUiService {
                 "coding worktrees are unavailable",
             )
         })?;
-        let id = session_id.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.discard(&lease)
-        })
-        .await
-        .map_err(|_| {
-            boundary_failure(
-                boundary,
-                "discard_coding_session",
-                "worktree discard stopped",
-            )
-        })?
-        .map_err(|error| boundary_failure(boundary, "discard_coding_session", error))?;
+        let target = coding_worktree_target(&session)
+            .map_err(|error| boundary_failure(boundary, "discard_coding_session", error))?;
+        manager
+            .discard(&session_id.0, target)
+            .await
+            .map_err(|error| boundary_failure(boundary, "discard_coding_session", error))?;
         self.engine.detach_session(session_id).await;
         agent.detach_authenticated_session(session_id).await;
         self.sessions.delete(&session.id).await.map_err(|error| {
@@ -1828,36 +1813,24 @@ impl RuntimeUiService {
             .user_workspace
             .as_ref()
             .or(effective.agent_workspace.as_ref());
+        let worktree_target = workspace_binding
+            .filter(|binding| !binding.read_only)
+            .map(|binding| binding.execution_target.clone());
         let mut workspace = workspace_binding.map_or_else(
             || std::path::PathBuf::from("."),
             |binding| binding.path.clone(),
         );
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
-        let lease = if workspace_binding.is_some_and(|binding| {
-            !binding.read_only
-                && execution_target_supports_host_worktree(
-                    &agent.execution_targets,
-                    &binding.execution_target,
-                )
-        }) && self
-            .worktrees
-            .as_ref()
-            .is_some_and(|manager| manager.is_git_workspace(&workspace))
-        {
-            let manager = self.worktrees.as_ref().expect("checked above").clone();
-            let requested = workspace.clone();
-            let id = session_id.0.clone();
-            let created = tokio::task::spawn_blocking(move || manager.create(&id, &requested))
+        let lease = match (worktree_target.as_deref(), self.worktrees.as_ref()) {
+            (Some(target), Some(manager)) => manager
+                .create(&session_id.0, target, &workspace)
                 .await
-                .map_err(|_| {
-                    boundary_failure(boundary, "create_session", "worktree creation stopped")
-                })?
-                .map_err(|error| boundary_failure(boundary, "create_session", error))?;
-            workspace.clone_from(&created.effective_workspace);
-            Some(created)
-        } else {
-            None
+                .map_err(|error| boundary_failure(boundary, "create_session", error))?,
+            _ => None,
         };
+        if let Some(lease) = &lease {
+            workspace.clone_from(&lease.effective_workspace);
+        }
         bind_effective_workspace(&mut effective, &workspace);
         let metadata = SessionMetadata {
             workspace,
@@ -1887,9 +1860,19 @@ impl RuntimeUiService {
                 "git_worktree".into(),
                 serde_json::Value::String(lease.branch.clone()),
             );
+            if let Some(target) = &lease.target_id {
+                session.external_meta.insert(
+                    "git_worktree_target".into(),
+                    serde_json::Value::String(target.clone()),
+                );
+            }
         }
         if let Err(error) = self.sessions.save(&session).await {
-            self.discard_worktree(&session_id).await;
+            self.discard_worktree(
+                &session_id,
+                lease.as_ref().and_then(|lease| lease.target_id.as_deref()),
+            )
+            .await;
             return Err(boundary_failure(
                 boundary,
                 "create_session",
@@ -1901,7 +1884,11 @@ impl RuntimeUiService {
             .await
         {
             let _ = self.sessions.delete(&session_id).await;
-            self.discard_worktree(&session_id).await;
+            self.discard_worktree(
+                &session_id,
+                lease.as_ref().and_then(|lease| lease.target_id.as_deref()),
+            )
+            .await;
             return Err(boundary_failure(
                 boundary,
                 "create_session",
@@ -1918,7 +1905,12 @@ impl RuntimeUiService {
             )
             .await
         {
-            self.rollback_created_session(&agent, &session_id).await;
+            self.rollback_created_session(
+                &agent,
+                &session_id,
+                lease.as_ref().and_then(|lease| lease.target_id.clone()),
+            )
+            .await;
             return Err(boundary_failure(
                 boundary,
                 "create_session",
@@ -1933,26 +1925,36 @@ impl RuntimeUiService {
         })
     }
 
-    async fn rollback_created_session(&self, agent: &ConfiguredAgent, session_id: &SessionId) {
+    async fn rollback_created_session(
+        &self,
+        agent: &ConfiguredAgent,
+        session_id: &SessionId,
+        target_id: Option<String>,
+    ) {
         self.engine.detach_session(session_id).await;
         agent.detach_authenticated_session(session_id).await;
+        let target_id = match target_id {
+            Some(target) => Some(target),
+            None => match self.sessions.get(session_id).await {
+                Ok(Some(session)) => coding_worktree_target(&session)
+                    .ok()
+                    .flatten()
+                    .map(str::to_owned),
+                _ => None,
+            },
+        };
+        self.discard_worktree(session_id, target_id.as_deref())
+            .await;
         if let Err(error) = self.sessions.delete(session_id).await {
             warn!(%error, %session_id, "failed to delete compensated session");
         }
-        self.discard_worktree(session_id).await;
     }
 
-    async fn discard_worktree(&self, session_id: &SessionId) {
+    async fn discard_worktree(&self, session_id: &SessionId, target_id: Option<&str>) {
         let Some(manager) = self.worktrees.clone() else {
             return;
         };
-        let id = session_id.0.clone();
-        let result = tokio::task::spawn_blocking(move || match manager.open(&id) {
-            Ok(lease) => manager.discard(&lease),
-            Err(_) => Ok(()),
-        })
-        .await;
-        if let Ok(Err(error)) = result {
+        if let Err(error) = manager.discard_if_present(&session_id.0, target_id).await {
             warn!(%error, %session_id, "failed to discard session worktree");
         }
     }
@@ -2274,6 +2276,7 @@ impl RuntimeUiService {
     }
 }
 
+#[cfg(test)]
 fn execution_target_supports_host_worktree(
     targets: &HashMap<String, config::ExecutionTransportConfig>,
     target_id: &str,
@@ -2286,6 +2289,99 @@ fn execution_target_supports_host_worktree(
                 | config::ExecutionTransportConfig::Sandbox { .. }
         )
     )
+}
+
+fn coding_worktree_target(session: &StoredSession) -> Result<Option<&str>, String> {
+    match session.external_meta.get("git_worktree_target") {
+        Some(serde_json::Value::String(target)) if !target.trim().is_empty() => {
+            Ok(Some(target.as_str()))
+        }
+        Some(_) => Err("session has invalid remote worktree metadata".into()),
+        None => Ok(None),
+    }
+}
+
+fn build_coding_worktree_service(
+    config: &ServerConfig,
+) -> Result<coding_worktree::CodingWorktreeService, RuntimeError> {
+    let data_dir = config
+        .server
+        .data_dir
+        .as_ref()
+        .expect("runtime data directory is resolved before worktree composition");
+    let local = Arc::new(git_worktree::GitWorktreeManager::new(
+        data_dir.join("coding-sessions"),
+    ));
+    let mut service = coding_worktree::CodingWorktreeService::new(local);
+    let mut explicit_local = false;
+    for target in &config.execution_targets {
+        match &target.transport {
+            config::ExecutionTransportConfig::Ssh {
+                host,
+                port,
+                user,
+                credential,
+                known_hosts,
+                control_path,
+                worktree_root,
+            } => {
+                let identity = SystemSecretResolver.resolve(credential).map_err(|_| {
+                    RuntimeError::Config(format!(
+                        "SSH target {} identity resolution failed",
+                        target.id
+                    ))
+                })?;
+                let identity_path = identity.as_str().map_err(|_| {
+                    RuntimeError::Config(format!(
+                        "SSH target {} identity must be a UTF-8 path",
+                        target.id
+                    ))
+                })?;
+                let executor = crate::execution::SshExecutor::new(
+                    host,
+                    *port,
+                    user,
+                    identity_path,
+                    known_hosts,
+                    control_path,
+                )
+                .map_err(|_| {
+                    RuntimeError::Config(format!(
+                        "SSH target {} executor configuration is invalid",
+                        target.id
+                    ))
+                })?;
+                let manager = remote_git_worktree::RemoteGitWorktreeManager::new(
+                    data_dir
+                        .join("coding-sessions/remote")
+                        .join(sha256_text(&target.id)),
+                    worktree_root,
+                    target.id.clone(),
+                    Arc::new(executor),
+                )
+                .map_err(|error| {
+                    RuntimeError::Config(format!("SSH target {}: {error}", target.id))
+                })?;
+                service
+                    .register_remote(target.id.clone(), Arc::new(manager))
+                    .map_err(RuntimeError::Config)?;
+            }
+            config::ExecutionTransportConfig::Local { .. }
+            | config::ExecutionTransportConfig::Container { .. }
+            | config::ExecutionTransportConfig::Sandbox { .. } => {
+                explicit_local |= target.id == "local";
+                service
+                    .register_local(target.id.clone())
+                    .map_err(RuntimeError::Config)?;
+            }
+        }
+    }
+    if !explicit_local {
+        service
+            .register_local("local")
+            .map_err(RuntimeError::Config)?;
+    }
+    Ok(service)
 }
 
 fn sha256_text(value: &str) -> String {
@@ -3005,14 +3101,7 @@ impl Runtime {
             .validate()
             .map_err(|error| RuntimeError::Config(error.to_string()))?;
         let mut config = with_resolved_paths(config)?;
-        let worktrees = Arc::new(git_worktree::GitWorktreeManager::new(
-            config
-                .server
-                .data_dir
-                .as_ref()
-                .expect("resolved runtime data directory")
-                .join("coding-sessions"),
-        ));
+        let worktrees = Arc::new(build_coding_worktree_service(&config)?);
         let session_db = config
             .server
             .session_db
@@ -3316,15 +3405,19 @@ impl Runtime {
         let active_worktrees = persistent_sessions
             .iter()
             .filter(|session| session.external_meta.contains_key("git_worktree"))
-            .map(|session| (session.id.0.clone(), session.metadata.workspace.clone()))
-            .collect::<HashMap<_, _>>();
-        let reconciliation_manager = worktrees.clone();
-        let reconciliation = tokio::task::spawn_blocking(move || {
-            reconciliation_manager.reconcile(&active_worktrees)
-        })
-        .await
-        .map_err(|_| RuntimeError::Store("worktree reconciliation stopped".into()))?
-        .map_err(|error| RuntimeError::Store(format!("worktree reconciliation: {error}")))?;
+            .map(|session| {
+                Ok(coding_worktree::ActiveCodingWorkspace {
+                    session_id: session.id.0.clone(),
+                    effective_workspace: session.metadata.workspace.clone(),
+                    target_id: coding_worktree_target(session)?.map(str::to_owned),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(RuntimeError::Store)?;
+        let reconciliation = worktrees
+            .reconcile(&active_worktrees)
+            .await
+            .map_err(|error| RuntimeError::Store(format!("worktree reconciliation: {error}")))?;
         info!(
             retained = reconciliation.retained,
             removed = reconciliation.removed,
@@ -3444,36 +3537,42 @@ impl Runtime {
         &self,
         session_id: &SessionId,
     ) -> Result<git_worktree::WorkspaceDiff, RuntimeError> {
+        let session = self
+            .session_store
+            .get(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
         let manager = self
             .ui_service
             .worktrees
             .clone()
             .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
-        let id = session_id.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.inspect(&lease)
-        })
-        .await
-        .map_err(|_| RuntimeError::Engine("worktree inspection stopped".into()))?
-        .map_err(RuntimeError::Engine)
+        let target = coding_worktree_target(&session).map_err(RuntimeError::Engine)?;
+        manager
+            .inspect(&session_id.0, target)
+            .await
+            .map_err(RuntimeError::Engine)
     }
 
     /// Merge the reviewed coding-session changes while keeping the session open.
     pub async fn accept_coding_session(&self, session_id: &SessionId) -> Result<(), RuntimeError> {
+        let session = self
+            .session_store
+            .get(session_id)
+            .await
+            .map_err(|error| RuntimeError::Store(error.to_string()))?
+            .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
         let manager = self
             .ui_service
             .worktrees
             .clone()
             .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
-        let id = session_id.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.accept(&lease)
-        })
-        .await
-        .map_err(|_| RuntimeError::Engine("worktree merge stopped".into()))?
-        .map_err(RuntimeError::Engine)
+        let target = coding_worktree_target(&session).map_err(RuntimeError::Engine)?;
+        manager
+            .accept(&session_id.0, target)
+            .await
+            .map_err(RuntimeError::Engine)
     }
 
     /// Abandon an isolated coding session and remove its worktree.
@@ -3484,6 +3583,16 @@ impl Runtime {
             .await
             .map_err(|error| RuntimeError::Store(error.to_string()))?
             .ok_or_else(|| RuntimeError::Store(format!("unknown session {session_id}")))?;
+        let manager = self
+            .ui_service
+            .worktrees
+            .clone()
+            .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
+        let target = coding_worktree_target(&session).map_err(RuntimeError::Engine)?;
+        manager
+            .discard(&session_id.0, target)
+            .await
+            .map_err(RuntimeError::Engine)?;
         self.engine.detach_session(session_id).await;
         for agent_id in &session.agents {
             if let Some(agent) = self.configured_agents.get(agent_id) {
@@ -3493,20 +3602,7 @@ impl Runtime {
         self.session_store
             .delete(session_id)
             .await
-            .map_err(|error| RuntimeError::Store(error.to_string()))?;
-        let manager = self
-            .ui_service
-            .worktrees
-            .clone()
-            .ok_or_else(|| RuntimeError::Engine("coding worktrees are unavailable".into()))?;
-        let id = session_id.0.clone();
-        tokio::task::spawn_blocking(move || {
-            let lease = manager.open(&id)?;
-            manager.discard(&lease)
-        })
-        .await
-        .map_err(|_| RuntimeError::Engine("worktree discard stopped".into()))?
-        .map_err(RuntimeError::Engine)
+            .map_err(|error| RuntimeError::Store(error.to_string()))
     }
 
     #[cfg(test)]
