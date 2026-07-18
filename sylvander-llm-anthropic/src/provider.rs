@@ -118,5 +118,5 @@ impl Stream for NeutralStream {
 }
 
 #[cfg(test)]
-#[path = "provider_tests.rs"]
+#[path = "../tests/unit/provider.rs"]
 mod tests;
