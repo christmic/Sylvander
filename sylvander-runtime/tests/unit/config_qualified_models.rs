@@ -52,6 +52,16 @@ fn qualified_allowlist_accepts_same_model_id_across_providers() {
 }
 
 #[test]
+fn qualified_allowlist_must_be_explicit_and_non_empty() {
+    let mut config = qualified_config();
+    config.agents[0].spec.model.allowed_models.clear();
+    assert!(
+        validation_text(&config)
+            .contains("allowed Models must be explicitly configured and non-empty")
+    );
+}
+
+#[test]
 fn qualified_allowlist_rejects_unknown_provider() {
     let mut config = qualified_config();
     config.agents[0].spec.model.allowed_models[1].provider_id = "missing".into();

@@ -59,6 +59,7 @@ description = "Coding Agent"
 [agents.spec.model]
 provider = "primary"
 model_name = "model-a"
+allowed_models = [{ provider_id = "primary", model_id = "model-a" }]
 max_tokens = 32000
 
 [agents.agent_workspace]

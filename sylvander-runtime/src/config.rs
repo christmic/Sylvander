@@ -1397,7 +1397,12 @@ fn validate_agent_model_catalog(
             agent.spec.id, agent.spec.model.model_name, agent.spec.model.provider
         ));
     }
-    if !agent.spec.model.allowed_models.is_empty() {
+    if agent.spec.model.allowed_models.is_empty() {
+        errors.push(format!(
+            "Agent {} allowed Models must be explicitly configured and non-empty",
+            agent.spec.id
+        ));
+    } else {
         let default_model = agent.spec.model.model_name.trim();
         let mut allowed = HashSet::new();
         for model in &agent.spec.model.allowed_models {
