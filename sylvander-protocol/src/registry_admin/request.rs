@@ -1,3 +1,9 @@
+//! Version-gated registry inspection and lifecycle mutation requests.
+//!
+//! The request envelope is deliberately strict: unknown fields are rejected,
+//! pagination is bounded, and mutations carry expected active revisions so the
+//! Runtime can detect conflicting administrators.
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -7,8 +13,8 @@ use super::{
 
 pub const DEFAULT_REGISTRY_REVISION_PAGE_SIZE: u16 = 50;
 pub const MAX_REGISTRY_REVISION_PAGE_SIZE: u16 = 100;
-pub const REGISTRY_ADMIN_READ_MIN_UI_PROTOCOL_VERSION: u16 = 2;
-pub const REGISTRY_ADMIN_MUTATION_MIN_UI_PROTOCOL_VERSION: u16 = 3;
+pub const REGISTRY_ADMIN_READ_MIN_UI_PROTOCOL_VERSION: u16 = crate::UI_PROTOCOL_VERSION;
+pub const REGISTRY_ADMIN_MUTATION_MIN_UI_PROTOCOL_VERSION: u16 = crate::UI_PROTOCOL_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -115,7 +121,7 @@ pub enum RegistryAdminRequest {
 }
 
 impl RegistryAdminRequest {
-    /// Old read operations are available in v2; state mutations require v3.
+    /// All registry operations require the single current UI protocol.
     #[must_use]
     pub const fn minimum_ui_protocol_version(&self) -> u16 {
         match self {

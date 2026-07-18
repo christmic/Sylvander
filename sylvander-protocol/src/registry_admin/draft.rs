@@ -1,3 +1,9 @@
+//! Write-only drafts accepted by registry lifecycle mutations.
+//!
+//! These wire types accept declarative provider, model, pricing, and secret
+//! reference metadata. Their custom `Debug` implementations never reveal the
+//! submitted configuration.
+
 use serde::{Deserialize, Serialize};
 
 /// Write-only Provider configuration accepted by lifecycle mutations.

@@ -6,7 +6,9 @@ fn effective_config_json() -> serde_json::Value {
         "agent_id": "agent-1",
         "agent_revision": 3,
         "provider_id": "provider-1",
+        "provider_revision": 7,
         "model_id": "model-1",
+        "model_revision": 11,
         "reasoning_effort": "off",
         "permissions": {
             "file_access": "workspace_write",
@@ -14,6 +16,11 @@ fn effective_config_json() -> serde_json::Value {
             "approval_policy": "allow"
         },
         "system_prompt_sha256": "digest",
+        "prompt_manifest": {
+            "layers": [],
+            "aggregate_sha256": "aggregate",
+            "total_bytes": 0
+        },
         "execution_target": "local",
         "provenance": {
             "model": source.clone(),
@@ -29,21 +36,15 @@ fn effective_config_json() -> serde_json::Value {
 }
 
 #[test]
-fn legacy_effective_config_omits_unresolved_revision_pins() {
-    let config: SessionEffectiveConfig =
-        serde_json::from_value(effective_config_json()).expect("legacy config");
-    assert_eq!(config.provider_revision, None);
-    assert_eq!(config.model_revision, None);
-    assert_eq!(config.prompt_manifest, None);
-    assert_eq!(
-        config.require_revision_pins(),
-        Err(SessionRevisionPinError::MissingProviderRevision)
-    );
-
-    let encoded = serde_json::to_value(config).expect("serialize legacy config");
-    assert!(encoded.get("provider_revision").is_none());
-    assert!(encoded.get("model_revision").is_none());
-    assert!(encoded.get("prompt_manifest").is_none());
+fn effective_config_rejects_missing_revision_pins_and_prompt_manifest() {
+    for field in ["provider_revision", "model_revision", "prompt_manifest"] {
+        let mut json = effective_config_json();
+        json.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<SessionEffectiveConfig>(json).is_err(),
+            "missing {field} must fail closed"
+        );
+    }
 }
 
 #[test]
@@ -74,7 +75,7 @@ fn prompt_manifest_round_trips_in_composition_order() {
     });
 
     let config: SessionEffectiveConfig = serde_json::from_value(json).unwrap();
-    let manifest = config.prompt_manifest.as_ref().unwrap();
+    let manifest = &config.prompt_manifest;
     assert_eq!(manifest.layers[0].kind, PromptLayerKind::SharedSafety);
     assert_eq!(manifest.layers[1].kind, PromptLayerKind::Agent);
     assert_eq!(manifest.layers[2].kind, PromptLayerKind::SessionInput);
@@ -83,7 +84,7 @@ fn prompt_manifest_round_trips_in_composition_order() {
 
     let round_trip: SessionEffectiveConfig =
         serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
-    assert_eq!(round_trip.prompt_manifest.unwrap(), expected_manifest);
+    assert_eq!(round_trip.prompt_manifest, expected_manifest);
 }
 
 #[test]
@@ -143,7 +144,7 @@ fn pinned_effective_config_round_trips_and_validates() {
 }
 
 #[test]
-fn revision_pin_validation_rejects_each_missing_or_zero_value() {
+fn revision_pin_validation_rejects_each_zero_value() {
     let mut json = effective_config_json();
     json["provider_revision"] = serde_json::json!(0);
     json["model_revision"] = serde_json::json!(1);
@@ -154,13 +155,6 @@ fn revision_pin_validation_rejects_each_missing_or_zero_value() {
     );
 
     json["provider_revision"] = serde_json::json!(1);
-    json.as_object_mut().unwrap().remove("model_revision");
-    let config: SessionEffectiveConfig = serde_json::from_value(json.clone()).unwrap();
-    assert_eq!(
-        config.require_revision_pins(),
-        Err(SessionRevisionPinError::MissingModelRevision)
-    );
-
     json["model_revision"] = serde_json::json!(0);
     let config: SessionEffectiveConfig = serde_json::from_value(json).unwrap();
     assert_eq!(
@@ -361,36 +355,26 @@ fn platform_snapshot_round_trip_keeps_status_semantic() {
 }
 
 #[test]
-fn ui_protocol_selects_overlap_and_rejects_incompatible_ranges() {
-    let legacy = UiProtocolHello {
+fn ui_protocol_accepts_only_the_current_revision() {
+    let current = UiProtocolHello {
         client_name: "test".into(),
-        min_version: 1,
-        max_version: 1,
+        min_version: UI_PROTOCOL_VERSION,
+        max_version: UI_PROTOCOL_VERSION,
         capabilities: vec!["diagnostics".into()],
     };
-    assert_eq!(negotiate_ui_protocol(&legacy), Ok(1));
+    assert_eq!(negotiate_ui_protocol(&current), Ok(UI_PROTOCOL_VERSION));
 
-    let version_two = UiProtocolHello {
-        max_version: 2,
-        ..legacy.clone()
-    };
-    assert_eq!(negotiate_ui_protocol(&version_two), Ok(2));
-
-    let current = UiProtocolHello {
-        min_version: 3,
-        max_version: 3,
-        ..legacy.clone()
-    };
-    assert_eq!(negotiate_ui_protocol(&current), Ok(3));
-
-    let incompatible = UiProtocolHello {
-        min_version: 4,
-        max_version: 4,
-        ..legacy
-    };
-    let error = negotiate_ui_protocol(&incompatible).expect_err("must reject");
-    assert_eq!(error.code, "incompatible_protocol");
-    assert_eq!(error.server_max_version, UI_PROTOCOL_MAX_VERSION);
+    for version in [UI_PROTOCOL_VERSION - 1, UI_PROTOCOL_VERSION + 1] {
+        let incompatible = UiProtocolHello {
+            min_version: version,
+            max_version: version,
+            ..current.clone()
+        };
+        let error = negotiate_ui_protocol(&incompatible).expect_err("must reject");
+        assert_eq!(error.code, "incompatible_protocol");
+        assert_eq!(error.server_min_version, UI_PROTOCOL_VERSION);
+        assert_eq!(error.server_max_version, UI_PROTOCOL_VERSION);
+    }
 }
 
 #[test]
@@ -399,14 +383,15 @@ fn session_config_update_contract_preserves_optimistic_revision() {
         session_id: SessionId::new("session-1"),
         expected_revision: 7,
         overrides: SessionConfigOverrides {
-            model_id: Some("model-b".into()),
+            model: Some(model("provider-b", "model-b")),
             reasoning_effort: Some(ReasoningEffort::High),
             ..SessionConfigOverrides::default()
         },
     };
     let json = serde_json::to_value(&request).unwrap();
     assert_eq!(json["expected_revision"], 7);
-    assert_eq!(json["overrides"]["model_id"], "model-b");
+    assert_eq!(json["overrides"]["model"]["provider_id"], "provider-b");
+    assert_eq!(json["overrides"]["model"]["model_id"], "model-b");
     assert_eq!(
         serde_json::from_value::<SessionConfigUpdateRequest>(json).unwrap(),
         request
@@ -441,43 +426,34 @@ fn qualified_model_selection_has_a_stable_schema_and_wire_shape() {
 }
 
 #[test]
-fn public_model_input_resolves_qualified_and_unique_legacy_models() {
+fn current_override_resolves_only_an_exact_qualified_model() {
     let catalog = vec![model("anthropic", "shared"), model("openai", "gpt-5")];
-
+    let current = SessionConfigOverrides {
+        model: Some(model("openai", "gpt-5")),
+        ..SessionConfigOverrides::default()
+    };
     assert_eq!(
-        ModelSelectionInput::Qualified(model("openai", "gpt-5")).resolve(&catalog),
-        Ok(model("openai", "gpt-5"))
+        current.resolve_model_selection(&catalog),
+        Ok(Some(model("openai", "gpt-5")))
     );
-    assert_eq!(
-        ModelSelectionInput::Legacy("shared".into()).resolve(&catalog),
-        Ok(model("anthropic", "shared"))
-    );
+    let missing = SessionConfigOverrides {
+        model: Some(model("missing", "shared")),
+        ..SessionConfigOverrides::default()
+    };
     assert!(matches!(
-        ModelSelectionInput::Qualified(model("missing", "shared")).resolve(&catalog),
+        missing.resolve_model_selection(&catalog),
         Err(ModelSelectionResolutionError::Unavailable { .. })
     ));
 }
 
 #[test]
-fn public_legacy_model_input_fails_closed_when_missing_or_ambiguous() {
-    let catalog = vec![model("anthropic", "shared"), model("openai", "shared")];
-
-    assert!(matches!(
-        ModelSelectionInput::Legacy("missing".into()).resolve(&catalog),
-        Err(ModelSelectionResolutionError::LegacyUnavailable { .. })
-    ));
-    assert_eq!(
-        ModelSelectionInput::Legacy("shared".into()).resolve(&catalog),
-        Err(ModelSelectionResolutionError::LegacyAmbiguous {
-            model_id: "shared".into(),
-            provider_ids: vec!["anthropic".into(), "openai".into()],
-        })
+fn bare_model_id_override_is_rejected_as_an_unknown_field() {
+    assert!(
+        serde_json::from_value::<SessionConfigOverrides>(
+            serde_json::json!({ "model_id": "shared" })
+        )
+        .is_err()
     );
-
-    let schema = serde_json::to_string(&schemars::schema_for!(ModelSelectionInput)).unwrap();
-    assert!(schema.contains("anyOf"));
-    assert!(schema.contains("ModelSelection"));
-    assert!(schema.contains(r#""type":"string""#));
 }
 
 #[test]
@@ -493,51 +469,6 @@ fn current_override_round_trips_a_qualified_model() {
         serde_json::from_value::<SessionConfigOverrides>(json).unwrap(),
         overrides
     );
-}
-
-#[test]
-fn legacy_model_id_migrates_only_on_one_catalog_match() {
-    let overrides: SessionConfigOverrides =
-        serde_json::from_value(serde_json::json!({ "model_id": "sonnet" })).unwrap();
-    let catalog = vec![model("anthropic", "sonnet"), model("openai", "gpt-5")];
-
-    assert_eq!(
-        overrides.resolve_model_selection(&catalog),
-        Ok(Some(model("anthropic", "sonnet")))
-    );
-}
-
-#[test]
-fn legacy_model_id_fails_closed_when_missing_or_ambiguous() {
-    let overrides = SessionConfigOverrides {
-        model_id: Some("shared".into()),
-        ..SessionConfigOverrides::default()
-    };
-    assert_eq!(
-        overrides.resolve_model_selection(&[]),
-        Err(ModelSelectionResolutionError::LegacyUnavailable {
-            model_id: "shared".into()
-        })
-    );
-
-    let catalog = vec![model("provider-a", "shared"), model("provider-b", "shared")];
-    assert_eq!(
-        overrides.resolve_model_selection(&catalog),
-        Err(ModelSelectionResolutionError::LegacyAmbiguous {
-            model_id: "shared".into(),
-            provider_ids: vec!["provider-a".into(), "provider-b".into()]
-        })
-    );
-}
-
-#[test]
-fn override_wire_rejects_qualified_and_legacy_model_together() {
-    let error = serde_json::from_value::<SessionConfigOverrides>(serde_json::json!({
-        "model": { "provider_id": "anthropic", "model_id": "sonnet" },
-        "model_id": "sonnet"
-    }))
-    .unwrap_err();
-    assert!(error.to_string().contains("cannot both be set"));
 }
 
 #[test]

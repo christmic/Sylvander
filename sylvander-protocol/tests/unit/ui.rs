@@ -2,7 +2,7 @@ use super::{UiClientMessage, UiServerMessage};
 use crate::{PermissionProfile, ReasoningEffort};
 
 #[test]
-fn legacy_chat_defaults_remain_compatible() {
+fn minimal_chat_uses_current_optional_defaults() {
     let message: UiClientMessage =
         serde_json::from_str(r#"{"type":"chat","text":"hello"}"#).unwrap();
     assert!(matches!(
@@ -17,25 +17,19 @@ fn legacy_chat_defaults_remain_compatible() {
 }
 
 #[test]
-fn model_selection_accepts_legacy_and_qualified_wire_shapes() {
-    let legacy: UiClientMessage =
-        serde_json::from_str(r#"{"type":"select_model","model":"m","reasoning_effort":"off"}"#)
-            .unwrap();
-    assert!(matches!(
-        legacy,
-        UiClientMessage::SelectModel {
-            session_id: None,
-            model: crate::ModelSelectionInput::Legacy(model),
-            ..
-        } if model == "m"
-    ));
-
+fn model_selection_requires_a_provider_qualified_wire_shape() {
+    assert!(
+        serde_json::from_str::<UiClientMessage>(
+            r#"{"type":"select_model","model":"m","reasoning_effort":"off"}"#
+        )
+        .is_err()
+    );
     let qualified = UiClientMessage::SelectModel {
         session_id: Some("session-1".into()),
-        model: crate::ModelSelectionInput::Qualified(crate::ModelSelection {
+        model: crate::ModelSelection {
             provider_id: "openai".into(),
             model_id: "gpt-5".into(),
-        }),
+        },
         reasoning_effort: ReasoningEffort::High,
     };
     let value = serde_json::to_value(&qualified).unwrap();
@@ -49,29 +43,23 @@ fn model_selection_accepts_legacy_and_qualified_wire_shapes() {
 }
 
 #[test]
-fn runtime_info_adds_qualified_identity_without_breaking_legacy_payloads() {
-    let legacy: UiServerMessage = serde_json::from_value(serde_json::json!({
-        "type": "runtime_info",
-        "model": "shared",
-        "capabilities": 0,
-        "approval_enabled": false,
-        "max_attachment_bytes": 1024
-    }))
-    .unwrap();
-    assert!(matches!(
-        legacy,
-        UiServerMessage::RuntimeInfo {
-            model_selection: None,
-            ..
-        }
-    ));
+fn runtime_info_requires_a_provider_qualified_model() {
+    assert!(
+        serde_json::from_value::<UiServerMessage>(serde_json::json!({
+            "type": "runtime_info",
+            "model": "shared",
+            "capabilities": 0,
+            "approval_enabled": false,
+            "max_attachment_bytes": 1024
+        }))
+        .is_err()
+    );
 
     let qualified = UiServerMessage::RuntimeInfo {
-        model: "shared".into(),
-        model_selection: Some(crate::ModelSelection {
+        model: crate::ModelSelection {
             provider_id: "openai".into(),
             model_id: "shared".into(),
-        }),
+        },
         reasoning_effort: ReasoningEffort::Off,
         models: Vec::new(),
         permissions: PermissionProfile::default(),
@@ -81,17 +69,16 @@ fn runtime_info_adds_qualified_identity_without_breaking_legacy_payloads() {
         platform: crate::PlatformSnapshot::default(),
     };
     let value = serde_json::to_value(qualified).unwrap();
-    assert_eq!(value["model"], "shared");
-    assert_eq!(value["model_selection"]["provider_id"], "openai");
-    assert_eq!(value["model_selection"]["model_id"], "shared");
+    assert_eq!(value["model"]["provider_id"], "openai");
+    assert_eq!(value["model"]["model_id"], "shared");
 }
 
 #[test]
-fn model_selection_schema_exposes_legacy_and_qualified_inputs() {
+fn model_selection_schema_exposes_only_the_qualified_input() {
     let schema = serde_json::to_string(&crate::schema::ui_protocol_schema()).unwrap();
-    assert!(schema.contains("ModelSelectionInput"));
     assert!(schema.contains("ModelSelection"));
-    assert!(schema.contains("model_selection"));
+    assert!(!schema.contains("ModelSelectionInput"));
+    assert!(!schema.contains("model_selection"));
 }
 
 #[test]

@@ -134,7 +134,7 @@ pub enum UiClientMessage {
     SelectModel {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
-        model: crate::ModelSelectionInput,
+        model: crate::ModelSelection,
         reasoning_effort: ReasoningEffort,
     },
     SelectPermissions {
@@ -337,11 +337,7 @@ pub enum UiServerMessage {
         response: Arc<crate::IdentityBindingResponse>,
     },
     RuntimeInfo {
-        /// Legacy model-only identity retained for older clients.
-        model: String,
-        /// Provider-qualified identity used by current clients.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_selection: Option<crate::ModelSelection>,
+        model: crate::ModelSelection,
         #[serde(default)]
         reasoning_effort: ReasoningEffort,
         #[serde(default)]

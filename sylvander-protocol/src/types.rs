@@ -9,8 +9,14 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const UI_PROTOCOL_MIN_VERSION: u16 = 1;
-pub const UI_PROTOCOL_MAX_VERSION: u16 = 3;
+/// The only UI protocol revision accepted by this pre-release build.
+///
+/// Sylvander intentionally ships one latest schema before its first stable
+/// release. Older or newer revisions fail negotiation instead of entering a
+/// compatibility path.
+pub const UI_PROTOCOL_VERSION: u16 = 4;
+pub const UI_PROTOCOL_MIN_VERSION: u16 = UI_PROTOCOL_VERSION;
+pub const UI_PROTOCOL_MAX_VERSION: u16 = UI_PROTOCOL_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolHello {
@@ -84,7 +90,7 @@ impl ReasoningEffort {
 pub struct ModelDescriptor {
     pub id: String,
     pub provider: String,
-    /// Legacy bitset retained for wire compatibility with UI protocol v1-v3.
+    /// Compact capability bitset used by terminal clients.
     pub capabilities: u8,
     /// Provider-neutral, canonical capabilities for current clients.
     #[serde(default)]
@@ -133,84 +139,12 @@ pub struct ModelSelection {
     pub model_id: String,
 }
 
-/// Backward-compatible model selection accepted by public UI requests.
-///
-/// Current clients send a provider-qualified object. Legacy clients may keep
-/// sending a bare model id, which the server must resolve against the visible
-/// catalog before it mutates session configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(untagged)]
-pub enum ModelSelectionInput {
-    Qualified(ModelSelection),
-    Legacy(String),
-}
-
-impl From<String> for ModelSelectionInput {
-    fn from(model_id: String) -> Self {
-        Self::Legacy(model_id)
-    }
-}
-
-impl From<&str> for ModelSelectionInput {
-    fn from(model_id: &str) -> Self {
-        Self::Legacy(model_id.to_owned())
-    }
-}
-
-impl ModelSelectionInput {
-    /// Resolve one public input without guessing when a legacy id is absent
-    /// or shared by more than one provider.
-    pub fn resolve(
-        &self,
-        catalog: &[ModelSelection],
-    ) -> Result<ModelSelection, ModelSelectionResolutionError> {
-        match self {
-            Self::Qualified(selection) => catalog
-                .iter()
-                .find(|candidate| *candidate == selection)
-                .cloned()
-                .ok_or_else(|| ModelSelectionResolutionError::Unavailable {
-                    provider_id: selection.provider_id.clone(),
-                    model_id: selection.model_id.clone(),
-                }),
-            Self::Legacy(model_id) => {
-                let matches = catalog
-                    .iter()
-                    .filter(|candidate| candidate.model_id == *model_id)
-                    .collect::<Vec<_>>();
-                match matches.as_slice() {
-                    [] => Err(ModelSelectionResolutionError::LegacyUnavailable {
-                        model_id: model_id.clone(),
-                    }),
-                    [selection] => Ok((*selection).clone()),
-                    _ => Err(ModelSelectionResolutionError::LegacyAmbiguous {
-                        model_id: model_id.clone(),
-                        provider_ids: matches
-                            .iter()
-                            .map(|selection| selection.provider_id.clone())
-                            .collect(),
-                    }),
-                }
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModelSelectionResolutionError {
-    #[error("model and legacy model_id cannot both be set")]
-    ConflictingOverrides,
     #[error("model selection `{provider_id}/{model_id}` is unavailable")]
     Unavailable {
         provider_id: String,
         model_id: String,
-    },
-    #[error("legacy model id `{model_id}` is unavailable")]
-    LegacyUnavailable { model_id: String },
-    #[error("legacy model id `{model_id}` is ambiguous across providers: {provider_ids:?}")]
-    LegacyAmbiguous {
-        model_id: String,
-        provider_ids: Vec<String>,
     },
 }
 
@@ -676,7 +610,6 @@ pub enum SessionConfigSourceKind {
     ChannelDefault,
     SessionOverride,
     RequestOverride,
-    LegacyMigration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -690,15 +623,10 @@ pub struct SessionConfigSource {
 /// the Agent and channel definitions instead of copying their current values.
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[serde(try_from = "SessionConfigOverridesWire")]
 pub struct SessionConfigOverrides {
-    /// Provider-qualified model selection used by current clients.
+    /// Provider-qualified model selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSelection>,
-    /// Legacy model-only selection accepted solely for catalog-aware
-    /// migration. New clients must write `model` instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -718,7 +646,6 @@ impl std::fmt::Debug for SessionConfigOverrides {
         formatter
             .debug_struct("SessionConfigOverrides")
             .field("model", &self.model)
-            .field("model_id", &self.model_id)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("permissions", &self.permissions)
             .field("prompt_profile", &self.prompt_profile)
@@ -740,8 +667,6 @@ pub struct RedactedSessionConfigOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permissions: Option<PermissionProfile>,
@@ -757,7 +682,6 @@ impl From<&SessionConfigOverrides> for RedactedSessionConfigOverrides {
     fn from(value: &SessionConfigOverrides) -> Self {
         Self {
             model: value.model.clone(),
-            model_id: value.model_id.clone(),
             reasoning_effort: value.reasoning_effort,
             permissions: value.permissions.clone(),
             prompt_profile: value.prompt_profile.clone(),
@@ -777,61 +701,14 @@ where
     RedactedSessionConfigOverrides::from(value).serialize(serializer)
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(rename = "SessionConfigOverrides")]
-struct SessionConfigOverridesWire {
-    /// Provider-qualified model selection used by current clients.
-    #[serde(default)]
-    model: Option<ModelSelection>,
-    /// Legacy model-only selection accepted for catalog-aware migration.
-    #[serde(default)]
-    model_id: Option<String>,
-    #[serde(default)]
-    reasoning_effort: Option<ReasoningEffort>,
-    #[serde(default)]
-    permissions: Option<PermissionProfile>,
-    #[serde(default)]
-    prompt_profile: Option<String>,
-    #[serde(default)]
-    system_prompt: Option<String>,
-    #[serde(default)]
-    user_workspace: Option<SessionWorkspaceBinding>,
-    #[serde(default)]
-    execution_target: Option<String>,
-}
-
-impl TryFrom<SessionConfigOverridesWire> for SessionConfigOverrides {
-    type Error = ModelSelectionResolutionError;
-
-    fn try_from(wire: SessionConfigOverridesWire) -> Result<Self, Self::Error> {
-        if wire.model.is_some() && wire.model_id.is_some() {
-            return Err(ModelSelectionResolutionError::ConflictingOverrides);
-        }
-        Ok(Self {
-            model: wire.model,
-            model_id: wire.model_id,
-            reasoning_effort: wire.reasoning_effort,
-            permissions: wire.permissions,
-            prompt_profile: wire.prompt_profile,
-            system_prompt: wire.system_prompt,
-            user_workspace: wire.user_workspace,
-            execution_target: wire.execution_target,
-        })
-    }
-}
-
 impl SessionConfigOverrides {
-    /// Resolve a provider-qualified selection from a current or legacy
-    /// override. A legacy id migrates only when it uniquely identifies one
-    /// catalog entry; missing and ambiguous ids fail closed.
+    /// Resolve the provider-qualified override against the visible catalog.
     pub fn resolve_model_selection(
         &self,
         catalog: &[ModelSelection],
     ) -> Result<Option<ModelSelection>, ModelSelectionResolutionError> {
-        match (&self.model, &self.model_id) {
-            (Some(_), Some(_)) => Err(ModelSelectionResolutionError::ConflictingOverrides),
-            (Some(selection), None) => {
+        match &self.model {
+            Some(selection) => {
                 let matches = catalog
                     .iter()
                     .filter(|candidate| *candidate == selection)
@@ -845,10 +722,7 @@ impl SessionConfigOverrides {
                     })
                 }
             }
-            (None, Some(legacy_model_id)) => ModelSelectionInput::Legacy(legacy_model_id.clone())
-                .resolve(catalog)
-                .map(Some),
-            (None, None) => Ok(None),
+            None => Ok(None),
         }
     }
 }
@@ -905,16 +779,10 @@ pub struct PromptManifest {
     pub total_bytes: u64,
 }
 
-/// A legacy effective configuration can be decoded without revision pins, but
-/// it cannot execute until the runtime resolves and persists both revisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SessionRevisionPinError {
-    #[error("session Provider revision is missing")]
-    MissingProviderRevision,
     #[error("session Provider revision must be greater than zero")]
     ZeroProviderRevision,
-    #[error("session Model revision is missing")]
-    MissingModelRevision,
     #[error("session Model revision must be greater than zero")]
     ZeroModelRevision,
 }
@@ -927,25 +795,19 @@ pub struct SessionEffectiveConfig {
     pub agent_id: AgentId,
     pub agent_revision: u64,
     pub provider_id: String,
-    /// Immutable Provider registry revision. `None` is accepted only while
-    /// loading a legacy session that still requires migration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_revision: Option<u64>,
+    /// Immutable Provider registry revision.
+    pub provider_revision: u64,
     pub model_id: String,
-    /// Immutable Model registry revision. `None` is accepted only while
-    /// loading a legacy session that still requires migration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_revision: Option<u64>,
+    /// Immutable Model registry revision.
+    pub model_revision: u64,
     pub reasoning_effort: ReasoningEffort,
     pub permissions: PermissionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_profile: Option<String>,
     /// Digest of the resolved prompt, never the prompt or credentials.
     pub system_prompt_sha256: String,
-    /// Optional for backward compatibility with sessions created before
-    /// prompt-layer provenance was recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_manifest: Option<PromptManifest>,
+    /// Ordered, content-free provenance for the exact composed prompt.
+    pub prompt_manifest: PromptManifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_workspace: Option<SessionWorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -967,24 +829,18 @@ impl SessionEffectiveConfig {
         }
     }
 
-    /// Return execution-safe revision pins, rejecting unresolved legacy data
-    /// and the reserved zero revision.
+    /// Return execution-safe revision pins, rejecting the reserved zero
+    /// revision.
     pub fn require_revision_pins(&self) -> Result<SessionRevisionPins, SessionRevisionPinError> {
-        let provider_revision = self
-            .provider_revision
-            .ok_or(SessionRevisionPinError::MissingProviderRevision)?;
-        if provider_revision == 0 {
+        if self.provider_revision == 0 {
             return Err(SessionRevisionPinError::ZeroProviderRevision);
         }
-        let model_revision = self
-            .model_revision
-            .ok_or(SessionRevisionPinError::MissingModelRevision)?;
-        if model_revision == 0 {
+        if self.model_revision == 0 {
             return Err(SessionRevisionPinError::ZeroModelRevision);
         }
         Ok(SessionRevisionPins {
-            provider_revision,
-            model_revision,
+            provider_revision: self.provider_revision,
+            model_revision: self.model_revision,
         })
     }
 }

@@ -1,10 +1,16 @@
 use super::*;
 
 #[test]
-fn generated_v3_schema_keeps_legacy_and_current_operations_visible() {
+fn generated_schema_exposes_the_current_protocol_contract() {
     let schema = ui_protocol_schema();
-    assert_eq!(schema["protocol"]["min_version"], 1);
-    assert_eq!(schema["protocol"]["max_version"], 3);
+    assert_eq!(
+        schema["protocol"]["min_version"],
+        crate::UI_PROTOCOL_VERSION
+    );
+    assert_eq!(
+        schema["protocol"]["max_version"],
+        crate::UI_PROTOCOL_VERSION
+    );
     let encoded = serde_json::to_string(&schema).unwrap();
     for operation in [
         "chat",

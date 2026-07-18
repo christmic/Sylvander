@@ -145,23 +145,40 @@ Each generated schema is also available programmatically through
 registry_admin_protocol_schema, identity_binding_protocol_schema,
 user_profile_protocol_schema}`.
 
-## 6. Tests
+## 6. Extension rules
+
+- Add a wire field only when every current producer and consumer can be changed
+  in the same bounded change. Do not add a fallback decoder for an unspecified
+  historical shape.
+- Administrative mutations require a typed request, typed response, JSON
+  Schema coverage, and an explicit minimum negotiated UI protocol version.
+- Model selection is always the exact `(provider_id, model_id)` pair. Durable
+  effective configuration requires its optimistic revision, immutable
+  Agent/Provider/Model pins, and prompt manifest; missing or historical
+  alternatives fail closed instead of being inferred.
+- Identity and authorization values must originate at a trusted ingress.
+  Client-provided display names, workspace paths, and Agent identifiers are
+  requests, never proof of authority.
+- New cross-language data belongs in a serde/JsonSchema module. Rust-only
+  runtime helpers stay outside generated wire schemas.
+
+## 7. Tests
 
 | Submodule | Test file | Coverage |
 |-----------|-----------|----------|
-| `types` | `sylvander-protocol/tests/unit/types.rs` | Round-trip, revision pins, prompt manifest, legacy compatibility, model selection resolution |
+| `types` | `sylvander-protocol/tests/unit/types.rs` | Round-trip, revision pins, prompt manifest, current negotiated shapes, model selection resolution |
 | `boundary` | `sylvander-protocol/tests/unit/boundary.rs` | Credentials never appear in serialized context, `AuthenticationFailure` is content-free |
 | `identity_binding` | `sylvander-protocol/tests/unit/identity_binding.rs` | Secret validation, serialization redaction, one-time-secret exhaustion |
 | `user_profile` | `sylvander-protocol/tests/unit/user_profile.rs` | Privacy classifications, constraint count limit, owner-free envelopes |
 | `bus_trait` | exercised by `in_process/tests` | filter matching semantics |
 | `in_process` | `sylvander-protocol/tests/unit/in_process.rs` | publish/subscribe, filter, backpressure rejection, concurrent publisher burst |
 | `session_context` | `sylvander-protocol/tests/unit/session_context.rs` | builder methods, attribute bag, system sentinel |
-| `schema` | `sylvander-protocol/tests/unit/schema.rs` | UI v3 schema exposes legacy + current operations, secrets redacted |
+| `schema` | `sylvander-protocol/tests/unit/schema.rs` | Current UI schema surface and content-safe secret handling |
 | `ui` | `sylvander-protocol/tests/unit/ui.rs` | strict-shape parsing, registry/user-profile/identity-binding envelopes |
 | `agent_admin` | `sylvander-protocol/tests/unit/agent_admin.rs` | conflict errors, allowed_models round-trip, prompt redaction |
 | `registry_admin` | `sylvander-protocol/tests/unit/registry_admin.rs` | generation reads, credential redaction |
 
-## 7. Related docs
+## 8. Related docs
 
 - [`docs/boundary-authorization.md`](boundary-authorization.md) — boundary contract, authentication methods, denial codes.
 - [`docs/identity-binding-protocol.md`](identity-binding-protocol.md) — identity link challenges, one-time secrets.
