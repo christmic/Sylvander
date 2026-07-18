@@ -1013,6 +1013,13 @@ async fn approval_timeout_rejects_and_clears_the_pending_request() {
         bus,
         agent_id: AgentId::new("agent"),
         session_id: SessionId::new("session"),
+        grant_context: ApprovalGrantContext::new(
+            "user",
+            AgentId::new("agent"),
+            format!("sha256:{}", "1".repeat(64)),
+            format!("sha256:{}", "2".repeat(64)),
+        ),
+        persistent_identity_authorized: true,
         pending_approvals: pending.clone(),
         approval_memory: Arc::new(Mutex::new(ApprovalMemory::load(None).unwrap())),
     });
@@ -1653,11 +1660,23 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
         (&session_a, approval_a_tx, answer_a_tx, plan_a_tx),
         (&session_b, approval_b_tx, answer_b_tx, plan_b_tx),
     ] {
+        let grant = ApprovalGrantContext::new(
+            "user",
+            AgentId::new("agent"),
+            format!("sha256:{}", "1".repeat(64)),
+            format!("sha256:{}", "2".repeat(64)),
+        )
+        .key_for(&ToolUseRequest {
+            call_id: "shared-id".into(),
+            tool_name: "write".into(),
+            input: serde_json::json!({"path": "shared"}),
+        });
         run.inner.pending_approvals.lock().await.insert(
             (session.clone(), "shared-id".into()),
             PendingApproval {
                 session_id: session.clone(),
-                fingerprint: "shared-fingerprint".into(),
+                grant,
+                persistent_identity_authorized: true,
                 allowed_scopes: vec![sylvander_protocol::ApprovalScope::Once],
                 sender: approval,
             },
@@ -2127,63 +2146,6 @@ async fn join_and_leave_session() {
     assert_eq!(run.list_sessions().await.len(), 1);
     run.leave_session(&sid).await;
     assert!(run.list_sessions().await.is_empty());
-}
-
-#[tokio::test]
-async fn approval_memory_is_session_isolated_and_persistent_only_with_a_store() {
-    let directory = tempfile::tempdir().expect("tempdir");
-    let path = directory.path().join("approvals.json");
-    let first = SessionId::new("session-1");
-    let second = SessionId::new("session-2");
-    let fingerprint = "write:{\"file_path\":\"a.rs\"}".to_string();
-
-    let mut memory = ApprovalMemory::load(Some(path.clone())).expect("load");
-    assert_eq!(
-        memory.allowed_scopes(),
-        vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
-            sylvander_protocol::ApprovalScope::Persistent,
-        ]
-    );
-    memory
-        .remember(
-            &first,
-            fingerprint.clone(),
-            sylvander_protocol::ApprovalScope::Session,
-        )
-        .await
-        .expect("session grant");
-    assert!(memory.contains(&first, &fingerprint));
-    assert!(!memory.contains(&second, &fingerprint));
-
-    let durable = "read:{\"file_path\":\"README.md\"}".to_string();
-    memory
-        .remember(
-            &first,
-            durable.clone(),
-            sylvander_protocol::ApprovalScope::Persistent,
-        )
-        .await
-        .expect("persistent grant");
-    let reloaded = ApprovalMemory::load(Some(path)).expect("reload");
-    assert!(reloaded.contains(&second, &durable));
-    assert!(!reloaded.contains(&first, &fingerprint));
-}
-
-#[test]
-fn approval_fingerprint_is_stable_across_json_key_order() {
-    let first = ToolUseRequest {
-        call_id: "a".into(),
-        tool_name: "write".into(),
-        input: serde_json::json!({"content": "x", "file_path": "a.rs"}),
-    };
-    let second = ToolUseRequest {
-        call_id: "b".into(),
-        tool_name: "write".into(),
-        input: serde_json::json!({"file_path": "a.rs", "content": "x"}),
-    };
-    assert_eq!(approval_fingerprint(&first), approval_fingerprint(&second));
 }
 
 #[tokio::test]

@@ -77,6 +77,8 @@ and this index in the same change.
   MCP runtime lifecycle, health, reconnection contract.
 - [sylvander-agent/docs/skills.md](../sylvander-agent/docs/skills.md) —
   Skill package discovery, precedence, isolation, and the per-turn budget.
+- [sylvander-agent/docs/approval.md](../sylvander-agent/docs/approval.md) —
+  persistent approval identity, invalidation, and store operations.
 - [sylvander-channel/docs/ARCHITECTURE.md](../sylvander-channel/docs/ARCHITECTURE.md) —
   transport-neutral ingress, channel ownership, and adapter rules.
 - [sylvander-llm-anthropic/docs/ARCHITECTURE.md](../sylvander-llm-anthropic/docs/ARCHITECTURE.md) —

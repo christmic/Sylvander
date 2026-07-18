@@ -22,7 +22,7 @@ instead of mid-flight.
 | `DINGTALK_APP_KEY`   | —                             | DingTalk channel only enabled when *both* this and `DINGTALK_APP_SECRET` are set. |
 | `DINGTALK_APP_SECRET`| —                             | (ditto)                                         |
 | `SYLVANDER_APPROVAL` | unset                         | Set to any value to enable tool approval gate.  |
-| `SYLVANDER_APPROVAL_STORE` | unset | JSON file used for durable exact-request approvals. Persistent scope is unavailable unless this is set; requires `SYLVANDER_APPROVAL`. |
+| `SYLVANDER_APPROVAL_STORE` | unset | Current-schema JSON store for durable six-dimensional approval grants. Persistent scope additionally requires a Runtime-authenticated stable identity and `SYLVANDER_APPROVAL`; malformed, legacy, or unknown schemas fail startup. |
 | `SYLVANDER_MODELS` | primary model only | Comma-separated model ids exposed to `/model`; `SYLVANDER_MODEL` is inserted if omitted. |
 | `SYLVANDER_REASONING_MODELS` | empty | Comma-separated subset of model ids that support low/medium/high reasoning. Other models advertise `off` only. |
 | `SYLVANDER_DEPRECATED_MODELS` | empty | Comma-separated `model` or `model=replacement` entries. The lifecycle is advertised to clients; deprecated models remain selectable for old sessions. |

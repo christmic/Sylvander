@@ -77,6 +77,7 @@
 
 /// Approval request persistence, policy evaluation, and user decisions.
 pub mod approval;
+mod approval_store;
 /// One-shot AskUser prompt/answer gate for an Agent run.
 pub mod ask_user_gate;
 /// In-process message bus, stream events, and subscription filtering.

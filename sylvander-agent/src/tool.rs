@@ -13,6 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use sylvander_llm_anthropic::api::types::InputSchema;
@@ -223,13 +224,18 @@ impl ToolRegistry {
         self
     }
 
-    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+    fn unhooked_snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
         let mut tools = self.tools.clone();
         for source in &self.dynamic_sources {
             for tool in source.snapshot() {
                 tools.insert(tool.name().to_string(), tool);
             }
         }
+        tools
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+        let mut tools = self.unhooked_snapshot();
         if !self.hooks.is_empty() {
             tools = tools
                 .into_iter()
@@ -275,6 +281,36 @@ impl ToolRegistry {
                 }),
         );
         features
+    }
+
+    /// Return the content-addressed revision of the executable tool surface.
+    ///
+    /// The revision covers the current dynamic snapshot, schemas,
+    /// descriptions, and before-tool hooks. Persistent approvals bind to this
+    /// value so a catalog or hook change cannot reuse an older grant.
+    #[must_use]
+    pub fn capability_revision(&self) -> String {
+        let definitions = build_definitions(self);
+        let revision = serde_json::json!({
+            "definitions": definitions,
+            "hooks": self.hooks,
+        });
+        let mut hasher = Sha256::new();
+        hasher.update(b"sylvander.tool.capability.v1\0");
+        hasher.update(serde_json::to_vec(&revision).unwrap_or_default());
+        format!("sha256:{:x}", hasher.finalize())
+    }
+
+    /// Freeze dynamic sources once for an immutable turn and return the exact
+    /// revision to which approval grants must bind.
+    pub(crate) fn freeze_with_revision(&self) -> (Self, String) {
+        let frozen = Self {
+            tools: self.unhooked_snapshot(),
+            dynamic_sources: Vec::new(),
+            hooks: self.hooks.clone(),
+        };
+        let revision = frozen.capability_revision();
+        (frozen, revision)
     }
 
     /// Number of registered tools.
