@@ -93,7 +93,7 @@ completed backend feature.
 - [x] Approval supports once/session/persistent exact-request decisions where policy permits.
 - [x] `/context` reports provider-confirmed window use, cache use, and structural contributing sources.
 - [x] `/compact` and automatic compaction expose progress, failure, and resulting summary.
-- [x] Cost, rate limit, retry, and model migration states are visible.
+- [x] Cost, rate limit, retry, and model deprecation/replacement states are visible.
 - [x] Checkpoint, rewind, rollback, and undo have explicit safety boundaries.
 
 ### Core commands
@@ -151,7 +151,9 @@ completed backend feature.
       activity, selection, and management tests pass in Xcode.
 - [x] The current supported-terminal scope does not claim native tmux
       integration. PTY reflow is verified for tmux's `screen-256color` surface;
-      real-process verification moves into a future tmux integration track.
+      no native tmux executable was available for the current evidence. A
+      deployment that relies on a real tmux process must supply it and pass the
+      opt-in acceptance journey before advertising that integration.
 - [x] OpenSSH workspace execution remains server-owned and location-transparent
       to the TUI. The client does not advertise a native interactive SSH
       terminal; configured SSH workspaces use the ordinary session and tool UI.
