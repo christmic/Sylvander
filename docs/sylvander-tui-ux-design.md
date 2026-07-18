@@ -42,7 +42,7 @@ surfaces rather than in novel conversation chrome.
 | Claude Code | Quiet prose, natural-language decisions, uninterrupted terminal rhythm | Stronger authored identity and clearer semantic state |
 | Codex | Legible live work, concise approval choices, settled decision history | Remove gray/card-like Composer chrome and keep the canvas immersive |
 | Kimi Code | Tool-specific previews, inline feedback, structured multi-question flow | Reduce persistent density and keep ordinary work visually quiet |
-| Sylvander existing TUI | Seed-Crab Welcome, pure-black canvas, left-anchored transcript, full-width Composer | Replace generic centered popups with native terminal surfaces |
+| Sylvander existing TUI | Seed-Crab Welcome, default pure-black canvas, left-anchored transcript, full-width Composer | Replace generic centered popups with native terminal surfaces |
 
 The result must retain Claude's low-friction reading rhythm, feel calmer than
 Kimi, warmer than Codex, and remain internally consistent with Sylvander's own
@@ -52,7 +52,9 @@ Welcome and semantic state.
 
 ### 2.1 Canvas
 
-- Background is pure black `#000000`.
+- The default `sylvander` theme background is pure black `#000000`. A selected
+  built-in theme may replace it with that theme's validated semantic canvas;
+  layout and hierarchy do not depend on the literal color.
 - There is no gray transcript panel, message card, or permanent outer frame.
 - Warm ivory `#ECE7DE` is primary text.
 - Gray is reserved for metadata, hints, rules, and inactive state.
@@ -238,7 +240,7 @@ shape.
 - Maximum visible draft height is eight rows; further content scrolls internally.
 - Continuation rows align with text after the prompt.
 - Enter sends; Shift+Enter inserts a newline.
-- While the Composer owns focus, the hardware cursor is visible after the `> `
+- While the Composer owns focus, the hardware cursor is visible after the `❯ `
   prompt even when the draft is empty.
 - The hardware cursor follows the logical cursor after `❯ ` by terminal-cell
   width and never
@@ -404,7 +406,8 @@ A change is acceptable only when all are true:
 5. The Agent presence mark occurs once per turn.
 6. Streaming and settled output keep the same geometry.
 7. 70-column layout uses the same Welcome character above metadata.
-8. Pure black remains visible in unused space.
+8. The selected theme's semantic canvas remains visible in unused space; the
+   default `sylvander` acceptance capture uses pure black.
 9. Approval follows the visible Composer, leaves the transcript readable, keeps
    status bottommost, and exposes exactly one apparent focus.
 10. AskUser, plan acceptance, and rollback confirmation share Decision Dock

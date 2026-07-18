@@ -139,7 +139,8 @@ Used only for first-run onboarding, an empty workspace, and selected brand mater
 
 ### 6.2 Product mark
 
-Used for app icon, session entry, Ghostty sidebar header, and loading surface.
+Used for app icon, session entry, Ghostty native session-rail header, and
+loading surface.
 
 - Target size: 16–48 px.
 - Uses the canonical silhouette with at most one internal aperture.
@@ -229,9 +230,10 @@ The terminal rendition deliberately simplifies the approved seed-crab while pres
 
 ### Ghostty multi-session workspace
 
-- The left sidebar uses the presence glyph in the Sylvander header and active-session row.
+- The native left session rail uses the presence glyph in the Sylvander header
+  and active-session row.
 - Waiting, running, approval, error, and complete states use separate symbols and labels.
-- The hero character never occupies the sidebar.
+- The hero character never occupies the session rail.
 - Multiple sessions do not create multiple animated faces; only the focused session may animate.
 
 ## 11. Reference synthesis
