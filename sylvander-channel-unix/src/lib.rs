@@ -6,6 +6,7 @@
 //!
 //! ## Client → Server
 //! ```json
+//! {"type":"hello","protocol":{"client_name":"example","min_version":4,"max_version":4,"capabilities":[]}}
 //! {"type":"chat","text":"hello"}
 //! {"type":"chat","text":"hi","session_id":"abc"}
 //! {"type":"approve","call_id":"toolu_001","approved":true}
@@ -76,6 +77,7 @@ struct RelayHub {
 // Channel
 // ===========================================================================
 
+/// Owner-authenticated line-delimited JSON server over a Unix-domain socket.
 pub struct UnixChannel {
     socket_path: PathBuf,
     instance_id: String,
@@ -84,16 +86,26 @@ pub struct UnixChannel {
     max_request_bytes: usize,
 }
 
+/// Current Runtime truth advertised to a negotiated local UI client.
 #[derive(Clone)]
 pub struct RuntimeInfo {
-    pub model: String,
+    /// Provider-qualified effective default model.
+    pub model: sylvander_protocol::ModelSelection,
+    /// Effective default reasoning effort.
     pub reasoning_effort: sylvander_protocol::ReasoningEffort,
+    /// Models the selected Agent currently permits.
     pub models: Vec<sylvander_protocol::ModelDescriptor>,
+    /// Effective permission profile.
     pub permissions: sylvander_protocol::PermissionProfile,
+    /// Compact capability bitset carried by the current UI protocol.
     pub capabilities: u8,
+    /// Whether the selected Agent can issue approval requests.
     pub approval_enabled: bool,
+    /// Maximum encoded attachment size accepted from a client.
     pub max_attachment_bytes: usize,
+    /// Initial MCP, Skill, and memory platform snapshot.
     pub platform: sylvander_protocol::PlatformSnapshot,
+    /// Optional callback used to refresh platform truth per request.
     pub platform_provider:
         Option<Arc<dyn Fn() -> sylvander_protocol::PlatformSnapshot + Send + Sync>>,
 }
@@ -107,13 +119,17 @@ impl RuntimeInfo {
 }
 
 impl UnixChannel {
+    /// Construct a local adapter for `agent_id` at `socket_path`.
     pub fn new(socket_path: impl Into<PathBuf>, agent_id: impl Into<AgentId>) -> Self {
         Self {
             socket_path: socket_path.into(),
             instance_id: "unix".into(),
             agent_id: agent_id.into(),
             runtime: RuntimeInfo {
-                model: "unknown".into(),
+                model: sylvander_protocol::ModelSelection {
+                    provider_id: "unknown".into(),
+                    model_id: "unknown".into(),
+                },
                 reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
                 models: Vec::new(),
                 permissions: sylvander_protocol::PermissionProfile::default(),
@@ -127,16 +143,21 @@ impl UnixChannel {
         }
     }
 
+    /// Bind the socket to a stable configured channel instance.
+    #[must_use]
     pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
         self.instance_id = instance_id.into();
         self
     }
 
+    /// Supply the Runtime-owned information advertised after negotiation.
+    #[must_use]
     pub fn with_runtime_info(mut self, runtime: RuntimeInfo) -> Self {
         self.runtime = runtime;
         self
     }
 
+    /// Bound each line-delimited client frame before JSON parsing.
     #[must_use]
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
         self.max_request_bytes = max_request_bytes;
@@ -305,7 +326,7 @@ impl Channel for UnixChannel {
                                     protocol: sylvander_protocol::UiProtocolWelcome {
                                         server_name: "sylvander-server".into(),
                                         version,
-                                        capabilities: ui_protocol_capabilities(version),
+                                        capabilities: ui_protocol_capabilities(),
                                     },
                                 });
                             }
@@ -356,28 +377,27 @@ impl Channel for UnixChannel {
     }
 }
 
-fn ui_protocol_capabilities(version: u16) -> Vec<String> {
+fn ui_protocol_capabilities() -> Vec<String> {
     [
-        ("agent_administration", 2),
-        ("attachments", 1),
-        ("approval_scopes", 1),
-        ("compaction", 1),
-        ("credential_registry_lifecycle", 3),
-        ("diagnostics", 1),
-        (sylvander_protocol::IDENTITY_BINDING_CAPABILITY, 1),
-        ("model_selection", 1),
-        ("plans", 1),
-        ("provider_model_registry_lifecycle", 3),
-        ("registry_administration", 2),
-        ("session_replay", 1),
-        ("sessions", 1),
-        ("tasks", 1),
-        (sylvander_protocol::USER_PROFILE_CAPABILITY, 1),
-        ("workspace_rollback", 1),
+        "agent_administration",
+        "attachments",
+        "approval_scopes",
+        "compaction",
+        "credential_registry_lifecycle",
+        "diagnostics",
+        sylvander_protocol::IDENTITY_BINDING_CAPABILITY,
+        "model_selection",
+        "plans",
+        "provider_model_registry_lifecycle",
+        "registry_administration",
+        "session_replay",
+        "sessions",
+        "tasks",
+        sylvander_protocol::USER_PROFILE_CAPABILITY,
+        "workspace_rollback",
     ]
     .into_iter()
-    .filter(|(_, minimum)| version >= *minimum)
-    .map(|(capability, _)| capability.to_owned())
+    .map(str::to_owned)
     .collect()
 }
 
@@ -1185,7 +1205,17 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
         }
         ClientMsg::DeleteSession { session_id } => {
             let session_id = SessionId::new(session_id);
-            match ctx.sessions.delete(&session_id).await {
+            let result = if let Some(ui) = &ctx.ui {
+                ui.delete_session(boundary, &session_id)
+                    .await
+                    .map_err(|error| error.message)
+            } else {
+                ctx.sessions
+                    .delete(&session_id)
+                    .await
+                    .map_err(|error| error.to_string())
+            };
+            match result {
                 Ok(()) => {
                     let _ = tx.send(ServerMsg::SessionDeleted {
                         session_id: session_id.0,
@@ -1193,7 +1223,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
                 Err(error) => {
                     warn!(%error, "unix: failed to permanently delete session");
-                    operation_error(tx, "delete_session", error.to_string());
+                    operation_error(tx, "delete_session", error.clone());
                 }
             }
         }
@@ -1329,12 +1359,13 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             let capabilities = runtime
                 .models
                 .iter()
-                .find(|model| model.id == runtime.model)
+                .find(|model| {
+                    model.id == runtime.model.model_id
+                        && model.provider == runtime.model.provider_id
+                })
                 .map_or(runtime.capabilities, |model| model.capabilities);
-            let model_selection = unique_model_selection(&runtime.models, &runtime.model);
             let _ = tx.send(ServerMsg::RuntimeInfo {
                 model: runtime.model.clone(),
-                model_selection,
                 reasoning_effort: runtime.reasoning_effort,
                 models: runtime.models.clone(),
                 permissions: runtime.permissions.clone(),
@@ -1554,15 +1585,18 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 }
             };
             let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
-            let selection = match model.resolve(&catalog) {
-                Ok(selection) => selection,
-                Err(error) => {
-                    operation_error(tx, "select_model", error.to_string());
-                    return;
-                }
-            };
-            overrides.model = Some(selection);
-            overrides.model_id = None;
+            if !catalog.contains(&model) {
+                operation_error(
+                    tx,
+                    "select_model",
+                    format!(
+                        "model selection `{}/{}` is unavailable",
+                        model.provider_id, model.model_id
+                    ),
+                );
+                return;
+            }
+            overrides.model = Some(model);
             overrides.reasoning_effort = Some(reasoning_effort);
             match ui
                 .update_session_config(
@@ -1625,21 +1659,6 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
     }
 }
 
-fn unique_model_selection(
-    models: &[sylvander_protocol::ModelDescriptor],
-    model_id: &str,
-) -> Option<sylvander_protocol::ModelSelection> {
-    let mut matches = models.iter().filter(|model| model.id == model_id);
-    let model = matches.next()?;
-    matches
-        .next()
-        .is_none()
-        .then(|| sylvander_protocol::ModelSelection {
-            provider_id: model.provider.clone(),
-            model_id: model.id.clone(),
-        })
-}
-
 fn send_session_runtime_info(
     tx: &mpsc::UnboundedSender<ServerMsg>,
     runtime: &RuntimeInfo,
@@ -1651,8 +1670,7 @@ fn send_session_runtime_info(
         .find(|entry| entry.id == effective.model_id && entry.provider == effective.provider_id)
         .map_or(0, |entry| entry.capabilities);
     let _ = tx.send(ServerMsg::RuntimeInfo {
-        model: effective.model_id.clone(),
-        model_selection: Some(effective.model_selection()),
+        model: effective.model_selection(),
         reasoning_effort: effective.reasoning_effort,
         models: runtime.models.clone(),
         permissions: effective.permissions.clone(),
