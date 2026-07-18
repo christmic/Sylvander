@@ -345,5 +345,5 @@ fn mime(value: legacy::ImageMediaType) -> &'static str {
 }
 
 #[cfg(test)]
-#[path = "content_tests.rs"]
+#[path = "../../tests/unit/provider_compat_content.rs"]
 mod tests;
