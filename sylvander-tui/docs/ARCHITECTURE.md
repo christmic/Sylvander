@@ -81,6 +81,16 @@ business messages. Incompatible peers fail closed with a bounded protocol
 error. Negotiated truth is stored in `AppState` for status and diagnostics, not
 used by Panels to infer backend behavior.
 
+The owner-scoped User Profile is one capability-gated subflow through this same
+boundary. `/profile` is unavailable unless the server welcome advertises
+`user_profile_v1`. `ServerMsg::UserProfile` becomes
+`DomainEvent::UserProfileReceived`; the reducer owns the latest server
+`UserProfileView`, including its revision, and the service sends only typed
+`UserProfileRequest` actions. Editors never accept raw JSON. Update, correction,
+privacy toggles, and deletion first read the current server revision. A typed
+conflict invalidates the local cache, reloads server truth, and never retries or
+overwrites the stale draft.
+
 The wire reader converts malformed or unknown messages into bounded diagnostic
 domain events. Raw message bodies are never copied into diagnostics or logs, so
 future event types remain visible without exposing prompt or credential data.
@@ -134,6 +144,12 @@ surfaces use exactly three families:
   permissions, workspace files, and persisted-session retrieval.
 - Review View temporarily owns the transcript viewport for plan editing, help,
   and long tool output while preserving the status row.
+
+`modal/profile.rs` uses the Focus Picker geometry for a compact typed editor
+covering language, locale, response detail, tone, accessibility, and bounded
+constraints. Its destructive delete prompt uses the Decision Dock. Both
+preserve the single transcript and status line; there is no profile sidebar or
+second Composer.
 
 Feature modules provide semantic rows and key handling; they do not calculate
 independent popup rectangles. Centered bordered dialogs and per-feature surface

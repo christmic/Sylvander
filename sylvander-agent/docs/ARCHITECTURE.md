@@ -10,7 +10,7 @@ not a server composition root and it does not expose network listeners.
 ```text
 AgentRun / AgentRunEngine
   -> prompt composition + session snapshot
-  -> provider-compatible AgentLoop
+  -> provider-neutral AgentLoop
   -> ToolRegistry / ToolContext / approval & AskUser gates
   -> workspace executor, Skills, MCP, memory
   -> StreamEvent + durable session history
@@ -30,8 +30,13 @@ AgentRun / AgentRunEngine
   below the Tool boundary. They return bounded structured results and artifacts
   rather than unbounded transcript text.
 - `session_store` is the durable transcript/config store. Production uses the
-  SQLite implementation injected by Runtime; in-memory stores are only for
-  tests or an explicit ephemeral development mode.
+  SQLite implementation injected by Runtime. A completely empty database is
+  initialized directly at session schema version 1; every existing database
+  must match the Sylvander session application ID, `user_version`, complete
+  table/index definition set, foreign-key rules, and SQLite integrity check
+  exactly. Old, future, undeclared, partial, or damaged files fail closed. The
+  session store has no migration, repair, downgrade, or production in-memory
+  fallback. In-memory SQLite is only a full-schema test fixture.
 
 ## Invariants
 
@@ -48,6 +53,16 @@ AgentRun / AgentRunEngine
 5. Background tasks get a new explicit task prompt and a reduced read-only
    capability set. They do not inherit private chain-of-thought or silently
    mutate the parent session.
+6. Schema ownership remains explicit even when Runtime deliberately shares one
+   SQLite file between the session store and Agent registry. Standalone open
+   accepts only the exact session object set. Shared open accepts only the
+   exact union of the session store's fixed namespace and the companion
+   registry's complete current object-name allowlist; each component still
+   exact-matches the SQL for every object it owns. Memory, profile, evidence,
+   Guardian, extension, operator-created, undeclared, and obsolete objects are
+   rejected. Runtime creates the session namespace first on an empty file so
+   its application ID and `user_version = 1` remain the file-level contract,
+   then atomically installs or validates the registry namespace.
 
 ## Extension points
 
@@ -56,8 +71,8 @@ AgentRun / AgentRunEngine
   input schema, execution budget, and tests for both allowed and denied paths.
 - Add MCP or Skill support through their dedicated loaders; never inject
   unvalidated filesystem content directly into the system prompt.
-- Use `WorkspaceExecutor` for file and command work so local, container, and
-  later remote targets share one result contract.
+- Use `WorkspaceExecutor` for file and command work so local, SSH, container,
+  and managed-sandbox targets share one result contract.
 
 ## Verification
 

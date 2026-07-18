@@ -1,9 +1,10 @@
 # sylvander-llm-anthropic
 
-Sylvander v2 Anthropic Protocol SDK — minimal Rust wrapper for the Anthropic
-Messages API.
+Anthropic adapter for Sylvander's provider-neutral model contract. It owns
+request conversion, authentication headers, streaming assembly, bounded
+errors, and direct SDK entry points for the Anthropic Messages API.
 
-This is the **M1 Protocol SDK** layer. It implements the wire format for:
+The implemented direct API surface is:
 
 | Endpoint | Sync | Stream | Notes |
 |----------|------|--------|-------|
@@ -88,6 +89,10 @@ if status.processing_status == ProcessingStatus::Ended {
 
 ## Architecture
 
+The normative adapter lifecycle, ownership boundary, and failure contract are
+in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The source map below is an
+orientation aid, not a second specification.
+
 ```
 src/
 ├── lib.rs                      crate root + prelude
@@ -134,19 +139,15 @@ src/
 ## Tests
 
 ```bash
-cargo test --workspace                  # all 159 tests
-cargo test --test real_api -- --ignored # 3 tests against real Anthropic API (needs key)
+cargo test -p sylvander-llm-anthropic --all-targets --locked
+cargo clippy -p sylvander-llm-anthropic --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-llm-anthropic --no-deps --locked
+cargo test -p sylvander-llm-anthropic --test real_api -- --ignored
 ```
 
-Test breakdown:
-
-- 126 unit (serde round-trip + parser logic + builder validation + error classification)
-- 14 wiremock integration (`tests/`)
-- 3 large-stream stress (`tests/large_stream.rs` — 10K events, 100K chars)
-- 2 sync blocking integration (`tests/blocking.rs`)
-- 8 batches integration (`tests/messages_batches.rs`)
-- 3 real API `#[ignore]` (`tests/real_api.rs`)
-- 2 doctest (`lib.rs` examples)
+The last command requires explicit Anthropic credentials and is an opt-in
+deployment smoke. Deterministic unit, fixture, mock-server, large-stream, and
+blocking-client coverage runs without external credentials.
 
 ## Non-goals
 

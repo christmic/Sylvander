@@ -115,28 +115,40 @@ while let Some(event) = stream.next().await {
 # }
 ```
 
-### Custom tools (M3+)
+### Custom tools
 
-M2 ships `MockTool` for tests. To add a real tool, implement the
-`Tool` trait:
+Implement `Tool`, declare the operation's security class, and use the
+Runtime-derived `ToolContext` for identity, workspace, executor, budget, and
+capability checks. Model input never selects an owner or an unrestricted host
+path:
 
 ```rust,ignore
-struct ReadTool { workdir: PathBuf }
+struct ProjectSummary;
 
 #[async_trait]
-impl Tool for ReadTool {
-    fn name(&self) -> &str { "Read" }
-    fn description(&self) -> &str { "Read a file from disk" }
+impl Tool for ProjectSummary {
+    fn name(&self) -> &'static str { "project_summary" }
+    fn description(&self) -> &'static str { "Read the bounded project summary" }
     fn input_schema(&self) -> InputSchema {
-        InputSchema::new_with_properties(
-            json!({"file_path": {"type": "string"}}),
-            &["file_path"],
-        )
+        InputSchema::new_with_properties(json!({}), &[])
     }
-    async fn execute(&self, input: JsonValue) -> Result<ToolOutput, ToolError> {
-        let path = input["file_path"].as_str().unwrap();
-        let content = std::fs::read_to_string(self.workdir.join(path))
-            .map_err(|e| ToolError::Other(e.to_string()))?;
+
+    fn invocation_class(&self) -> ToolInvocationClass {
+        ToolInvocationClass::Read
+    }
+
+    async fn execute(
+        &self,
+        ctx: &ToolContext,
+        _input: JsonValue,
+    ) -> Result<ToolOutput, ToolError> {
+        if !ctx.has_cap(Cap::Read) {
+            return Ok(ToolOutput::err("read capability not granted"));
+        }
+        let root = ctx.surface.fs_root.as_ref()
+            .ok_or_else(|| ToolError::Other("workspace unavailable".into()))?;
+        let content = std::fs::read_to_string(root.join("PROJECT.md"))
+            .map_err(|error| ToolError::Other(error.to_string()))?;
         Ok(ToolOutput::ok(content))
     }
 }
@@ -144,9 +156,14 @@ impl Tool for ReadTool {
 let mut loop_ = AgentLoop::builder()
     .client(client)
     .model(model)
-    .tool(ReadTool { workdir: ".".into() })
+    .tool(ProjectSummary)
     .build()?;
 ```
+
+Standalone `AgentLoop` embeddings receive an exact-registry gateway. Production
+`Runtime` replaces it with the actor-aware policy and durable audit gateway.
+Built-ins, dynamic MCP tools, browser/host adapters, and extensions therefore
+share one authorization entry immediately before execution.
 
 ### Custom compression strategy
 
@@ -173,15 +190,9 @@ Runtime contracts:
 - [MCP supervision, cancellation, and inspection](docs/mcp.md)
 - [Workspace executor and coding-tool contract](docs/workspace-execution.md)
 
-```
-src/
-├── lib.rs          # crate root + prelude
-├── error.rs        # AgentLoopError (thiserror)
-├── event.rs        # AgentEvent enum (reactive events)
-├── compress.rs     # Compressor trait + NoCompression + SimpleWindowCompressor
-├── tool.rs         # Tool trait + ToolRegistry + MockTool
-└── loop_.rs        # AgentLoop + AgentLoopBuilder + AgentRun
-```
+The detailed source ownership map is maintained in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Tests live under `tests/`;
+production modules contain only path-qualified test-module declarations.
 
 ### Iteration loop
 
@@ -190,15 +201,16 @@ run() {
     for iteration in 1..=max_iterations {
         emit(IterationStart { iteration });
 
-        // 1. Compressor.maybe_compress → emit Compressed if truncated
-        // 2. Build CreateMessageRequest from current messages + tools
-        // 3. validate_capabilities(&request)
-        // 4. call_llm_with_retry(&request)   # exponential backoff on 5xx/429
-        // 5. Emit TextChunk / ThinkingChunk from response.content
-        // 6. Re-feed assistant message
+        // 1. Compose typed, budgeted context with provenance.
+        // 2. Freeze the exact tool/Skill/MCP capability revision.
+        // 3. Build and validate the provider-neutral model request.
+        // 4. Stream through the selected provider with bounded retry.
+        // 5. Emit TextChunk / ThinkingChunk from response content.
+        // 6. Re-feed the assistant message.
         // 7. stop_reason match:
         //    EndTurn / StopSequence / MaxTokens / Refusal / PauseTurn → break
-        //    ToolUse → execute tools, re-feed tool_result blocks
+        //    ToolUse → approval → policy/audit gateway → execute
+        //              → terminal audit → re-feed bounded tool_result blocks
 
         emit(IterationEnd { iteration, usage });
     }
@@ -231,7 +243,6 @@ Error(String)                         loop terminated with error
 | `run_stream(initial)` | `-> impl Stream<Item = AgentEvent>` | Core API — drive loop, yield events as they happen |
 | `model()` | `-> &ModelInfo` | Resolved model metadata |
 | `tools()` | `-> &ToolRegistry` | Configured tool registry |
-| `compressor()` | `-> &dyn Compressor` | Compression strategy |
 | `max_iterations()` | `-> u32` | Configured cap |
 | `max_retries()` | `-> u32` | Configured retry count |
 
@@ -243,7 +254,6 @@ Error(String)                         loop terminated with error
 | `model(model_info)` | required | Resolved `ModelInfo` (capabilities + context_window) |
 | `tool(tool)` | none | Register a single tool (chainable) |
 | `tools(registry)` | empty | Replace tool registry |
-| `compressor(c)` | `NoCompression` | Compression strategy |
 | `max_iterations(n)` | 50 | Iteration cap |
 | `max_retries(n)` | 3 | Per-LLM-call retry on transient errors; 0 = disable |
 
@@ -282,41 +292,23 @@ does not claim to capture shell commands or user edits.
 ## Tests
 
 ```bash
-cargo test --workspace                # all 210 tests across both crates
-cargo test -p sylvander-agent          # 51 M2 tests
-cargo test -p sylvander-agent --lib    # 34 unit
-cargo test -p sylvander-agent --test simple_run       # 7 wiremock integration
-cargo test -p sylvander-agent --test capability_retry # 9 wiremock integration
+cargo test -p sylvander-agent --locked
+cargo test -p sylvander-agent --all-targets --locked
+cargo clippy -p sylvander-agent --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-agent --no-deps --locked
 ```
 
-Test breakdown (51 total):
-- 34 unit (compress.rs / tool.rs / error.rs / event.rs / loop_.rs)
-- 7 wiremock integration (`tests/simple_run.rs`)
-- 9 wiremock integration (`tests/capability_retry.rs`)
-- 1 doctest
-
-Wiremock is the integration test backbone — no real API calls in CI.
+Unit, contract, fixture-provider, and opt-in real-provider journeys are all
+owned by `tests/`; CI does not depend on live provider credentials.
 
 ## Conventions
 
-- Class-based OOP — `AgentLoop` is a struct, no FP combinators
-- Reactive events — `on_event` callback delivers events as they fire
-- Async-first — sync blocking API deferred
-- Capability validation before LLM call — fast-fails on model mismatch
-- Composable compression — `Compressor` trait, simple default provided
-
-## Non-goals (M3+)
-
-- Concrete tools (Read/Bash/Edit/Glob/Grep) — M3
-- Parallel tool execution — M3
-- Permission system / approval gates — M3
-- MCP stdio tool and resource integration
-- Sandbox / process isolation — M3
-- Sub-agents / Hooks / Skills — M4
-- Long-term memory — M4
-- Self-improvement — M4
-- Sync blocking loop — skipped
-- Full reactive streaming (use `on_event` instead) — M3 enhancement
+- Async and streaming first; cancellation is part of the execution contract.
+- Runtime owns identity, workspace routing, durable stores, and authority.
+- Model compatibility is validated before dispatch.
+- Tool output, context, and evidence have explicit size and content policies.
+- No compatibility fallback is retained unless an approved migration names
+  its source schema and transition.
 
 ## License
 

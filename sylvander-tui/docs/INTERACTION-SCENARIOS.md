@@ -94,6 +94,7 @@ resolved values.
 | `/mcp` | Shows redacted Agent-advertised MCP configuration, auth metadata, and trust state |
 | `/skills` | Shows advertised skill source, activation, trust, and reload state |
 | `/memory` | Shows server-reported long-term memory availability and capabilities |
+| `/profile [show\|create\|edit\|correct\|do-not-learn on\|off\|export\|delete]` | Reads or edits the owner-scoped User Profile through `user_profile_v1` |
 | `/tools [expand\|collapse]` | Controls detailed tool rendering |
 | `/model [model-id] [effort]` | Opens the server-backed picker or selects an advertised combination for the next turn |
 | `/permissions` | Edits workspace filesystem, network, and approval policy for the next turn |
@@ -119,6 +120,28 @@ Invoking `/security-review src/auth` submits the expanded prompt through the
 normal chat/queue path. Built-in or alias collisions, duplicate IDs/names,
 invalid metadata, and external or unverified trust are shown as unavailable;
 they are never invoked.
+
+### User Profile
+
+`/profile` and `/profile show` read the authenticated owner's latest profile
+and append a compact summary to the transcript. `/profile create` opens a typed
+below-Composer editor. `/profile edit` and `/profile correct` first reload the
+server revision, then open the same editor with the current language, locale,
+detail, tone, accessibility switches, and constraints. `↑`/`↓` moves between
+fields, `←`/`→` changes enumerated values, `Enter` edits text or toggles a
+switch, `a`/`d` adds or removes a constraint, and `s` submits.
+
+`/profile do-not-learn on|off` is also revision-bound. `/profile export`
+requests the portable JSON export and copies it through the bounded terminal
+clipboard. `/profile delete` opens a destructive confirmation before sending
+the current revision. A server conflict discards the stale local cache,
+reloads, and reports that the edit was not applied; the TUI never silently
+retries a stale replacement.
+
+Every profile command is visibly unavailable until the hello/welcome exchange
+negotiates `user_profile_v1`. The editor uses `personal` classification for
+interaction preferences and `sensitive` classification for constraints; it
+does not expose a raw JSON or cross-user identifier field.
 
 The model picker never carries a hard-coded catalog. `↑`/`↓` chooses among
 server-advertised models and `←`/`→` chooses only reasoning efforts supported by
