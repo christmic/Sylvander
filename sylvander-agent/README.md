@@ -1,8 +1,8 @@
 # sylvander-agent
 
-Sylvander v2 Agent Loop — async reactive driver that calls the Anthropic
-Messages API, executes tools, re-feeds results, and emits events as the
-loop progresses.
+Sylvander Agent Loop — async reactive driver that calls one exact
+provider-qualified model route, executes tools, re-feeds results, and emits
+events as the loop progresses.
 
 This crate is the Agent execution layer. It builds on the provider-neutral
 model contract and contains the iterative model/tool loop, authenticated run
@@ -11,7 +11,7 @@ executors, Skills, and supervised MCP stdio.
 
 ## Current scope
 
-- `AgentLoop` for provider-compatible iterative generation and tool re-feeding
+- `AgentLoop` for provider-qualified iterative generation and tool re-feeding
 - `AgentRun` / `AgentRunEngine` for authenticated per-session execution
 - `ToolRegistry`, concrete workspace/memory/plan/task tools, and approvals
 - durable SQLite sessions, composition, compression, Skills, and MCP stdio
@@ -29,13 +29,28 @@ Add to `Cargo.toml`:
 [dependencies]
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-llm-core = { path = "../sylvander-llm-core" }
 ```
 
 ### Quickstart
 
 ```rust,no_run
-use sylvander_agent::prelude::*;
-use sylvander_llm_anthropic::prelude::*;
+use std::sync::Arc;
+
+use sylvander_agent::{
+    prelude::{AgentLoop, MessageParam, ToolContext},
+    tool_context::Cap,
+};
+use sylvander_llm_anthropic::{
+    AnthropicProvider,
+    api::{
+        client::AnthropicClient,
+        model::{ModelCapabilities, ModelInfo},
+    },
+};
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -51,10 +66,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = AnthropicClient::builder()
         .api_key(std::env::var("ANTHROPIC_API_KEY")?)
         .build()?;
+    let exact_model = ProviderModelInfo {
+        reference: ModelRef::new("anthropic", model.id.clone()),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        capabilities: ProviderCapabilities::TOOL_USE,
+    };
 
     let mut loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+        .qualified_router(Arc::new(AnthropicProvider::new("anthropic", client)))
+        .provider_model(exact_model)
+        .tool_context(
+            ToolContext::new(sylvander_protocol::SessionContext::new(
+                "user", "agent", "session",
+            ))
+            .with_fs_root("/tmp")
+            .with_capability(Cap::Read),
+        )
         .max_iterations(50)
         .build()?;
 
@@ -79,8 +107,11 @@ let run = loop_.run_with_events(
     |event| match event {
         AgentEvent::TextChunk(t) => print!("{t}"),
         AgentEvent::ToolCallStart { name, .. } => eprintln!("\n[tool] {name}"),
-        AgentEvent::Compressed { removed_count, .. } => {
-            eprintln!("[compressed, dropped {removed_count} messages]")
+        AgentEvent::Compressed { layers } => {
+            eprintln!(
+                "[compressed, dropped {} messages]",
+                total_removed(&layers)
+            )
         }
         _ => {}
     },
@@ -154,8 +185,15 @@ impl Tool for ProjectSummary {
 }
 
 let mut loop_ = AgentLoop::builder()
-    .client(client)
-    .model(model)
+    .qualified_router(router)
+    .provider_model(exact_model)
+    .tool_context(
+        ToolContext::new(sylvander_protocol::SessionContext::new(
+            "user", "agent", "session",
+        ))
+        .with_fs_root("/workspace")
+        .with_capability(sylvander_agent::tool_context::Cap::Read),
+    )
     .tool(ProjectSummary)
     .build()?;
 ```
@@ -165,22 +203,26 @@ Standalone `AgentLoop` embeddings receive an exact-registry gateway. Production
 Built-ins, dynamic MCP tools, browser/host adapters, and extensions therefore
 share one authorization entry immediately before execution.
 
-### Custom compression strategy
+### Custom compression pipeline
 
 ```rust,ignore
-struct MyCompressor;
-impl Compressor for MyCompressor {
-    fn maybe_compress(&self, ctx: &mut CompressContext) -> CompressionOutcome {
-        // Your strategy here
-        CompressionOutcome::Keep
-    }
-}
+let pipeline = CompressionPipeline::builder()
+    .layer(MyCompressionLayer)
+    .build();
 
 let loop_ = AgentLoop::builder()
-    .compressor(MyCompressor)
-    // ...
+    .qualified_router(router)
+    .provider_model(exact_model)
+    .tool_context(ToolContext::new(
+        sylvander_protocol::SessionContext::new("user", "agent", "session"),
+    ))
+    .compression_pipeline(pipeline)
     .build()?;
 ```
+
+Custom layers implement the object-safe `CompressionLayer` contract and return
+a typed `LayerReport`. A layer records a bounded failure instead of aborting
+later layers in the pipeline.
 
 ## Architecture
 
@@ -228,7 +270,7 @@ TextChunk(String)                     text delta from model
 ThinkingChunk(String)                 thinking delta (when enabled)
 ToolCallStart { id, name, input }     tool about to execute
 ToolCallEnd { id, name, output, is_error }
-Compressed { removed_count, freed_tokens }   compressor fired
+Compressed { layers: Vec<LayerReport> }     compression pipeline reported work
 IterationEnd { iteration, usage }     iteration done
 Done(Message)                         loop terminated cleanly
 Error(String)                         loop terminated with error
@@ -238,8 +280,8 @@ Error(String)                         loop terminated with error
 
 | Method | Signature | Description |
 |---|---|---|
-| `run(initial)` | `async` | Drive loop, return `Result<AgentRun, _>` — convenience over `run_stream` |
-| `run_with_events(initial, callback)` | `async` | Drive loop, fire non-terminal events into callback, return final `AgentRun` |
+| `run(initial)` | `async` | Drive loop, return `Result<AgentLoopResult, _>` — convenience over `run_stream` |
+| `run_with_events(initial, callback)` | `async` | Drive loop, fire non-terminal events into callback, return final `AgentLoopResult` |
 | `run_stream(initial)` | `-> impl Stream<Item = AgentEvent>` | Core API — drive loop, yield events as they happen |
 | `model()` | `-> &ModelInfo` | Resolved model metadata |
 | `tools()` | `-> &ToolRegistry` | Configured tool registry |
@@ -250,19 +292,15 @@ Error(String)                         loop terminated with error
 
 | Builder method | Default | Description |
 |---|---|---|
-| `client(client)` | required | Anthropic SDK client |
-| `model(model_info)` | required | Resolved `ModelInfo` (capabilities + context_window) |
+| `qualified_router(router)` | required | Immutable provider-qualified model router |
+| `provider_model(model_info)` | required | Exact `(provider, model)` metadata and capabilities |
 | `tool(tool)` | none | Register a single tool (chainable) |
 | `tools(registry)` | empty | Replace tool registry |
+| `compression_pipeline(pipeline)` | model default | Replace the ordered compression pipeline |
 | `max_iterations(n)` | 50 | Iteration cap |
-| `max_retries(n)` | 3 | Per-LLM-call retry on transient errors; 0 = disable |
+| `max_retries(n)` | 3 | Retry transient provider-open failures on the same exact route; 0 = disable |
 
-Note: the previous `on_event(f)` builder method was removed in the
-stream-first refactor — events are now delivered through
-`run_with_events(initial, callback)` or by pulling from
-`run_stream(initial)` directly.
-
-`AgentRun { final_message, iterations, total_usage }`.
+`AgentLoopResult { final_message, iterations, total_usage }`.
 
 ## Error types
 
@@ -270,14 +308,15 @@ stream-first refactor — events are now delivered through
 |---|---|
 | `MaxIterationsReached(u32)` | Loop hit the iteration cap |
 | `IncompatibleModel(String)` | Request requires capability the model lacks |
-| `Llm { retries, source }` | LLM call failed (after retries if `retries > 0`) |
+| `Provider { attempts, source }` | Qualified provider route failed after the recorded attempts |
 | `Tool(String)` | Non-recoverable tool failure |
 | `Compression(String)` | Compressor reported an error |
 | `Validation(String)` | Bad request shape |
 | `Builder(String)` | Builder field missing |
 
-`is_retryable()` on the error delegates to the inner `AnthropicError`
-for the `Llm` variant; other variants are deterministic caller bugs.
+`is_retryable()` delegates only to the provider-neutral `ProviderError`
+classification; the other variants are deterministic caller or execution
+contract failures.
 
 ## Workspace rollback journal
 

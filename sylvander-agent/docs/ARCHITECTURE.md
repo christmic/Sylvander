@@ -23,6 +23,13 @@ AgentRun / AgentRunEngine
   per-layer byte, token-estimate, and item budgets and records content-safe
   provenance plus digests for every included item.
 - `engine` serializes work per session and exposes run lifecycle to Runtime.
+- `loop_` exposes only provider-qualified production composition:
+  `qualified_router` plus exact `provider_model` metadata. Direct-client and
+  unqualified constructors do not exist. Standalone builders must also provide
+  an explicit `ToolContext`; no model-derived user/session placeholder exists.
+  The internal
+  Anthropic wire adapter translates transcript/tool shapes without becoming a
+  second route or fallback.
 - `tool` and `tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
   model arguments are never authority.
@@ -49,7 +56,9 @@ AgentRun / AgentRunEngine
    they never let model content forge a response under another session.
 4. Every concrete tool call checks its `ToolContext` capability snapshot and
    records content-safe lifecycle evidence. Tool output is size-bounded before
-   returning to the model or a client.
+   returning to the model or a client. Workspace tools are stateless and reject
+   an empty context workspace instead of falling back to constructor or process
+   paths.
 5. Background tasks get a new explicit task prompt and a reduced read-only
    capability set. They do not inherit private chain-of-thought or silently
    mutate the parent session.
@@ -63,6 +72,9 @@ AgentRun / AgentRunEngine
    rejected. Runtime creates the session namespace first on an empty file so
    its application ID and `user_version = 1` remain the file-level contract,
    then atomically installs or validates the registry namespace.
+7. Runtime pins an exact `(provider_id, model_id)` before building a turn.
+   Agent execution never falls back to a direct client, an unqualified model
+   name, or a second provider when the selected route fails.
 
 ## Extension points
 
