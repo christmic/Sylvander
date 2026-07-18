@@ -98,10 +98,9 @@ A production Sylvander server needs:
   directory, on storage the database writer cannot modify (the file
   backend) or an HTTPS CAS endpoint reachable from the host (the HTTP
   backend);
-- network access to the Anthropic-compatible upstream
-  (`ANTHROPIC_BASE_URL`), plus optional access to MCP servers, the
-  external chat platform webhook URLs, and any non-`local` execution
-  target;
+- network access to every Provider `base_url` selected by the active
+  configuration, plus optional access to MCP servers, external chat
+  platform webhook URLs, and any non-`local` execution target;
 - OCI runtime (`docker`, `podman`, or compatible) only if you intend to
   use the `container` or `sandbox` execution targets; otherwise it is
   unused.
@@ -145,10 +144,10 @@ artifact lives at `target/release/sylvander`.
 ### 4.3 First-run layout
 
 Sylvander creates its data directory and the default session/evidence/
-memory/profile databases on first successful startup. With
-`SYLVANDER_CONFIG` set, the directory comes from the configuration file.
-Without it (legacy environment mode), the directory defaults to
-`$XDG_DATA_HOME/sylvander` or `~/.local/share/sylvander`.
+memory/profile databases on first successful startup. `SYLVANDER_CONFIG` is
+required; `server.data_dir` controls the directory and defaults to
+`$XDG_DATA_HOME/sylvander` or `~/.local/share/sylvander` only when that field is
+omitted from the current TOML document.
 
 If you use the integrity anchor in production, pre-create the anchor
 directory with `0700` permissions owned by the service account before
@@ -164,10 +163,11 @@ The shortest path from a clean checkout to a working session:
 cp config/sylvander.example.toml /etc/sylvander/server.toml
 $EDITOR /etc/sylvander/server.toml
 
-# 2. Provide required secrets
+# 2. Provide every secret referenced by that document
 export ANTHROPIC_API_KEY=sk-ant-...
-export ANTHROPIC_BASE_URL=https://api.anthropic.com
-export SYLVANDER_MODEL=claude-sonnet-4-7
+# Production example also references memory/evidence keys:
+export SYLVANDER_MEMORY_INTEGRITY_KEY=...
+export SYLVANDER_EVIDENCE_ENCRYPTION_KEY=...
 
 # 3. Run
 export SYLVANDER_CONFIG=/etc/sylvander/server.toml
@@ -212,9 +212,9 @@ The maintained, fully-commented example lives at
 Treat that file as **normative** for the public schema — anything not
 present in it is not part of the supported surface.
 
-When `SYLVANDER_CONFIG` is unset, the server converts the legacy
-environment contract into the same in-memory schema. This is a bounded,
-explicitly-approved migration path; **new deployments should use TOML**.
+When `SYLVANDER_CONFIG` is missing, empty, invalid, unreadable, or points to an
+old/unknown schema, startup fails before any listener opens. There is no
+environment-only conversion or implicit provider/model fallback.
 
 For the full schema reference, validation rules, secret-reference
 format, integrity-anchor options, and agent/workspace semantics, see
@@ -274,54 +274,56 @@ principal; unauthenticated failures share a bounded anonymous window.
 
 ## 7. Modes
 
-The server recognises three operating modes declared in `[server].mode`:
+The current configuration schema recognises two modes declared in
+`[server].mode`:
 
-- `production` (default) — fail-closed startup, latest-only schema
-  validation, integrity anchor required, durable session/evidence/memory
-  stores, supervised channels. This is the only mode with full
-  operational guarantees.
-- `foreground` — same as `production`, but signal handling and shutdown
-  semantics are tuned for interactive sessions: logs are line-buffered,
-  the final maintenance state is published synchronously, and an
-  unhandled error in a channel task is surfaced immediately rather than
-  triggering a supervised restart. Use this for development on a laptop.
-- `supervised` — designed to run under an external supervisor
-  (systemd, launchd, runit). Startup is identical to `production`; the
-  server expects the supervisor to handle respawn, log rotation, and
-  watchdog. The server still exits non-zero on any owned component that
-  fails to drain cleanly so the supervisor can record the failure.
+- `self_use` (default) — durable local operation for the owner/developer,
+  without requiring an independently administered memory integrity anchor.
+- `production` — fail-closed startup with the configured evidence encryption
+  and independent memory-integrity boundary.
 
-`SYLVANDER_MODE=self_use` is an additional legacy compatibility value
-used by the local-dev `sylvander.env`; it disables the integrity anchor
-and the supervised multi-instance contract. Use it only for evaluation.
+Mode is a TOML field, not an environment override. Both modes use the same
+latest configuration schema, qualified model identity, durable session
+configuration, supervised channels, and shutdown contract. `self_use` relaxes
+only the explicitly documented production trust prerequisites; it is not a
+fallback when production configuration is invalid.
 
 ## 8. Anthropic setup
 
 Sylvander talks to any Anthropic-compatible upstream that accepts the
-`/v1/messages` POST format with `Authorization: Bearer …`. Three
-environment variables are required at startup:
+`/v1/messages` POST format. Provider URL, models, capabilities, lifecycle, and
+pricing are declared under `[[model_providers]]`; only the secret value may
+come from an environment/file `SecretRef`.
 
-| Variable             | Required | Purpose                                                |
-|----------------------|:--------:|--------------------------------------------------------|
-| `ANTHROPIC_API_KEY`  | yes      | Bearer token sent in the request `Authorization` header |
-| `ANTHROPIC_BASE_URL` | yes      | Root URL of the upstream (no trailing slash)            |
-| `SYLVANDER_MODEL`    | yes      | Default model id the gateway must recognise             |
+```toml
+[[model_providers]]
+id = "primary"
+kind = "anthropic_compatible"
+base_url = "https://api.anthropic.com"
 
-`SYLVANDER_MODEL` is intentionally required rather than optional: a typo
-or unknown id surfaces as a startup failure instead of a 404 storm at
-runtime (see [`server-env.md`](server-env.md) for the rationale).
+[model_providers.api_key]
+source = "env"
+name = "ANTHROPIC_API_KEY"
 
-### 8.1 Optional model list
+[[model_providers.models]]
+id = "claude-sonnet"
+context_window = 200000
+max_output_tokens = 32000
+capabilities = ["tool_use", "vision", "prompt_caching"]
+```
 
-| Variable                       | Default              | Purpose                                                                |
-|--------------------------------|----------------------|------------------------------------------------------------------------|
-| `SYLVANDER_MODELS`             | primary model only   | Comma-separated model ids exposed through `/model`                     |
-| `SYLVANDER_REASONING_MODELS`   | empty                | Subset that advertises low/medium/high reasoning; others report `off`  |
-| `SYLVANDER_DEPRECATED_MODELS`  | empty                | `model` or `model=replacement`; old sessions may still select them     |
-| `SYLVANDER_MODEL_PRICING`      | empty                | `model=input:output[:cache_write:cache_read]` USD per million tokens   |
+Agent defaults, prompt profiles, and session overrides reference the qualified
+pair `(provider_id, model_id)`. A bare model environment variable or
+same-named-model guess is rejected. Unknown models, unavailable revision pins,
+and capability mismatches fail before credential resolution or dispatch.
 
-Invalid values in any of these variables fail startup; omitted prices
-remain explicitly unknown rather than defaulting to zero.
+### 8.1 Model catalog
+
+Add one `[[model_providers.models]]` block per model. Lifecycle and replacement,
+reasoning/tool/media capabilities, context/output limits, and optional pricing
+belong to that immutable definition. Omitting pricing means “unknown”; it never
+defaults to zero. The active provider/model revisions become durable session
+pins and remain exact across restart.
 
 ### 8.2 Credential rotation
 
@@ -341,36 +343,25 @@ values are never persisted in the session or evidence databases.
 
 ### 8.3 Examples
 
-Official Anthropic API:
+Official Anthropic uses the configuration above and only exports the referenced
+secret:
 
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-...
-export ANTHROPIC_BASE_URL=https://api.anthropic.com
-export SYLVANDER_MODEL=claude-sonnet-4-7
+export SYLVANDER_CONFIG=/etc/sylvander/server.toml
 ./target/release/sylvander
 ```
 
-Internal compatible gateway with a deprecated-model migration:
-
-```sh
-export ANTHROPIC_API_KEY=anything-here
-export ANTHROPIC_BASE_URL=http://my-gateway.internal:9527
-export SYLVANDER_MODEL=fast-code
-export SYLVANDER_MODELS=fast-code,deep-code
-export SYLVANDER_REASONING_MODELS=deep-code
-export SYLVANDER_DEPRECATED_MODELS=fast-code=deep-code
-export SYLVANDER_MODEL_PRICING="fast-code=0.10:0.40,deep-code=3:15:3.75:0.30"
-./target/release/sylvander
-```
-
-Local mock for development (see `sylvander.env` in the repository root):
+For an internal compatible gateway or local mock, change `base_url` and model
+definitions in a separate current-schema TOML file. Do not construct a catalog
+from comma-separated environment variables:
 
 ```sh
 export ANTHROPIC_API_KEY=dev
-export ANTHROPIC_BASE_URL=http://127.0.0.1:9527
-export SYLVANDER_MODEL=mock-fast
+export SYLVANDER_CONFIG=./config/local-mock.toml
 RUST_LOG=debug ./target/release/sylvander
 ```
+
 ## 9. Channels overview
 
 A **channel** is one ingress adapter instance. Every `[[channels]]`
@@ -544,10 +535,8 @@ default_agent = "sylvander"
 [channels.transport]
 kind = "wechat"
 bind = "127.0.0.1:8091"
-
-[channels.transport.corp_id]
-source = "env"
-name = "WECHAT_CORP_ID"
+corp_id = "ww0123456789abcdef"
+agent_id = "1000002"
 
 [channels.transport.secret]
 source = "env"
@@ -562,9 +551,19 @@ source = "env"
 name = "WECHAT_ENCODING_AES_KEY"
 ```
 
-Credentials are resolved at startup so the server fails fast before
-accepting traffic. The WeChat surface is intentionally narrower than
-Unix/WebSocket.
+`corp_id` and numeric `agent_id` are public WeChat application identifiers.
+The three secret references are exposed to the adapter as renewable,
+instance-scoped slots: `api_secret`, `callback_token`, and
+`encoding_aes_key`. Startup preflights the callback codec and outbound token
+path; every callback or delivery obtains a bounded lease, so file/environment
+rotation takes effect without rebuilding the channel.
+
+WeChat verifies and decrypts enterprise callbacks, binds the embedded
+recipient to `corp_id`, rejects replays, and routes authenticated chat plus
+`/approve`, `/deny`, `/answer`, and `/interrupt` controls through Runtime. It
+delivers bounded completed replies and tool/control status through the active
+message API. Access tokens are cached only for their credential generation,
+refreshed once on WeChat expiry codes, and never exposed in logs.
 
 ## 16. Approval / AskUser flow
 
@@ -576,11 +575,13 @@ responds with
 One-shot approvals match one pending call. Session and persistent choices
 create an exact grant; they do not mutate the Agent or the persistent policy.
 
-Persistent approvals across restarts require both:
+Persistent approvals across restarts require the current configuration to
+enable approval and name a durable store:
 
-```sh
-export SYLVANDER_APPROVAL=1
-export SYLVANDER_APPROVAL_STORE=/var/lib/sylvander/approvals.json
+```toml
+[server.approval]
+enabled = true
+persistent_store = "/var/lib/sylvander/approvals.json"
 ```
 
 Without the store, the approval gate offers only one-shot and session scopes.
@@ -621,8 +622,10 @@ Relationship Memory observations, Agent private candidates derived
 from the user, or cross-user canonical memory derived from the user.
 Deletion preserves the durable opt-out as a tombstone; re-creating a
 profile inherits that marker until the owner changes it explicitly.
-The TUI negotiates `user_profile_v1` but does not yet expose an
-editing surface — use a protocol client until the TUI editor lands.
+The TUI exposes the profile through `/profile`. `show`, `create`, `edit`,
+`correct`, `do-not-learn on|off`, `export`, and confirmed `delete` are typed
+operations; mutations reload and bind the current server revision before
+submission. The editor covers every current preference without raw JSON.
 
 ## 18. Identity binding
 
@@ -672,14 +675,18 @@ Capture policies:
 | Policy         | What is stored                                              |
 |----------------|-------------------------------------------------------------|
 | `metadata_only`| Event types, timestamps, byte sizes, attachment counts, digests |
-| `redacted`     | Adds a structural envelope with payload replaced by `[REDACTED]` |
-| `full`         | Stores the serialized bus message; opt-in only              |
+| `redacted`     | Encrypts structurally redacted JSON under an exact tenant/user scope |
+| `full`         | Encrypts the serialized bus message; opt-in only             |
 
 `server.evidence.content = "metadata_only"` is the default and the
-recommended production setting. `full` requires an operator-defined
-privacy, access, backup, and deletion policy. Retention defaults to
-30 days; completed runs older than `retention_days` are deleted at
-startup. Active and crash-recovery records are retained.
+recommended production setting. Production still requires
+`server.evidence.encryption` because generated MCP result artifacts
+share the governed store. `redacted` and `full` never fall back to the
+plaintext event table. Retention defaults to 30 days; completed runs
+and expired governed event/artifact ciphertext are removed at startup.
+Exact tenant/user-scoped export and deletion are auditable, and
+deleted record IDs cannot be reused. Active and crash-recovery metadata
+records are retained.
 
 Query APIs return bounded turn summaries with step and failure
 counts; raw payloads are not part of those summaries. Cohort analysis
@@ -744,14 +751,16 @@ external supervisor has exceeded its termination deadline.
 
 ### 20.5 FAQ / troubleshooting
 
-- **Startup fails with `ANTHROPIC_API_KEY must be set`.** Export it
-  in the same shell, or use a TOML `SecretRef` pointing to a file
-  containing the key.
-- **`ANTHROPIC_BASE_URL is set but empty`.** The variable is exported
-  but contains the empty string.
-- **`Anthropic API error (status 404): unknown: (no message)`.** The
-  gateway does not recognise `SYLVANDER_MODEL`. Check the id against
-  `/v1/models`.
+- **Startup cannot resolve a Provider credential.** Set the environment
+  variable or file named by that Provider's TOML `SecretRef`; do not put the
+  secret value in the configuration.
+- **Startup rejects a Provider URL or catalog.** Correct the Provider
+  `base_url` and its current `[[model_providers.models]]` definitions. An
+  empty URL or catalog is invalid.
+- **The upstream returns an unknown-model error.** Verify the exact
+  `(provider_id, model_id)` selected by the Agent/session against that
+  Provider's current catalog and upstream deployment. Bare model names are
+  never guessed.
 - **TUI connects but every chat returns `session_id required`.** Send
   the first chat without `session_id`; the server returns
   `session_created`.
@@ -773,8 +782,12 @@ external supervisor has exceeded its termination deadline.
 - **Coding session lost edits after a SIGKILL.** The session
   workspace is a worktree lease. Restart the server — boot validates
   active leases and recovers worktrees left before manifest commit.
-- **TUI shows `user_profile_v1` but no editing controls.** Expected.
-  Use a Unix/WebSocket protocol client until the TUI editor lands.
+- **`/profile` is unavailable.** The connected server did not advertise
+  `user_profile_v1`; verify Runtime profile storage and the hello/welcome
+  capability set. The TUI intentionally fails closed.
+- **A profile edit reports a conflict.** Another client changed the profile.
+  The stale draft was not applied; `/profile` reloads current server truth
+  before the next edit.
 - **Bug reports.** Open an issue; include the server version, the
   structured log line, the affected channel instance id, and (if
   reproducible) a redacted turn summary from the evidence query API.

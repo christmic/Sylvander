@@ -108,27 +108,38 @@ The production path currently includes:
 - `user_profile_v1` capability negotiation and content-safe public errors;
 - Evidence-backed, content-safe operation outcomes in the Runtime path.
 
-The TUI advertises and negotiates `user_profile_v1`, but does not yet provide a
-profile editor. Protocol support must not be described as an implemented TUI
-editing experience.
+The TUI advertises and negotiates `user_profile_v1` and exposes `/profile`.
+Its compact typed editor covers language, locale, response detail, tone,
+accessibility, and bounded constraints without asking users to author JSON.
+Read/show, create, update, explicit correction, do-not-learn on/off, JSON
+export, and confirmed deletion all use this public envelope. Mutating commands
+first load the server revision; a typed conflict invalidates the stale cache
+and reloads rather than retrying or overwriting newer data.
 
-The Agent crate contains a deterministic, bounded formatter for the compact
-User Profile interaction contract. It is not yet injected by the live
-per-turn Runtime/Agent prompt path. The durable `do_not_learn` marker is also
-not yet enforced across every Relationship Memory and Agent private-candidate
-write. Those are open integration gates, not implied by storage or wire
-support.
+The live Runtime composition injects the owner-scoped
+`UserProfileProvider` into every Agent run. Before each authenticated turn, the
+Agent loads the current profile, renders the deterministic bounded interaction
+contract, and admits it as the typed `UserProfile` layer. Its revision and
+content digest are recorded in the turn-context manifest between the Agent and
+Relationship Memory layers. Provider or formatting failure aborts prompt
+construction rather than silently omitting a configured profile.
 
-Completion still requires tests proving:
+The durable `do_not_learn` marker is both prompt-visible state and a
+Runtime-owned authorization input. An active marker denies direct
+Relationship Memory append, Worker memory-candidate invocation, Guardian event
+admission, pre-existing queued-event candidate extraction, and new governed
+commit actions for relationship, profile, Agent-canonical, and workspace
+knowledge scopes. The profile store is queried at each of those boundaries;
+an unavailable preference source fails closed. The marker does not block
+explicit owner correction, export, deletion, decay, or forgetting, because
+those operations govern existing data rather than learn a new fact.
 
-1. the live turn snapshot injects the owner profile with revision and digest
-   provenance in the documented prompt precedence order;
-2. an active `do_not_learn` marker denies every governed learning write while
-   leaving explicit correction, export, and deletion available;
-3. audit failure and profile-store failure remain fail-closed without leaking
-   profile, SQL, path, or principal content;
-4. the future TUI editor sends operations only after capability negotiation
-   and handles typed revision conflicts without overwriting newer data.
+Acceptance coverage proves the live turn layer order, owner-scoped profile
+lookup, revision/digest provenance, restart-safe storage, opt-out before and
+after event persistence, fail-closed preference lookup, memory-candidate
+denial, and continued explicit correction/export/delete. The TUI capability
+gate, typed request mapping, revision-bound editor, and conflict path have
+unit coverage as the public client journey.
 
 Operational database placement, backup, permissions, and tombstone retention
 are specified in
