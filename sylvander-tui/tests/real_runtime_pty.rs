@@ -1081,7 +1081,7 @@ async fn real_agent_approval_rejection_prevents_tool_execution() {
         &socket_path,
         store,
         client,
-        ToolRegistry::new().register(WriteTool::new(temp.path())),
+        ToolRegistry::new().register(WriteTool::new()),
         true,
     )
     .await;
