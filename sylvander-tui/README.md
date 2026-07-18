@@ -17,11 +17,11 @@ runtime remain product-owned.
 - [`docs/INPUT-RENDERING.md`](docs/INPUT-RENDERING.md) — keyboard/mouse ownership,
   event loop, frame pacing, scrolling, and rendering performance.
 - [`docs/SECURITY.md`](docs/SECURITY.md) — trust boundaries, verified controls,
-  redaction coverage, and open release blockers.
+  redaction coverage, and deployment-specific credential gates.
 - [`docs/INTERACTION-SCENARIOS.md`](docs/INTERACTION-SCENARIOS.md) — scenario-by-scenario
   command, tool, approval, question, session, and recovery behavior.
-- [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md) — prioritized
-  production gap checklist and end-to-end acceptance gates.
+- [`docs/PRODUCTION-READINESS.md`](docs/PRODUCTION-READINESS.md) — implemented
+  capability ledger and end-to-end acceptance gates.
 - [`../docs/sylvander-tui-ux-design.md`](../docs/sylvander-tui-ux-design.md) —
   normative visual and interaction specification.
 

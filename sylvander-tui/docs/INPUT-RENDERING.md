@@ -43,8 +43,8 @@ The active Vim mode is always visible in the status row.
 
 ## Event-driven runtime
 
-The old main loop slept for 200ms after every drain, causing up to 200ms keyboard
-latency. The runtime now uses `tokio::select!` with independent wake sources:
+The runtime uses `tokio::select!` with independent wake sources and does not
+sleep on the keystroke path:
 
 ```text
 terminal input ───────── immediate state update + immediate render
