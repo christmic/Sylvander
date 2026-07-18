@@ -137,6 +137,10 @@ async fn command_reports_status_and_streams_program_on_stdin() {
         fs::read_to_string(&fake.stdin_log).expect("stdin log"),
         "printf '%s' \"用户命令; $(safe as data)\""
     );
+    let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
+    assert!(argv.contains("command -v setsid"));
+    assert!(argv.contains("set -m 2>/dev/null"));
+    assert!(argv.contains("kill -TERM -- \"-$child\""));
 }
 
 #[tokio::test]
@@ -221,7 +225,8 @@ async fn dropping_command_future_terminates_the_ssh_transport() {
     let ready = directory.path().join("ready");
     let survived = directory.path().join("survived");
     let fake = FakeSsh::new(&format!(
-        "printf ready > {}; sleep 1; printf survived > {}",
+        "case \"$*\" in *attempt=0*) exit 0;; esac\n\
+         printf ready > {}; sleep 1; printf survived > {}",
         shell_quote(ready.to_str().unwrap()),
         shell_quote(survived.to_str().unwrap())
     ));
