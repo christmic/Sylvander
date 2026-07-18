@@ -249,6 +249,12 @@ fn nonterminal_renderer_suppresses_token_spam_and_bounds_tool_output() {
 #[test]
 fn nonterminal_renderer_surfaces_terminal_failures() {
     assert_eq!(
+        render_nonterminal_event(&StreamEvent::Error {
+            message: "provider unavailable".into(),
+        }),
+        Some("❌ provider unavailable".into())
+    );
+    assert_eq!(
         render_nonterminal_event(&StreamEvent::CompactionFailed {
             automatic: true,
             reason: "budget exhausted".into(),

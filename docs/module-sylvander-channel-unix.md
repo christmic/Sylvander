@@ -64,7 +64,10 @@ authenticated principal.
    range; business messages sent before `Hello` are rejected.
 5. **Replay** — disconnected clients can request `LoadSession` and
    receive a buffered `session_history` (with optional truncation).
-6. **Shutdown** — runtime removes the socket path on stop.
+6. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
+   typed list/decide envelopes are dispatched to Runtime. The transport adds
+   no owner selector and cannot bypass persisted-session ownership.
+7. **Shutdown** — runtime removes the socket path on stop.
 
 ## 6. Tests
 
@@ -72,6 +75,8 @@ Unit tests live in `sylvander-channel-unix/tests/unit/lib.rs`,
 covering framing bounds, protocol negotiation, peer/session isolation,
 Runtime-owned administration and identity dispatch, redaction, session
 lifecycle, replay, attachments, approvals, tasks, and socket permissions.
+The same suite verifies memory-confirmation dispatch and service-unavailable
+mapping through the real line protocol.
 
 ## 7. Common pitfalls
 

@@ -244,6 +244,9 @@ async fn run_outgoing(
             sylvander_agent::bus::StreamEvent::Done { text } => {
                 client.reply_markdown(url, "Reply", text).await;
             }
+            sylvander_agent::bus::StreamEvent::Error { message } => {
+                client.reply_text(url, &format!("❌ {message}")).await;
+            }
             sylvander_agent::bus::StreamEvent::ToolCall { tool_name, .. } => {
                 client
                     .reply_text(url, &format!("🔧 calling: {tool_name}"))

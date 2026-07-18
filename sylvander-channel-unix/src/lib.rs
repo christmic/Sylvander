@@ -6,7 +6,7 @@
 //!
 //! ## Client → Server
 //! ```json
-//! {"type":"hello","protocol":{"client_name":"example","min_version":4,"max_version":4,"capabilities":[]}}
+//! {"type":"hello","protocol":{"client_name":"example","min_version":5,"max_version":5,"capabilities":[]}}
 //! {"type":"chat","text":"hello"}
 //! {"type":"chat","text":"hi","session_id":"abc"}
 //! {"type":"approve","call_id":"toolu_001","approved":true}
@@ -385,7 +385,9 @@ fn ui_protocol_capabilities() -> Vec<String> {
         "compaction",
         "credential_registry_lifecycle",
         "diagnostics",
+        sylvander_protocol::FEEDBACK_CAPABILITY,
         sylvander_protocol::IDENTITY_BINDING_CAPABILITY,
+        sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY,
         "model_selection",
         "plans",
         "provider_model_registry_lifecycle",
@@ -568,7 +570,11 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                     return;
                 }
             };
-            let sid = submitted.session_id;
+            let sylvander_channel::SubmittedChat {
+                session_id: sid,
+                feedback_target,
+                events,
+            } = submitted;
 
             let start_relay = {
                 let mut guard = hub.lock().await;
@@ -590,9 +596,9 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                 guard.relays.insert(sid.clone())
             };
             let relay_rx = if start_relay {
-                Some(submitted.events)
+                Some(events)
             } else {
-                drop(submitted.events);
+                drop(events);
                 None
             };
 
@@ -749,6 +755,7 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                                     Some(ServerMsg::TurnInterrupted {
                                         session_id: s.0.clone(),
                                         reason,
+                                        feedback_target: feedback_target.clone(),
                                     })
                                 }
                                 StreamEvent::PlanProposed {
@@ -812,6 +819,12 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
                                 StreamEvent::Done { text } => Some(ServerMsg::Done {
                                     session_id: s.0.clone(),
                                     text,
+                                    feedback_target: feedback_target.clone(),
+                                }),
+                                StreamEvent::Error { message } => Some(ServerMsg::Error {
+                                    session_id: s.0.clone(),
+                                    message,
+                                    feedback_target: feedback_target.clone(),
                                 }),
                                 StreamEvent::UserAnswer { .. } => None,
                             };
@@ -983,6 +996,16 @@ async fn handle_client_msg_for_client(msg: ClientMsg, handler: ClientHandler<'_>
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
+        }
+        ClientMsg::MemoryConfirmation { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.memory_confirmation(boundary, request).await
+            } else {
+                sylvander_protocol::MemoryConfirmationResponse::service_unavailable(
+                    request.operation(),
+                )
+            };
+            let _ = tx.send(ServerMsg::MemoryConfirmation { response });
         }
         ClientMsg::AgentAdmin { request } => {
             let response = if let Some(ui) = &ctx.ui {

@@ -355,6 +355,10 @@ async fn chat(
                         yield Ok(Event::default().data(text.as_str()).event("done"));
                         break;
                     }
+                    StreamEvent::Error { message } => {
+                        yield Ok(Event::default().data(message.as_str()).event("error"));
+                        break;
+                    }
                     StreamEvent::IterationStart { iteration } =>
                         Event::default().data(iteration.to_string()).event("iteration_start"),
                     _ => continue,

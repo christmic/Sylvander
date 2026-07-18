@@ -65,7 +65,10 @@ re-authenticating individual frames.
 6. **Session discovery** — `list_sessions` dispatches through Runtime
    `UiService`, preserving stable-user visibility rules, and returns one typed
    `sessions_list` response.
-7. **Shutdown** — runtime closes idle connections gracefully and
+7. **Memory confirmation** — when `memory_confirmation_v1` was negotiated,
+   list/decide envelopes pass unchanged to Runtime under the authenticated
+   WebSocket boundary. The adapter never derives or accepts owner identity.
+8. **Shutdown** — runtime closes idle connections gracefully and
    aborts stuck ones on supervisor shutdown.
 
 ## 6. Tests
@@ -74,7 +77,11 @@ Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover the mandatory
 handshake, capability negotiation, live bearer rotation and lease failure,
 Runtime-owned identity and administration dispatch, redaction, per-session
 model changes, Runtime-owned session listing, approval transport, and
-request-size limits.
+request-size limits. Governed-memory confirmation uses the same exhaustive
+message dispatcher; its typed shapes, Runtime ownership, and real transport
+round trip are covered by the protocol, Runtime, and Unix suites. Add a
+WebSocket-specific round-trip case whenever WebSocket framing or dispatch
+changes.
 
 ## 7. Common pitfalls
 
