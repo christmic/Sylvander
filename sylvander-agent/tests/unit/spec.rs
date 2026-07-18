@@ -146,6 +146,9 @@ description = "A fully configured agent"
 [model]
 provider = "anthropic"
 model_name = "claude-sonnet-5-20260601"
+allowed_models = [
+  { provider_id = "anthropic", model_id = "claude-sonnet-5-20260601" },
+]
 temperature = 0.7
 max_tokens = 4096
 
@@ -177,12 +180,29 @@ max_retries = 5
     assert_eq!(spec.persona.system_prompt, "You are a helpful assistant.");
     assert_eq!(spec.model.temperature, Some(0.7));
     assert_eq!(spec.model.max_tokens, Some(4096));
-    assert!(spec.model.allowed_models.is_empty());
+    assert_eq!(spec.model.allowed_models.len(), 1);
     assert_eq!(spec.tools.len(), 3);
     assert_eq!(spec.memory_stores.len(), 1);
     assert_eq!(spec.memory_stores[0].store_type, "sqlite");
     assert_eq!(spec.behavior.max_iterations, 30);
     assert_eq!(spec.behavior.max_retries, 5);
+}
+
+#[test]
+fn toml_model_requires_explicit_allowed_models() {
+    let error = toml::from_str::<AgentSpec>(
+        r#"
+id = "missing-allowlist"
+name = "Missing Allowlist"
+
+[model]
+provider = "anthropic"
+model_name = "claude-sonnet-5-20260601"
+"#,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("allowed_models"));
 }
 
 // -- ModelInfo conversion --

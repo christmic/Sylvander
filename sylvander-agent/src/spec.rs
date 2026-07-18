@@ -49,11 +49,8 @@ pub struct ModelConfig {
     pub model_name: String,
     /// Exact Provider/Model identities this Agent revision may select.
     ///
-    /// An empty list is reserved for legacy definitions. The runtime must
-    /// materialize those definitions from their existing immutable snapshot
-    /// or legacy bootstrap seed; newly authored definitions should always
-    /// provide this allowlist explicitly.
-    #[serde(default)]
+    /// Runtime configuration requires this list to be explicit, non-empty,
+    /// provider-qualified, and to contain the Agent default model.
     pub allowed_models: Vec<ModelSelection>,
     /// Optional temperature override.
     #[serde(default)]
