@@ -2,8 +2,50 @@ use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
 use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
 use sylvander_channel::UiService;
+use sylvander_channel::credential::{
+    CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 
 struct DenyAgentAccess;
+
+struct RotatingLeaseSource {
+    state: std::sync::Mutex<(u64, String, bool)>,
+}
+
+fn bearer_lease(instance_id: &str, value: &str) -> BearerLease {
+    BearerLease {
+        source: Arc::new(RotatingLeaseSource {
+            state: std::sync::Mutex::new((1, value.into(), false)),
+        }),
+        request: CredentialLeaseRequest::new(instance_id, ["bearer_token"]).unwrap(),
+    }
+}
+
+#[async_trait]
+impl CredentialLeaseSource for RotatingLeaseSource {
+    async fn lease(
+        &self,
+        request: &CredentialLeaseRequest,
+    ) -> Result<CredentialLeaseBundle, CredentialLeaseError> {
+        let (generation, value, unavailable) = self.state.lock().unwrap().clone();
+        if unavailable {
+            return Err(CredentialLeaseError::Unavailable);
+        }
+        let now: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .try_into()
+            .unwrap();
+        CredentialLeaseBundle::new(
+            generation,
+            generation,
+            now,
+            now + 30,
+            [(request.slots[0].clone(), value.into_bytes())],
+        )
+    }
+}
 
 #[test]
 fn request_limit_is_configurable() {
@@ -105,6 +147,61 @@ fn bearer_comparison_rejects_wrong_content_and_length() {
 }
 
 #[tokio::test]
+async fn live_bearer_lease_rotates_and_fails_closed_without_restart() {
+    let source = Arc::new(RotatingLeaseSource {
+        state: std::sync::Mutex::new((1, "first-token".into(), false)),
+    });
+    let state = AppState {
+        ctx: Arc::new(ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            None,
+            None,
+        )),
+        agent_id: sylvander_agent::spec::AgentId::new("agent"),
+        sessions: Mutex::new(std::collections::HashMap::new()),
+        instance_id: "http-primary".into(),
+        principal_id: Some("caller".into()),
+        bearer_lease: Some(BearerLease {
+            source: source.clone(),
+            request: CredentialLeaseRequest::new("http-primary", ["bearer_token"]).unwrap(),
+        }),
+        operational_health: None,
+    };
+    let headers = |value: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {value}").parse().unwrap(),
+        );
+        headers
+    };
+
+    assert!(
+        authenticate(&state, &headers("first-token"))
+            .await
+            .is_some()
+    );
+    *source.state.lock().unwrap() = (2, "second-token".into(), false);
+    assert!(
+        authenticate(&state, &headers("first-token"))
+            .await
+            .is_none()
+    );
+    assert!(
+        authenticate(&state, &headers("second-token"))
+            .await
+            .is_some()
+    );
+    *source.state.lock().unwrap() = (2, "second-token".into(), true);
+    assert!(
+        authenticate(&state, &headers("second-token"))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn first_chat_cannot_create_a_session_without_agent_access() {
     let sessions: Arc<dyn SessionStore> =
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
@@ -119,7 +216,7 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http-private".into(),
         principal_id: Some("caller".into()),
-        bearer_token: Some("secret".into()),
+        bearer_lease: Some(bearer_lease("http-private", "secret")),
         operational_health: None,
     });
     let mut headers = HeaderMap::new();
@@ -130,7 +227,11 @@ async fn first_chat_cannot_create_a_session_without_agent_access() {
 
     let result = chat(
         State(state.clone()),
-        headers,
+        Extension(
+            authenticate(&state, &headers)
+                .await
+                .expect("test bearer credential is valid"),
+        ),
         Json(ChatRequest {
             session_id: "client-session".into(),
             message: "hello".into(),
@@ -156,7 +257,7 @@ async fn authentication_rejection_uses_runtime_status() {
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http-private".into(),
         principal_id: Some("caller".into()),
-        bearer_token: Some("secret".into()),
+        bearer_lease: Some(bearer_lease("http-private", "secret")),
         operational_health: None,
     };
     assert_eq!(
@@ -178,7 +279,7 @@ async fn operational_health_controls_readiness_and_metrics() {
         sessions: Mutex::new(std::collections::HashMap::new()),
         instance_id: "http".into(),
         principal_id: None,
-        bearer_token: None,
+        bearer_lease: None,
         operational_health: Some(Arc::new(|| {
             Box::pin(async {
                 Ok(OperationalHealth {
