@@ -798,4 +798,5 @@ CREATE TABLE IF NOT EXISTS agent_registry_heads (
 ";
 
 #[cfg(test)]
+#[path = "../tests/unit/agent_registry.rs"]
 mod tests;
