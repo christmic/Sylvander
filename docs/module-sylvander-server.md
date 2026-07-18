@@ -23,19 +23,24 @@ relevant types from `sylvander-runtime` are re-used internally:
 pub struct ServerConfig { /* see sylvander-runtime::config */ }
 pub enum ChannelTransportConfig {
     Unix    { path: PathBuf },
-    Http    { bind: String, principal_id: Option<String>, bearer_token: SecretRef },
-    Websocket { bind: String, principal_id: Option<String>, bearer_token: SecretRef },
+    Http    { bind: String, principal_id: String, bearer_token: SecretRef },
+    Websocket { bind: String, principal_id: String, bearer_token: SecretRef },
     DingTalk  { app_key: SecretRef, app_secret: SecretRef },
     Telegram  { token: SecretRef, bind: String, webhook_secret: SecretRef },
-    Wechat    { bind: String, corp_id: String, secret: SecretRef,
-                token: SecretRef, encoding_aes_key: SecretRef, .. },
+    Wechat    { bind: String, corp_id: String, agent_id: String,
+                secret: SecretRef, token: SecretRef,
+                encoding_aes_key: SecretRef },
 }
 
-pub trait SecretResolver { fn resolve(&self, ref: &SecretRef) -> Result<Secret, _>; }
-pub struct SystemSecretResolver;
+// Public transport-neutral contract in sylvander-channel:
+pub trait CredentialLeaseSource { async fn lease(&self, request: &CredentialLeaseRequest) -> ...; }
+
+// Internal server adapter:
+struct SystemChannelCredentialSource { /* SecretRef map + resolver + generation state */ }
 
 // Internal enum (sylvander-server/src/main.rs):
 enum ServerError {
+    MissingConfig,
     Config(ConfigError),
     Runtime(RuntimeError),
     UnknownAgent(String),
@@ -48,18 +53,22 @@ enum ServerError {
 }
 ```
 
-`ChannelTransportConfig` variants and their secret-resolution path
-(every `SecretRef` is resolved through `SystemSecretResolver::resolve`
-before the channel is constructed so startup fails fast):
+`ChannelTransportConfig` variants and their renewable credential slots:
 
-| Variant | Secrets | Resolved through |
-|---------|---------|------------------|
+| Variant | Lease slots | Operation boundary |
+|---------|-------------|--------------------|
 | `Unix` | none | n/a |
-| `Http` | `bearer_token` | `SystemSecretResolver` |
-| `Websocket` | `bearer_token` | `SystemSecretResolver` |
-| `DingTalk` | `app_key`, `app_secret` | `SystemSecretResolver` |
-| `Telegram` | `token`, `webhook_secret` | `SystemSecretResolver` |
-| `Wechat` | `secret`, `token`, `encoding_aes_key` | `SystemSecretResolver` (resolves `secret` eagerly to fail before traffic) |
+| `Http` | `bearer_token` | each chat authentication |
+| `Websocket` | `bearer_token` | each HTTP upgrade |
+| `DingTalk` | `app_key`, `app_secret` | Stream connection and access-token refresh |
+| `Telegram` | `bot_token`, `webhook_secret` | Bot API delivery and webhook authentication |
+| `Wechat` | `api_secret`, `callback_token`, `encoding_aes_key` | API token refresh and callback codec creation |
+
+The composition root passes only the source and stable channel instance to an
+adapter. `SystemChannelCredentialSource` resolves all requested slots together,
+publishes a new credential generation only after complete success, and issues
+a bounded lease for each operation. It re-reads file/environment references,
+so rotation does not require rebuilding the channel.
 
 ## 3. Architecture
 
@@ -79,7 +88,8 @@ before the channel is constructed so startup fails fast):
                                 v
                     +------------------------+
                     | build_channels         |
-                    |   - resolve secrets    |
+                    |   - register secret    |
+                    |     lease slots        |
                     |   - construct Arc<dyn  |
                     |     Channel> per kind  |
                     +-----------+------------+
@@ -111,14 +121,15 @@ The verified code path (`sylvander-server/src/main.rs:19`) is:
 1. `init_tracing` — installs a `tracing_subscriber::fmt` layer with the
    `EnvFilter` from `RUST_LOG`, switching to JSON when
    `SYLVANDER_LOG_FORMAT=json`.
-2. `load_config` — reads `SYLVANDER_CONFIG` (file path) when present;
-   otherwise falls back to `ServerConfig::from_legacy_env()` for
-   legacy environment-only deployments.
+2. `load_config` — the current product contract requires
+   `SYLVANDER_CONFIG` to identify the latest-version configuration file.
+   Missing, empty, non-Unicode, unreadable, old, or unknown configuration
+   fails before Runtime boot; the binary has no environment-only conversion.
 3. `Runtime::boot_config(config.clone())` — boots the runtime with the
    resolved `ServerConfig`.
 4. `build_channels(&config, &runtime)` — iterates enabled channels,
-   resolves each channel's secrets via `SystemSecretResolver`, and
-   constructs the matching `Arc<dyn Channel>` from the per-transport
+   maps each channel's secret references to an instance-scoped renewable
+   lease source, and constructs the matching `Arc<dyn Channel>` from the per-transport
    crates (`sylvander_channel_unix`, `sylvander_channel_http`,
    `sylvander_channel_ws`, `sylvander_channel_dingtalk`,
    `sylvander_channel_telegram`, `sylvander_channel_wechat`). Each
@@ -141,7 +152,7 @@ The verified code path (`sylvander-server/src/main.rs:19`) is:
 
 | Knob | Type | Effect |
 |------|------|--------|
-| `SYLVANDER_CONFIG` | path | Loads `ServerConfig` from the given file. Unset → `from_legacy_env` |
+| `SYLVANDER_CONFIG` | path | Required current contract: loads the versioned `ServerConfig` file |
 | `SYLVANDER_LOG_FORMAT` | `json` | Switches the tracing subscriber to JSON output |
 | `RUST_LOG` | env-filter | Standard `tracing_subscriber::EnvFilter` directives |
 | `config.server.name` | string | Logged as `server` on the running line |
@@ -149,28 +160,47 @@ The verified code path (`sylvander-server/src/main.rs:19`) is:
 | `config.channels[].enabled` | bool | Disabled channels are filtered out in `build_channels` |
 | `config.channels[].supervision.*` | restart policy | `max_restart_attempts`, `initial_backoff_ms`, `max_backoff_ms` |
 | `config.channels[].default_workspace` | optional binding | Maps to `SessionConfigOverrides::user_workspace` per session |
-| secret refs | `SecretRef` | Every variant has its secrets resolved at startup |
+| secret refs | `SecretRef` | Resolved atomically at each native operation boundary |
 
-## 6. Tests
+## 6. Composition extension rules
+
+- Add a new channel by extending the latest `ChannelTransportConfig`,
+  registering exact credential slots here, and returning one supervised
+  registration. Never pass resolved credential strings into a channel
+  constructor.
+- Provider, store, Agent, identity, and authorization construction belongs in
+  Runtime composition, not in this binary.
+- Startup must fail before listeners become ready when configuration, durable
+  state, or required identities cannot be validated. Renewable secret
+  unavailability fails the first dependent operation closed and remains
+  recoverable without restart.
+- A new wait branch must still converge on the single `Runtime::shutdown`
+  path; do not add independent process-lifetime owners.
+
+## 7. Tests
 
 | Surface | Test location | Notes |
 |---------|---------------|-------|
 | `Runtime::boot_config` | `sylvander-runtime` integration tests | Verifies supervisor behaviour for enabled/disabled channels |
 | `Runtime::start_channels` + shutdown | `sylvander-runtime` integration tests | End-to-end channel lifecycle |
-| `build_channels` paths | exercise via runtime tests; deterministic helpers in `sylvander-server/tests` if present | Channel construction logic depends only on `ServerConfig` |
+| channel credential source | `sylvander-server/tests/unit/credential.rs` | Rotation, atomic partial-failure handling, instance/slot isolation, redacted debug |
+| `build_channels` paths | exercise via runtime tests | Channel construction logic depends only on `ServerConfig` |
+| current config entry point | `sylvander-server/tests/unit/server_main.rs` | Missing/empty `SYLVANDER_CONFIG` fails; a present path is preserved |
 | `init_tracing` | smoke test via `RUST_LOG` override | Logs are not asserted in unit tests |
 
-The binary itself has no `#[cfg(test)]` block; its behaviour is
-verified through the runtime and channel integration tests plus the
-operations runbook drills.
+The production files contain only test-module path bridges; every test body
+lives under `sylvander-server/tests/`. Server behavior is verified through
+those white-box tests, runtime/channel integration tests, and the operations
+runbook drills.
 
-## 7. Related docs
+## 8. Related docs
 
 - [`docs/server-env.md`](server-env.md) — full env-var reference for `SYLVANDER_*`.
 - [`docs/server-configuration.md`](server-configuration.md) — `ServerConfig` schema, channel blocks, secret references.
 - [`docs/operations-runbook.md`](operations-runbook.md) — startup / shutdown / supervision drills.
 - [`docs/recovery-drills.md`](recovery-drills.md) — crash recovery for the supervisor.
 - [`docs/runtime-evidence.md`](runtime-evidence.md) — runtime evidence that exercises this composition root.
+- [`docs/credential-leases.md`](credential-leases.md) — renewable Provider and channel credentials.
 - [`AGENTS.md`](../AGENTS.md) — project-wide agent guide.
 
 Co-Authored-By: 🦀 <oraculo@oraculo.ai>
