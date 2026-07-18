@@ -62,6 +62,10 @@ impl Tool for SearchTool {
         }))
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::Read
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(Cap::Read) {
             return Ok(ToolOutput::err(

@@ -66,6 +66,10 @@ impl Tool for CommandTool {
         )
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::Terminal
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.execute_inner(ctx, input, None).await
     }
