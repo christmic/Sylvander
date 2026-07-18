@@ -29,8 +29,9 @@ async fn input_schema_has_content_field() {
     let schema = tool.input_schema();
     let props = schema.schema.get("properties").expect("has properties");
     assert!(props.get("content").is_some());
+    assert!(props.get("scope").is_some());
     assert_eq!(schema.schema["additionalProperties"], json!(false));
-    for server_owned in ["owner", "scope", "id", "created_at", "provenance"] {
+    for server_owned in ["owner", "id", "created_at", "provenance"] {
         assert!(props.get(server_owned).is_none());
     }
     let required = schema.schema.get("required").expect("has required");
@@ -115,7 +116,7 @@ async fn model_input_cannot_submit_server_owned_fields() {
     let store = test_store();
     let tool = MemoryWriteTool::new(store.clone());
     let c = ctx();
-    for forbidden in ["owner", "scope", "id", "created_at", "provenance"] {
+    for forbidden in ["owner", "id", "created_at", "provenance"] {
         let mut input = json!({"content": "must not persist"});
         input[forbidden] = json!("attacker-controlled");
         assert!(tool.execute(&c, input).await.is_err());
@@ -130,6 +131,59 @@ async fn model_input_cannot_submit_server_owned_fields() {
         .await
         .unwrap();
     assert!(results.is_empty());
+}
+
+#[derive(Default)]
+struct RecordingCandidateSink {
+    submissions: std::sync::Mutex<Vec<MemoryCandidateSubmission>>,
+}
+
+#[async_trait]
+impl MemoryCandidateSink for RecordingCandidateSink {
+    async fn submit(
+        &self,
+        _context: &ToolContext,
+        candidate: MemoryCandidateSubmission,
+    ) -> Result<
+        crate::curated_memory::MemoryCandidateReceipt,
+        crate::curated_memory::MemoryCandidateError,
+    > {
+        self.submissions.lock().unwrap().push(candidate);
+        Ok(crate::curated_memory::MemoryCandidateReceipt {
+            event_id: "candidate-event".into(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn production_candidate_path_queues_typed_scope_without_direct_storage() {
+    let sink = Arc::new(RecordingCandidateSink::default());
+    let tool = MemoryWriteTool::candidate(sink.clone());
+    let result = tool
+        .execute(
+            &ctx(),
+            json!({
+                "content": "Workspace uses a custom release workflow",
+                "tags": ["workspace", "release"],
+                "scope": "workspace_knowledge"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert!(!result.is_error);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&result.content).unwrap(),
+        json!({"status": "queued", "event_id": "candidate-event"})
+    );
+    assert_eq!(
+        *sink.submissions.lock().unwrap(),
+        vec![MemoryCandidateSubmission {
+            scope: CuratedMemoryScope::WorkspaceKnowledge,
+            content: "Workspace uses a custom release workflow".into(),
+            tags: vec!["workspace".into(), "release".into()],
+        }]
+    );
 }
 
 #[tokio::test]

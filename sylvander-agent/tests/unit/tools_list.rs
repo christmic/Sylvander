@@ -12,7 +12,7 @@ async fn lists_recursively_with_explicit_truncation() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/lib.rs"), "fn crab() {}\n").unwrap();
-    let output = ListTool::new("/")
+    let output = ListTool::new()
         .execute(
             &context(dir.path()),
             json!({"path": ".", "recursive": true, "max_results": 1}),
@@ -27,7 +27,7 @@ async fn lists_recursively_with_explicit_truncation() {
 
 #[test]
 fn schema_and_runtime_reject_unbounded_inputs() {
-    let schema = ListTool::new("/").input_schema();
+    let schema = ListTool::new().input_schema();
     assert_eq!(schema.schema["additionalProperties"], false);
     assert_eq!(
         schema.schema["properties"]["max_results"]["maximum"],
