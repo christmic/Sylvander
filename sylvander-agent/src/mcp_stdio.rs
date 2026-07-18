@@ -5,7 +5,6 @@
 //! discover the tools, and register the returned [`McpTool`](crate::mcp_stdio::McpTool) values in the
 //! ordinary [`ToolRegistry`](crate::tool::ToolRegistry).
 
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -34,6 +33,25 @@ const MCP_HEALTH_ACTIVE: u8 = 1;
 const MCP_HEALTH_DEGRADED: u8 = 2;
 const MCP_HEALTH_UNAVAILABLE: u8 = 3;
 const MCP_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Complete MCP result handed to a Runtime-owned governed artifact store.
+#[derive(Debug, Clone)]
+pub struct McpResultArtifact {
+    pub user_id: String,
+    pub session_id: String,
+    pub server: String,
+    pub operation: String,
+    pub media_type: String,
+    pub payload: Vec<u8>,
+    pub created_at: i64,
+}
+
+/// Storage boundary for full MCP results. Implementations return an opaque,
+/// user-safe locator rather than a host filesystem path.
+#[async_trait]
+pub trait McpResultArtifactSink: Send + Sync {
+    async fn persist(&self, artifact: McpResultArtifact) -> Result<String, String>;
+}
 
 /// Errors raised while starting or communicating with an MCP server.
 #[derive(Debug, Error)]
@@ -94,7 +112,7 @@ struct McpInner {
     reconnect: Mutex<()>,
     io: Mutex<ProcessIo>,
     child: Mutex<Child>,
-    result_artifact_root: Option<PathBuf>,
+    result_artifact_sink: Option<Arc<dyn McpResultArtifactSink>>,
     tool_definitions: std::sync::RwLock<Vec<JsonValue>>,
     resource_definitions: std::sync::RwLock<Vec<JsonValue>>,
     supports_resources: AtomicBool,
@@ -173,23 +191,23 @@ impl McpStdioClient {
         Self::connect_inner(config, request_timeout, None, true).await
     }
 
-    /// Start a server and persist every complete tool result below `root`.
+    /// Start a server and persist every complete tool result through `sink`.
     ///
     /// Callers still receive a bounded summary. The durable JSON artifact is
     /// retained for later inspection, debugging, and evidence-driven
     /// improvement without flooding the model or UI.
-    pub async fn connect_with_result_artifacts(
+    pub async fn connect_with_result_artifact_sink(
         config: &McpServerConfig,
         request_timeout: Duration,
-        root: PathBuf,
+        sink: Arc<dyn McpResultArtifactSink>,
     ) -> Result<Self, McpError> {
-        Self::connect_inner(config, request_timeout, Some(root), true).await
+        Self::connect_inner(config, request_timeout, Some(sink), true).await
     }
 
     async fn connect_inner(
         config: &McpServerConfig,
         request_timeout: Duration,
-        result_artifact_root: Option<PathBuf>,
+        result_artifact_sink: Option<Arc<dyn McpResultArtifactSink>>,
         start_health_monitor: bool,
     ) -> Result<Self, McpError> {
         let mut command = Command::new(&config.command);
@@ -227,7 +245,7 @@ impl McpStdioClient {
                     stdout: BufReader::new(stdout),
                 }),
                 child: Mutex::new(child),
-                result_artifact_root,
+                result_artifact_sink,
                 tool_definitions: std::sync::RwLock::new(Vec::new()),
                 resource_definitions: std::sync::RwLock::new(Vec::new()),
                 supports_resources: AtomicBool::new(false),
@@ -381,23 +399,19 @@ impl McpStdioClient {
         })
     }
 
-    async fn read_resource(&self, uri: &str, session_id: &str) -> Result<ToolOutput, McpError> {
+    async fn read_resource(
+        &self,
+        uri: &str,
+        user_id: &str,
+        session_id: &str,
+    ) -> Result<ToolOutput, McpError> {
         let result = self
             .request("resources/read", json!({ "uri": uri }))
             .await?;
-        let artifact = match &self.inner.result_artifact_root {
-            Some(root) => persist_result_artifact(
-                root,
-                session_id,
-                &self.inner.server_name,
-                "read_resource",
-                &result,
-            )
-            .await
-            .ok(),
-            None => None,
-        };
-        Ok(map_tool_result(&result, artifact.as_deref()))
+        let locator = self
+            .persist_result_artifact(user_id, session_id, "read_resource", &result)
+            .await;
+        Ok(map_tool_result(&result, locator.as_deref()))
     }
 
     /// Stop the child process and wait for it to exit.
@@ -437,6 +451,7 @@ impl McpStdioClient {
         &self,
         name: &str,
         arguments: JsonValue,
+        user_id: &str,
         session_id: &str,
     ) -> Result<ToolOutput, McpError> {
         let generation = self.inner.generation.load(Ordering::Acquire);
@@ -451,33 +466,10 @@ impl McpStdioClient {
                 self.inner
                     .health
                     .store(MCP_HEALTH_ACTIVE, Ordering::Release);
-                let artifact = match &self.inner.result_artifact_root {
-                    Some(root) => {
-                        match persist_result_artifact(
-                            root,
-                            session_id,
-                            &self.inner.server_name,
-                            name,
-                            &result,
-                        )
-                        .await
-                        {
-                            Ok(path) => Some(path),
-                            Err(error) => {
-                                tracing::warn!(
-                                    server = %self.inner.server_name,
-                                    tool = name,
-                                    session_id,
-                                    error = %error,
-                                    "failed to persist complete MCP result artifact"
-                                );
-                                None
-                            }
-                        }
-                    }
-                    None => None,
-                };
-                Ok(map_tool_result(&result, artifact.as_deref()))
+                let locator = self
+                    .persist_result_artifact(user_id, session_id, name, &result)
+                    .await;
+                Ok(map_tool_result(&result, locator.as_deref()))
             }
             Err(error) => {
                 if is_recoverable_transport_error(&error) {
@@ -504,7 +496,7 @@ impl McpStdioClient {
         let replacement = Self::connect_inner(
             &self.inner.config,
             self.inner.request_timeout,
-            self.inner.result_artifact_root.clone(),
+            self.inner.result_artifact_sink.clone(),
             false,
         )
         .await?;
@@ -538,6 +530,42 @@ impl McpStdioClient {
             .health
             .store(MCP_HEALTH_ACTIVE, Ordering::Release);
         Ok(())
+    }
+
+    async fn persist_result_artifact(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        operation: &str,
+        result: &JsonValue,
+    ) -> Option<String> {
+        let sink = self.inner.result_artifact_sink.as_ref()?;
+        let payload =
+            serde_json::to_vec(result).expect("serializing an MCP JSON result cannot fail");
+        match sink
+            .persist(McpResultArtifact {
+                user_id: user_id.to_owned(),
+                session_id: session_id.to_owned(),
+                server: self.inner.server_name.clone(),
+                operation: operation.to_owned(),
+                media_type: "application/json".into(),
+                payload,
+                created_at: crate::session::now_secs(),
+            })
+            .await
+        {
+            Ok(locator) => Some(locator),
+            Err(error) => {
+                tracing::warn!(
+                    server = %self.inner.server_name,
+                    operation,
+                    session_id,
+                    error,
+                    "failed to persist governed MCP result artifact"
+                );
+                None
+            }
+        }
     }
 
     async fn request(&self, method: &str, params: JsonValue) -> Result<JsonValue, McpError> {
@@ -794,7 +822,12 @@ impl Tool for McpTool {
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.client
-            .call_tool(&self.remote_name, input, &ctx.session_id().0)
+            .call_tool(
+                &self.remote_name,
+                input,
+                &ctx.user_id().0,
+                &ctx.session_id().0,
+            )
             .await
             .map_err(|error| match error {
                 McpError::Timeout { duration, .. } => ToolError::Timeout(duration),
@@ -886,7 +919,7 @@ impl Tool for McpResourceTool {
                     .filter(|uri| !uri.is_empty())
                     .ok_or_else(|| ToolError::Other("resource URI is required".into()))?;
                 self.client
-                    .read_resource(uri, &ctx.session_id().0)
+                    .read_resource(uri, &ctx.user_id().0, &ctx.session_id().0)
                     .await
                     .map_err(|error| ToolError::Other(error.to_string()))
             }
@@ -974,7 +1007,7 @@ async fn read_frame(
     })
 }
 
-fn map_tool_result(result: &JsonValue, artifact: Option<&Path>) -> ToolOutput {
+fn map_tool_result(result: &JsonValue, artifact_locator: Option<&str>) -> ToolOutput {
     let is_error = result
         .get("isError")
         .and_then(JsonValue::as_bool)
@@ -1010,9 +1043,9 @@ fn map_tool_result(result: &JsonValue, artifact: Option<&Path>) -> ToolOutput {
             serde_json::to_string_pretty(result).unwrap_or_else(|_| "<invalid MCP result>".into()),
         );
     }
-    let content = match artifact {
-        Some(path) => {
-            let suffix = format!("\n\nFull result artifact: {}", path.display());
+    let content = match artifact_locator {
+        Some(locator) => {
+            let suffix = format!("\n\nFull result artifact: {locator}");
             let summary_limit = MAX_TOOL_RESULT_BYTES.saturating_sub(suffix.len());
             format!(
                 "{}{suffix}",
@@ -1025,46 +1058,6 @@ fn map_tool_result(result: &JsonValue, artifact: Option<&Path>) -> ToolOutput {
         ToolOutput::err(content)
     } else {
         ToolOutput::ok(content)
-    }
-}
-
-async fn persist_result_artifact(
-    root: &Path,
-    session_id: &str,
-    server: &str,
-    tool: &str,
-    result: &JsonValue,
-) -> std::io::Result<PathBuf> {
-    let directory = root
-        .join(safe_path_component(session_id))
-        .join(safe_path_component(server));
-    tokio::fs::create_dir_all(&directory).await?;
-    let id = uuid::Uuid::new_v4();
-    let filename = format!("{}-{id}.json", safe_path_component(tool));
-    let path = directory.join(filename);
-    let temporary = path.with_extension("json.tmp");
-    let body =
-        serde_json::to_vec_pretty(result).expect("serializing an MCP JSON result cannot fail");
-    tokio::fs::write(&temporary, body).await?;
-    tokio::fs::rename(&temporary, &path).await?;
-    Ok(path)
-}
-
-fn safe_path_component(value: &str) -> String {
-    let sanitized = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
-        "_".into()
-    } else {
-        sanitized
     }
 }
 

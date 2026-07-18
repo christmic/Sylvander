@@ -1917,7 +1917,7 @@ impl AgentRunInner {
                     metadata.clone(),
                     vec![self.id.clone()],
                 );
-                stored.effective_config = Some(self.legacy_session_config(metadata).await);
+                stored.effective_config = Some(self.direct_session_config(metadata).await);
                 if let Err(error) = store.save(&stored).await {
                     warn!(%session_id, %error, "failed to persist joined session");
                     return context;
@@ -1956,14 +1956,14 @@ impl AgentRunInner {
         context
     }
 
-    async fn legacy_session_config(
+    async fn direct_session_config(
         &self,
         metadata: &SessionMetadata,
     ) -> sylvander_protocol::SessionEffectiveConfig {
         let runtime = self.runtime_models.read().await;
         let source = || sylvander_protocol::SessionConfigSource {
-            kind: sylvander_protocol::SessionConfigSourceKind::LegacyMigration,
-            reference: Some("legacy-channel-session".into()),
+            kind: sylvander_protocol::SessionConfigSourceKind::AgentDefault,
+            reference: Some("direct-agent".into()),
         };
         let prompt = self
             .loop_config
@@ -1976,27 +1976,37 @@ impl AgentRunInner {
             .and_then(|resolver| resolver.resolve(&runtime.current, None, None).ok());
         let (prompt_profile, system_prompt_sha256, prompt_manifest) = resolved_prompt.map_or_else(
             || {
+                let sha256 = format!("{:x}", Sha256::digest(prompt.as_bytes()));
                 (
                     None,
-                    format!("{:x}", Sha256::digest(prompt.as_bytes())),
-                    None,
+                    sha256.clone(),
+                    sylvander_protocol::PromptManifest {
+                        layers: vec![sylvander_protocol::PromptLayerDigest {
+                            kind: sylvander_protocol::PromptLayerKind::Agent,
+                            reference: Some("direct-agent".into()),
+                            sha256: sha256.clone(),
+                            byte_count: prompt.len() as u64,
+                        }],
+                        aggregate_sha256: sha256,
+                        total_bytes: prompt.len() as u64,
+                    },
                 )
             },
             |resolved| {
                 (
                     resolved.profile_id,
                     resolved.system_prompt_sha256,
-                    Some(resolved.manifest),
+                    resolved.manifest,
                 )
             },
         );
         sylvander_protocol::SessionEffectiveConfig {
             agent_id: self.id.clone(),
-            agent_revision: 0,
+            agent_revision: 1,
             provider_id: runtime.current.provider_id.clone(),
-            provider_revision: None,
+            provider_revision: 1,
             model_id: runtime.current.model_id.clone(),
-            model_revision: None,
+            model_revision: 1,
             reasoning_effort: runtime.reasoning_effort,
             permissions: self.runtime_permissions.read().await.clone(),
             prompt_profile,
@@ -2223,7 +2233,7 @@ impl AgentRunInner {
                     )
                     .map_err(|_| prompt_integrity_error())?;
                 if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
-                    || effective.prompt_manifest.as_ref() != Some(&resolved_prompt.manifest)
+                    || effective.prompt_manifest != resolved_prompt.manifest
                 {
                     return Err(prompt_integrity_error());
                 }

@@ -543,6 +543,8 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
 
     let directory = tempfile::TempDir::new().expect("temporary directory");
     let database = directory.path().join("sessions.db");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("empty workspace");
     let store: Arc<dyn SessionStore> = Arc::new(
         SqliteSessionStore::open(&database)
             .await
@@ -556,7 +558,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         .build()
         .expect("spec");
     let metadata = SessionMetadata {
-        workspace: "/tmp".into(),
+        workspace,
         name: "configured".into(),
         user_id: "user-1".into(),
     };
@@ -604,14 +606,14 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         agent_id: spec.id.clone(),
         agent_revision: 1,
         provider_id: spec.model.provider.clone(),
-        provider_revision: None,
+        provider_revision: 1,
         model_id: spec.model.model_name.clone(),
-        model_revision: None,
+        model_revision: 1,
         reasoning_effort: ReasoningEffort::Off,
         permissions: PermissionProfile::default(),
         prompt_profile: Some("session".into()),
         system_prompt_sha256: composed.system_prompt_sha256,
-        prompt_manifest: Some(composed.manifest),
+        prompt_manifest: composed.manifest,
         agent_workspace: None,
         user_workspace: None,
         workspace_mounts: Vec::new(),
@@ -651,13 +653,16 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
     let requests = server.received_requests().await.expect("provider requests");
     let body: serde_json::Value =
         serde_json::from_slice(&requests[0].body).expect("provider request body");
-    assert_eq!(
-        body["system"][0]["text"],
-        format!(
-            "{}\n\nsession profile",
-            sylvander_agent::prompt::SHARED_SAFETY_PROMPT
-        )
+    let system = body["system"][0]["text"]
+        .as_str()
+        .expect("typed system prompt");
+    assert!(system.contains(sylvander_agent::prompt::SHARED_SAFETY_PROMPT));
+    assert!(system.contains("session profile"));
+    assert!(
+        system.find("kind=safety").expect("safety layer")
+            < system.find("kind=agent").expect("agent layer")
     );
+    assert!(!system.contains("kind=workspace_knowledge"));
 
     let connection = rusqlite::Connection::open(database).expect("inspect database");
     let turn_count: i64 = connection

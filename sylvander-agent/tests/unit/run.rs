@@ -312,21 +312,25 @@ fn remote_effective_config(
     workspace: &str,
 ) -> sylvander_protocol::SessionEffectiveConfig {
     let source = || sylvander_protocol::SessionConfigSource {
-        kind: sylvander_protocol::SessionConfigSourceKind::LegacyMigration,
+        kind: sylvander_protocol::SessionConfigSourceKind::RequestOverride,
         reference: None,
     };
     sylvander_protocol::SessionEffectiveConfig {
         agent_id: AgentId::new("test-agent"),
-        agent_revision: 0,
+        agent_revision: 1,
         provider_id: "test".into(),
-        provider_revision: None,
+        provider_revision: 1,
         model_id: "test".into(),
-        model_revision: None,
+        model_revision: 1,
         reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         permissions: sylvander_protocol::PermissionProfile::default(),
         prompt_profile: None,
         system_prompt_sha256: String::new(),
-        prompt_manifest: None,
+        prompt_manifest: sylvander_protocol::PromptManifest {
+            layers: Vec::new(),
+            aggregate_sha256: String::new(),
+            total_bytes: 0,
+        },
         agent_workspace: None,
         user_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
             execution_target: target_id.into(),
@@ -425,7 +429,7 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
         metadata.clone(),
         vec![run.id().clone()],
     );
-    stored.effective_config = Some(run.inner.legacy_session_config(&metadata).await);
+    stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
     stored
         .effective_config
         .as_mut()
@@ -557,10 +561,10 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
     let prompt_snapshot = resolver
         .resolve(&selection, None, Some("respond with evidence"))
         .unwrap();
-    let mut effective = run.inner.legacy_session_config(&metadata).await;
+    let mut effective = run.inner.direct_session_config(&metadata).await;
     effective.agent_revision = 3;
     effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
-    effective.prompt_manifest = Some(prompt_snapshot.manifest);
+    effective.prompt_manifest = prompt_snapshot.manifest;
     stored.effective_config = Some(effective);
     store.save(&stored).await.unwrap();
 
@@ -620,14 +624,12 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
         SenderIdentity,
         SystemHash,
         LayerHash,
-        MissingManifest,
     }
 
     for tamper in [
         Tamper::SenderIdentity,
         Tamper::SystemHash,
         Tamper::LayerHash,
-        Tamper::MissingManifest,
     ] {
         let directory = tempfile::TempDir::new().expect("temporary directory");
         let database = directory.path().join("sessions.db");
@@ -680,18 +682,16 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
             vec![run.id().clone()],
         );
         stored.config_overrides.system_prompt = Some("private prompt sentinel".into());
-        let mut effective = run.inner.legacy_session_config(&metadata).await;
+        let mut effective = run.inner.direct_session_config(&metadata).await;
         effective.agent_revision = 1;
         effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
-        effective.prompt_manifest = Some(prompt_snapshot.manifest);
+        effective.prompt_manifest = prompt_snapshot.manifest;
         match tamper {
             Tamper::SenderIdentity => {}
             Tamper::SystemHash => effective.system_prompt_sha256 = "tampered".into(),
             Tamper::LayerHash => {
-                effective.prompt_manifest.as_mut().expect("manifest").layers[0].sha256 =
-                    "tampered".into();
+                effective.prompt_manifest.layers[0].sha256 = "tampered".into();
             }
-            Tamper::MissingManifest => effective.prompt_manifest = None,
         }
         stored.effective_config = Some(effective);
         store.save(&stored).await.expect("save tampered session");
@@ -1982,7 +1982,7 @@ async fn durable_session_history_restores_into_agent_context() {
 }
 
 #[tokio::test]
-async fn legacy_join_persists_an_auditable_effective_configuration() {
+async fn direct_join_persists_an_auditable_effective_configuration() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let resolver = Arc::new(
@@ -2000,7 +2000,7 @@ async fn legacy_join_persists_an_auditable_effective_configuration() {
             .await
             .expect("store"),
     );
-    let session_id = SessionId::new("legacy-session");
+    let session_id = SessionId::new("direct-session");
     let metadata = test_metadata();
     let run = AgentRun::builder(spec, client)
         .bus(bus)
@@ -2016,13 +2016,13 @@ async fn legacy_join_persists_an_auditable_effective_configuration() {
     let stored = store.get(&session_id).await.unwrap().unwrap();
     let effective = stored
         .effective_config
-        .expect("legacy session must snapshot runtime defaults");
+        .expect("direct session must snapshot runtime defaults");
     assert_eq!(effective.agent_id, run.id().clone());
-    assert!(effective.prompt_manifest.is_some());
+    assert!(!effective.prompt_manifest.layers.is_empty());
     assert_eq!(effective.user_workspace.unwrap().path, metadata.workspace);
     assert_eq!(
         effective.provenance.model.kind,
-        sylvander_protocol::SessionConfigSourceKind::LegacyMigration
+        sylvander_protocol::SessionConfigSourceKind::AgentDefault
     );
 }
 

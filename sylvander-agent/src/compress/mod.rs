@@ -1,20 +1,20 @@
 //! Compression pipeline for the agent loop's message history.
 //!
-//! M3 ships a multi-layer [`CompressionPipeline`] (see
+//! M3 ships a multi-layer [`CompressionPipeline`](crate::compress::pipeline::CompressionPipeline) (see
 //! `pipeline.rs` and `layers/`) that runs cheap-to-expensive layers
 //! in sequence. The pipeline is the only compression path — there's
 //! no legacy single-strategy fallback.
 //!
 //! Layers available:
-//! - L0: [`ToolResultBudgetLayer`](self::layers::tool_result_budget::ToolResultBudgetLayer)
+//! - L0: [`ToolResultBudgetLayer`](crate::compress::layers::tool_result_budget::ToolResultBudgetLayer)
 //!   — cap inline `tool_result` size via disk offload
-//! - L1: [`OrphanSnipLayer`](self::layers::orphan_snip::OrphanSnipLayer)
+//! - L1: [`OrphanSnipLayer`](crate::compress::layers::orphan_snip::OrphanSnipLayer)
 //!   — drop `tool_result` blocks with no matching `tool_use`
-//! - L2: [`MicroCompactLayer`](self::layers::micro_compact::MicroCompactLayer)
+//! - L2: [`MicroCompactLayer`](crate::compress::layers::micro_compact::MicroCompactLayer)
 //!   — replace old `tool_result`s with placeholders
-//! - L3: [`ContextCollapseLayer`](self::layers::context_collapse::ContextCollapseLayer)
+//! - L3: [`ContextCollapseLayer`](crate::compress::layers::context_collapse::ContextCollapseLayer)
 //!   — trim old thinking blocks
-//! - L4: [`AutoCompactLayer`](self::layers::auto_compact::AutoCompactLayer)
+//! - L4: [`AutoCompactLayer`](crate::compress::layers::auto_compact::AutoCompactLayer)
 //!   — LLM-driven summarization when context budget is exhausted
 
 pub mod auto_compact_llm;
@@ -34,7 +34,7 @@ use crate::compress::pipeline::CompressionPipeline;
 /// Context passed to each layer in a pipeline.
 ///
 /// Layers mutate `messages` (the model-visible history) and report
-/// what they did via a [`LayerReport`](self::layer::LayerReport).
+/// what they did via a [`LayerReport`](crate::compress::layer::LayerReport).
 pub struct CompressContext<'a> {
     /// Mutable message history. Layers may drop from the front or
     /// rewrite inner blocks in place.

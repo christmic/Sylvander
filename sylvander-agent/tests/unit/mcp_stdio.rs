@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 
 use tempfile::TempDir;
 
@@ -12,6 +13,7 @@ import sys
 import time
 
 log_path = os.environ["MCP_TEST_LOG"]
+slow_seconds = float(os.environ.get("MCP_TEST_SLOW_SECONDS", "0.3"))
 
 def read_message():
     line = sys.stdin.readline()
@@ -39,7 +41,7 @@ while True:
     elif method == "ping":
         send({"jsonrpc":"2.0", "id":message["id"], "result":{}})
     elif method == "slow":
-        time.sleep(0.3)
+        time.sleep(slow_seconds)
         send({"jsonrpc":"2.0", "id":message["id"], "result":{}})
     elif method == "tools/list":
         send({"jsonrpc":"2.0", "method":"notifications/tools/list_changed"})
@@ -71,7 +73,7 @@ while True:
         if arguments.get("crash"):
             os._exit(3)
         if arguments.get("sleep"):
-            time.sleep(0.3)
+            time.sleep(slow_seconds)
         send({"jsonrpc":"2.0", "id":message["id"], "result":{
             "content":[
                 {"type":"text", "text":"echo:" + arguments.get("value", "")},
@@ -90,6 +92,25 @@ fn fake_config(temp: &TempDir) -> McpServerConfig {
         command: "python3".into(),
         args: vec![script.display().to_string()],
         envs: HashMap::from([("MCP_TEST_LOG".into(), log.display().to_string())]),
+    }
+}
+
+async fn wait_for_log_method_count(path: &Path, method: &str, expected: usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let count = fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|entry| *entry == method)
+            .count();
+        if count >= expected {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {expected} `{method}` log entries; observed {count}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -195,25 +216,29 @@ async fn tool_call_timeout_is_reported_and_process_can_be_stopped() {
 #[tokio::test]
 async fn timeout_and_dropped_request_emit_protocol_cancellation() {
     let temp = TempDir::new().expect("temp dir");
-    let config = fake_config(&temp);
-    let client = McpStdioClient::connect(&config, Duration::from_millis(100))
+    let mut config = fake_config(&temp);
+    config
+        .envs
+        .insert("MCP_TEST_SLOW_SECONDS".into(), "3".into());
+    let client = McpStdioClient::connect(&config, Duration::from_secs(2))
         .await
         .expect("connect");
+    let log_path = temp.path().join("requests.log");
 
     let error = client
         .request("slow", json!({}))
         .await
         .expect_err("slow request must time out");
     assert!(matches!(error, McpError::Timeout { .. }));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_log_method_count(&log_path, "notifications/cancelled", 1).await;
 
     let interrupted_client = client.clone();
     let interrupted =
         tokio::spawn(async move { interrupted_client.request("slow", json!({})).await });
-    tokio::time::sleep(Duration::from_millis(25)).await;
+    wait_for_log_method_count(&log_path, "slow", 2).await;
     interrupted.abort();
     assert!(interrupted.await.unwrap_err().is_cancelled());
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    wait_for_log_method_count(&log_path, "notifications/cancelled", 2).await;
 
     let feature = DynamicToolSource::platform_feature(&client).expect("MCP health");
     assert!(feature.summary.contains("2 cancellations"));
@@ -355,9 +380,8 @@ fn public_tool_names_are_stable_bounded_and_mcp_namespaced() {
     );
 }
 
-#[tokio::test]
-async fn complete_results_are_persisted_but_presented_as_bounded_summaries() {
-    let directory = tempfile::tempdir().expect("tempdir");
+#[test]
+fn complete_results_are_persisted_but_presented_as_bounded_summaries() {
     let result = json!({
         "content": [{
             "type": "text",
@@ -368,23 +392,13 @@ async fn complete_results_are_persisted_but_presented_as_bounded_summaries() {
         }
     });
 
-    let path = persist_result_artifact(
-        directory.path(),
-        "session/one",
-        "search server",
-        "lookup",
-        &result,
-    )
-    .await
-    .expect("persist result");
-    let output = map_tool_result(&result, Some(&path));
+    let output = map_tool_result(&result, Some("evidence-artifact:artifact-1"));
 
-    assert!(path.starts_with(directory.path().join("session_one/search_server")));
-    assert_eq!(
-        serde_json::from_slice::<JsonValue>(&tokio::fs::read(&path).await.unwrap()).unwrap(),
-        result
-    );
     assert!(output.content.contains("MCP result truncated"));
-    assert!(output.content.contains("Full result artifact:"));
+    assert!(
+        output
+            .content
+            .contains("Full result artifact: evidence-artifact:artifact-1")
+    );
     assert!(output.content.len() <= MAX_TOOL_RESULT_BYTES);
 }

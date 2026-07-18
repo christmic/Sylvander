@@ -2,8 +2,8 @@ use super::*;
 use std::path::PathBuf;
 
 /// Default session context used by every test. Identity is the
-/// legacy "user-1" from `test_meta` so existing assertions keep
-/// working after the `SessionContext` split.
+/// stable "user-1" from `test_meta` so ownership assertions share one
+/// authenticated subject.
 fn ctx() -> sylvander_protocol::SessionContext {
     sylvander_protocol::SessionContext::new("user-1", "agent-1", "sess-1")
 }
@@ -35,14 +35,18 @@ fn effective_config() -> sylvander_protocol::SessionEffectiveConfig {
         agent_id: AgentId::new("agent-1"),
         agent_revision: 7,
         provider_id: "primary".into(),
-        provider_revision: None,
+        provider_revision: 1,
         model_id: "model-a".into(),
-        model_revision: None,
+        model_revision: 1,
         reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
         permissions: sylvander_protocol::PermissionProfile::default(),
         prompt_profile: Some("coding".into()),
         system_prompt_sha256: "abc123".into(),
-        prompt_manifest: None,
+        prompt_manifest: sylvander_protocol::PromptManifest {
+            layers: Vec::new(),
+            aggregate_sha256: "manifest".into(),
+            total_bytes: 0,
+        },
         agent_workspace: Some(sylvander_protocol::SessionWorkspaceBinding {
             execution_target: "local".into(),
             path: "/agent".into(),
@@ -95,7 +99,10 @@ async fn save_and_get() {
     let store = SqliteSessionStore::open_in_memory().await.unwrap();
     let mut session = make_session("s1", SessionLifetime::Persistent);
     session.config_revision = 3;
-    session.config_overrides.model_id = Some("model-a".into());
+    session.config_overrides.model = Some(sylvander_protocol::ModelSelection {
+        provider_id: "provider-a".into(),
+        model_id: "model-a".into(),
+    });
     session.effective_config = Some(effective_config());
     store.save(&session).await.unwrap();
 
@@ -105,7 +112,13 @@ async fn save_and_get() {
     assert_eq!(s.agents.len(), 1);
     assert_eq!(s.agents[0], AgentId::new("agent-1"));
     assert_eq!(s.config_revision, 3);
-    assert_eq!(s.config_overrides.model_id.as_deref(), Some("model-a"));
+    assert_eq!(
+        s.config_overrides.model,
+        Some(sylvander_protocol::ModelSelection {
+            provider_id: "provider-a".into(),
+            model_id: "model-a".into(),
+        })
+    );
     assert_eq!(s.effective_config, session.effective_config);
 }
 
@@ -147,7 +160,10 @@ async fn config_updates_are_optimistic_and_turn_start_is_atomic() {
     store.save(&session).await.unwrap();
     let effective = effective_config();
     let overrides = sylvander_protocol::SessionConfigOverrides {
-        model_id: Some("model-a".into()),
+        model: Some(sylvander_protocol::ModelSelection {
+            provider_id: "primary".into(),
+            model_id: "model-a".into(),
+        }),
         ..Default::default()
     };
 

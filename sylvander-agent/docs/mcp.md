@@ -31,9 +31,12 @@ cancellation asynchronously. The child remains kill-on-drop as the final
 process boundary.
 
 Frames are limited to 16 MiB. Model- and UI-facing results are Unicode-safe,
-bounded head/tail summaries; complete JSON results can be persisted as
-artifacts below the Runtime data directory. Inline binary data is represented
-without copying its encoded payload into the transcript.
+bounded head/tail summaries. With Runtime evidence encryption configured,
+complete JSON results are routed to the tenant/user-scoped governed artifact
+store and the summary carries only an opaque `evidence-artifact:` locator.
+Agent code never writes plaintext result files below the Runtime data
+directory. Inline binary data is represented without copying its encoded
+payload into the transcript.
 
 ## Inspection
 

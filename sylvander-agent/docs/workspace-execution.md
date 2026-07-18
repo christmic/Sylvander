@@ -40,6 +40,12 @@ inspection boundary through both `LocalExecutor` and `WorkspaceRouter`.
 Separate regressions cover query limits, read-only mounts, output pressure,
 UTF-8 chunk boundaries, timeout, dropped futures, and unavailable targets.
 
-Remote SSH process-tree semantics remain deferred to P3.3. Container resource
-policy and managed sandboxes remain P3.4; neither changes the Agent-facing
-tool contract.
+The OpenSSH executor uses strict host-key verification, a deployment-owned
+known-hosts file, bounded control connection reuse, and a remote process-group
+wrapper. Timeout, interrupt, or dropped execution futures terminate the
+transport and the owned remote group. Remote Git worktrees use durable local
+lease manifests plus create, inspect, accept, discard, and restart
+reconciliation against the configured remote worktree root. The opt-in
+real-SSH journey is the deployment acceptance gate because it requires a
+disposable SSH daemon and repository. Container resource policy and managed
+sandboxes use the same Agent-facing contract.

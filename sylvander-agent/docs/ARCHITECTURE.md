@@ -59,6 +59,21 @@ AgentRun / AgentRunEngine
 - Use `WorkspaceExecutor` for file and command work so local, container, and
   later remote targets share one result contract.
 
+## Verification
+
+White-box tests live under `tests/unit/` and are linked through test-only path
+bridges; public journeys live directly under `tests/`. The suite covers
+authenticated run issuance, typed turn-context budgeting, provider conversion,
+tool capability denial, approval/AskUser gates, workspace executors, memory,
+MCP, Skills, compression, cancellation, and durable session restore. Real
+provider tests are explicitly ignored unless credentials are supplied.
+
+```bash
+cargo test -p sylvander-agent --all-targets --locked
+cargo clippy -p sylvander-agent --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-agent --no-deps --locked
+```
+
 ## Related documentation
 
 - [`workspace-execution.md`](workspace-execution.md) — executor and coding tool
