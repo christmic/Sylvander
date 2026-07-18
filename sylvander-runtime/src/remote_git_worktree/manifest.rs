@@ -32,11 +32,7 @@ pub(super) struct LeaseManifestStore {
 }
 
 impl LeaseManifestStore {
-    pub(super) fn new(
-        state_root: PathBuf,
-        remote_root: PathBuf,
-        target_id: String,
-    ) -> Self {
+    pub(super) fn new(state_root: PathBuf, remote_root: PathBuf, target_id: String) -> Self {
         Self {
             state_root,
             remote_root,
