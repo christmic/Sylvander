@@ -72,6 +72,10 @@ impl Tool for MemoryReadTool {
         schema
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::Read
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryRead) {
             return Ok(ToolOutput::err("memory read capability not granted"));

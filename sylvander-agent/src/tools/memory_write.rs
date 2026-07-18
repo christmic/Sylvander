@@ -65,6 +65,10 @@ impl Tool for MemoryWriteTool {
         schema
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::MemoryCandidate
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         if !ctx.has_cap(crate::tool_context::Cap::MemoryWrite) {
             return Ok(ToolOutput::err("memory write capability not granted"));

@@ -41,6 +41,10 @@ impl Tool for PresentPlanTool {
         )
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::Control
+    }
+
     async fn execute(
         &self,
         _ctx: &ToolContext,
