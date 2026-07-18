@@ -68,6 +68,9 @@ pub enum UiClientMessage {
     SubmitFeedback {
         feedback: crate::RunFeedback,
     },
+    MemoryConfirmation {
+        request: crate::MemoryConfirmationRequest,
+    },
     AgentAdmin {
         request: crate::AgentAdminRequest,
     },
@@ -221,10 +224,14 @@ pub enum UiServerMessage {
     Done {
         session_id: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback_target: Option<crate::FeedbackTarget>,
     },
     Error {
         session_id: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback_target: Option<crate::FeedbackTarget>,
     },
     ApprovalRequest {
         session_id: String,
@@ -248,6 +255,8 @@ pub enum UiServerMessage {
     TurnInterrupted {
         session_id: String,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feedback_target: Option<crate::FeedbackTarget>,
     },
     PlanProposed {
         session_id: String,
@@ -323,6 +332,9 @@ pub enum UiServerMessage {
     },
     FeedbackRecorded {
         feedback_id: String,
+    },
+    MemoryConfirmation {
+        response: crate::MemoryConfirmationResponse,
     },
     AgentAdmin {
         response: crate::AgentAdminResponse,

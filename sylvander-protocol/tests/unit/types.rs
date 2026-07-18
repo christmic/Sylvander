@@ -459,10 +459,9 @@ fn current_override_round_trips_a_qualified_model() {
 }
 
 #[test]
-fn feedback_requires_a_run_identity_and_has_stable_wire_values() {
+fn feedback_requires_an_opaque_target_and_has_stable_wire_values() {
     let feedback = RunFeedback {
-        run_id: "run-1".into(),
-        turn_id: Some("turn-2".into()),
+        target: FeedbackTarget("sha256:opaque".into()),
         rating: FeedbackRating::Negative,
         note: Some("tool changed the wrong file".into()),
         correction: Some("edit src/api.rs instead".into()),
@@ -480,9 +479,39 @@ fn feedback_requires_a_run_identity_and_has_stable_wire_values() {
     };
     let json = serde_json::to_value(&feedback).unwrap();
     assert_eq!(json["rating"], "negative");
-    assert_eq!(json["run_id"], "run-1");
+    assert_eq!(json["target"], "sha256:opaque");
+    assert!(json.get("run_id").is_none());
+    assert!(json.get("turn_id").is_none());
     assert_eq!(
         serde_json::from_value::<RunFeedback>(json).unwrap(),
         feedback
     );
+}
+
+#[test]
+fn feedback_target_accepts_only_the_server_digest_shape() {
+    assert!(FeedbackTarget(format!("sha256:{}", "a".repeat(64))).is_well_formed());
+    for invalid in [
+        format!("sha256:{}", "a".repeat(63)),
+        format!("sha256:{}", "A".repeat(64)),
+        format!("sha256:{}", "g".repeat(64)),
+        "sha256:opaque".into(),
+        format!("sha512:{}", "a".repeat(64)),
+    ] {
+        assert!(
+            !FeedbackTarget(invalid.clone()).is_well_formed(),
+            "{invalid} must not be accepted as a server-issued target"
+        );
+    }
+}
+
+#[test]
+fn terminal_error_has_a_stable_typed_wire_shape() {
+    let event = StreamEvent::Error {
+        message: "provider unavailable".into(),
+    };
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "error");
+    assert_eq!(json["message"], "provider unavailable");
+    assert_eq!(serde_json::from_value::<StreamEvent>(json).unwrap(), event);
 }
