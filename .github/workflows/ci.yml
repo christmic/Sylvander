@@ -1,14 +1,19 @@
 name: CI
 
 # Verifies on every push to master and on PRs:
-#   1. The Sylvander Rust workspace still compiles and tests pass,
-#      is formatted, and passes clippy.
-#   2. The Rust workspace builds on Linux too (catches macOS-only
+#   1. The Sylvander Rust workspace still compiles, passes the complete
+#      no-exclusion test suite, is formatted, and passes strict clippy.
+#   2. Rust tests remain outside src/, public docs build warning-free, and
+#      every first-party crate (including token9) has an indexed boundary.
+#   3. The independently versioned token9 workspace passes its complete
+#      format/test/lint/doc matrix.
+#   4. A clean archive of the exact commit can install, start, persist state,
+#      expose its Unix socket, and shut down normally.
+#   5. The Rust workspace builds on Linux too (catches macOS-only
 #      assumptions before they reach release).
-#   3. macOS Swift files compile-check our rename (Sylvander-Info.plist,
-#      Sylvander.sdef, Sylvander.xcodeproj) hasn't broken references.
-#   4. The macOS app helper contract is preserved (universal build +
-#      ad-hoc codesign + lipo arch verification).
+#   6. The active Ghostty contracts preserve the universal signed helper,
+#      the rebranded macOS project, and TrueColor TUI behavior. The disabled
+#      Zig jobs below are documentation, not release evidence.
 #
 # History:
 #   zig-module — removed (2026-07-17). Exercised a sylvander-ghostty/src/sylvander/
@@ -144,9 +149,8 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --locked
 
-      # Build the test binaries without running them so any compile
-      # error in #[cfg(test)] code surfaces before libtest's --skip
-      # filter can hide it.
+      # Build every test target before execution so compile failures are
+      # reported independently from runtime failures.
       - name: cargo test --no-run (build verification)
         run: cargo test --workspace --locked --no-run
 
@@ -176,6 +180,12 @@ jobs:
       - name: cargo test
         run: |
           INSTA_UPDATE=no cargo test --workspace --locked -- --test-threads=1
+
+      # This intentionally runs after the complete suite so Cargo has fetched
+      # the locked dependency graph. The script exports this exact HEAD and
+      # then installs both release binaries with --offline in a fresh tree.
+      - name: Verify clean-room install and lifecycle
+        run: ./scripts/clean-room-verify.sh
 
   # ---------------------------------------------------------------
   # 4. macOS Swift files — syntax sanity (catches our Info.plist /
@@ -330,8 +340,8 @@ jobs:
         run: cargo build --workspace --locked
 
   # ---------------------------------------------------------------
-  # 10. TUI snapshot drift guard — the 23 `insta::assert_snapshot!`
-  # tests in `sylvander-tui/tests/snapshots.rs` cover the entire UI
+  # 10. TUI snapshot drift guard — the snapshot suite in
+  # `sylvander-tui/tests/snapshots.rs` covers the entire UI
   # surface (modals, composer, breakpoints, AskUser variants, etc.).
   # A change that goes unnoticed in `cargo build` because the binary
   # links fine but shifts visual layout (one extra row in `tool_call_*`
