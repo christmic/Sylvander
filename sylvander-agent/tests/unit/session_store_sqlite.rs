@@ -123,7 +123,7 @@ async fn save_and_get() {
 }
 
 #[tokio::test]
-async fn opening_legacy_database_adds_session_config_columns() {
+async fn opening_legacy_database_fails_closed_without_migration() {
     let directory = tempfile::TempDir::new().unwrap();
     let path = directory.path().join("legacy.db");
     {
@@ -140,17 +140,10 @@ async fn opening_legacy_database_adds_session_config_columns() {
                 .unwrap();
     }
 
-    let store = SqliteSessionStore::open(&path).await.unwrap();
-    let session = make_session("migrated", SessionLifetime::Persistent);
-    store.save(&session).await.unwrap();
-    let loaded = store.get(&session.id).await.unwrap().unwrap();
-
-    assert_eq!(loaded.config_revision, 0);
-    assert_eq!(
-        loaded.config_overrides,
-        sylvander_protocol::SessionConfigOverrides::default()
-    );
-    assert!(loaded.effective_config.is_none());
+    assert!(matches!(
+        SqliteSessionStore::open(&path).await,
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
 }
 
 #[tokio::test]
@@ -406,19 +399,73 @@ async fn usage_rejects_cost_beyond_sqlite_integer_range() {
 }
 
 #[test]
-fn legacy_usage_table_migrates_with_unknown_historical_cost() {
+fn legacy_usage_table_is_rejected_instead_of_migrated() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
             "CREATE TABLE session_usage (session_id TEXT PRIMARY KEY, iterations INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0); INSERT INTO session_usage VALUES ('old', 1, 10, 2);",
         )
         .unwrap();
-    SqliteSessionStore::init_schema(&conn).unwrap();
-    assert_eq!(
-        read_usage(&conn, &SessionId::new("old"))
-            .unwrap()
-            .cost_nano_usd,
-        None
+    assert!(matches!(
+        SqliteSessionStore::init_schema(&conn),
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
+}
+
+#[test]
+fn current_schema_reopens_but_damaged_and_future_schemas_fail_closed() {
+    let current = Connection::open_in_memory().unwrap();
+    SqliteSessionStore::init_schema(&current).unwrap();
+    SqliteSessionStore::init_schema(&current).unwrap();
+
+    current
+        .execute_batch("DROP INDEX idx_messages_user")
+        .unwrap();
+    assert!(matches!(
+        SqliteSessionStore::init_schema(&current),
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
+
+    let future = Connection::open_in_memory().unwrap();
+    future.execute_batch(SCHEMA_SQL).unwrap();
+    future
+        .pragma_update(None, "user_version", SESSION_SCHEMA_VERSION + 1)
+        .unwrap();
+    assert!(matches!(
+        SqliteSessionStore::init_schema(&future),
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
+}
+
+#[tokio::test]
+async fn shared_open_accepts_only_the_declared_foreign_namespace() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let path = directory.path().join("shared.db");
+    drop(SqliteSessionStore::open(&path).await.unwrap());
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE registry_probe(value TEXT);")
+        .unwrap();
+    drop(connection);
+
+    drop(
+        SqliteSessionStore::open_shared(&path, &["registry_probe"])
+            .await
+            .unwrap(),
     );
+    assert!(matches!(
+        SqliteSessionStore::open(&path).await,
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("CREATE TABLE undeclared_probe(value TEXT);")
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        SqliteSessionStore::open_shared(&path, &["registry_probe"]).await,
+        Err(SessionStoreError::IncompatibleSchema)
+    ));
 }
 
 #[tokio::test]

@@ -1,22 +1,25 @@
 //! SQLite-backed [`SessionStore`].
 //!
-//! MVP concurrency model: a single `rusqlite::Connection` guarded by
-//! `tokio::sync::Mutex`. All calls go through `spawn_blocking` so
-//! `SQLite` work never stalls the async runtime. Adequate for desktop
-//! use (single agent process, low write rate). A real production
-//! deployment should swap this for `deadpool-sqlite` or `sqlx` with
-//! a proper pool.
+//! One store owns one `rusqlite::Connection`, serialized by
+//! `tokio::sync::Mutex`. Every database operation runs through
+//! `spawn_blocking`, so `SQLite` work never occupies an async executor thread.
+//! Runtime owns the store process-wide and applies its own bounded admission.
 //!
-//! Schema is created on first open (idempotent migration).
+//! A completely empty database is initialized directly at the current schema.
+//! Existing databases must match the application id, schema version, and
+//! complete `SQLite` object set exactly; Sylvander does not repair or migrate an
+//! older, newer, unmanaged, or damaged session database.
 //!
 //! Wire-format compatibility: `content_json` stores the same JSON
 //! shape Anthropic uses for `MessageParam` / `Message`, so the
 //! history can be fed straight back into `AgentLoop::run` after a
 //! restart without re-serialization.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::types::Type;
@@ -54,13 +57,46 @@ impl std::fmt::Debug for SqliteSessionStore {
 }
 
 impl SqliteSessionStore {
-    /// Open or create a database at `path`. Runs migrations on first
-    /// call; idempotent thereafter.
+    /// Open or create a database at `path`.
+    ///
+    /// An empty file is initialized at the current schema. Every non-empty
+    /// file must already be an exact current Sylvander session database.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, SessionStoreError> {
+        Self::open_with_allowed_foreign_objects(path, Vec::new()).await
+    }
+
+    /// Open the session store in a database shared with another component.
+    ///
+    /// `allowed_foreign_objects` must be the other component's complete
+    /// current owned-object allowlist. Session objects remain exact-match
+    /// validated; foreign objects are namespace-checked here and validated by
+    /// their owning component.
+    pub async fn open_shared(
+        path: impl AsRef<Path>,
+        allowed_foreign_objects: &[&str],
+    ) -> Result<Self, SessionStoreError> {
+        Self::open_with_allowed_foreign_objects(
+            path,
+            allowed_foreign_objects
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        )
+        .await
+    }
+
+    async fn open_with_allowed_foreign_objects(
+        path: impl AsRef<Path>,
+        allowed_foreign_objects: Vec<String>,
+    ) -> Result<Self, SessionStoreError> {
         let path = path.as_ref().to_path_buf();
         task::spawn_blocking(move || -> Result<Self, SessionStoreError> {
             let conn = Connection::open(&path).map_err(sqlite_err)?;
-            Self::init_schema(&conn)?;
+            conn.busy_timeout(Duration::from_secs(5))
+                .map_err(sqlite_err)?;
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(sqlite_err)?;
+            Self::init_schema_with_foreign_objects(&conn, &allowed_foreign_objects)?;
             Ok(Self {
                 inner: Arc::new(StoreInner {
                     conn: Mutex::new(conn),
@@ -76,6 +112,8 @@ impl SqliteSessionStore {
     pub async fn open_in_memory() -> Result<Self, SessionStoreError> {
         task::spawn_blocking(|| -> Result<Self, SessionStoreError> {
             let conn = Connection::open_in_memory().map_err(sqlite_err)?;
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(sqlite_err)?;
             Self::init_schema(&conn)?;
             Ok(Self {
                 inner: Arc::new(StoreInner {
@@ -87,12 +125,44 @@ impl SqliteSessionStore {
         .map_err(|e| SessionStoreError::Store(format!("blocking task panicked: {e}")))?
     }
 
-    /// One-shot schema bootstrap. Idempotent — uses `IF NOT EXISTS`.
+    /// Initialize an empty database or validate an exact current database.
     fn init_schema(conn: &Connection) -> Result<(), SessionStoreError> {
-        conn.execute_batch(SCHEMA_SQL).map_err(sqlite_err)?;
-        ensure_usage_cost_columns(conn)?;
-        ensure_session_config_columns(conn)?;
-        Ok(())
+        Self::init_schema_with_foreign_objects(conn, &[])
+    }
+
+    fn init_schema_with_foreign_objects(
+        conn: &Connection,
+        allowed_foreign_objects: &[String],
+    ) -> Result<(), SessionStoreError> {
+        validate_allowed_foreign_objects(allowed_foreign_objects)?;
+        let version = conn
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .map_err(sqlite_err)?;
+        let application_id = conn
+            .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+            .map_err(sqlite_err)?;
+        let object_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sqlite_err)?;
+        match (version, application_id, object_count) {
+            (0, 0, 0) => conn.execute_batch(SCHEMA_SQL).map_err(sqlite_err)?,
+            (SESSION_SCHEMA_VERSION, SESSION_APPLICATION_ID, _) => {
+                validate_schema(conn, allowed_foreign_objects)?;
+            }
+            _ => return Err(SessionStoreError::IncompatibleSchema),
+        }
+        let integrity = conn
+            .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+            .map_err(sqlite_err)?;
+        if integrity == "ok" {
+            validate_owned_foreign_keys(conn)
+        } else {
+            Err(SessionStoreError::CorruptSchema)
+        }
     }
 
     /// Acquire the lock and run a closure against the connection on
@@ -122,9 +192,35 @@ impl SqliteSessionStore {
 // Schema
 // ---------------------------------------------------------------------------
 
+const SESSION_SCHEMA_VERSION: i64 = 1;
+const SESSION_APPLICATION_ID: i64 = 0x5359_5353;
+
+/// `SQLite` objects owned and exact-match validated by the session store.
+///
+/// A shared database caller must pass this complete list to every other
+/// component that is allowed to coexist with the session store.
+pub const SESSION_SCHEMA_OBJECT_NAMES: &[&str] = &[
+    "sessions",
+    "session_agents",
+    "session_messages",
+    "session_usage",
+    "session_turn_configs",
+    "idx_messages_user",
+    "idx_messages_agent",
+    "idx_messages_trace",
+    "idx_sessions_lifetime",
+    "idx_sessions_user",
+    "idx_sessions_updated",
+    "idx_session_agents_agent",
+    "idx_messages_session",
+    "idx_messages_unsummarized",
+];
+
 const SCHEMA_SQL: &str = r"
+BEGIN IMMEDIATE;
+PRAGMA application_id=1398362963;
 -- Session metadata
-CREATE TABLE IF NOT EXISTS sessions (
+CREATE TABLE sessions (
     id              TEXT PRIMARY KEY,
     name            TEXT NOT NULL,
     lifetime        TEXT NOT NULL,
@@ -141,7 +237,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- Many-to-many: session ↔ agent
-CREATE TABLE IF NOT EXISTS session_agents (
+CREATE TABLE session_agents (
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     agent_id        TEXT NOT NULL,
     joined_at       INTEGER NOT NULL,
@@ -154,7 +250,7 @@ CREATE TABLE IF NOT EXISTS session_agents (
 -- (not a JSON blob) so SQLite can use indexes for per-user / per-
 -- trace lookups. Adding a new SessionContext field means
 -- `ALTER TABLE ADD COLUMN`, not editing a json blob.
-CREATE TABLE IF NOT EXISTS session_messages (
+CREATE TABLE session_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     seq             INTEGER NOT NULL,
@@ -174,7 +270,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
     UNIQUE(session_id, seq)
 );
 
-CREATE TABLE IF NOT EXISTS session_usage (
+CREATE TABLE session_usage (
     session_id      TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     iterations      INTEGER NOT NULL DEFAULT 0,
     input_tokens    INTEGER NOT NULL DEFAULT 0,
@@ -183,7 +279,7 @@ CREATE TABLE IF NOT EXISTS session_usage (
     cost_complete   INTEGER NOT NULL DEFAULT 1
 );
 
-CREATE TABLE IF NOT EXISTS session_turn_configs (
+CREATE TABLE session_turn_configs (
     session_id      TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     turn_id         TEXT NOT NULL,
     config_revision INTEGER NOT NULL,
@@ -192,76 +288,131 @@ CREATE TABLE IF NOT EXISTS session_turn_configs (
     PRIMARY KEY (session_id, turn_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_user
+CREATE INDEX idx_messages_user
     ON session_messages(user_id, session_id);
-CREATE INDEX IF NOT EXISTS idx_messages_agent
+CREATE INDEX idx_messages_agent
     ON session_messages(agent_id);
-CREATE INDEX IF NOT EXISTS idx_messages_trace
+CREATE INDEX idx_messages_trace
     ON session_messages(trace_id) WHERE trace_id IS NOT NULL;
 
 -- Boot filter: persistent + non-archived
-CREATE INDEX IF NOT EXISTS idx_sessions_lifetime
+CREATE INDEX idx_sessions_lifetime
     ON sessions(lifetime, is_archived);
-CREATE INDEX IF NOT EXISTS idx_sessions_user
+CREATE INDEX idx_sessions_user
     ON sessions(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_updated
+CREATE INDEX idx_sessions_updated
     ON sessions(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_session_agents_agent
+CREATE INDEX idx_session_agents_agent
     ON session_agents(agent_id);
-CREATE INDEX IF NOT EXISTS idx_messages_session
+CREATE INDEX idx_messages_session
     ON session_messages(session_id, seq);
-CREATE INDEX IF NOT EXISTS idx_messages_unsummarized
+CREATE INDEX idx_messages_unsummarized
     ON session_messages(session_id, is_summarized);
+PRAGMA user_version=1;
+COMMIT;
 ";
 
-fn ensure_usage_cost_columns(conn: &Connection) -> Result<(), SessionStoreError> {
-    let has_column = |name: &str| -> rusqlite::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session_usage') WHERE name = ?1)",
-            [name],
-            |row| row.get(0),
-        )
-    };
-    if !has_column("cost_nano_usd").map_err(sqlite_err)? {
-        conn.execute(
-            "ALTER TABLE session_usage ADD COLUMN cost_nano_usd INTEGER NOT NULL DEFAULT 0",
-            [],
-        )
-        .map_err(sqlite_err)?;
+fn validate_schema(
+    conn: &Connection,
+    allowed_foreign_objects: &[String],
+) -> Result<(), SessionStoreError> {
+    let expected = Connection::open_in_memory().map_err(sqlite_err)?;
+    expected.execute_batch(SCHEMA_SQL).map_err(sqlite_err)?;
+    let actual = schema_objects(conn)?;
+    validate_object_namespace(&actual, allowed_foreign_objects)?;
+    let actual_owned = owned_schema_objects(actual);
+    if actual_owned == schema_objects(&expected)? {
+        Ok(())
+    } else {
+        Err(SessionStoreError::IncompatibleSchema)
     }
-    if !has_column("cost_complete").map_err(sqlite_err)? {
-        // Existing usage predates pricing snapshots, so its full cost is unknown.
-        conn.execute(
-            "ALTER TABLE session_usage ADD COLUMN cost_complete INTEGER NOT NULL DEFAULT 0",
-            [],
-        )
-        .map_err(sqlite_err)?;
+}
+
+fn validate_allowed_foreign_objects(
+    allowed_foreign_objects: &[String],
+) -> Result<(), SessionStoreError> {
+    let owned = SESSION_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut allowed = HashSet::new();
+    for name in allowed_foreign_objects {
+        if name.is_empty() || owned.contains(name.as_str()) || !allowed.insert(name.as_str()) {
+            return Err(SessionStoreError::IncompatibleSchema);
+        }
     }
     Ok(())
 }
 
-fn ensure_session_config_columns(conn: &Connection) -> Result<(), SessionStoreError> {
-    let has_column = |name: &str| -> rusqlite::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?1)",
-            [name],
-            |row| row.get(0),
-        )
-    };
-    for (name, definition) in [
-        ("config_revision", "INTEGER NOT NULL DEFAULT 0"),
-        ("config_overrides", "TEXT NOT NULL DEFAULT '{}'"),
-        ("effective_config", "TEXT"),
-    ] {
-        if !has_column(name).map_err(sqlite_err)? {
-            conn.execute(
-                &format!("ALTER TABLE sessions ADD COLUMN {name} {definition}"),
-                [],
-            )
-            .map_err(sqlite_err)?;
+fn validate_object_namespace(
+    objects: &[(String, String, String, String)],
+    allowed_foreign_objects: &[String],
+) -> Result<(), SessionStoreError> {
+    let owned = SESSION_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let allowed = allowed_foreign_objects
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if objects
+        .iter()
+        .all(|object| owned.contains(object.1.as_str()) || allowed.contains(object.1.as_str()))
+    {
+        Ok(())
+    } else {
+        Err(SessionStoreError::IncompatibleSchema)
+    }
+}
+
+fn owned_schema_objects(
+    objects: Vec<(String, String, String, String)>,
+) -> Vec<(String, String, String, String)> {
+    let owned = SESSION_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    objects
+        .into_iter()
+        .filter(|object| owned.contains(object.1.as_str()))
+        .collect()
+}
+
+fn validate_owned_foreign_keys(conn: &Connection) -> Result<(), SessionStoreError> {
+    let owned = SESSION_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut statement = conn
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(sqlite_err)?;
+    let mut rows = statement.query([]).map_err(sqlite_err)?;
+    while let Some(row) = rows.next().map_err(sqlite_err)? {
+        let table = row.get::<_, String>(0).map_err(sqlite_err)?;
+        if owned.contains(table.as_str()) {
+            return Err(SessionStoreError::CorruptSchema);
         }
     }
     Ok(())
+}
+
+fn schema_objects(
+    conn: &Connection,
+) -> Result<Vec<(String, String, String, String)>, SessionStoreError> {
+    let mut statement = conn
+        .prepare(
+            "SELECT type,name,tbl_name,sql FROM sqlite_schema \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
+        )
+        .map_err(sqlite_err)?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(sqlite_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_err)
 }
 
 // ---------------------------------------------------------------------------
