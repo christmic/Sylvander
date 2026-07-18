@@ -450,7 +450,8 @@ pub trait Channel: Send + Sync {
     /// - Listen for external messages (stdin, webhook, polling, ...)
     /// - Subscribe to the bus for agent events
     /// - Map external IDs → session IDs via [`ChannelContext::sessions`]
-    /// - Publish normalized messages via [`ChannelContext::bus`]
+    /// - Submit normalized messages through [`ChannelContext::submit_control`]
+    ///   or [`submit_external_chat`]
     ///
     /// Runs until the tokio task is cancelled or the channel decides
     /// to shut down.

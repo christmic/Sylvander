@@ -108,4 +108,5 @@ pub enum RegistryAdminResult {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/registry_admin.rs"]
 mod tests;
