@@ -1,19 +1,13 @@
 //! Session persistence — `SQLite` backend.
 //!
-//! Two tables:
-//! - `sessions`         — session metadata (id, name, lifetime, agents, ...)
-//! - `session_messages` — every user / assistant / tool message, ordered
-//!
-//! Plus `session_agents` M:N join and `sessions_fts` FTS5 virtual table
-//! for full-text search over session names.
-//!
-//! M3 L4 summarization integrates via the `is_summarized` flag on
-//! messages: compressed messages stay on disk but are excluded from
-//! `read_history(include_summarized=false)` — the loop's view.
+//! The current schema owns session metadata, Agent membership, ordered
+//! messages, cumulative usage, and immutable per-turn configuration
+//! snapshots. Compaction marks retired messages with `is_summarized`; they
+//! remain auditable on disk while the active loop view excludes them.
 
 mod sqlite;
 
-pub use sqlite::SqliteSessionStore;
+pub use sqlite::{SESSION_SCHEMA_OBJECT_NAMES, SqliteSessionStore};
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -68,8 +62,9 @@ pub struct StoredSession {
     /// Sparse session-owned values layered over Agent and channel defaults.
     #[serde(default)]
     pub config_overrides: SessionConfigOverrides,
-    /// Last successfully resolved configuration. Legacy rows remain `None`
-    /// until the runtime migrates them against a live Agent definition.
+    /// Last successfully resolved configuration. `None` is valid only while a
+    /// newly constructed session awaits Runtime resolution; the current
+    /// durable schema rejects unresolved persisted sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_config: Option<SessionEffectiveConfig>,
 }
@@ -189,8 +184,8 @@ pub struct StoredMessage {
     pub model_id: Option<String>,
     pub tool_name: Option<String>,
     pub parent_msg_id: Option<i64>,
-    /// True once M3 L4 summarization has folded this message into a
-    /// summary. Excluded from `read_history(include_summarized=false)`.
+    /// True once semantic compaction has folded this message into a summary.
+    /// Excluded from `read_history(include_summarized=false)`.
     pub is_summarized: bool,
     pub created_at: i64,
 }
@@ -367,7 +362,7 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<StoredMessage, SessionStoreError>;
 
     /// Read all messages for a session, ordered by `seq` ascending.
-    /// `include_summarized=false` skips M3 L4-compacted messages.
+    /// `include_summarized=false` skips compacted messages.
     /// `limit` caps the result (most recent N if Some).
     ///
     /// `ctx` provides the caller's identity for access control.
@@ -381,8 +376,8 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<Vec<StoredMessage>, SessionStoreError>;
 
     /// Mark a contiguous range of messages as summarized.
-    /// Called by M3 L4 when it produces a summary message that
-    /// supersedes older ones.
+    /// Called when semantic compaction produces a summary that supersedes
+    /// older messages.
     async fn mark_summarized(
         &self,
         session_id: &SessionId,
@@ -416,6 +411,10 @@ pub trait SessionStore: Send + Sync {
 pub enum SessionStoreError {
     #[error("store error: {0}")]
     Store(String),
+    #[error("session store schema is not the exact current schema")]
+    IncompatibleSchema,
+    #[error("session store integrity check failed")]
+    CorruptSchema,
     #[error("session not found: {0}")]
     NotFound(SessionId),
     #[error("invalid argument: {0}")]
