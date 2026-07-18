@@ -29,6 +29,9 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{MessageKind, StreamEvent, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_channel::credential::{
+    CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
 };
@@ -41,32 +44,46 @@ use sylvander_protocol::{
 // Telegram types
 // ===========================================================================
 
+/// Telegram Bot API update envelope accepted by the webhook.
 #[derive(Debug, Deserialize)]
 pub struct Update {
+    /// Monotonic Telegram update identifier used for replay suppression.
     #[serde(rename = "update_id")]
     pub update_id: i64,
+    /// Message payload when the update represents a user message.
     pub message: Option<Message>,
 }
 
+/// User message fields consumed by Sylvander.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Message {
+    /// Telegram message identifier.
     #[serde(rename = "message_id")]
     pub message_id: i64,
+    /// Optional sender metadata used only for presentation.
     pub from: Option<User>,
+    /// Stable chat used to derive the transport principal and session mapping.
     pub chat: Chat,
+    /// Plain text accepted as an Agent prompt.
     pub text: Option<String>,
 }
 
+/// Non-authoritative sender presentation fields.
 #[derive(Debug, Clone, Deserialize)]
 pub struct User {
+    /// Telegram user identifier.
     pub id: i64,
+    /// Display name; never used as authorization evidence.
     #[serde(rename = "first_name")]
     pub first_name: String,
 }
 
+/// Telegram conversation identity and kind.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Chat {
+    /// Stable chat identifier.
     pub id: i64,
+    /// Telegram chat kind such as `private` or `group`.
     #[serde(rename = "type")]
     pub chat_type: String,
 }
@@ -81,60 +98,62 @@ struct SendMessage {
 // Channel
 // ===========================================================================
 
+/// Authenticated Telegram webhook and Bot API delivery adapter.
 pub struct TelegramChannel {
-    token: String,
     webhook_addr: SocketAddr,
     agent_id: AgentId,
     /// `chat_id` → bot `message_id` (for `editMessageText` during streaming)
     last_bot_msg: Arc<RwLock<HashMap<i64, i32>>>,
     http: reqwest::Client,
     api_base_url: String,
-    webhook_secret: Option<String>,
     instance_id: String,
+    credentials: Arc<dyn CredentialLeaseSource>,
+    credential_request: CredentialLeaseRequest,
     max_request_bytes: usize,
 }
 
 impl TelegramChannel {
+    /// Construct one bot adapter with renewable, instance-scoped credentials.
     pub fn new(
-        token: impl Into<String>,
         webhook_addr: SocketAddr,
         agent_id: impl Into<AgentId>,
-    ) -> Self {
-        Self {
-            token: token.into(),
+        instance_id: impl Into<String>,
+        credentials: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError> {
+        let instance_id = instance_id.into();
+        Ok(Self {
             webhook_addr,
             agent_id: agent_id.into(),
             last_bot_msg: Arc::new(RwLock::new(HashMap::new())),
             http: reqwest::Client::new(),
             api_base_url: "https://api.telegram.org".into(),
-            webhook_secret: None,
-            instance_id: "telegram".into(),
+            credential_request: CredentialLeaseRequest::new(
+                instance_id.clone(),
+                ["bot_token", "webhook_secret"],
+            )?,
+            instance_id,
+            credentials,
             max_request_bytes: 1024 * 1024,
-        }
+        })
     }
 
-    /// Require Telegram's secret-token header on every webhook request.
-    #[must_use]
-    pub fn with_webhook_secret(mut self, secret: impl Into<String>) -> Self {
-        self.webhook_secret = Some(secret.into());
-        self
-    }
-
-    /// Identify this configured bot instance for session and principal isolation.
-    #[must_use]
-    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self {
-        self.instance_id = instance_id.into();
-        self
-    }
-
+    /// Bound a decoded Telegram webhook body before JSON parsing.
     #[must_use]
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
         self.max_request_bytes = max_request_bytes;
         self
     }
 
-    fn api(&self, method: &str) -> String {
-        format!("{}/bot{}/{}", self.api_base_url, self.token, method)
+    fn api(&self, token: &str, method: &str) -> String {
+        format!("{}/bot{token}/{method}", self.api_base_url)
+    }
+
+    async fn credential_bundle(&self) -> Result<CredentialLeaseBundle, CredentialLeaseError> {
+        let bundle = self.credentials.lease(&self.credential_request).await?;
+        if !bundle.contains_exact_slots(&self.credential_request.slots) {
+            return Err(CredentialLeaseError::InvalidLease);
+        }
+        Ok(bundle)
     }
 }
 
@@ -158,7 +177,6 @@ impl Channel for TelegramChannel {
             ctx,
             channel: self.clone(),
             agent_id: self.agent_id.clone(),
-            webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
             replay: ReplayCache::default(),
         });
@@ -195,14 +213,14 @@ impl Channel for TelegramChannel {
 impl Clone for TelegramChannel {
     fn clone(&self) -> Self {
         Self {
-            token: self.token.clone(),
             webhook_addr: self.webhook_addr,
             agent_id: self.agent_id.clone(),
             last_bot_msg: self.last_bot_msg.clone(),
             http: self.http.clone(),
             api_base_url: self.api_base_url.clone(),
-            webhook_secret: self.webhook_secret.clone(),
             instance_id: self.instance_id.clone(),
+            credentials: self.credentials.clone(),
+            credential_request: self.credential_request.clone(),
             max_request_bytes: self.max_request_bytes,
         }
     }
@@ -217,7 +235,6 @@ struct AppState {
     channel: Arc<TelegramChannel>,
     agent_id: AgentId,
     sessions: Arc<dyn SessionStore>,
-    webhook_secret: Option<String>,
     instance_id: String,
     replay: ReplayCache,
 }
@@ -263,7 +280,7 @@ async fn handle_webhook(
     headers: HeaderMap,
     Json(update): Json<Update>,
 ) -> Result<&'static str, StatusCode> {
-    if !valid_webhook_secret(&headers, state.webhook_secret.as_deref()) {
+    if !valid_webhook_credentials(&state, &headers).await {
         warn!("telegram: rejected webhook with invalid secret token");
         return Err(reject_webhook_authentication(&state).await);
     }
@@ -336,8 +353,23 @@ async fn handle_webhook(
         .as_ref()
         .map_or_else(|| "user".into(), |user| user.first_name.clone());
 
-    info!(%chat_id, sender = %sender_name, text, "telegram: message received");
+    info!(
+        %chat_id,
+        sender = %sender_name,
+        message_bytes = text.len(),
+        "telegram: message accepted"
+    );
     Ok("ok")
+}
+
+async fn valid_webhook_credentials(state: &AppState, headers: &HeaderMap) -> bool {
+    let Ok(credentials) = state.channel.credential_bundle().await else {
+        return false;
+    };
+    let Ok(expected) = credentials.secret("webhook_secret") else {
+        return false;
+    };
+    valid_webhook_secret(headers, Some(expected))
 }
 
 async fn reject_webhook_authentication(state: &AppState) -> StatusCode {
@@ -421,58 +453,102 @@ async fn run_outgoing(ch: Arc<TelegramChannel>, ctx: Arc<ChannelContext>) {
             continue;
         };
 
-        let text = match ev {
-            StreamEvent::TextDelta { delta } => delta.clone(),
-            StreamEvent::Done { text } => {
-                send_message(&ch, chat_id, text).await;
-                continue;
-            }
-            StreamEvent::ToolCall { tool_name, .. } => format!("🔧 calling {tool_name}"),
-            StreamEvent::ToolResult {
-                tool_name,
-                output,
-                is_error,
-                ..
-            } => {
-                let icon = if *is_error { "❌" } else { "✅" };
-                let summary = if output.chars().count() > 200 {
-                    format!("{}...", output.chars().take(200).collect::<String>())
-                } else {
-                    output.clone()
-                };
-                format!("{icon} {tool_name}: {summary}")
-            }
-            StreamEvent::ToolApprovalRequired {
-                batch_id, tools, ..
-            } => {
-                let list: Vec<String> =
-                    tools.iter().map(|t| format!("- {}", t.tool_name)).collect();
-                format!(
-                    "⚠️ approval needed:\n{}\n/approve {batch_id}\n/deny {batch_id} [reason]",
-                    list.join("\n")
-                )
-            }
-            StreamEvent::AskUser {
-                call_id,
-                question,
-                options,
-                ..
-            } => {
-                let options = options
-                    .iter()
-                    .enumerate()
-                    .map(|(index, option)| format!("{}. {option}", index + 1))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("{question}\n{options}\n/answer {call_id} <answer>")
-            }
-            StreamEvent::IterationStart { iteration } => {
-                format!("💭 thinking... (round {iteration})")
-            }
-            _ => continue,
+        if let StreamEvent::Done { text } = ev {
+            send_message(&ch, chat_id, text).await;
+            continue;
+        }
+        let Some(text) = render_nonterminal_event(ev) else {
+            continue;
         };
-
         send_message(&ch, chat_id, &text).await;
+    }
+}
+
+fn render_nonterminal_event(event: &StreamEvent) -> Option<String> {
+    match event {
+        StreamEvent::ModelRetry {
+            attempt,
+            max_attempts,
+            delay_ms,
+            reason,
+            ..
+        } => Some(format!(
+            "⏳ model retry {attempt}/{max_attempts} in {delay_ms}ms: {reason}"
+        )),
+        StreamEvent::InteractionTimedOut { kind, .. } => {
+            Some(format!("⌛ interaction timed out: {kind:?}"))
+        }
+        StreamEvent::CompactionFailed { reason, .. } => {
+            Some(format!("⚠️ context compaction failed: {reason}"))
+        }
+        StreamEvent::TurnInterrupted { reason } => Some(format!("⏹️ interrupted: {reason}")),
+        StreamEvent::TaskFailed { task_id, error } => {
+            Some(format!("❌ task {task_id} failed: {error}"))
+        }
+        StreamEvent::TaskCancelled { task_id, reason } => {
+            Some(format!("⏹️ task {task_id} cancelled: {reason}"))
+        }
+        StreamEvent::ToolCall { tool_name, .. } => Some(format!("🔧 calling {tool_name}")),
+        StreamEvent::ToolResult {
+            tool_name,
+            output,
+            is_error,
+            ..
+        } => {
+            let icon = if *is_error { "❌" } else { "✅" };
+            let summary = if output.chars().count() > 200 {
+                format!("{}...", output.chars().take(200).collect::<String>())
+            } else {
+                output.clone()
+            };
+            Some(format!("{icon} {tool_name}: {summary}"))
+        }
+        StreamEvent::ToolApprovalRequired {
+            batch_id, tools, ..
+        } => {
+            let list: Vec<String> = tools
+                .iter()
+                .map(|tool| format!("- {}", tool.tool_name))
+                .collect();
+            Some(format!(
+                "⚠️ approval needed:\n{}\n/approve {batch_id}\n/deny {batch_id} [reason]",
+                list.join("\n")
+            ))
+        }
+        StreamEvent::AskUser {
+            call_id,
+            question,
+            options,
+            ..
+        } => {
+            let options = options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| format!("{}. {option}", index + 1))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(format!("{question}\n{options}\n/answer {call_id} <answer>"))
+        }
+        StreamEvent::IterationStart { iteration } => {
+            Some(format!("💭 thinking... (round {iteration})"))
+        }
+        // Telegram has no streaming transport in this adapter. Delivering
+        // every token as a new sendMessage request is both unreadable and
+        // likely to hit provider rate limits; the complete text arrives in
+        // the terminal Done event.
+        StreamEvent::TextDelta { .. }
+        | StreamEvent::ThinkingDelta { .. }
+        | StreamEvent::CompactionStarted { .. }
+        | StreamEvent::CompactionCompleted { .. }
+        | StreamEvent::ToolOutputDelta { .. }
+        | StreamEvent::IterationEnd { .. }
+        | StreamEvent::UserAnswer { .. }
+        | StreamEvent::PlanProposed { .. }
+        | StreamEvent::PlanUpdated { .. }
+        | StreamEvent::TaskStarted { .. }
+        | StreamEvent::TaskProgress { .. }
+        | StreamEvent::TaskCompleted { .. }
+        | StreamEvent::Done { .. } => None,
     }
 }
 
@@ -497,13 +573,27 @@ async fn get_chat_id(
 async fn send_message(ch: &TelegramChannel, chat_id: i64, text: &str) {
     // Telegram limit: 4096 chars per message
     for chunk in split_message(text, 4096) {
+        let Ok(credentials) = ch.credential_bundle().await else {
+            warn!("telegram: credential lease unavailable");
+            return;
+        };
         let body = SendMessage {
             chat_id,
             text: chunk.to_string(),
         };
         let mut delivered = false;
         for attempt in 0..3_u32 {
-            match ch.http.post(ch.api("sendMessage")).json(&body).send().await {
+            let Ok(token) = credentials.secret("bot_token") else {
+                warn!("telegram: credential lease expired");
+                return;
+            };
+            match ch
+                .http
+                .post(ch.api(token, "sendMessage"))
+                .json(&body)
+                .send()
+                .await
+            {
                 Ok(response) if response.status().is_success() => {
                     delivered = true;
                     break;
