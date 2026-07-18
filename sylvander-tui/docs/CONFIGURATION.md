@@ -49,9 +49,14 @@ parent environment from stripping the TUI palette. An explicit user override
 still wins when the TUI is launched outside the desktop host.
 
 Transparency is owned by the host window, not by Ratatui. The workspace
-`NSWindow` is non-opaque with a clear background and a behind-window material;
-the terminal TUI continues to render semantic foreground/background roles
-inside its PTY. See
+`NSWindow` is non-opaque with a clear background. On macOS 26,
+`TerminalViewContainer` supplies one clear glass effect and the SwiftUI root
+remains clear; older systems use the behind-window material fallback. The
+container is configured not to add an inactive-window dark tint, so focusing
+another window must not make the workspace opaque. The terminal TUI continues
+to render semantic foreground/background roles inside its PTY. A focused
+macOS regression test asserts the clear-glass host exists without an opaque
+root. See
 [`../../docs/sylvander-ghostty-architecture.md`](../../docs/sylvander-ghostty-architecture.md#7-transparency-and-terminal-color-contract).
 
 `/config` opens the resolved configuration in the searchable, copyable

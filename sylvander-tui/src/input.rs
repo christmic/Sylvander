@@ -4,9 +4,9 @@
 //! - Rows are stored as `Vec<String>`, one `String` per line (UTF-8 safe).
 //! - Cursor is `(row, col)` where `col` is a *byte* offset into `rows[row]`.
 //! - All char-edge work uses `is_char_boundary` so multi-byte chars never desync.
-//! - Enter inserts a newline; **Alt+Enter / Ctrl+Enter** submits (terminally
-//!   Alt+Enter is the conventional multi-line send; we accept Ctrl+Enter as
-//!   a fallback because some terminals swallow Alt).
+//! - Plain Enter submits. **Shift+Enter** inserts a newline; Alt+Enter and
+//!   Ctrl+Enter are accepted as newline fallbacks for terminals that cannot
+//!   report Shift+Enter distinctly.
 //! - Up/Down arrows walk a history ring (`history`, capped at 100 entries).
 //! - Shift+Left/Right extends a selection; selection is byte-wise inclusive of
 //!   start and exclusive of end.

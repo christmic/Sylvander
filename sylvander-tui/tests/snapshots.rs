@@ -63,6 +63,7 @@ fn one_user_message_visible() {
     });
     state.apply(DomainEvent::AgentDone {
         final_text: "hi there".into(),
+        feedback_target: None,
     });
     insta::assert_snapshot!(render_buf(state, 80, 24));
 }
@@ -78,9 +79,24 @@ fn welcome_first_turn_and_clean_agent_reply_share_one_transcript() {
     });
     state.apply(DomainEvent::AgentDone {
         final_text: String::new(),
+        feedback_target: None,
     });
 
     insta::assert_snapshot!(render_buf(state, 120, 36));
+}
+
+#[test]
+fn unicode_transcript_wraps_by_terminal_cells_without_splitting_graphemes() {
+    let mut state = AppState::new();
+    state.messages.push(ChatMessage::User(
+        "中文输入按终端单元换行，组合字符 cafe\u{301} 和家庭表情 👨‍👩‍👧‍👦 必须保持完整，不可以被拆开。"
+            .into(),
+    ));
+    state.messages.push(ChatMessage::Agent(
+        "收到。中文、组合字符与 emoji 会保持完整。".into(),
+    ));
+
+    insta::assert_snapshot!(render_buf(state, 80, 26));
 }
 
 #[test]
@@ -609,6 +625,7 @@ fn seed_state() -> AppState {
     });
     s.apply(DomainEvent::AgentDone {
         final_text: "Inspecting router.".into(),
+        feedback_target: None,
     });
     s
 }

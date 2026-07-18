@@ -17,6 +17,7 @@ fn seeded() -> AppState {
     });
     s.apply(crate::event::DomainEvent::AgentDone {
         final_text: "world".into(),
+        feedback_target: None,
     });
     s
 }
@@ -195,6 +196,93 @@ fn wrapped_user_turn_marks_only_the_first_visual_row() {
 }
 
 #[test]
+fn transcript_chunks_measure_cjk_and_mixed_text_in_terminal_cells() {
+    assert_eq!(display_chunks("你好世界", 4), ["你好", "世界"]);
+    assert_eq!(display_chunks("A你B好C", 3), ["A你", "B好", "C"]);
+
+    for row in display_chunks("A你B好C", 3) {
+        assert!(
+            UnicodeWidthStr::width(row) <= 3,
+            "ordinary graphemes must fit the requested terminal-cell width: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn transcript_chunks_never_split_combining_or_emoji_zwj_graphemes() {
+    let family = "👨‍👩‍👧‍👦";
+    let combined = "e\u{301}";
+    let text = format!("a{family}{combined}b");
+    let rows = display_chunks(&text, 2);
+
+    assert_eq!(rows.concat(), text);
+    assert!(rows.contains(&family));
+    assert!(rows.iter().any(|row| row.contains(combined)));
+    assert_eq!(
+        rows.iter()
+            .flat_map(|row| row.graphemes(true))
+            .collect::<Vec<_>>(),
+        text.graphemes(true).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn transcript_chunks_make_progress_for_zero_or_too_narrow_widths() {
+    let family = "👨‍👩‍👧‍👦";
+    assert_eq!(display_chunks(family, 0), [family]);
+    assert_eq!(display_chunks(family, 1), [family]);
+    assert_eq!(display_chunks("ab", 0), ["a", "b"]);
+    assert_eq!(display_chunks("你好\n\nworld", 8), ["你好", "", "world"]);
+}
+
+#[test]
+fn queued_and_task_word_wrapping_uses_display_cells_and_keeps_clusters() {
+    let family = "👨‍👩‍👧‍👦";
+    let text = format!("你好 {family} cafe\u{301} mixed");
+    let rows = wrap_words(&text, "", "  ".into(), 8);
+    let normalized = rows
+        .iter()
+        .map(|row| row.trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert_eq!(normalized, text);
+    assert!(
+        rows.iter()
+            .all(|row| UnicodeWidthStr::width(row.as_str()) <= 8)
+    );
+    assert!(rows.iter().any(|row| row.contains(family)));
+    assert!(rows.iter().any(|row| row.contains("e\u{301}")));
+
+    assert_eq!(wrap_words("ab", "", "  ".into(), 1), ["a", "b"]);
+    assert_eq!(wrap_words(family, "", "  ".into(), 1), [family]);
+}
+
+#[test]
+fn transcript_truncation_is_cell_bounded_and_grapheme_safe() {
+    let combined = "e\u{301}";
+    let truncated = truncate_display(&format!("你好{combined}world"), 6);
+    let family = "👨‍👩‍👧‍👦";
+    let emoji = truncate_display(&format!("{family}abc"), 3);
+
+    assert_eq!(UnicodeWidthStr::width(truncated.as_str()), 6);
+    assert!(truncated.contains(combined));
+    assert!(truncated.ends_with('…'));
+    assert_eq!(emoji, format!("{family}…"));
+}
+
+#[test]
+fn structured_input_labels_align_by_display_cells() {
+    let lines = input_kv_lines(&serde_json::json!({"id": "short", "模型": "中文"}), 40);
+    let label_widths = lines
+        .iter()
+        .map(|line| UnicodeWidthStr::width(line.spans[0].content.as_ref()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(label_widths, vec![8, 8]);
+}
+
+#[test]
 fn collapsed_command_shows_only_the_latest_live_progress() {
     let mut lines = Vec::new();
     let message = ChatMessage::ToolStep {
@@ -267,6 +355,7 @@ fn streaming_and_settled_agent_turn_keep_the_same_vertical_origin() {
     let streaming_y = marker_y(&state);
     state.apply(crate::event::DomainEvent::AgentDone {
         final_text: "A stable reply".into(),
+        feedback_target: None,
     });
     let settled_y = marker_y(&state);
     assert_eq!(streaming_y, settled_y);
@@ -330,6 +419,7 @@ fn render_order_user_then_agent_then_toolstep() {
     });
     s.apply(crate::event::DomainEvent::AgentDone {
         final_text: "Hello back".into(),
+        feedback_target: None,
     });
     s.apply(crate::event::DomainEvent::ToolStarted {
         call_id: "call-1".into(),
