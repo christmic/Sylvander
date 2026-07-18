@@ -19,6 +19,7 @@ mod evaluation_types;
 mod experiment;
 mod experiment_signer;
 mod experiment_types;
+mod governance;
 mod proposal;
 mod proposal_types;
 mod recorder;
@@ -41,6 +42,11 @@ pub use experiment_types::{
     SelfChangeExperimentStatus, SignedExperimentEvidence, StoredSelfChangeExperiment,
     UnsignedExperimentEvidence,
 };
+pub use governance::{
+    EvidenceArtifactSink, EvidenceClassification, EvidenceEncryption, EvidenceExport,
+    EvidenceGovernance, EvidenceScope, GovernanceAudit, GovernedRecord, GovernedRecordInput,
+    GovernedRecordKind, RetentionSweep, structured_redact,
+};
 pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
     RequiredEvaluation, StoredImprovementProposal,
@@ -50,6 +56,7 @@ pub use recorder::EvidenceRecorder;
 #[derive(Clone)]
 pub struct EvidenceStore {
     connection: Arc<Mutex<Connection>>,
+    governance: Option<Arc<governance::GovernanceState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,16 +215,17 @@ pub struct StoredFeedback {
 impl EvidenceStore {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, EvidenceError> {
         let path = path.as_ref().to_path_buf();
-        Self::open_connection(move || Connection::open(path)).await
+        Self::open_connection(move || Connection::open(path), None).await
     }
 
     #[cfg(test)]
     async fn open_in_memory() -> Result<Self, EvidenceError> {
-        Self::open_connection(Connection::open_in_memory).await
+        Self::open_connection(Connection::open_in_memory, None).await
     }
 
     async fn open_connection(
         open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
+        governance: Option<Arc<governance::GovernanceState>>,
     ) -> Result<Self, EvidenceError> {
         task::spawn_blocking(move || {
             let connection = open().map_err(EvidenceError::sqlite)?;
@@ -227,9 +235,13 @@ impl EvidenceStore {
             connection
                 .execute_batch(SCHEMA)
                 .map_err(EvidenceError::sqlite)?;
+            if let Some(state) = governance.as_deref() {
+                governance::initialize_governance(&connection, state)?;
+            }
             recover_interrupted(&connection)?;
             Ok(Self {
                 connection: Arc::new(Mutex::new(connection)),
+                governance,
             })
         })
         .await
@@ -344,6 +356,9 @@ impl EvidenceStore {
     }
 
     pub async fn append_event(&self, event: EvidenceEvent) -> Result<(), EvidenceError> {
+        if event.payload_json.is_some() {
+            return Err(EvidenceError::PlaintextEvidenceRejected);
+        }
         self.run(move |connection| {
             connection.execute(
                 "INSERT OR IGNORE INTO evidence_events(id, run_id, session_id, turn_id, event_type, occurred_at, observed_at, payload_bytes, payload_digest, payload_json, privacy_class) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -1086,6 +1101,30 @@ pub enum EvidenceError {
     InvalidExperimentData,
     #[error("Agent administration audit is missing or already terminal")]
     InvalidAuditState,
+    #[error("governed evidence requires an encryption key")]
+    EncryptionRequired,
+    #[error("evidence encryption key must be 32 raw bytes or 64 hexadecimal characters")]
+    InvalidEncryptionKey,
+    #[error("evidence encryption failed")]
+    EncryptionFailed,
+    #[error("evidence decryption or authentication failed")]
+    DecryptionFailed,
+    #[error("evidence database tenant or key binding does not match configuration")]
+    GovernanceBindingMismatch,
+    #[error("evidence scope does not match the configured tenant")]
+    EvidenceScopeMismatch,
+    #[error("governed evidence record is invalid")]
+    InvalidGovernedRecord,
+    #[error("governed evidence record does not exist in this scope")]
+    GovernedRecordNotFound,
+    #[error("governed evidence record was previously deleted")]
+    GovernedRecordDeleted,
+    #[error("evidence retention policy is invalid")]
+    InvalidRetentionPolicy,
+    #[error("plaintext evidence content must use the encrypted governance store")]
+    PlaintextEvidenceRejected,
+    #[error("evidence governance schema is not the exact current schema")]
+    InvalidGovernanceSchema,
 }
 
 impl EvidenceError {
@@ -1281,6 +1320,39 @@ CREATE TABLE IF NOT EXISTS administration_audit_intents (
   resource_digest TEXT NOT NULL, version INTEGER,
   CHECK (version IS NULL OR version > 0)
 );
+CREATE TABLE IF NOT EXISTS evidence_governance_meta (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  tenant_id TEXT NOT NULL, key_id TEXT NOT NULL,
+  key_check_nonce BLOB NOT NULL, key_check_ciphertext BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evidence_governed_records (
+  tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, id TEXT NOT NULL,
+  kind TEXT NOT NULL, classification TEXT NOT NULL, source_ref TEXT NOT NULL,
+  media_type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+  payload_digest_sha256 TEXT NOT NULL, payload_nonce BLOB NOT NULL,
+  payload_ciphertext BLOB NOT NULL, key_id TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,user_id,id),
+  CHECK(kind IN ('event','artifact')),
+  CHECK(classification IN ('operational','internal','confidential','restricted')),
+  CHECK(expires_at > created_at)
+);
+CREATE TABLE IF NOT EXISTS evidence_governance_tombstones (
+  tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, record_id TEXT NOT NULL,
+  kind TEXT NOT NULL, classification TEXT NOT NULL,
+  payload_digest_sha256 TEXT NOT NULL, deleted_at INTEGER NOT NULL,
+  reason_digest_sha256 TEXT NOT NULL,
+  PRIMARY KEY(tenant_id,user_id,record_id),
+  CHECK(kind IN ('event','artifact')),
+  CHECK(classification IN ('operational','internal','confidential','restricted'))
+);
+CREATE TABLE IF NOT EXISTS evidence_governance_audit (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+  tenant_id TEXT NOT NULL, user_id TEXT NOT NULL, action TEXT NOT NULL,
+  selector_digest_sha256 TEXT NOT NULL, result_digest_sha256 TEXT NOT NULL,
+  record_count INTEGER NOT NULL, occurred_at INTEGER NOT NULL,
+  CHECK(action IN ('export','delete','retention')),
+  CHECK(record_count > 0)
+);
 CREATE INDEX IF NOT EXISTS idx_evidence_events_session ON evidence_events(session_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_evidence_turns_session ON evidence_turns(session_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_evidence_feedback_run ON evidence_feedback(run_id, recorded_at);
@@ -1288,6 +1360,10 @@ CREATE INDEX IF NOT EXISTS idx_authorization_denials_time ON authorization_denia
 CREATE INDEX IF NOT EXISTS idx_agent_admin_audit_time ON agent_administration_audit(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_administration_audit_time ON administration_audit(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_administration_audit_intents_time ON administration_audit_intents(occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_governed_records_retention
+  ON evidence_governed_records(tenant_id,expires_at,id);
+CREATE INDEX IF NOT EXISTS idx_governance_audit_scope
+  ON evidence_governance_audit(tenant_id,user_id,sequence DESC);
 ";
 
 #[cfg(test)]
