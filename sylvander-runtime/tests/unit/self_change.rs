@@ -128,6 +128,66 @@ async fn reviewed_local_experiment_rolls_back_observed_regression() {
     );
 }
 
+#[tokio::test]
+async fn human_can_rollback_a_merged_local_experiment() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source = temporary.path().join("source");
+    fs::create_dir(&source).unwrap();
+    git(&source, &["init"]);
+    git(&source, &["config", "user.name", "Test"]);
+    git(&source, &["config", "user.email", "test@example.com"]);
+    fs::write(source.join("README.md"), "base\n").unwrap();
+    git(&source, &["add", "."]);
+    git(&source, &["commit", "-m", "base"]);
+
+    let evidence = EvidenceStore::open(temporary.path().join("evidence.sqlite"))
+        .await
+        .unwrap();
+    register_proposal(&evidence).await;
+    let manager = SelfChangeExperimentManager::new(
+        evidence,
+        temporary.path().join("runtime"),
+        Arc::new(SequenceEvaluator {
+            values: Mutex::new(VecDeque::from([100, 100])),
+        }),
+        Arc::new(HmacSha256EvidenceSigner::new("local", vec![7; 32]).unwrap()),
+    );
+    let actor = "9".repeat(64);
+    let started = manager
+        .start("experiment-1", "proposal-1", &source, &actor, 10)
+        .await
+        .unwrap();
+    fs::write(
+        started.lease.effective_workspace.join("feature.txt"),
+        "candidate\n",
+    )
+    .unwrap();
+    manager
+        .evaluate_candidate("experiment-1", &actor, 11)
+        .await
+        .unwrap();
+    manager
+        .approve_merge("experiment-1", &actor, "Reviewed candidate evidence.", 12)
+        .await
+        .unwrap();
+    manager
+        .merge_approved("experiment-1", &actor, 13)
+        .await
+        .unwrap();
+
+    let rolled_back = manager
+        .rollback(
+            "experiment-1",
+            &actor,
+            "Human rejected the observation.",
+            14,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rolled_back.status, SelfChangeExperimentStatus::RolledBack);
+    assert!(!source.join("feature.txt").exists());
+}
+
 async fn register_proposal(store: &EvidenceStore) {
     store
         .register_scoring_adapter(ScoringAdapterRevision {

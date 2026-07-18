@@ -13,6 +13,10 @@ use sylvander_protocol::{
 use crate::agent_admin::is_agent_administrator;
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
 use crate::config::SecretRef;
+use crate::credential_audit::{
+    CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
+    CredentialOperationAuditLedger,
+};
 use crate::credential_registry::{CredentialRegistryError, CredentialSecretResolver};
 use crate::model_registry::ModelRegistryError;
 use crate::provider_registry::ProviderRegistryError;
@@ -553,6 +557,7 @@ impl<'a> RegistryAdminService<'a> {
 pub(crate) struct CredentialRegistryMutationService<'a> {
     registry: &'a AgentRegistry,
     resolver: &'a dyn CredentialSecretResolver,
+    audit: &'a CredentialOperationAuditLedger,
 }
 
 impl<'a> CredentialRegistryMutationService<'a> {
@@ -560,8 +565,13 @@ impl<'a> CredentialRegistryMutationService<'a> {
     pub(crate) const fn new(
         registry: &'a AgentRegistry,
         resolver: &'a dyn CredentialSecretResolver,
+        audit: &'a CredentialOperationAuditLedger,
     ) -> Self {
-        Self { registry, resolver }
+        Self {
+            registry,
+            resolver,
+            audit,
+        }
     }
 
     pub(crate) async fn dispatch(
@@ -580,7 +590,8 @@ impl<'a> CredentialRegistryMutationService<'a> {
         if let Err(error) = request.validate() {
             return failure(error);
         }
-        match request {
+        let audit_target = credential_mutation_audit_target(&request);
+        let response = match request {
             RegistryAdminRequest::CreateCredentialBinding {
                 binding_id,
                 reference,
@@ -621,7 +632,23 @@ impl<'a> CredentialRegistryMutationService<'a> {
                 None,
                 None,
             )),
+        };
+        let (subject, operation, revision) = audit_target;
+        let (operation, result) = credential_mutation_audit_outcome(&response, operation);
+        if self
+            .audit
+            .record(&subject, operation, revision, result)
+            .await
+            .is_err()
+        {
+            return failure(error(
+                RegistryAdminErrorCode::StorageUnavailable,
+                "credential operation audit is unavailable",
+                None,
+                revision,
+            ));
         }
+        response
     }
 
     async fn create(
@@ -715,6 +742,90 @@ impl<'a> CredentialRegistryMutationService<'a> {
             }),
             Err(source) => failure(map_credential_error(source, &binding_id, Some(target))),
         }
+    }
+}
+
+fn credential_mutation_audit_target(
+    request: &RegistryAdminRequest,
+) -> (
+    CredentialAuditSubject,
+    CredentialAuditOperation,
+    Option<u64>,
+) {
+    let (binding_id, operation, revision) = match request {
+        RegistryAdminRequest::CreateCredentialBinding { binding_id, .. } => {
+            (binding_id, CredentialAuditOperation::Create, Some(1))
+        }
+        RegistryAdminRequest::StageCredentialGeneration {
+            binding_id,
+            generation,
+            ..
+        }
+        | RegistryAdminRequest::ActivateCredentialGeneration {
+            binding_id,
+            generation,
+            ..
+        } => (
+            binding_id,
+            CredentialAuditOperation::Rotate,
+            Some(*generation),
+        ),
+        RegistryAdminRequest::RollbackCredentialGeneration {
+            binding_id,
+            expected_active_generation,
+            ..
+        } => (
+            binding_id,
+            CredentialAuditOperation::Revoke,
+            Some(*expected_active_generation),
+        ),
+        _ => unreachable!("validated credential mutation dispatch target"),
+    };
+    (
+        CredentialAuditSubject::provider_binding(binding_id)
+            .expect("validated registry binding identity"),
+        operation,
+        revision,
+    )
+}
+
+fn credential_mutation_audit_outcome(
+    response: &RegistryAdminResponse,
+    success_operation: CredentialAuditOperation,
+) -> (CredentialAuditOperation, CredentialAuditResult) {
+    match response {
+        RegistryAdminResponse::Success { .. } => {
+            (success_operation, CredentialAuditResult::Succeeded)
+        }
+        RegistryAdminResponse::Error { error } => (
+            CredentialAuditOperation::Failure,
+            match error.code {
+                RegistryAdminErrorCode::InvalidRequest
+                | RegistryAdminErrorCode::UnknownCredentialBinding
+                | RegistryAdminErrorCode::UnknownGeneration
+                | RegistryAdminErrorCode::CredentialAlreadyExists
+                | RegistryAdminErrorCode::NonSequentialGeneration
+                | RegistryAdminErrorCode::GenerationCollision
+                | RegistryAdminErrorCode::InvalidRollback
+                | RegistryAdminErrorCode::Unauthorized
+                | RegistryAdminErrorCode::UnknownProvider
+                | RegistryAdminErrorCode::UnknownModel
+                | RegistryAdminErrorCode::UnknownRevision
+                | RegistryAdminErrorCode::ProviderAlreadyExists
+                | RegistryAdminErrorCode::ModelAlreadyExists
+                | RegistryAdminErrorCode::NonSequentialRevision
+                | RegistryAdminErrorCode::RevisionCollision
+                | RegistryAdminErrorCode::InvalidRevisionRollback
+                | RegistryAdminErrorCode::Internal => CredentialAuditResult::InvalidRequest,
+                RegistryAdminErrorCode::ActiveGenerationConflict
+                | RegistryAdminErrorCode::ActiveRevisionConflict => CredentialAuditResult::Conflict,
+                RegistryAdminErrorCode::CredentialUnavailable => CredentialAuditResult::Unavailable,
+                RegistryAdminErrorCode::StorageUnavailable => {
+                    CredentialAuditResult::StorageUnavailable
+                }
+                RegistryAdminErrorCode::IntegrityFailure => CredentialAuditResult::Integrity,
+            },
+        ),
     }
 }
 

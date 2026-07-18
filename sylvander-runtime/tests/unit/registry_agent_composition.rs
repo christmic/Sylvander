@@ -18,7 +18,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::Runtime;
 use crate::agent_registry::AgentRegistry;
-use crate::agent_registry_snapshot::AgentSnapshotSelection;
 use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
 use crate::config::{
     ExecutionTargetConfig, ExecutionTransportConfig, SecretRef, ServerConfig, SystemSecretResolver,
@@ -79,6 +78,7 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "model-a"
+allowed_models = [{{ provider_id = "alpha", model_id = "model-a" }}]
 "#,
         secret_path.display()
     ))
@@ -128,6 +128,7 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
 "#,
         alpha_secret.display(),
         beta_secret.display()
@@ -300,165 +301,6 @@ exec "$@"
 }
 
 #[tokio::test]
-async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
-    let directory = tempdir().unwrap();
-    let first_secret = directory.path().join("first.secret");
-    let second_secret = directory.path().join("second.secret");
-    std::fs::write(&first_secret, "first-key\n").unwrap();
-    std::fs::write(&second_secret, "second-key\n").unwrap();
-    let pinned_server = MockServer::start().await;
-    let newer_server = MockServer::start().await;
-    expect_request(&pinned_server, "first-key").await;
-    expect_request(&pinned_server, "second-key").await;
-
-    let config = config(&pinned_server.uri(), &first_secret);
-    let registry = AgentRegistry::open(directory.path().join("registry.db"))
-        .await
-        .unwrap();
-    registry.bootstrap_registries(&config).await.unwrap();
-    registry.seed(&config).await.unwrap();
-    registry
-        .stage_agent_snapshot(AgentSnapshotSelection {
-            agent_id: "assistant".into(),
-            agent_revision: 1,
-            provider_id: "alpha".into(),
-            allowed_model_ids: BTreeSet::from(["model-a".into(), "model-b".into()]),
-            default_model_id: "model-a".into(),
-        })
-        .await
-        .unwrap();
-    let snapshot = registry
-        .resolve_registry_composition(&config.agents[0].spec.id, 1)
-        .await
-        .unwrap();
-
-    let mut newer_provider = snapshot.provider.clone();
-    newer_provider.revision = 2;
-    newer_provider.base_url = newer_server.uri();
-    registry.stage_provider(1, newer_provider).await.unwrap();
-    registry.activate_provider("alpha", 2, 1).await.unwrap();
-    let mut newer_model = snapshot
-        .models
-        .iter()
-        .find(|model| model.model_id == "model-b")
-        .unwrap()
-        .clone();
-    newer_model.revision = 2;
-    registry.stage_model(1, newer_model).await.unwrap();
-    registry
-        .activate_model(("alpha", "model-b"), 2, 1)
-        .await
-        .unwrap();
-
-    let bus: Arc<dyn MessageBus> = Arc::new(InProcessMessageBus::new());
-    let store = Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
-    let sessions: Arc<dyn SessionStore> = store.clone();
-    let agent = build_registry_agent(
-        &config,
-        snapshot.clone(),
-        registry.clone(),
-        bus,
-        sessions,
-        Arc::new(InMemoryMemoryStore::new()),
-    )
-    .unwrap();
-    let runtime = agent.run.runtime_model_info().await;
-    assert_eq!(runtime.current_model, "model-a");
-    assert_eq!(runtime.models.len(), 2);
-    assert!(runtime.models.iter().all(|model| model.provider == "alpha"));
-    let default =
-        resolve_session_config(&agent, &SessionConfigOverrides::default(), None, None).unwrap();
-    assert_eq!(
-        default.require_revision_pins().unwrap().provider_revision,
-        1
-    );
-    assert_eq!(default.require_revision_pins().unwrap().model_revision, 1);
-    let alternate = resolve_session_config(
-        &agent,
-        &SessionConfigOverrides {
-            model: Some(ModelSelection {
-                provider_id: "alpha".into(),
-                model_id: "model-b".into(),
-            }),
-            ..SessionConfigOverrides::default()
-        },
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        alternate.require_revision_pins().unwrap().provider_revision,
-        1
-    );
-    assert_eq!(alternate.require_revision_pins().unwrap().model_revision, 1);
-
-    let mut missing = agent.clone();
-    missing
-        .revision_bindings
-        .model_revisions
-        .remove(&ModelSelection {
-            provider_id: "alpha".into(),
-            model_id: "model-b".into(),
-        });
-    assert!(matches!(
-        resolve_session_config(
-            &missing,
-            &SessionConfigOverrides {
-                model: Some(ModelSelection {
-                    provider_id: "alpha".into(),
-                    model_id: "model-b".into(),
-                }),
-                ..SessionConfigOverrides::default()
-            },
-            None,
-            None,
-        ),
-        Err(CompositionError::MissingRegistryModelBinding { .. })
-    ));
-
-    let first_session = persisted_session(&agent, &store, "first").await;
-    agent
-        .run
-        .handle_message(BusMessage::user_chat(
-            first_session,
-            "user",
-            "first request",
-        ))
-        .await
-        .unwrap();
-    registry
-        .stage_credential(
-            1,
-            CredentialBindingRevision {
-                binding_id: snapshot.credential_binding_id.clone(),
-                generation: 2,
-                reference: SecretRef::File {
-                    path: second_secret,
-                },
-            },
-        )
-        .await
-        .unwrap();
-    registry
-        .activate_credential(&snapshot.credential_binding_id, 2, 1)
-        .await
-        .unwrap();
-    let second_session = persisted_session(&agent, &store, "second").await;
-    agent
-        .run
-        .handle_message(BusMessage::user_chat(
-            second_session,
-            "user",
-            "second request",
-        ))
-        .await
-        .unwrap();
-
-    pinned_server.verify().await;
-    assert!(newer_server.received_requests().await.unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_credentials() {
     let directory = tempdir().unwrap();
     let alpha_first = directory.path().join("alpha-first.secret");
@@ -566,6 +408,14 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         Arc::new(InMemoryMemoryStore::new()),
         None,
         Arc::new(SystemSecretResolver),
+        None,
+        Arc::new(
+            crate::credential_audit::CredentialOperationAuditLedger::open_in_memory_with_policy(
+                1_000, 100,
+            )
+            .await
+            .unwrap(),
+        ),
         None,
         None,
     )
@@ -692,8 +542,6 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
             provider_id: "beta".into(),
             model_id: "shared".into(),
         }],
-        providers: Vec::new(),
-        models: Vec::new(),
         system_prompt: PROFILE_PROMPT.into(),
     }];
     let mut principal = AuthenticatedPrincipal::user("user", AuthenticationMethod::Internal);
@@ -854,42 +702,4 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     restarted.shutdown().await.unwrap();
     beta.verify().await;
     alpha.verify().await;
-}
-
-#[test]
-fn registry_revision_binding_validation_is_typed() {
-    let provider = ProviderDefinition {
-        id: "alpha".into(),
-        revision: 1,
-        kind: "anthropic_compatible".into(),
-        base_url: "https://alpha.invalid".into(),
-        credential_binding_id: "provider:alpha:api_key".into(),
-    };
-    let model = ModelDefinition {
-        provider_id: "alpha".into(),
-        model_id: "shared".into(),
-        revision: 1,
-        context_window: 100,
-        max_output_tokens: 10,
-        capabilities: BTreeSet::new(),
-        lifecycle: sylvander_protocol::ModelLifecycle::Active,
-        pricing: None,
-    };
-
-    let mut zero = provider.clone();
-    zero.revision = 0;
-    assert!(matches!(
-        registry_revision_bindings(&zero, std::slice::from_ref(&model)),
-        Err(CompositionError::InvalidRegistryRevisionBinding)
-    ));
-    assert!(matches!(
-        registry_revision_bindings(&provider, &[model.clone(), model.clone()]),
-        Err(CompositionError::DuplicateRegistryModelBinding { .. })
-    ));
-    let mut foreign = model;
-    foreign.provider_id = "beta".into();
-    assert!(matches!(
-        registry_revision_bindings(&provider, &[foreign]),
-        Err(CompositionError::RegistryModelProviderMismatch { .. })
-    ));
 }

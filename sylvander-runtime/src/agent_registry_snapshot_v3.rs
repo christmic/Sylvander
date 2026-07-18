@@ -7,10 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sylvander_protocol::ModelSelection;
 
-use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::agent_registry_snapshot::{
-    AgentRegistrySnapshot, AgentSnapshotError, load_snapshot as load_snapshot_v2,
-};
+use crate::agent_registry::{AgentRegistry, AgentRegistryError, ensure_current_registry_schema};
 
 /// Qualified model policy supplied when materializing one Agent revision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +66,7 @@ impl AgentRegistry {
     ) -> Result<AgentRegistrySnapshotV3, AgentSnapshotV3Error> {
         selection.validate()?;
         self.run_with(move |connection| {
+            ensure_current_registry_schema(connection)?;
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
@@ -87,14 +85,8 @@ impl AgentRegistry {
         let agent_id = agent_id.to_owned();
         let revision = sql_index(revision)?;
         self.run_with(move |connection| {
-            let snapshot = load_snapshot_v3(connection, &agent_id, revision)?;
-            if snapshot.is_some() && has_v2_snapshot(connection, &agent_id, revision)? {
-                return Err(AgentSnapshotV3Error::SchemaConflict {
-                    agent_id,
-                    revision: decode_index(revision)?,
-                });
-            }
-            Ok(snapshot)
+            ensure_current_registry_schema(connection)?;
+            load_snapshot_v3(connection, &agent_id, revision)
         })
         .await
     }
@@ -104,30 +96,7 @@ impl AgentRegistry {
         agent_id: &str,
         revision: u64,
     ) -> Result<Option<AgentRegistrySnapshotV3>, AgentSnapshotV3Error> {
-        let agent_id = agent_id.to_owned();
-        let revision = sql_index(revision)?;
-        self.run_with(move |connection| {
-            // Validate V3 before probing V2 so damaged current state cannot be
-            // hidden by a valid legacy snapshot.
-            let current = load_snapshot_v3(connection, &agent_id, revision)?;
-            let has_legacy = has_v2_snapshot(connection, &agent_id, revision)?;
-            if let Some(current) = current {
-                if has_legacy {
-                    return Err(AgentSnapshotV3Error::SchemaConflict {
-                        agent_id,
-                        revision: decode_index(revision)?,
-                    });
-                }
-                return Ok(Some(current));
-            }
-            if !has_legacy {
-                return Ok(None);
-            }
-            load_snapshot_v2(connection, &agent_id, revision)?
-                .map(lift_v2_snapshot)
-                .transpose()
-        })
-        .await
+        self.load_agent_snapshot_v3(agent_id, revision).await
     }
 }
 
@@ -136,6 +105,7 @@ pub(crate) fn stage_snapshot_v3_in_transaction(
     selection: AgentSnapshotSelectionV3,
 ) -> Result<AgentRegistrySnapshotV3, AgentSnapshotV3Error> {
     selection.validate()?;
+    ensure_current_registry_schema(transaction)?;
     let agent_revision = sql_index(selection.agent_revision)?;
     let agent_exists = transaction
         .query_row(
@@ -151,13 +121,6 @@ pub(crate) fn stage_snapshot_v3_in_transaction(
             revision: selection.agent_revision,
         });
     }
-    if has_v2_snapshot(transaction, &selection.agent_id, agent_revision)? {
-        return Err(AgentSnapshotV3Error::SchemaConflict {
-            agent_id: selection.agent_id,
-            revision: selection.agent_revision,
-        });
-    }
-
     let mut providers = BTreeMap::new();
     let mut models = Vec::with_capacity(selection.allowed_models.len());
     for model in &selection.allowed_models {
@@ -442,38 +405,6 @@ fn load_snapshot_v3(
     Ok(Some(snapshot))
 }
 
-fn lift_v2_snapshot(
-    legacy: AgentRegistrySnapshot,
-) -> Result<AgentRegistrySnapshotV3, AgentSnapshotV3Error> {
-    let default_model = legacy
-        .models
-        .iter()
-        .find(|model| model.is_default)
-        .map(|model| ModelSelection {
-            provider_id: model.provider_id.clone(),
-            model_id: model.model_id.clone(),
-        })
-        .ok_or_else(|| integrity("V2 snapshot has no default Model"))?;
-    AgentRegistrySnapshotV3::new(
-        legacy.agent_id,
-        legacy.agent_revision,
-        default_model,
-        BTreeMap::from([(legacy.provider_id, legacy.provider_revision)]),
-        legacy
-            .models
-            .into_iter()
-            .map(|model| SnapshotModelRevisionV3 {
-                model: ModelSelection {
-                    provider_id: model.provider_id,
-                    model_id: model.model_id,
-                },
-                revision: model.revision,
-            })
-            .collect(),
-    )
-    .map_err(|_| integrity("V2 snapshot cannot be represented as V3"))
-}
-
 fn active_provider_revision(
     connection: &Connection,
     provider_id: &str,
@@ -490,21 +421,6 @@ fn active_provider_revision(
         .map_err(storage)?
         .map(decode_index)
         .transpose()
-}
-
-fn has_v2_snapshot(
-    connection: &Connection,
-    agent_id: &str,
-    revision: i64,
-) -> Result<bool, AgentSnapshotV3Error> {
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_registry_snapshots \
-             WHERE agent_id=?1 AND agent_revision=?2)",
-            params![agent_id, revision],
-            |row| row.get(0),
-        )
-        .map_err(storage)
 }
 
 fn active_model_revision(
@@ -601,14 +517,10 @@ pub(crate) enum AgentSnapshotV3Error {
         provider_id: String,
         model_id: String,
     },
-    #[error("Agent snapshot `{agent_id}`@{revision} already uses the V2 schema")]
-    SchemaConflict { agent_id: String, revision: u64 },
     #[error("Agent snapshot `{agent_id}`@{revision} has different V3 content")]
     SnapshotCollision { agent_id: String, revision: u64 },
     #[error(transparent)]
     Registry(#[from] AgentRegistryError),
-    #[error(transparent)]
-    Legacy(#[from] AgentSnapshotError),
 }
 
 #[cfg(test)]
