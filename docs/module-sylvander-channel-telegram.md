@@ -14,8 +14,10 @@ Telegram Bot API. The channel serves a webhook on a local
 
 ```bash
 export TELEGRAM_BOT_TOKEN=...
-curl -X POST https://api.telegram.org/bot${TOKEN}/setWebhook \
-  -d "url=https://your-host/telegram/webhook"
+export TELEGRAM_WEBHOOK_SECRET=...
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  --data-urlencode "url=https://your-host/telegram/webhook" \
+  --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
 ```
 
 The composition root registers the bot token and webhook secret as named

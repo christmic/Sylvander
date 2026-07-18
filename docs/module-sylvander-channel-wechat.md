@@ -95,7 +95,7 @@ the resulting `BoundaryContext`.
 - Sharing `corp_id` across multiple channels — every bot is
   scoped to one corp.
 - Ignoring the URL verification handshake — WeChat requires the
-  `GET /` echo before it will deliver real callbacks.
+  `GET /wechat/callback` echo before it will deliver real callbacks.
 - Reusing one credential source across instance ids — the lease source rejects
   mismatched instance ids and never falls back to another application's
   credentials.

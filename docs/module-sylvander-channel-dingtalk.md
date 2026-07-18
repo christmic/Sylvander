@@ -13,7 +13,7 @@ the local `protocol` module).
 ## 2. Architecture
 
 ```text
-lib.rs      — Channel trait impl (glue: session mapping, bus pub/sub)
+lib.rs      — Channel trait impl (authenticated ingress + outbound subscription)
               |
               v
 protocol.rs — DingTalk Stream protocol (pure SDK, no Sylvander deps)

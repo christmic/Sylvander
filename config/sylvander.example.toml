@@ -142,6 +142,7 @@ description = "Primary coding Agent"
 [agents.spec.model]
 provider = "primary"
 model_name = "claude-sonnet"
+allowed_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
 max_tokens = 32000
 
 [agents.spec.behavior]
