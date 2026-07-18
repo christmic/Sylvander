@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 mod support;
 
-use support::InMemoryToolResultDisk;
+use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::tool_result_budget::ToolResultBudgetLayer;
 use sylvander_agent::prelude::*;
@@ -58,7 +58,7 @@ async fn real_api_natural_multi_turn_with_compression() {
     let big_body = "Line: ".to_string() + &"x".repeat(8_000);
     std::fs::write(tmp.path().join("data.txt"), &big_body).expect("write");
 
-    let read_tool = ReadTool::new(tmp.path());
+    let read_tool = ReadTool::new();
 
     // L0 with tight budget so the 8k file body triggers it.
     let disk = Arc::new(InMemoryToolResultDisk::new());
@@ -70,10 +70,12 @@ async fn real_api_natural_multi_turn_with_compression() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .tool(read_tool)
+        .tool_context(workspace_tool_context(
+            tmp.path(),
+            [sylvander_agent::tool_context::Cap::Read],
+        ))
         .compression_pipeline(pipeline)
         .max_iterations(4)
         .system_prompt(

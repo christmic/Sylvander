@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::InMemoryToolResultDisk;
+use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::{
     auto_compact::AutoCompactLayer, context_collapse::ContextCollapseLayer,
@@ -62,9 +62,7 @@ async fn default_pipeline_runs_cleanly_against_wiremock() {
         .mount(&server)
         .await;
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         // No .compression_pipeline(...) → default = L1+L2+L3
         .build()
         .expect("build");
@@ -89,7 +87,10 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read notes.md"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Read notes.md"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_step1",
@@ -123,15 +124,17 @@ async fn default_pipeline_drop_orphans_in_tool_calling_scenario() {
         .mount(&server)
         .await;
 
-    let read_tool = ReadTool::new(std::env::temp_dir());
+    let read_tool = ReadTool::new();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
+        .tool_context(workspace_tool_context(
+            std::env::temp_dir().as_path(),
+            [sylvander_agent::tool_context::Cap::Read],
+        ))
         .max_iterations(3)
         .build()
         .expect("build");
@@ -171,7 +174,10 @@ async fn l0_offloads_oversized_tool_result() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "Read big.txt"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Read big.txt"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_r1",
@@ -210,7 +216,7 @@ async fn l0_offloads_oversized_tool_result() {
     let big = "x".repeat(10_000);
     std::fs::write(tmp.path().join("big.txt"), &big).expect("write big");
 
-    let read_tool = ReadTool::new(tmp.path());
+    let read_tool = ReadTool::new();
 
     let disk = Arc::new(InMemoryToolResultDisk::new());
     let pipeline = CompressionPipeline::builder()
@@ -220,9 +226,7 @@ async fn l0_offloads_oversized_tool_result() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
         .tool_context(
             ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
@@ -284,9 +288,7 @@ async fn l1_runs_before_l2_in_default_pipeline() {
         .layer(OrphanSnipLayer::new())
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -326,9 +328,7 @@ async fn l2_keeps_recent_tool_results_intact() {
         .layer(MicroCompactLayer::new().with_keep_last_n(2))
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -373,9 +373,7 @@ async fn l3_trims_old_thinking_blocks_in_tool_calling_scenario() {
         .layer(ContextCollapseLayer::new().with_max_thinking_chars(200))
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -426,9 +424,7 @@ async fn l4_summarizes_when_usage_exceeds_threshold() {
         .layer(AutoCompactLayer::new().with_trigger_ratio(0.5))
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(tiny_model)
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), tiny_model)
         .compression_pipeline(pipeline)
         .max_iterations(2)
         .build()
@@ -457,7 +453,10 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "summarize"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "summarize"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
@@ -481,9 +480,7 @@ async fn full_pipeline_l1_l2_l3_l4_handles_tool_calling() {
         .layer(AutoCompactLayer::new())
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .compression_pipeline(pipeline)
         .build()
         .expect("build");

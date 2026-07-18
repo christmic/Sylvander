@@ -108,7 +108,7 @@ async fn read_e2e_wiremock() {
         .mount(&server)
         .await;
 
-    let read_tool = ReadTool::new(dir.path());
+    let read_tool = ReadTool::new();
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -199,7 +199,7 @@ async fn read_e2e_wiremock_missing_file() {
         .mount(&server)
         .await;
 
-    let read_tool = ReadTool::new(dir.path());
+    let read_tool = ReadTool::new();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(read_tool)
@@ -275,7 +275,7 @@ async fn read_e2e_real_api_single_iteration() {
         return;
     }
 
-    let read_tool = ReadTool::new("/tmp");
+    let read_tool = ReadTool::new();
     let loop_ = qualified_anthropic_loop_builder(client, model)
         .tool(read_tool)
         .tool_context(read_context(std::path::Path::new("/tmp")))

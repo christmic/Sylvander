@@ -7,8 +7,11 @@
 //! 2. Tool executes, `tool_result` is re-fed
 //! 3. Iter 2: API accepts the re-fed `tool_result` (no HTTP 400)
 
+mod support;
+
 use std::env;
 
+use support::{qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -56,15 +59,17 @@ async fn real_api_does_multi_turn_work() {
         "Hello from Sylvander. This is a test file.",
     )
     .expect("write");
-    let read_tool = ReadTool::new(tmp.path());
+    let read_tool = ReadTool::new();
 
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .tool(read_tool)
+        .tool_context(workspace_tool_context(
+            tmp.path(),
+            [sylvander_agent::tool_context::Cap::Read],
+        ))
         .max_iterations(3)
         .build()
         .expect("build loop");

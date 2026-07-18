@@ -42,7 +42,7 @@ use std::sync::Arc;
 use serde_json::json;
 mod support;
 
-use support::InMemoryToolResultDisk;
+use support::{InMemoryToolResultDisk, qualified_anthropic_loop_builder};
 use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::{
     context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
@@ -108,9 +108,7 @@ async fn real_api_l1_drops_prepopulated_orphan() {
         .layer(OrphanSnipLayer::new())
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -157,9 +155,7 @@ async fn real_api_l4_smoke_test() {
         )
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(tiny_model)
+    let loop_ = qualified_anthropic_loop_builder(client, tiny_model)
         .compression_pipeline(pipeline)
         .max_iterations(2)
         .build()
@@ -243,9 +239,7 @@ async fn real_api_l0_offloads_prepopulated_big_tool_result() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -324,9 +318,7 @@ async fn real_api_l2_condenses_old_tool_results() {
         .layer(MicroCompactLayer::new().with_keep_last_n(2))
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .compression_pipeline(pipeline)
         .build()
         .expect("build");
@@ -393,9 +385,7 @@ async fn real_api_l3_trims_old_thinking_block() {
         )
         .build();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .compression_pipeline(pipeline)
         .build()
         .expect("build");

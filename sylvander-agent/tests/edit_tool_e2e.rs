@@ -99,7 +99,7 @@ async fn edit_tool_e2e() {
     let events_clone = events.clone();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
-        .tool(EditTool::new(tmp.path()))
+        .tool(EditTool::new())
         .tool_context(edit_context(tmp.path()))
         .max_iterations(3)
         .build()
@@ -195,7 +195,7 @@ async fn edit_tool_with_ambiguous_match_returns_error() {
     let events_clone = events.clone();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
-        .tool(EditTool::new(tmp.path()))
+        .tool(EditTool::new())
         .tool_context(edit_context(tmp.path()))
         .max_iterations(3)
         .build()

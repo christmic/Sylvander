@@ -45,7 +45,7 @@ async fn tools_set_without_tool_use_capability_errors() {
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("hi")]).await;
     assert!(matches!(
         result,
-        Err(AgentLoopError::IncompatibleModel(ref msg)) if msg.contains("TOOL_USE")
+        Err(AgentLoopError::IncompatibleModel(ref msg)) if msg.contains("tool_use")
     ));
 }
 
