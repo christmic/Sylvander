@@ -233,6 +233,8 @@ jobs:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
             target -> target
+      - name: verify Rust test layout
+        run: ./scripts/verify-rust-test-layout.sh
       - name: cargo fmt --all -- --check
         run: cargo fmt --all -- --check
 
