@@ -970,6 +970,7 @@ fn apply_execution_targets(
                 credential,
                 known_hosts,
                 control_path,
+                worktree_root: _,
             } => {
                 let identity = resolve(credential)
                     .map_err(|()| CompositionError::ExecutionTarget(target.id.clone()))?;
@@ -1732,6 +1733,7 @@ path = "/tmp/sylvander-test.sock"
                     },
                     known_hosts: std::path::PathBuf::from("/tmp/sylvander-known-hosts"),
                     control_path: std::path::PathBuf::from("/tmp/sylvander-ssh-control"),
+                    worktree_root: std::path::PathBuf::from("/tmp/sylvander-worktrees"),
                 },
             });
         config.agents[0].agent_workspace = Some(crate::config::WorkspaceBindingConfig {

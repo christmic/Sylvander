@@ -50,16 +50,24 @@ kind = "ssh"
 host = "build.example.com"
 port = 22
 user = "builder"
+known_hosts = "/etc/sylvander/ssh_known_hosts"
+control_path = "/var/run/sylvander/ssh-%C"
+worktree_root = "/srv/sylvander/worktrees"
 
 [execution_targets.transport.credential]
 source = "env"
 name = "SYLVANDER_SSH_IDENTITY_PATH"
 ```
 
-Workspace paths for SSH targets are absolute paths on the remote host. Unknown
-or unimplemented targets fail explicitly before a tool can fall back to the
-server filesystem. A read-only workspace permits reads and rejects writes,
-edits, and commands.
+`known_hosts` is a deployment-owned file and strict verification is mandatory;
+Sylvander never learns a host key interactively. `control_path` enables bounded
+OpenSSH connection sharing (`ControlMaster=auto`, `ControlPersist=60`) and its
+parent must already be private to the server account. `worktree_root` is an
+absolute, non-root directory on the remote host used for durable coding-session
+branches. Workspace paths for SSH targets are also absolute remote paths.
+Unknown targets fail explicitly before a tool can fall back to the server
+filesystem. A read-only workspace permits reads and rejects writes, edits, and
+commands.
 
 A container target runs every workspace operation in a fresh disposable
 container. The server bind-mounts the selected host workspace at `/workspace`,

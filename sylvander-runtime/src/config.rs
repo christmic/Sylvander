@@ -593,6 +593,8 @@ pub enum ExecutionTransportConfig {
         known_hosts: PathBuf,
         /// Absolute control-socket path used by OpenSSH connection sharing.
         control_path: PathBuf,
+        /// Absolute directory on the remote host for managed coding worktrees.
+        worktree_root: PathBuf,
     },
     Container {
         runtime: String,
@@ -1119,6 +1121,7 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
             credential,
             known_hosts,
             control_path,
+            worktree_root,
         } => {
             require_text("SSH host", host, errors);
             require_text("SSH user", user, errors);
@@ -1126,7 +1129,11 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                 errors.push(format!("SSH target {} port must be positive", target.id));
             }
             credential.validate("SSH credential", errors);
-            for (field, path) in [("known_hosts", known_hosts), ("control_path", control_path)] {
+            for (field, path) in [
+                ("known_hosts", known_hosts),
+                ("control_path", control_path),
+                ("worktree_root", worktree_root),
+            ] {
                 if !path.is_absolute()
                     || path
                         .components()
@@ -1137,6 +1144,12 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                         target.id
                     ));
                 }
+            }
+            if worktree_root == Path::new("/") {
+                errors.push(format!(
+                    "SSH target {} worktree_root must not be the filesystem root",
+                    target.id
+                ));
             }
         }
         ExecutionTransportConfig::Container {
