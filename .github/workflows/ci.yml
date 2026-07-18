@@ -139,7 +139,7 @@ jobs:
         with:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
 
       - name: cargo build
         run: cargo build --workspace --locked
@@ -174,18 +174,8 @@ jobs:
           codesign --verify --strict "$helper"
 
       - name: cargo test
-        # Several tests assert on the streaming-event contract. Their
-        # expected event sequences drift even when no real API is
-        # involved (mock response shape mismatches). CI opts out;
-        # run them locally with plain `cargo test` to validate.
-        # INSTA_UPDATE=no forces insta snapshot tests to fail on drift
-        # instead of silently regenerating — protects visual layout.
         run: |
-          INSTA_UPDATE=no cargo test --workspace --locked -- \
-            --skip real_use_case \
-            --skip single_iteration_end_turn_returns_final_message \
-            --skip event_order_iteration_start_chunks_end \
-            --skip stream_wrong_content_type_errors
+          INSTA_UPDATE=no cargo test --workspace --locked -- --test-threads=1
 
   # ---------------------------------------------------------------
   # 4. macOS Swift files — syntax sanity (catches our Info.plist /
@@ -232,9 +222,11 @@ jobs:
         with:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
       - name: verify Rust test layout
-        run: ./scripts/verify-rust-test-layout.sh
+        run: |
+          ./scripts/verify-rust-test-layout.sh
+          ./scripts/tests/verify-rust-test-layout.sh
       - name: cargo fmt --all -- --check
         run: cargo fmt --all -- --check
 
@@ -255,12 +247,65 @@ jobs:
         with:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # ---------------------------------------------------------------
-  # 7. Linux build — catches macOS-only assumptions (Hardcoded
+  # 7. Rustdoc — module and public-contract documentation is code.
+  # Any broken link, invalid example, or warning fails the build.
+  # ---------------------------------------------------------------
+  rust-doc:
+    name: cargo doc -D warnings
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ci-${{ runner.os }}-
+          workspaces: |
+            . -> target
+      - name: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
+      - name: verify maintained architecture documentation
+        run: ./scripts/verify-docs.sh
+
+  # ---------------------------------------------------------------
+  # 8. token9 is first-party but intentionally has an independent
+  # Cargo workspace. It must pass the same format/test/lint/doc contract.
+  # ---------------------------------------------------------------
+  token9:
+    name: token9 workspace
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: sylvander-token9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96
+        with:
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: token9-${{ runner.os }}-
+          workspaces: |
+            sylvander-token9 -> target
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked -- --test-threads=1
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
+
+  # ---------------------------------------------------------------
+  # 9. Linux build — catches macOS-only assumptions (Hardcoded
   # `/Users/foo`, Apple-only crates, `#[cfg(target_os = "macos")]`
   # that should be cross-platform). Lightweight: build only, no
   # test run (the wiremock tests need a running server).
@@ -275,7 +320,7 @@ jobs:
         with:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
       - name: System dependencies
         run: |
           sudo apt-get update
@@ -285,7 +330,7 @@ jobs:
         run: cargo build --workspace --locked
 
   # ---------------------------------------------------------------
-  # 8. TUI snapshot drift guard — the 23 `insta::assert_snapshot!`
+  # 10. TUI snapshot drift guard — the 23 `insta::assert_snapshot!`
   # tests in `sylvander-tui/tests/snapshots.rs` cover the entire UI
   # surface (modals, composer, breakpoints, AskUser variants, etc.).
   # A change that goes unnoticed in `cargo build` because the binary
@@ -304,7 +349,7 @@ jobs:
         with:
           prefix-key: ci-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
       - name: System dependencies
         run: |
           sudo apt-get update

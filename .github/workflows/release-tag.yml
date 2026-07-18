@@ -51,7 +51,7 @@ jobs:
         with:
           prefix-key: release-${{ runner.os }}-
           workspaces: |
-            target -> target
+            . -> target
 
       - name: Select Xcode 26
         run: |

@@ -9,7 +9,7 @@ report_matches() {
   local title="$1"
   shift
   local matches
-  matches="$(git grep -nE "$@" -- ':(glob)*/src/**/*.rs' 2>/dev/null || true)"
+  matches="$(git grep -nE "$@" -- ':(glob)**/src/**/*.rs' 2>/dev/null || true)"
   if [[ -n "$matches" ]]; then
     echo "$title" >&2
     echo "$matches" >&2
@@ -32,9 +32,9 @@ while IFS= read -r file; do
   fi
 done < <(
   git ls-files \
-    ':(glob)*/src/**/*_test.rs' \
-    ':(glob)*/src/**/*_tests.rs' \
-    ':(glob)*/src/**/tests.rs'
+    ':(glob)**/src/**/*_test.rs' \
+    ':(glob)**/src/**/*_tests.rs' \
+    ':(glob)**/src/**/tests.rs'
 )
 if [[ -n "$source_test_files" ]]; then
   echo "Rust test files must not be stored below src/:" >&2
