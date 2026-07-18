@@ -21,8 +21,10 @@ restricted OCI container/sandbox execution,
 typed approvals and questions, Unix/HTTP/WebSocket channels, multi-instance
 DingTalk, Telegram, and WeChat Work adapters, MCP/skills/hooks/extensions,
 typed turn context, isolated Worker/Guardian curation, governed evidence and
-artifacts, operational diagnostics, and evidence-driven improvement
-experiments.
+artifacts, explicit governed-memory confirmation, renewable credential leases
+with a separate content-safe operation ledger, operational diagnostics, and
+evidence-driven improvement experiments with a local human-gated
+administrator command.
 
 Local execution remains the zero-external-dependency baseline. Configured SSH
 targets use strict host-key verification, bounded OpenSSH control reuse,
@@ -46,9 +48,18 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo build --workspace --release --locked
+./scripts/verify-docs.sh
 ./scripts/security-verify.sh
 ./scripts/performance-verify.sh
 ./scripts/clean-room-verify.sh
+
+(
+  cd sylvander-token9
+  cargo fmt --all -- --check
+  cargo test --workspace --locked
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+)
 ```
 
 Release evidence is valid only when every command above passes against the same
@@ -58,12 +69,36 @@ newly generated production configuration, observes its Unix socket and durable
 databases, verifies the installed TUI, and requires a clean signal-driven
 shutdown.
 
+The nested token9 workspace is first-party code but intentionally does not
+participate in the root Cargo workspace. Its independent format, full-test,
+strict-Clippy, and warning-denied Rustdoc block above is therefore required; a
+green root workspace cannot stand in for it. `verify-docs.sh` requires one
+indexed module boundary for all 16 first-party Cargo packages and rejects
+broken relative links in the maintained documentation set.
+
 The real-client gate compiles the TUI and drives it through a pseudo-terminal.
 It covers protocol negotiation, keyboard submission, streamed output, AskUser,
 approval rejection, interrupt, resize, reconnect, persisted SQLite resume, and
 colliding multi-client isolation. The approval journey additionally proves
 that a rejected write never executes. TUI unit, E2E, PTY, real-Agent PTY, and
 visual snapshot suites pass together.
+
+The local self-improvement administrator gate invokes the compiled
+`sylvander-improve` binary for proposal creation and transitions plus
+experiment start, evaluation, acceptance, observation, and rollback. Its two
+temporary Git repositories prove both a successful observed merge and a clean
+human-directed revert, then reopen the durable store to verify terminal state.
+This is not evidence of an automatic or remote production rollout.
+
+The desktop-host gate is recorded in
+[`ghostty-release-verification.md`](ghostty-release-verification.md). It
+requires the full exact-v5 Swift suite, a clean Release universal bundled
+helper with strict local signature verification, and a real Unix-backed
+`ReleaseLocal` lifecycle with active/inactive transparency plus TrueColor
+inspection. Those deterministic local checks close the implementation gate.
+A consistently Developer ID-signed Release lifecycle, notarization, and
+stapling are external distribution prerequisites; `ReleaseLocal` is not
+evidence that those credentialed deployment checks passed.
 
 The security gate reports no RustSec vulnerability in locked dependencies and
 covers malformed protocol input, path and command-argument injection,
@@ -96,9 +131,13 @@ scope. That statement is not a substitute for the current-commit closure gate.
   evidence; native interactive SSH-terminal and tmux process integration remain
   unadvertised unless a deployment supplies and passes their acceptance
   journey.
-- Local build signing verifies bundle structure and nested code signatures.
-  Distribution signing, notarization, and stapling still require the Apple
-  identities and credentials documented in
+- Local ad-hoc Release signing verifies bundle structure, universal helper,
+  and nested code signatures. It does not provide the Team ID needed for
+  hardened library validation of the embedded Sparkle framework; local
+  lifecycle/visual inspection therefore uses the separately entitled
+  `ReleaseLocal` configuration. Developer ID Release launch, distribution
+  signing, notarization, and stapling still require the Apple identities and
+  credentials documented in
   [`sylvander-ghostty-architecture.md`](sylvander-ghostty-architecture.md).
 
 These are bounded environmental or explicit non-claims, not hidden fallback
