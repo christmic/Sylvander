@@ -12,6 +12,7 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
+use crate::agent_registry::AgentRegistry;
 use crate::config::{SecretRef, SystemSecretResolver};
 use crate::registry_domain::{CredentialBindingRevision, ModelDefinition};
 

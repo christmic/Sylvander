@@ -1,7 +1,8 @@
 //! Request-scoped model-provider credentials.
 //!
-//! Provider configuration is pinned by the caller. Only the credential head
-//! is resolved for each newly opened request; no client or secret is cached.
+//! Provider configuration is pinned by the caller. Every newly opened request
+//! rechecks the credential head and receives a bounded renewable lease; no
+//! provider client or unbounded secret value is cached.
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -14,13 +15,17 @@ use sylvander_llm_core::{
     ProviderErrorPhase, ProviderFuture, validate_model_request_capabilities,
 };
 
-use crate::agent_registry::AgentRegistry;
-use crate::credential_registry::{
-    CredentialRegistryError, CredentialSecretResolver, ResolvedCredential,
-};
+use crate::credential_registry::{CredentialRegistryError, ResolvedCredential};
 use crate::registry_domain::{
     CanonicalModelCapability, ModelCapabilityError, ModelDefinition, ProviderDefinition,
     parse_model_capabilities,
+};
+
+mod credential_lease;
+pub(crate) use credential_lease::RegistryCredentialSource;
+pub use credential_lease::{
+    ExternalSecretLease, ExternalSecretLeaseError, ExternalSecretLeaseFuture,
+    MAX_EXTERNAL_SECRET_LEASE_SECONDS, RenewableExternalSecretProvider, SecretLeaseMetadata,
 };
 
 pub(crate) type CredentialLeaseFuture<'a> = Pin<
@@ -34,6 +39,12 @@ pub(crate) type CredentialLeaseFuture<'a> = Pin<
 /// Short-lived access to one resolved credential generation.
 pub(crate) trait ActiveCredentialLease: Send {
     fn generation(&self) -> u64;
+    fn lease_generation(&self) -> u64 {
+        self.generation()
+    }
+    fn expires_at_unix_secs(&self) -> i64 {
+        i64::MAX
+    }
     fn secret(&self) -> Result<&str, CredentialAccessError>;
 }
 
@@ -54,41 +65,6 @@ pub(crate) trait ActiveCredentialSource: Send + Sync {
     fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a>;
 }
 
-#[derive(Clone)]
-pub(crate) struct RegistryCredentialSource {
-    registry: AgentRegistry,
-    resolver: Arc<dyn CredentialSecretResolver>,
-}
-
-impl RegistryCredentialSource {
-    pub(crate) fn new(
-        registry: AgentRegistry,
-        resolver: Arc<dyn CredentialSecretResolver>,
-    ) -> Self {
-        Self { registry, resolver }
-    }
-}
-
-impl std::fmt::Debug for RegistryCredentialSource {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RegistryCredentialSource")
-            .finish_non_exhaustive()
-    }
-}
-
-impl ActiveCredentialSource for RegistryCredentialSource {
-    fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a> {
-        Box::pin(async move {
-            self.registry
-                .resolve_active_credential(binding_id, self.resolver.as_ref())
-                .await
-                .map(|credential| Box::new(credential) as Box<dyn ActiveCredentialLease>)
-                .map_err(CredentialAccessError::from_registry)
-        })
-    }
-}
-
 /// Redacted classification only; it deliberately carries no registry cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CredentialAccessError {
@@ -100,6 +76,8 @@ pub(crate) enum CredentialAccessError {
     Integrity,
     #[error("provider credential has invalid encoding")]
     InvalidEncoding,
+    #[error("provider credential lease expired")]
+    Expired,
 }
 
 impl CredentialAccessError {
@@ -290,7 +268,16 @@ impl ModelProvider for RequestScopedAnthropicProvider {
                 .resolve_active(&self.credential_binding_id)
                 .await
                 .map_err(map_credential_error)?;
-            let _generation = lease.generation();
+            let credential_generation = lease.generation();
+            let lease_generation = lease.lease_generation();
+            let lease_expires_at = lease.expires_at_unix_secs();
+            tracing::debug!(
+                provider = %self.provider_id,
+                credential_generation,
+                lease_generation,
+                lease_expires_at,
+                "provider credential lease opened"
+            );
             let client = AnthropicClient::builder()
                 .api_key(lease.secret().map_err(map_credential_error)?)
                 .base_url(&self.base_url)
@@ -400,12 +387,12 @@ pub(crate) enum ProviderRouterBuildError {
 
 fn map_credential_error(error: CredentialAccessError) -> ProviderError {
     match error {
-        CredentialAccessError::Unavailable | CredentialAccessError::InvalidEncoding => {
-            provider_error(
-                ProviderErrorKind::Authentication,
-                "provider credential unavailable",
-            )
-        }
+        CredentialAccessError::Unavailable
+        | CredentialAccessError::InvalidEncoding
+        | CredentialAccessError::Expired => provider_error(
+            ProviderErrorKind::Authentication,
+            "provider credential unavailable",
+        ),
         CredentialAccessError::RegistryUnavailable => provider_error(
             ProviderErrorKind::Unavailable,
             "credential registry unavailable",
