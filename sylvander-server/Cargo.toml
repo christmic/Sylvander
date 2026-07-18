@@ -21,10 +21,15 @@ sylvander-channel-wechat = { path = "../sylvander-channel-wechat" }
 sylvander-channel-ws = { path = "../sylvander-channel-ws" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-runtime = { path = "../sylvander-runtime" }
+async-trait = "0.1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

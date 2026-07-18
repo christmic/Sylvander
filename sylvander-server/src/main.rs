@@ -1,7 +1,8 @@
 //! Sylvander server composition root.
 
+use std::ffi::OsString;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sylvander_agent::bus::{
@@ -10,11 +11,16 @@ use sylvander_agent::bus::{
 };
 use sylvander_agent::spec::AgentId;
 use sylvander_channel::Channel;
+use sylvander_channel::credential::CredentialLeaseSource;
 use sylvander_runtime::config::{
-    ChannelTransportConfig, SecretResolver, ServerConfig, SystemSecretResolver,
+    ChannelTransportConfig, SecretRef, ServerConfig, SystemSecretResolver,
 };
 use sylvander_runtime::{ChannelRegistration, ChannelRestartPolicy, ChannelStatus, Runtime};
 use tracing::info;
+
+mod credential;
+
+use credential::SystemChannelCredentialSource;
 
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
@@ -70,22 +76,23 @@ fn init_tracing() {
 }
 
 fn load_config() -> Result<ServerConfig, ServerError> {
-    if let Some(path) = std::env::var_os("SYLVANDER_CONFIG") {
-        let path = Path::new(&path);
-        let config = ServerConfig::load(path)?;
-        info!(path = %path.display(), "server configuration loaded");
-        Ok(config)
-    } else {
-        info!("SYLVANDER_CONFIG is unset; migrating legacy environment");
-        ServerConfig::from_legacy_env().map_err(ServerError::from)
-    }
+    let path = required_config_path(std::env::var_os("SYLVANDER_CONFIG"))?;
+    let config = ServerConfig::load(&path)?;
+    info!(path = %path.display(), "server configuration loaded");
+    Ok(config)
+}
+
+fn required_config_path(value: Option<OsString>) -> Result<PathBuf, ServerError> {
+    value
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .ok_or(ServerError::MissingConfig)
 }
 
 fn build_channels(
     config: &ServerConfig,
     runtime: &Arc<Runtime>,
 ) -> Result<Vec<ChannelRegistration>, ServerError> {
-    let secrets = SystemSecretResolver;
     config
         .channels
         .iter()
@@ -130,7 +137,7 @@ fn build_channels(
                             .with_instance_id(&channel.id)
                             .with_request_limit(config.server.boundary.max_request_bytes)
                             .with_runtime_info(sylvander_channel_unix::RuntimeInfo {
-                                model: primary.0.model_id.clone(),
+                                model: primary.0.clone(),
                                 reasoning_effort: ReasoningEffort::Off,
                                 models,
                                 permissions: PermissionProfile {
@@ -161,11 +168,18 @@ fn build_channels(
                     Arc::new(
                         sylvander_channel_http::HttpChannel::new(parse_addr(bind)?, agent_id)
                         .with_request_limit(config.server.boundary.max_request_bytes)
-                        .with_bearer_auth(
+                        .with_bearer_lease(
                             &channel.id,
                             principal_id,
-                            resolve_text(&secrets, bearer_token, &channel.id)?,
+                            channel_credential_source(
+                                &channel.id,
+                                [("bearer_token", bearer_token)],
+                            )?,
                         )
+                        .map_err(|error| ServerError::Channel {
+                            id: channel.id.clone(),
+                            message: error.to_string(),
+                        })?
                         .with_operational_health(Arc::new(move || {
                             let runtime = Arc::clone(&health_runtime);
                             Box::pin(async move {
@@ -202,66 +216,86 @@ fn build_channels(
                 } => Arc::new(
                     sylvander_channel_ws::WsChannel::new(parse_addr(bind)?, agent_id)
                         .with_request_limit(config.server.boundary.max_request_bytes)
-                        .with_bearer_auth(
+                        .with_bearer_lease(
                             &channel.id,
                             principal_id,
-                            resolve_text(&secrets, bearer_token, &channel.id)?,
-                        ),
+                            channel_credential_source(
+                                &channel.id,
+                                [("bearer_token", bearer_token)],
+                            )?,
+                        )
+                        .map_err(|error| ServerError::Channel {
+                            id: channel.id.clone(),
+                            message: error.to_string(),
+                        })?,
                 ),
                 ChannelTransportConfig::DingTalk {
                     app_key,
                     app_secret,
-                } => Arc::new(sylvander_channel_dingtalk::DingTalkChannel::new(
-                    resolve_text(&secrets, app_key, &channel.id)?,
-                    resolve_text(&secrets, app_secret, &channel.id)?,
-                )
-                .with_identity(&channel.id, agent_id)
-                .with_request_limit(config.server.boundary.max_request_bytes)),
+                } => Arc::new(
+                    sylvander_channel_dingtalk::DingTalkChannel::new(
+                        &channel.id,
+                        agent_id,
+                        channel_credential_source(
+                            &channel.id,
+                            [("app_key", app_key), ("app_secret", app_secret)],
+                        )?,
+                    )
+                    .map_err(|error| ServerError::Channel {
+                        id: channel.id.clone(),
+                        message: error.to_string(),
+                    })?
+                    .with_request_limit(config.server.boundary.max_request_bytes),
+                ),
                 ChannelTransportConfig::Telegram {
                     token,
                     bind,
                     webhook_secret,
                 } => Arc::new(
                     sylvander_channel_telegram::TelegramChannel::new(
-                        resolve_text(&secrets, token, &channel.id)?,
                         parse_addr(bind)?,
                         agent_id,
-                    )
-                    .with_webhook_secret(resolve_text(
-                        &secrets,
-                        webhook_secret,
                         &channel.id,
-                    )?)
-                    .with_instance_id(&channel.id)
+                        channel_credential_source(
+                            &channel.id,
+                            [("bot_token", token), ("webhook_secret", webhook_secret)],
+                        )?,
+                    )
+                    .map_err(|error| ServerError::Channel {
+                        id: channel.id.clone(),
+                        message: error.to_string(),
+                    })?
                     .with_request_limit(config.server.boundary.max_request_bytes),
                 ),
                 ChannelTransportConfig::Wechat {
                     bind,
                     corp_id,
+                    agent_id: wechat_agent_id,
                     secret,
                     token,
                     encoding_aes_key,
-                    ..
-                } => {
-                    // Resolve the API credential now so startup fails before
-                    // accepting traffic; outbound WeChat API support consumes it later.
-                    let _api_secret = resolve_text(&secrets, secret, &channel.id)?;
-                    Arc::new(
-                        sylvander_channel_wechat::WechatChannel::new(
-                            resolve_text(&secrets, token, &channel.id)?,
-                            resolve_text(&secrets, encoding_aes_key, &channel.id)?,
-                            corp_id.clone(),
-                            parse_addr(bind)?,
-                            agent_id,
-                        )
-                        .map_err(|message| ServerError::Channel {
-                            id: channel.id.clone(),
-                            message,
-                        })?
-                        .with_instance_id(&channel.id)
-                        .with_request_limit(config.server.boundary.max_request_bytes),
+                } => Arc::new(
+                    sylvander_channel_wechat::WechatChannel::new(
+                        corp_id.clone(),
+                        wechat_agent_id.clone(),
+                        parse_addr(bind)?,
+                        agent_id,
+                        &channel.id,
+                        channel_credential_source(
+                            &channel.id,
+                            [
+                                ("api_secret", secret),
+                                ("callback_token", token),
+                                ("encoding_aes_key", encoding_aes_key),
+                            ],
+                        )?,
                     )
-                }
+                    .map_err(|message| ServerError::Channel {
+                        id: channel.id.clone(),
+                        message,
+                    })?
+                    .with_request_limit(config.server.boundary.max_request_bytes),
+                ),
             };
             info!(instance = %channel.id, kind = result.name(), "channel configured");
             let defaults = SessionConfigOverrides {
@@ -296,6 +330,24 @@ fn build_channels(
         .collect()
 }
 
+fn channel_credential_source<'a>(
+    channel_id: &str,
+    references: impl IntoIterator<Item = (&'a str, &'a SecretRef)>,
+) -> Result<Arc<dyn CredentialLeaseSource>, ServerError> {
+    SystemChannelCredentialSource::new(
+        channel_id,
+        references
+            .into_iter()
+            .map(|(slot, reference)| (slot.to_owned(), reference.clone())),
+        Arc::new(SystemSecretResolver),
+    )
+    .map(|source| Arc::new(source) as Arc<dyn CredentialLeaseSource>)
+    .map_err(|error| ServerError::Channel {
+        id: channel_id.to_owned(),
+        message: error.to_string(),
+    })
+}
+
 fn model_capability_names(
     capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities,
 ) -> Vec<ModelCapability> {
@@ -313,26 +365,6 @@ fn model_capability_names(
     .collect()
 }
 
-fn resolve_text(
-    resolver: &dyn SecretResolver,
-    reference: &sylvander_runtime::config::SecretRef,
-    channel_id: &str,
-) -> Result<String, ServerError> {
-    let secret = resolver
-        .resolve(reference)
-        .map_err(|error| ServerError::Channel {
-            id: channel_id.to_string(),
-            message: error.to_string(),
-        })?;
-    secret
-        .as_str()
-        .map(str::to_string)
-        .map_err(|error| ServerError::Channel {
-            id: channel_id.to_string(),
-            message: error.to_string(),
-        })
-}
-
 fn parse_addr(value: &str) -> Result<SocketAddr, ServerError> {
     value
         .parse()
@@ -344,6 +376,8 @@ fn parse_addr(value: &str) -> Result<SocketAddr, ServerError> {
 
 #[derive(Debug, thiserror::Error)]
 enum ServerError {
+    #[error("SYLVANDER_CONFIG must name the latest-version server configuration")]
+    MissingConfig,
     #[error(transparent)]
     Config(#[from] sylvander_runtime::config::ConfigError),
     #[error(transparent)]
@@ -368,3 +402,7 @@ enum RuntimeFailure {
     Channel(String),
     Agent(AgentId),
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/server_main.rs"]
+mod tests;
