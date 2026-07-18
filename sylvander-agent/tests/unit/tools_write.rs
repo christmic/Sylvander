@@ -3,8 +3,9 @@ use std::fs;
 use tempfile::TempDir;
 
 use crate::tool_context::ToolContext;
-fn ctx() -> ToolContext {
+fn ctx(root: &std::path::Path) -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -18,8 +19,8 @@ fn setup_workspace() -> TempDir {
 #[tokio::test]
 async fn write_new_file() {
     let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let out = tool
         .execute(&c, json!({"file_path": "out.txt", "content": "hello"}))
         .await
@@ -33,8 +34,8 @@ async fn write_new_file() {
 async fn write_overwrites_existing() {
     let dir = setup_workspace();
     fs::write(dir.path().join("f.txt"), "old").unwrap();
-    let tool = WriteTool::new(dir.path());
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let out = tool
         .execute(&c, json!({"file_path": "f.txt", "content": "new"}))
         .await
@@ -46,8 +47,8 @@ async fn write_overwrites_existing() {
 #[tokio::test]
 async fn write_creates_parent_dirs() {
     let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let out = tool
         .execute(&c, json!({"file_path": "a/b/c/deep.txt", "content": "x"}))
         .await
@@ -59,8 +60,8 @@ async fn write_creates_parent_dirs() {
 #[tokio::test]
 async fn write_writes_empty_string() {
     let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let out = tool
         .execute(&c, json!({"file_path": "empty.txt", "content": ""}))
         .await
@@ -75,9 +76,8 @@ async fn write_writes_empty_string() {
 #[tokio::test]
 async fn write_missing_file_path_field() {
     let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let _c = ctx();
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let result = tool.execute(&c, json!({"content": "x"})).await;
     assert!(matches!(result, Err(ToolError::Other(_))));
 }
@@ -85,20 +85,17 @@ async fn write_missing_file_path_field() {
 #[tokio::test]
 async fn write_missing_content_field() {
     let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let _c = ctx();
-    let c = ctx();
+    let tool = WriteTool::new();
+    let c = ctx(dir.path());
     let result = tool.execute(&c, json!({"file_path": "x.txt"})).await;
     assert!(matches!(result, Err(ToolError::Other(_))));
 }
 
 #[test]
 fn name_description_schema() {
-    let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let _c = ctx();
+    let tool = WriteTool::new();
     assert_eq!(tool.name(), "Write");
-    assert!(tool.description().contains("workdir"));
+    assert!(tool.description().contains("workspace"));
     let json = serde_json::to_value(tool.input_schema()).unwrap();
     assert!(json["properties"]["file_path"].is_object());
     assert!(json["properties"]["content"].is_object());
@@ -107,10 +104,17 @@ fn name_description_schema() {
     assert!(required.iter().any(|v| v == "content"));
 }
 
-#[test]
-fn workdir_accessor() {
-    let dir = setup_workspace();
-    let tool = WriteTool::new(dir.path());
-    let _c = ctx();
-    assert_eq!(tool.workdir(), dir.path());
+#[tokio::test]
+async fn empty_workspace_fails_closed_without_a_constructor_fallback() {
+    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_capability(crate::tool_context::Cap::Write);
+    let output = WriteTool::new()
+        .execute(
+            &context,
+            json!({"file_path": "out.txt", "content": "blocked"}),
+        )
+        .await
+        .unwrap();
+    assert!(output.is_error);
+    assert!(output.content.contains("workspace path is required"));
 }

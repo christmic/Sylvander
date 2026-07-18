@@ -18,7 +18,7 @@ fn context(root: &std::path::Path) -> ToolContext {
 async fn runs_in_effective_workspace_and_reports_status() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
-    let output = CommandTool::new("/")
+    let output = CommandTool::new()
         .execute(&context(dir.path()), json!({"command": "cat hello.txt"}))
         .await
         .unwrap();
@@ -32,7 +32,7 @@ async fn runs_in_effective_workspace_and_reports_status() {
 #[tokio::test]
 async fn non_zero_exit_is_visible_to_the_model() {
     let dir = tempfile::tempdir().unwrap();
-    let output = CommandTool::new("/")
+    let output = CommandTool::new()
         .execute(
             &context(dir.path()),
             json!({"command": "printf boom >&2; exit 7"}),
@@ -53,7 +53,7 @@ async fn streaming_keeps_recent_unicode_progress_without_returning_the_full_log(
     let captured = deltas.clone();
     let progress = ToolProgressSink::new(move |delta| captured.lock().unwrap().push(delta));
 
-    let output = CommandTool::new("/")
+    let output = CommandTool::new()
         .execute_streaming(
             &context(dir.path()),
             json!({

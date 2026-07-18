@@ -34,7 +34,7 @@ async fn status_runs_in_a_read_only_workspace() {
     init_repository(dir.path());
     std::fs::write(dir.path().join("new.txt"), "new\n").unwrap();
 
-    let output = GitTool::new("/")
+    let output = GitTool::new()
         .execute(&context(dir.path(), true), json!({"operation": "status"}))
         .await
         .unwrap();
@@ -68,7 +68,7 @@ async fn status_does_not_execute_repository_fsmonitor() {
         .unwrap();
     assert!(configured.success());
 
-    let output = GitTool::new("/")
+    let output = GitTool::new()
         .execute(&context(dir.path(), true), json!({"operation": "status"}))
         .await
         .unwrap();
@@ -81,7 +81,7 @@ async fn status_does_not_execute_repository_fsmonitor() {
 async fn diff_rejects_shell_arguments_and_parent_paths() {
     let dir = tempfile::tempdir().unwrap();
     init_repository(dir.path());
-    let tool = GitTool::new("/");
+    let tool = GitTool::new();
     let context = context(dir.path(), true);
 
     let arbitrary = tool
@@ -105,7 +105,7 @@ async fn requires_both_read_and_git_capabilities() {
         Arc::new(LocalExecutor),
         WorkspaceTarget::local(dir.path(), true),
     );
-    let tool = GitTool::new("/");
+    let tool = GitTool::new();
 
     let read_only = tool
         .execute(

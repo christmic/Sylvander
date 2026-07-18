@@ -3,8 +3,9 @@ use crate::tool_context::ToolContext;
 use std::fs;
 use tempfile::TempDir;
 
-fn ctx() -> ToolContext {
+fn ctx(root: &std::path::Path) -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_fs_root(root)
         .with_capability(crate::tool_context::Cap::Read)
         .with_capability(crate::tool_context::Cap::Write)
         .with_capability(crate::tool_context::Cap::MemoryRead)
@@ -31,9 +32,9 @@ fn progress_chunks_preserve_unicode_without_empty_tail() {
 #[test]
 fn read_existing_file() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
+    let tool = ReadTool::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let c = ctx();
+    let c = ctx(&workdir);
     let out = rt
         .block_on(tool.execute(&c, json!({"file_path": "hello.txt"})))
         .unwrap();
@@ -44,9 +45,9 @@ fn read_existing_file() {
 #[test]
 fn read_nested_file() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
+    let tool = ReadTool::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let c = ctx();
+    let c = ctx(&workdir);
     let out = rt
         .block_on(tool.execute(&c, json!({"file_path": "sub/nested.txt"})))
         .unwrap();
@@ -57,9 +58,9 @@ fn read_nested_file() {
 #[test]
 fn read_empty_file() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
+    let tool = ReadTool::new();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let c = ctx();
+    let c = ctx(&workdir);
     let out = rt
         .block_on(tool.execute(&c, json!({"file_path": "empty.txt"})))
         .unwrap();
@@ -70,8 +71,8 @@ fn read_empty_file() {
 #[tokio::test]
 async fn read_missing_file_returns_err() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
-    let c = ctx();
+    let tool = ReadTool::new();
+    let c = ctx(&workdir);
     let out = tool
         .execute(&c, json!({"file_path": "does_not_exist.txt"}))
         .await
@@ -89,8 +90,8 @@ async fn read_rejects_oversized_file_without_returning_partial_content() {
     )
     .unwrap();
 
-    let out = ReadTool::new(&workdir)
-        .execute(&ctx(), json!({"file_path": "large.txt"}))
+    let out = ReadTool::new()
+        .execute(&ctx(&workdir), json!({"file_path": "large.txt"}))
         .await
         .unwrap();
 
@@ -102,8 +103,8 @@ async fn read_rejects_oversized_file_without_returning_partial_content() {
 #[tokio::test]
 async fn read_missing_file_path_field() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
-    let c = ctx();
+    let tool = ReadTool::new();
+    let c = ctx(&workdir);
     let result = tool.execute(&c, json!({})).await;
     assert!(matches!(result, Err(ToolError::Other(_))));
 }
@@ -111,14 +112,14 @@ async fn read_missing_file_path_field() {
 #[tokio::test]
 async fn read_path_outside_workdir_rejected() {
     let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
+    let tool = ReadTool::new();
     // Try a path that resolves outside workdir. On most CI,
     // the parent dir exists but the requested file doesn't —
     // the canonicalize fails first with "No such file", which
     // we surface as a model-visible error. To exercise the actual
     // traversal check, we create a real symlink in setup_workspace
     // (next test).
-    let c = ctx();
+    let c = ctx(&workdir);
     let result = tool
         .execute(&c, json!({"file_path": "../etc/passwd"}))
         .await;
@@ -139,8 +140,8 @@ async fn read_path_via_symlink_outside_workdir_rejected() {
     std::fs::write(&outside_file, "SECRET").unwrap();
     symlink(&outside_file, workdir.join("escape.txt")).unwrap();
 
-    let tool = ReadTool::new(&workdir);
-    let c = ctx();
+    let tool = ReadTool::new();
+    let c = ctx(&workdir);
     let result = tool.execute(&c, json!({"file_path": "escape.txt"})).await;
 
     // Traversal is a security violation, NOT a model-visible
@@ -149,8 +150,8 @@ async fn read_path_via_symlink_outside_workdir_rejected() {
     match result {
         Err(ToolError::Other(msg)) => {
             assert!(
-                msg.contains("escapes workdir"),
-                "expected 'escapes workdir' in error, got: {msg}"
+                msg.contains("escapes workspace"),
+                "expected 'escapes workspace' in error, got: {msg}"
             );
         }
         other => panic!("expected Err(ToolError::Other) for traversal, got {other:?}"),
@@ -159,10 +160,9 @@ async fn read_path_via_symlink_outside_workdir_rejected() {
 
 #[test]
 fn name_description_schema() {
-    let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
+    let tool = ReadTool::new();
     assert_eq!(tool.name(), "Read");
-    assert!(tool.description().contains("workdir"));
+    assert!(tool.description().contains("workspace"));
     let schema = tool.input_schema();
     // schema is the flattened JSON object, must contain file_path
     let json = serde_json::to_value(&schema).unwrap();
@@ -170,9 +170,14 @@ fn name_description_schema() {
     assert_eq!(json["required"][0], "file_path");
 }
 
-#[test]
-fn workdir_accessor() {
-    let (_dir, workdir) = setup_workspace();
-    let tool = ReadTool::new(&workdir);
-    assert_eq!(tool.workdir(), workdir.as_path());
+#[tokio::test]
+async fn empty_workspace_fails_closed_without_a_constructor_fallback() {
+    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_capability(crate::tool_context::Cap::Read);
+    let output = ReadTool::new()
+        .execute(&context, json!({"file_path": "Cargo.toml"}))
+        .await
+        .unwrap();
+    assert!(output.is_error);
+    assert!(output.content.contains("workspace path is required"));
 }

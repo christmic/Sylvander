@@ -5,7 +5,7 @@ use serde_json::json;
 use super::*;
 use crate::tool::Tool;
 use crate::tool_context::{Cap, ToolContext};
-use crate::tools::{CommandTool, EditTool, ReadTool, WriteTool};
+use crate::tools::{CommandTool, EditTool, GitTool, ListTool, ReadTool, SearchTool, WriteTool};
 
 fn context(target: WorkspaceTarget) -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
@@ -147,7 +147,7 @@ async fn tool_uses_injected_executor_and_preserves_target_identity() {
             },
         )
         .with_capability(Cap::Read);
-    let output = ReadTool::new("/must-not-be-used")
+    let output = ReadTool::new()
         .execute(&context, json!({"file_path":"src/lib.rs"}))
         .await
         .unwrap();
@@ -159,29 +159,84 @@ async fn tool_uses_injected_executor_and_preserves_target_identity() {
 }
 
 #[tokio::test]
+async fn every_workspace_tool_fails_closed_when_the_context_has_no_workspace() {
+    let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
+        .with_capability(Cap::Read)
+        .with_capability(Cap::Write)
+        .with_capability(Cap::Spawn)
+        .with_capability(Cap::Git);
+
+    let outputs = [
+        ReadTool::new()
+            .execute(&context, json!({"file_path":"Cargo.toml"}))
+            .await
+            .unwrap(),
+        WriteTool::new()
+            .execute(
+                &context,
+                json!({"file_path":"blocked.txt","content":"blocked"}),
+            )
+            .await
+            .unwrap(),
+        EditTool::new()
+            .execute(
+                &context,
+                json!({"file_path":"blocked.txt","old_string":"a","new_string":"b"}),
+            )
+            .await
+            .unwrap(),
+        ListTool::new()
+            .execute(&context, json!({"path":"."}))
+            .await
+            .unwrap(),
+        SearchTool::new()
+            .execute(&context, json!({"query":"needle"}))
+            .await
+            .unwrap(),
+        CommandTool::new()
+            .execute(&context, json!({"command":"printf must-not-run"}))
+            .await
+            .unwrap(),
+        GitTool::new()
+            .execute(&context, json!({"operation":"status"}))
+            .await
+            .unwrap(),
+    ];
+
+    for output in outputs {
+        assert!(output.is_error);
+        assert!(
+            output.content.contains("workspace path is required"),
+            "{}",
+            output.content
+        );
+    }
+}
+
+#[tokio::test]
 async fn local_executor_contract_covers_read_write_edit_and_command() {
     let workspace = tempfile::tempdir().unwrap();
     let context = context(WorkspaceTarget::local(workspace.path(), false));
-    WriteTool::new("/")
+    WriteTool::new()
         .execute(
             &context,
             json!({"file_path":"value.txt","content":"before"}),
         )
         .await
         .unwrap();
-    EditTool::new("/")
+    EditTool::new()
         .execute(
             &context,
             json!({"file_path":"value.txt","old_string":"before","new_string":"after"}),
         )
         .await
         .unwrap();
-    let read = ReadTool::new("/")
+    let read = ReadTool::new()
         .execute(&context, json!({"file_path":"value.txt"}))
         .await
         .unwrap();
     assert_eq!(read.content, "after");
-    let command = CommandTool::new("/")
+    let command = CommandTool::new()
         .execute(&context, json!({"command":"printf command-ok"}))
         .await
         .unwrap();
@@ -197,7 +252,7 @@ async fn local_executor_contract_covers_read_write_edit_and_command() {
 async fn local_command_environment_is_scoped_validated_and_streaming_compatible() {
     let workspace = tempfile::tempdir().unwrap();
     let context = context(WorkspaceTarget::local(workspace.path(), false));
-    let output = CommandTool::new("/")
+    let output = CommandTool::new()
         .execute(
             &context,
             json!({
@@ -210,7 +265,7 @@ async fn local_command_environment_is_scoped_validated_and_streaming_compatible(
     assert!(!output.is_error);
     assert!(output.content.contains("蟹伙伴"));
 
-    let invalid = CommandTool::new("/")
+    let invalid = CommandTool::new()
         .execute(
             &context,
             json!({
@@ -372,18 +427,18 @@ async fn read_only_target_rejects_every_mutating_tool() {
         .await
         .unwrap();
     let context = context(WorkspaceTarget::local(workspace.path(), true));
-    let write = WriteTool::new("/")
+    let write = WriteTool::new()
         .execute(&context, json!({"file_path":"new.txt","content":"x"}))
         .await
         .unwrap();
-    let edit = EditTool::new("/")
+    let edit = EditTool::new()
         .execute(
             &context,
             json!({"file_path":"value.txt","old_string":"before","new_string":"after"}),
         )
         .await
         .unwrap();
-    let command = CommandTool::new("/")
+    let command = CommandTool::new()
         .execute(&context, json!({"command":"touch escaped"}))
         .await
         .unwrap();
@@ -664,7 +719,7 @@ async fn unavailable_target_never_falls_back_to_local() {
     let context = ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
         .with_execution_target("ssh:build", workspace.path(), false)
         .with_capability(Cap::Read);
-    let output = ReadTool::new(workspace.path())
+    let output = ReadTool::new()
         .execute(&context, json!({"file_path":"value.txt"}))
         .await
         .unwrap();

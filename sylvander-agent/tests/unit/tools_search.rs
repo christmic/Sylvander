@@ -11,7 +11,7 @@ fn context(root: &std::path::Path) -> ToolContext {
 async fn searches_with_structured_results_and_explicit_truncation() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("one.txt"), "crab one\ncrab two\n").unwrap();
-    let output = SearchTool::new("/")
+    let output = SearchTool::new()
         .execute(
             &context(dir.path()),
             json!({"query": "crab", "max_results": 1}),
@@ -28,7 +28,7 @@ async fn searches_with_structured_results_and_explicit_truncation() {
 #[tokio::test]
 async fn rejects_unknown_or_empty_input() {
     let dir = tempfile::tempdir().unwrap();
-    let tool = SearchTool::new("/");
+    let tool = SearchTool::new();
     assert!(
         tool.execute(&context(dir.path()), json!({"query": "", "glob": "*"}))
             .await
@@ -43,7 +43,7 @@ async fn rejects_unknown_or_empty_input() {
 
 #[test]
 fn schema_is_strict_and_bounded() {
-    let schema = SearchTool::new("/").input_schema();
+    let schema = SearchTool::new().input_schema();
     assert_eq!(schema.schema["additionalProperties"], false);
     assert_eq!(schema.schema["required"], json!(["query"]));
     assert_eq!(
