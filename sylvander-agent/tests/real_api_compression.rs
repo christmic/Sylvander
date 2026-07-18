@@ -40,7 +40,10 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use sylvander_agent::compress::disk::{InMemoryToolResultDisk, ToolResultDisk};
+mod support;
+
+use support::InMemoryToolResultDisk;
+use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::{
     context_collapse::ContextCollapseLayer, micro_compact::MicroCompactLayer,
     orphan_snip::OrphanSnipLayer, tool_result_budget::ToolResultBudgetLayer,

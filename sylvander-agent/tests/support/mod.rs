@@ -1,9 +1,15 @@
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use sylvander_agent::tool::{Tool, ToolError, ToolOutput};
 use sylvander_agent::tool_context::ToolContext;
+use sylvander_agent::compress::disk::{DiskHandle, ToolResultDisk};
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 /// In-memory tool double for public-contract integration tests.
@@ -79,5 +85,53 @@ impl Tool for MockTool {
             .or_else(|| self.responses.last())
             .cloned()
             .ok_or_else(|| ToolError::Other("no responses configured".into()))
+    }
+}
+
+/// In-memory oversized-result sink for public-contract integration tests.
+#[derive(Default, Clone)]
+pub(crate) struct InMemoryToolResultDisk {
+    inner: Arc<Mutex<HashMap<String, String>>>,
+    write_count: Arc<Mutex<usize>>,
+}
+
+impl InMemoryToolResultDisk {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn get(&self, tool_use_id: &str) -> Option<String> {
+        self.inner.lock().unwrap().get(tool_use_id).cloned()
+    }
+
+    pub(crate) fn write_count(&self) -> usize {
+        *self.write_count.lock().unwrap()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn ids(&self) -> Vec<String> {
+        let mut ids = self
+            .inner
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+}
+
+impl ToolResultDisk for InMemoryToolResultDisk {
+    fn persist(&self, tool_use_id: &str, body: &str) -> io::Result<DiskHandle> {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(tool_use_id.to_owned(), body.to_owned());
+        *self.write_count.lock().unwrap() += 1;
+        Ok(DiskHandle {
+            path: PathBuf::from(format!("<in-memory>/{tool_use_id}")),
+            original_bytes: body.len(),
+        })
     }
 }
