@@ -95,9 +95,9 @@ async fn provider_summary_is_qualified_text_only_and_minimal() {
         }]),
     ))]);
     let llm = ProviderAutoCompactLlm::new(provider.clone(), provider_model());
-    let legacy_model = crate::provider_compat::model_metadata_from_core(&provider_model());
+    let wire_model = crate::provider_adapter::model_metadata_from_core(&provider_model());
     let summary = llm
-        .summarize(&[MessageParam::user("old context")], &legacy_model)
+        .summarize(&[MessageParam::user("old context")], &wire_model)
         .await
         .unwrap();
     assert_eq!(summary, "summary");
@@ -149,11 +149,11 @@ async fn provider_summary_rejects_missing_late_and_non_text_completion() {
             }]),
         ))],
     ];
-    let legacy_model = crate::provider_compat::model_metadata_from_core(&provider_model());
+    let wire_model = crate::provider_adapter::model_metadata_from_core(&provider_model());
     for events in cases {
         let llm = ProviderAutoCompactLlm::new(provider(events), provider_model());
         assert!(matches!(
-            llm.summarize(&[MessageParam::user("old")], &legacy_model).await,
+            llm.summarize(&[MessageParam::user("old")], &wire_model).await,
             Err(AgentLoopError::Provider { source, .. })
                 if source.kind == sylvander_llm_core::ProviderErrorKind::Protocol
         ));

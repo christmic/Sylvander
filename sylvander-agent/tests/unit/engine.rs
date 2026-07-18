@@ -1,5 +1,7 @@
 use super::*;
 use crate::bus::{InProcessMessageBus, Recipient};
+use crate::test_support::qualified_anthropic_run_builder;
+use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 struct TestRevisionProvider {
     bindings: RwLock<HashMap<SessionId, u64>>,
@@ -50,10 +52,18 @@ fn test_client() -> AnthropicClient {
 }
 
 fn test_run(spec: &AgentSpec, bus: Arc<dyn MessageBus>) -> AgentRun {
-    AgentRun::builder(spec.clone(), test_client())
+    qualified_anthropic_run_builder(spec.clone(), test_client())
         .bus(bus)
         .build()
         .expect("run build")
+}
+
+async fn spawn_test_agent(
+    engine: &AgentRunEngine,
+    spec: AgentSpec,
+) -> Result<AgentHandle, EngineError> {
+    let run = test_run(&spec, engine.bus());
+    engine.spawn_run(spec, run).await
 }
 
 #[tokio::test]
@@ -152,8 +162,7 @@ async fn spawn_and_despawn() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = AgentRunEngine::new(bus);
 
-    let handle = engine
-        .spawn(test_spec("agent-1"), test_client())
+    let handle = spawn_test_agent(&engine, test_spec("agent-1"))
         .await
         .expect("spawn");
 
@@ -180,8 +189,7 @@ async fn unexpected_agent_exit_is_reported_and_can_be_reaped() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = AgentRunEngine::new(bus.clone());
     let agent_id = AgentId::new("agent-1");
-    engine
-        .spawn(test_spec("agent-1"), test_client())
+    spawn_test_agent(&engine, test_spec("agent-1"))
         .await
         .expect("spawn");
 
@@ -206,13 +214,11 @@ async fn duplicate_spawn_is_error() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = AgentRunEngine::new(bus);
 
-    engine
-        .spawn(test_spec("dup-agent"), test_client())
+    spawn_test_agent(&engine, test_spec("dup-agent"))
         .await
         .expect("first spawn");
 
-    let err = engine
-        .spawn(test_spec("dup-agent"), test_client())
+    let err = spawn_test_agent(&engine, test_spec("dup-agent"))
         .await
         .unwrap_err();
 
@@ -223,8 +229,8 @@ async fn duplicate_spawn_is_error() {
 async fn concurrent_duplicate_spawn_starts_exactly_one_agent() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = Arc::new(AgentRunEngine::new(bus));
-    let first = engine.spawn(test_spec("same-agent"), test_client());
-    let second = engine.spawn(test_spec("same-agent"), test_client());
+    let first = spawn_test_agent(&engine, test_spec("same-agent"));
+    let second = spawn_test_agent(&engine, test_spec("same-agent"));
 
     let (first, second) = tokio::join!(first, second);
     assert_ne!(first.is_ok(), second.is_ok());
@@ -241,8 +247,7 @@ async fn create_session_notifies_agents() {
     let engine = AgentRunEngine::new(bus);
 
     // Spawn agent and drain its status updates so inbox is clean
-    let _handle = engine
-        .spawn(test_spec("agent-1"), test_client())
+    let _handle = spawn_test_agent(&engine, test_spec("agent-1"))
         .await
         .expect("spawn");
 
@@ -296,8 +301,7 @@ async fn create_session_notifies_agents() {
 async fn attach_session_preserves_durable_identity() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = AgentRunEngine::new(bus);
-    engine
-        .spawn(test_spec("agent-1"), test_client())
+    spawn_test_agent(&engine, test_spec("agent-1"))
         .await
         .expect("spawn");
 
@@ -358,12 +362,10 @@ async fn list_agents_and_sessions() {
     let bus = Arc::new(InProcessMessageBus::new());
     let engine = AgentRunEngine::new(bus);
 
-    engine
-        .spawn(test_spec("agent-a"), test_client())
+    spawn_test_agent(&engine, test_spec("agent-a"))
         .await
         .expect("spawn a");
-    engine
-        .spawn(test_spec("agent-b"), test_client())
+    spawn_test_agent(&engine, test_spec("agent-b"))
         .await
         .expect("spawn b");
 

@@ -64,7 +64,6 @@ fn builder_defaults() {
 
     assert!(spec.persona.system_prompt.is_empty());
     assert!(spec.tools.is_empty());
-    assert!(spec.mcp_servers.is_empty());
     assert!(spec.memory_stores.is_empty());
     assert!(spec.ui_commands.is_empty());
     assert_eq!(spec.behavior.max_iterations, 50);
@@ -131,6 +130,21 @@ name = "Minimal TOML Agent"
     assert_eq!(spec.id, AgentId::new("minimal-toml"));
     assert_eq!(spec.name, "Minimal TOML Agent");
     assert!(spec.persona.system_prompt.is_empty());
+}
+
+#[test]
+fn toml_rejects_removed_parallel_mcp_registry() {
+    let toml_str = r#"
+id = "legacy-mcp"
+name = "Legacy MCP"
+
+[[mcp_servers]]
+name = "search"
+command = "search-mcp"
+"#;
+
+    let error = toml::from_str::<AgentSpec>(toml_str).unwrap_err();
+    assert!(error.to_string().contains("unknown field `mcp_servers`"));
 }
 
 #[test]
@@ -225,7 +239,7 @@ fn to_model_info() {
         .build()
         .expect("build should succeed");
 
-    let info = spec.to_model_info();
+    let info = spec.to_model_info().unwrap();
     assert_eq!(info.id, "claude-sonnet-5-20260601");
     assert_eq!(info.max_output_tokens, 8192);
     assert_eq!(info.context_window, 200_000);
@@ -240,8 +254,23 @@ fn to_model_info_default_max_tokens() {
         .build()
         .expect("build should succeed");
 
-    let info = spec.to_model_info();
+    let info = spec.to_model_info().unwrap();
     assert_eq!(info.max_output_tokens, 32_000);
+}
+
+#[test]
+fn to_model_info_rejects_invalid_declarative_input_without_panicking() {
+    let mut spec = AgentSpec::builder()
+        .id("invalid-model")
+        .name("Invalid Model")
+        .build()
+        .unwrap();
+    spec.model.model_name.clear();
+
+    assert!(matches!(
+        spec.to_model_info(),
+        Err(AgentSpecError::InvalidModel)
+    ));
 }
 
 // -- ID types --

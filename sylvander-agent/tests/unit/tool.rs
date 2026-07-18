@@ -27,6 +27,15 @@ fn tool_output_err_constructor() {
 }
 
 #[test]
+fn hook_progress_is_control_safe_and_bounded() {
+    assert_eq!(bounded_hook_delta("ok\u{1b}[31m\n"), "ok\u{fffd}[31m\n");
+    let oversized = "x".repeat(MAX_VISIBLE_HOOK_DELTA_CHARS + 1);
+    let visible = bounded_hook_delta(&oversized);
+    assert!(visible.contains("hook output delta truncated"));
+    assert!(visible.len() < oversized.len() + 64);
+}
+
+#[test]
 fn registry_register_and_get() {
     let tool = MockTool::new("echo", "echoes input", ToolOutput::ok("hi"));
     let registry = ToolRegistry::new().register(tool);
@@ -45,6 +54,26 @@ fn registry_iter_yields_names() {
     assert!(names.contains(&"a"));
     assert!(names.contains(&"b"));
     assert_eq!(names.len(), 2);
+}
+
+#[test]
+fn restrictive_registry_clone_drops_executable_hooks() {
+    let registry = ToolRegistry::new()
+        .register(MockTool::new("read", "read", ToolOutput::ok("")))
+        .register(MockTool::new("write", "write", ToolOutput::ok("")))
+        .with_hooks(vec![ToolHookConfig {
+            name: "side-channel".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTurn,
+            command: "touch escaped".into(),
+            timeout_secs: 5,
+            blocking: true,
+        }]);
+
+    let restricted = registry.retain_named(&["read"]);
+
+    assert!(restricted.get("read").is_some());
+    assert!(restricted.get("write").is_none());
+    assert!(restricted.hooks.is_empty());
 }
 
 #[test]
@@ -70,6 +99,14 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
     ));
     let hooked = base.clone().with_hooks(vec![ToolHookConfig {
         name: "policy".into(),
+        phase: sylvander_protocol::AgentHookPhase::BeforeTool,
+        command: "exit 0".into(),
+        timeout_secs: 5,
+        blocking: true,
+    }]);
+    let rephased = base.clone().with_hooks(vec![ToolHookConfig {
+        name: "policy".into(),
+        phase: sylvander_protocol::AgentHookPhase::AfterTool,
         command: "exit 0".into(),
         timeout_secs: 5,
         blocking: true,
@@ -81,6 +118,11 @@ fn capability_revision_tracks_tool_contract_and_hooks() {
         changed_schema.capability_revision()
     );
     assert_ne!(base.capability_revision(), hooked.capability_revision());
+    assert_ne!(
+        hooked.capability_revision(),
+        rephased.capability_revision(),
+        "phase changes must bind approvals and revision reloads to new truth"
+    );
 }
 
 #[tokio::test]
@@ -129,12 +171,14 @@ async fn hooks_report_lifecycle_and_block_before_tool_execution() {
     let registry = ToolRegistry::new().register(inner).with_hooks(vec![
         ToolHookConfig {
             name: "lint".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
             command: "printf 'checked'".into(),
             timeout_secs: 5,
             blocking: false,
         },
         ToolHookConfig {
             name: "policy".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
             command: "exit 7".into(),
             timeout_secs: 5,
             blocking: true,
@@ -154,18 +198,24 @@ async fn hooks_report_lifecycle_and_block_before_tool_execution() {
         .unwrap();
 
     assert!(output.is_error);
-    assert!(output.content.contains("blocked by hook `policy`"));
+    assert!(
+        output
+            .content
+            .contains("blocking hook `policy` failed during `before_tool`")
+    );
     assert_eq!(observed.call_count(), 0);
     let lifecycle = deltas.lock().unwrap().join("");
-    assert!(lifecycle.contains("hook lint · running"));
-    assert!(lifecycle.contains("hook lint · passed"));
-    assert!(lifecycle.contains("hook policy · blocked · exit 7"));
+    assert!(lifecycle.contains("hook lint · before_tool · running"));
+    assert!(lifecycle.contains("hook lint · before_tool · passed"));
+    assert!(lifecycle.contains("hook policy · before_tool · blocked · exit 7"));
     let features = registry.platform_features();
     assert_eq!(features.len(), 2);
     assert_eq!(
         features[1].status,
         sylvander_protocol::PlatformFeatureStatus::Configured
     );
+    assert_eq!(features[1].capabilities, ["before_tool"]);
+    assert!(features[1].reloadable);
 }
 
 #[tokio::test]
@@ -177,6 +227,7 @@ async fn advisory_hook_failure_does_not_hide_the_tool_result() {
         .register(inner)
         .with_hooks(vec![ToolHookConfig {
             name: "optional-check".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
             command: "exit 2".into(),
             timeout_secs: 5,
             blocking: false,
@@ -190,4 +241,68 @@ async fn advisory_hook_failure_does_not_hide_the_tool_result() {
         .unwrap();
     assert_eq!(output, ToolOutput::ok("contents"));
     assert_eq!(observed.call_count(), 1);
+}
+
+#[tokio::test]
+async fn blocking_after_tool_hook_rejects_an_already_executed_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let inner = MockTool::new("read", "read", ToolOutput::ok("contents"));
+    let observed = inner.clone();
+    let registry = ToolRegistry::new()
+        .register(inner)
+        .with_hooks(vec![ToolHookConfig {
+            name: "verify-result".into(),
+            phase: sylvander_protocol::AgentHookPhase::AfterTool,
+            command: "exit 9".into(),
+            timeout_secs: 5,
+            blocking: true,
+        }]);
+
+    let output = registry
+        .get("read")
+        .unwrap()
+        .execute(&ctx().with_fs_root(directory.path()), json!({}))
+        .await
+        .unwrap();
+
+    assert!(output.is_error);
+    assert!(
+        output
+            .content
+            .contains("blocking hook `verify-result` failed during `after_tool`")
+    );
+    assert_eq!(observed.call_count(), 1);
+}
+
+#[tokio::test]
+async fn turn_hook_entry_runs_only_the_requested_phase() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = ToolRegistry::new().with_hooks(vec![
+        ToolHookConfig {
+            name: "before".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTurn,
+            command: "printf before > before-turn".into(),
+            timeout_secs: 5,
+            blocking: true,
+        },
+        ToolHookConfig {
+            name: "after".into(),
+            phase: sylvander_protocol::AgentHookPhase::AfterTurn,
+            command: "printf after > after-turn".into(),
+            timeout_secs: 5,
+            blocking: true,
+        },
+    ]);
+    let context = ctx().with_fs_root(directory.path());
+
+    registry
+        .run_turn_hooks(sylvander_protocol::AgentHookPhase::BeforeTurn, &context)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("before-turn")).unwrap(),
+        "before"
+    );
+    assert!(!directory.path().join("after-turn").exists());
 }

@@ -1,7 +1,9 @@
 use super::*;
-use crate::bus::InProcessMessageBus;
+use crate::bus::{InProcessMessageBus, Recipient};
+use crate::test_support::qualified_anthropic_run_builder;
 use crate::tools::memory::InMemoryMemoryStore;
 use std::path::PathBuf;
+use sylvander_llm_anthropic::api::client::AnthropicClient;
 
 #[allow(clippy::too_many_arguments)]
 async fn with_workspace_context(
@@ -425,6 +427,226 @@ impl sylvander_llm_core::ModelProvider for RecordingProvider {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionStoreFailPoint {
+    Get,
+    Save,
+    ReadHistory,
+    BeginTurn,
+    RecordUsage,
+    AppendMessage,
+    ReplaceHistory,
+}
+
+struct FailingSessionStore {
+    inner: Arc<dyn SessionStore>,
+    fail: SessionStoreFailPoint,
+}
+
+impl FailingSessionStore {
+    fn new(inner: Arc<dyn SessionStore>, fail: SessionStoreFailPoint) -> Self {
+        Self { inner, fail }
+    }
+
+    fn injected() -> crate::session_store::SessionStoreError {
+        crate::session_store::SessionStoreError::Store("private injected detail".into())
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionStore for FailingSessionStore {
+    async fn list_persistent(
+        &self,
+    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+        self.inner.list_persistent().await
+    }
+
+    async fn save(
+        &self,
+        session: &StoredSession,
+    ) -> Result<(), crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::Save {
+            return Err(Self::injected());
+        }
+        self.inner.save(session).await
+    }
+
+    async fn patch_metadata(
+        &self,
+        id: &SessionId,
+        patch: crate::session_store::SessionMetadataPatch,
+    ) -> Result<(), crate::session_store::SessionStoreError> {
+        self.inner.patch_metadata(id, patch).await
+    }
+
+    async fn update_config(
+        &self,
+        id: &SessionId,
+        expected_revision: u64,
+        overrides: sylvander_protocol::SessionConfigOverrides,
+        effective: sylvander_protocol::SessionEffectiveConfig,
+    ) -> Result<u64, crate::session_store::SessionStoreError> {
+        self.inner
+            .update_config(id, expected_revision, overrides, effective)
+            .await
+    }
+
+    async fn begin_turn(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        start: TurnStart,
+    ) -> Result<crate::session_store::StoredMessage, crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::BeginTurn {
+            return Err(Self::injected());
+        }
+        self.inner.begin_turn(context, start).await
+    }
+
+    async fn turn_config(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> Result<
+        Option<crate::session_store::TurnConfigSnapshot>,
+        crate::session_store::SessionStoreError,
+    > {
+        self.inner.turn_config(session_id, turn_id).await
+    }
+
+    async fn archive(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+        self.inner.archive(id).await
+    }
+
+    async fn restore(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+        self.inner.restore(id).await
+    }
+
+    async fn record_usage(
+        &self,
+        id: &SessionId,
+        input_tokens: u32,
+        output_tokens: u32,
+        cost_nano_usd: Option<u64>,
+    ) -> Result<crate::session_store::SessionUsage, crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::RecordUsage {
+            return Err(Self::injected());
+        }
+        self.inner
+            .record_usage(id, input_tokens, output_tokens, cost_nano_usd)
+            .await
+    }
+
+    async fn usage(
+        &self,
+        id: &SessionId,
+    ) -> Result<crate::session_store::SessionUsage, crate::session_store::SessionStoreError> {
+        self.inner.usage(id).await
+    }
+
+    async fn delete(&self, id: &SessionId) -> Result<(), crate::session_store::SessionStoreError> {
+        self.inner.delete(id).await
+    }
+
+    async fn get(
+        &self,
+        id: &SessionId,
+    ) -> Result<Option<StoredSession>, crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::Get {
+            return Err(Self::injected());
+        }
+        self.inner.get(id).await
+    }
+
+    async fn list(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        filter: crate::session_store::SessionFilter,
+    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+        self.inner.list(context, filter).await
+    }
+
+    async fn search(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<StoredSession>, crate::session_store::SessionStoreError> {
+        self.inner.search(context, query, limit).await
+    }
+
+    async fn append_message(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+        role: StoredMessageRole,
+        message_content: serde_json::Value,
+        model_id: Option<&str>,
+        tool_name: Option<&str>,
+        parent_msg_id: Option<i64>,
+    ) -> Result<crate::session_store::StoredMessage, crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::AppendMessage {
+            return Err(Self::injected());
+        }
+        self.inner
+            .append_message(
+                context,
+                session_id,
+                role,
+                message_content,
+                model_id,
+                tool_name,
+                parent_msg_id,
+            )
+            .await
+    }
+
+    async fn read_history(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+        include_summarized: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<crate::session_store::StoredMessage>, crate::session_store::SessionStoreError>
+    {
+        if self.fail == SessionStoreFailPoint::ReadHistory {
+            return Err(Self::injected());
+        }
+        self.inner
+            .read_history(context, session_id, include_summarized, limit)
+            .await
+    }
+
+    async fn mark_summarized(
+        &self,
+        session_id: &SessionId,
+        seq_range: std::ops::Range<u32>,
+    ) -> Result<(), crate::session_store::SessionStoreError> {
+        self.inner.mark_summarized(session_id, seq_range).await
+    }
+
+    async fn replace_active_history(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+        messages: Vec<ReplacementMessage>,
+    ) -> Result<(), crate::session_store::SessionStoreError> {
+        if self.fail == SessionStoreFailPoint::ReplaceHistory {
+            return Err(Self::injected());
+        }
+        self.inner
+            .replace_active_history(context, session_id, messages)
+            .await
+    }
+
+    async fn count_active_messages(
+        &self,
+        context: &sylvander_protocol::SessionContext,
+        session_id: &SessionId,
+    ) -> Result<u64, crate::session_store::SessionStoreError> {
+        self.inner.count_active_messages(context, session_id).await
+    }
+}
+
 #[tokio::test]
 async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() {
     let source = tempfile::TempDir::new().unwrap();
@@ -462,7 +684,7 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
         max_output_tokens: 4096,
         capabilities: sylvander_llm_core::ModelCapabilities::empty(),
     };
-    let run = AgentRun::provider_builder(spec, provider.clone(), model)
+    let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
         .bus(Arc::new(InProcessMessageBus::new()))
         .session_store(store.clone())
         .prompt_resolver(resolver)
@@ -587,7 +809,7 @@ async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
         max_output_tokens: 4096,
         capabilities: sylvander_llm_core::ModelCapabilities::empty(),
     };
-    let run = AgentRun::provider_builder(spec, provider.clone(), model)
+    let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
         .bus(Arc::new(InProcessMessageBus::new()))
         .session_store(store.clone())
         .memory(memory)
@@ -717,7 +939,7 @@ async fn identity_and_prompt_integrity_fail_before_provider_and_durable_turn_wri
             max_output_tokens: 4096,
             capabilities: sylvander_llm_core::ModelCapabilities::empty(),
         };
-        let run = AgentRun::provider_builder(spec, provider.clone(), model)
+        let run = AgentRun::qualified_router_builder(spec, provider.clone(), model)
             .bus(Arc::new(InProcessMessageBus::new()))
             .session_store(store.clone())
             .prompt_resolver(resolver)
@@ -811,7 +1033,7 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
         max_output_tokens: 16_384,
         capabilities: sylvander_llm_core::ModelCapabilities::empty(),
     };
-    let run = AgentRun::provider_builder(spec, provider.clone(), provider_model)
+    let run = AgentRun::qualified_router_builder(spec, provider.clone(), provider_model)
         .bus(Arc::new(InProcessMessageBus::new()))
         .available_provider_models(vec![alternate, foreign])
         .build()
@@ -819,37 +1041,44 @@ async fn provider_catalog_is_qualified_and_turn_snapshot_uses_exact_model() {
 
     let before = run.runtime_model_info().await;
     assert_eq!(before.models.len(), 3);
-    assert!(
-        run.select_model("shared", sylvander_protocol::ReasoningEffort::Off)
-            .await
-            .is_err()
-    );
-    assert!(
-        run.select_qualified_model(
-            sylvander_protocol::ModelSelection {
-                provider_id: "remote".into(),
-                model_id: "shared".into(),
-            },
-            sylvander_protocol::ReasoningEffort::Off,
-        )
-        .await
-        .is_err()
-    );
+    let remote_selection = sylvander_protocol::ModelSelection {
+        provider_id: "remote".into(),
+        model_id: "shared".into(),
+    };
+    run.select_qualified_model(
+        remote_selection.clone(),
+        sylvander_protocol::ReasoningEffort::Off,
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        run.runtime_model_info().await.current_model,
-        before.current_model
+        run.inner.runtime_models.read().await.current,
+        remote_selection
     );
-    run.select_model("model-b", sylvander_protocol::ReasoningEffort::Off)
-        .await
-        .unwrap();
+    run.select_qualified_model(
+        sylvander_protocol::ModelSelection {
+            provider_id: "local".into(),
+            model_id: "model-b".into(),
+        },
+        sylvander_protocol::ReasoningEffort::Off,
+    )
+    .await
+    .unwrap();
     let selected = {
         let runtime = run.inner.runtime_models.read().await;
         runtime.available.get(&runtime.current).unwrap().clone()
     };
-    let snapshot = run
+    let mut snapshot = run
         .inner
         .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
         .unwrap();
+    // This test dispatches the loop snapshot directly instead of entering an
+    // AgentRun turn, so it must supply the explicit context a real turn would.
+    snapshot.tool_context = ToolContext::new(sylvander_protocol::SessionContext::new(
+        "test-user",
+        "router-agent",
+        "model-selection-test",
+    ));
 
     crate::loop_::run(
         &snapshot,
@@ -951,10 +1180,15 @@ async fn qualified_router_crosses_providers_without_metadata_collisions() {
         let runtime = run.inner.runtime_models.read().await;
         runtime.available.get(&runtime.current).unwrap().clone()
     };
-    let snapshot = run
+    let mut snapshot = run
         .inner
         .prepare_loop_snapshot(&selected, sylvander_protocol::ReasoningEffort::Off)
         .unwrap();
+    snapshot.tool_context = ToolContext::new(sylvander_protocol::SessionContext::new(
+        "test-user",
+        "router-agent",
+        "cross-provider-test",
+    ));
     crate::loop_::run(
         &snapshot,
         vec![sylvander_llm_anthropic::api::types::MessageParam::user(
@@ -979,7 +1213,7 @@ async fn provider_manual_compaction_uses_backend_factory() {
         .unwrap();
     spec.model.provider = "local".into();
     let provider = Arc::new(RecordingProvider::default());
-    let run = AgentRun::provider_builder(
+    let run = AgentRun::qualified_router_builder(
         spec,
         provider.clone(),
         ProviderModelInfo {
@@ -1014,7 +1248,7 @@ async fn manual_compaction_failures_are_typed_before_string_facade() {
     use crate::compress::error::CompactionFailureCode;
 
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .build()
         .unwrap();
@@ -1067,7 +1301,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .id("test-agent")
         .name("Test")
         .model_name("test-model")
-        .mcp_server_def(crate::spec::McpServerConfig {
+        .mcp_server(crate::spec::McpServerConfig {
             name: "search".into(),
             command: "/opt/bin/search-mcp".into(),
             args: vec!["--token".into(), "also-secret".into()],
@@ -1093,7 +1327,7 @@ fn platform_snapshot_is_truthful_and_redacts_configuration_secrets() {
         .api_key("test-key")
         .build()
         .unwrap();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .memory(Arc::new(InMemoryMemoryStore::new()))
         .build()
@@ -1151,7 +1385,7 @@ fn platform_snapshot_reports_runtime_override_without_activating_declarations() 
         .api_key("test-key")
         .build()
         .unwrap();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .memory(Arc::new(InMemoryMemoryStore::new()))
         .build()
@@ -1204,7 +1438,7 @@ fn agent_memory_declarations_are_not_implicit_runtime_fallbacks() {
         .api_key("test-key")
         .build()
         .unwrap();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .build()
         .unwrap();
@@ -1373,7 +1607,7 @@ fn configured_pricing_calculates_nano_usd_and_requires_cache_rates() {
 async fn agent_run_is_cloneable() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -1390,7 +1624,7 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
     std::fs::write(&file, "before").unwrap();
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .workspace_journal(journal.path())
         .build()
@@ -1408,7 +1642,7 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
     .with_fs_root(workspace.path())
     .with_capability(Cap::Write)
     .with_workspace_journal(run.inner.workspace_journal.clone().unwrap());
-    crate::tools::WriteTool::new(workspace.path())
+    crate::tools::WriteTool::new()
         .execute(
             &context,
             serde_json::json!({"file_path":"file.txt","content":"after"}),
@@ -1428,18 +1662,20 @@ async fn agent_run_previews_and_rolls_back_journaled_write() {
 async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let thinking = ModelInfo::builder()
-        .id("thinking-model")
-        .context_window(200_000)
-        .max_output_tokens(32_000)
-        .capability(ModelCapabilities::EXTENDED_THINKING)
-        .build()
-        .expect("model");
-    let run = AgentRun::builder(spec, client)
+    let thinking = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new("anthropic", "thinking-model"),
+        context_window: 200_000,
+        max_output_tokens: 32_000,
+        capabilities: sylvander_llm_core::ModelCapabilities::REASONING,
+    };
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
-        .available_models(vec![thinking])
-        .model_lifecycles(HashMap::from([(
-            "thinking-model".into(),
+        .available_provider_models(vec![thinking])
+        .qualified_model_lifecycles(HashMap::from([(
+            sylvander_protocol::ModelSelection {
+                provider_id: "anthropic".into(),
+                model_id: "thinking-model".into(),
+            },
             sylvander_protocol::ModelLifecycle::Deprecated {
                 replacement: Some("claude-sonnet-5-20260601".into()),
             },
@@ -1461,7 +1697,13 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         }) if replacement == "claude-sonnet-5-20260601"
     ));
     let selected = run
-        .select_model("thinking-model", sylvander_protocol::ReasoningEffort::High)
+        .select_qualified_model(
+            sylvander_protocol::ModelSelection {
+                provider_id: "anthropic".into(),
+                model_id: "thinking-model".into(),
+            },
+            sylvander_protocol::ReasoningEffort::High,
+        )
         .await
         .expect("select");
     assert_eq!(selected.current_model, "thinking-model");
@@ -1470,8 +1712,11 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
         sylvander_protocol::ReasoningEffort::High
     );
     assert!(
-        run.select_model(
-            "claude-sonnet-5-20260601",
+        run.select_qualified_model(
+            sylvander_protocol::ModelSelection {
+                provider_id: "anthropic".into(),
+                model_id: "claude-sonnet-5-20260601".into(),
+            },
             sylvander_protocol::ReasoningEffort::Low,
         )
         .await
@@ -1487,7 +1732,7 @@ async fn runtime_model_selection_is_catalog_backed_and_capability_checked() {
 async fn context_report_separates_window_usage_from_cumulative_accounting() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -1527,7 +1772,7 @@ async fn context_report_separates_window_usage_from_cumulative_accounting() {
 async fn runtime_permissions_are_validated_against_operator_capabilities() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -1595,7 +1840,7 @@ fn permission_profile_builds_a_workspace_scoped_tool_context() {
 fn builder_registers_local_and_injected_workspace_executors() {
     let (spec, client) = test_spec_and_client();
     let remote: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"remote"));
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .workspace_executor("ssh:build", remote.clone())
         .build()
@@ -1655,14 +1900,14 @@ async fn executor_resolution_is_rebuilt_after_agent_restart() {
     let old: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"old"));
     let new: Arc<dyn WorkspaceExecutor> = Arc::new(MarkerWorkspaceExecutor::new(b"new"));
     let (spec, client) = test_spec_and_client();
-    let before_restart = AgentRun::builder(spec, client)
+    let before_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .workspace_executor("container:dev", old)
         .build()
         .unwrap();
     drop(before_restart);
     let (spec, client) = test_spec_and_client();
-    let after_restart = AgentRun::builder(spec, client)
+    let after_restart = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .workspace_executor("container:dev", new)
         .build()
@@ -1833,7 +2078,7 @@ fn user_workspace_precedes_agent_workspace_and_agent_fallback_keeps_read_only() 
 async fn interrupt_is_scoped_to_the_selected_session() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -1869,7 +2114,7 @@ async fn interrupt_is_scoped_to_the_selected_session() {
 async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus.clone())
         .build()
         .expect("build");
@@ -1976,6 +2221,259 @@ async fn interactive_decisions_are_scoped_when_ids_collide_across_sessions() {
     task.abort();
 }
 
+async fn failing_persistent_run(
+    fail: SessionStoreFailPoint,
+    seed_session: bool,
+) -> (
+    AgentRun,
+    AgentSessionIssuer,
+    Arc<RecordingProvider>,
+    Arc<dyn SessionStore>,
+    SessionId,
+    SessionMetadata,
+) {
+    let inner: Arc<dyn SessionStore> = Arc::new(
+        crate::session_store::SqliteSessionStore::open_in_memory()
+            .await
+            .expect("store"),
+    );
+    let store: Arc<dyn SessionStore> = Arc::new(FailingSessionStore::new(inner.clone(), fail));
+    let (spec, _) = test_spec_and_client();
+    let resolver = Arc::new(
+        crate::prompt::PromptResolver::new(
+            "agent:test-agent@1".into(),
+            spec.persona.system_prompt.clone(),
+            Vec::new(),
+            None,
+            false,
+        )
+        .expect("resolver"),
+    );
+    let provider = Arc::new(RecordingProvider::default());
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            spec.model.provider.clone(),
+            spec.model.model_name.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let (run, issuer) = AgentRun::qualified_router_builder(spec, provider.clone(), model)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store)
+        .prompt_resolver(resolver)
+        .build_with_session_issuer()
+        .expect("run");
+    let session_id = SessionId::new("persistence-failure-session");
+    let metadata = test_metadata();
+    if seed_session {
+        let mut stored = StoredSession::new(
+            session_id.clone(),
+            metadata.name.clone(),
+            SessionLifetime::Persistent,
+            metadata.clone(),
+            vec![run.id().clone()],
+        );
+        stored.effective_config = Some(run.inner.direct_session_config(&metadata).await);
+        inner.save(&stored).await.expect("seed persistent session");
+    }
+    (run, issuer, provider, inner, session_id, metadata)
+}
+
+fn assert_persistence_failure(error: AgentRunError, expected: SessionPersistenceOperation) {
+    let rendered = error.to_string();
+    assert!(
+        matches!(
+            error,
+            AgentRunError::SessionPersistence { operation, .. } if operation == expected
+        ),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("private injected detail"));
+}
+
+#[tokio::test]
+async fn persistent_session_attach_fails_closed_on_inspect_create_and_restore() {
+    for (fail, seed, expected) in [
+        (
+            SessionStoreFailPoint::Get,
+            true,
+            SessionPersistenceOperation::InspectSession,
+        ),
+        (
+            SessionStoreFailPoint::Save,
+            false,
+            SessionPersistenceOperation::CreateSession,
+        ),
+        (
+            SessionStoreFailPoint::ReadHistory,
+            true,
+            SessionPersistenceOperation::RestoreHistory,
+        ),
+    ] {
+        let (run, issuer, _, _, session_id, metadata) = failing_persistent_run(fail, seed).await;
+        let lease = issuer
+            .issue(session_id.clone(), metadata)
+            .expect("authenticated lease");
+        let error = run
+            .attach_authenticated_session(lease)
+            .await
+            .expect_err("persistence failure must reject session attachment");
+        assert_persistence_failure(error, expected);
+        assert!(!run.list_sessions().await.contains(&session_id));
+        assert!(
+            !run.inner
+                .authenticated_sessions
+                .read()
+                .await
+                .contains(&session_id)
+        );
+    }
+}
+
+#[tokio::test]
+async fn persistent_user_write_failure_stops_before_provider_work() {
+    let (run, issuer, provider, inner, session_id, metadata) =
+        failing_persistent_run(SessionStoreFailPoint::BeginTurn, true).await;
+    let authenticated = issuer
+        .issue(session_id.clone(), metadata.clone())
+        .expect("lease");
+    run.attach_authenticated_session(authenticated)
+        .await
+        .expect("attach");
+
+    let error = run
+        .handle_message(BusMessage::user_chat(
+            session_id.clone(),
+            metadata.user_id.clone(),
+            "must persist first",
+        ))
+        .await
+        .expect_err("begin-turn failure must terminate the turn");
+    assert_persistence_failure(error, SessionPersistenceOperation::BeginTurn);
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
+    let caller = sylvander_protocol::SessionContext::new(
+        metadata.user_id,
+        run.id().clone(),
+        session_id.clone(),
+    );
+    assert!(
+        inner
+            .read_history(&caller, &session_id, false, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn persistent_terminal_write_failures_never_publish_done() {
+    for (fail, expected) in [
+        (
+            SessionStoreFailPoint::RecordUsage,
+            SessionPersistenceOperation::RecordUsage,
+        ),
+        (
+            SessionStoreFailPoint::AppendMessage,
+            SessionPersistenceOperation::AppendAssistant,
+        ),
+    ] {
+        let (run, issuer, provider, inner, session_id, metadata) =
+            failing_persistent_run(fail, true).await;
+        let mut events = run
+            .inner
+            .bus
+            .subscribe(SubscriptionFilter::all())
+            .await
+            .unwrap();
+        let authenticated = issuer
+            .issue(session_id.clone(), metadata.clone())
+            .expect("lease");
+        run.attach_authenticated_session(authenticated)
+            .await
+            .expect("attach");
+
+        let error = run
+            .handle_message(BusMessage::user_chat(
+                session_id.clone(),
+                metadata.user_id.clone(),
+                "produce a durable answer",
+            ))
+            .await
+            .expect_err("terminal persistence failure must fail the turn");
+        assert_persistence_failure(error, expected);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(run.get_session(&session_id).await.unwrap().len(), 1);
+        let caller = sylvander_protocol::SessionContext::new(
+            metadata.user_id,
+            run.id().clone(),
+            session_id.clone(),
+        );
+        let history = inner
+            .read_history(&caller, &session_id, false, None)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].role, StoredMessageRole::User);
+
+        let mut saw_error = false;
+        while let Ok(message) = events.try_recv() {
+            if let MessageKind::Stream(event) = message.kind {
+                assert!(!matches!(event, StreamEvent::Done { .. }));
+                if let StreamEvent::Error { message } = event {
+                    saw_error = true;
+                    assert!(!message.contains("private injected detail"));
+                }
+            }
+        }
+        assert!(saw_error);
+    }
+}
+
+#[tokio::test]
+async fn compacted_history_write_failure_keeps_live_and_durable_history_unchanged() {
+    let (run, issuer, _, inner, session_id, metadata) =
+        failing_persistent_run(SessionStoreFailPoint::ReplaceHistory, true).await;
+    let authenticated = issuer
+        .issue(session_id.clone(), metadata.clone())
+        .expect("lease");
+    run.attach_authenticated_session(authenticated)
+        .await
+        .expect("attach");
+    let replacement = vec![sylvander_llm_anthropic::api::types::MessageParam::user(
+        "[Earlier conversation summary]\nimportant decision",
+    )];
+    let layers = vec![crate::compress::layer::LayerReport {
+        name: "auto_compact".into(),
+        removed_count: 2,
+        freed_tokens: 100,
+        details: Some(serde_json::json!({"summary": "important decision"})),
+        ..Default::default()
+    }];
+
+    let error = run
+        .inner
+        .apply_compacted_history(&session_id, &replacement, &layers)
+        .await
+        .expect_err("history replacement must fail closed");
+    assert_persistence_failure(error, SessionPersistenceOperation::ReplaceHistory);
+    assert_eq!(run.get_session(&session_id).await.unwrap().len(), 0);
+    let caller = sylvander_protocol::SessionContext::new(
+        metadata.user_id,
+        run.id().clone(),
+        session_id.clone(),
+    );
+    assert!(
+        inner
+            .read_history(&caller, &session_id, false, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn durable_session_history_restores_into_agent_context() {
     let bus = Arc::new(InProcessMessageBus::new());
@@ -2019,7 +2517,7 @@ async fn durable_session_history_restores_into_agent_context() {
         .await
         .expect("append");
 
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .session_store(store)
         .build()
@@ -2027,7 +2525,8 @@ async fn durable_session_history_restores_into_agent_context() {
     let restored = run
         .inner
         .restore_session_context(&session_id, &metadata)
-        .await;
+        .await
+        .expect("restore durable history");
 
     assert_eq!(restored.len(), 1);
 }
@@ -2053,7 +2552,7 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
     );
     let session_id = SessionId::new("direct-session");
     let metadata = test_metadata();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .session_store(store.clone())
         .prompt_resolver(resolver)
@@ -2062,7 +2561,8 @@ async fn direct_join_persists_an_auditable_effective_configuration() {
 
     run.inner
         .restore_session_context(&session_id, &metadata)
-        .await;
+        .await
+        .expect("persist direct session");
 
     let stored = store.get(&session_id).await.unwrap().unwrap();
     let effective = stored
@@ -2121,7 +2621,7 @@ async fn compacted_history_replaces_runtime_and_durable_active_history() {
             .await
             .expect("append");
     }
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .session_store(store.clone())
         .build()
@@ -2171,7 +2671,7 @@ async fn memory_is_infrastructure_not_tool() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let store = Arc::new(InMemoryMemoryStore::new());
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .memory(store)
         .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
@@ -2185,12 +2685,12 @@ async fn memory_is_infrastructure_not_tool() {
 #[tokio::test]
 async fn session_capability_is_bound_to_one_run() {
     let (spec_a, client_a) = test_spec_and_client();
-    let (run_a, issuer_a) = AgentRun::builder(spec_a, client_a)
+    let (run_a, issuer_a) = qualified_anthropic_run_builder(spec_a, client_a)
         .bus(Arc::new(InProcessMessageBus::new()))
         .build_with_session_issuer()
         .expect("build A");
     let (spec_b, client_b) = test_spec_and_client();
-    let (run_b, _) = AgentRun::builder(spec_b, client_b)
+    let (run_b, _) = qualified_anthropic_run_builder(spec_b, client_b)
         .bus(Arc::new(InProcessMessageBus::new()))
         .build_with_session_issuer()
         .expect("build B");
@@ -2211,7 +2711,7 @@ async fn session_capability_is_bound_to_one_run() {
 #[test]
 fn session_issuer_rejects_control_characters_before_admission() {
     let (spec, client) = test_spec_and_client();
-    let (_, issuer) = AgentRun::builder(spec, client)
+    let (_, issuer) = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .build_with_session_issuer()
         .expect("build");
@@ -2231,7 +2731,7 @@ fn session_issuer_rejects_control_characters_before_admission() {
 #[tokio::test]
 async fn raw_session_presence_has_no_trusted_memory_identity() {
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(Arc::new(InProcessMessageBus::new()))
         .memory(Arc::new(InMemoryMemoryStore::new()))
         .build()
@@ -2253,7 +2753,7 @@ async fn remember_is_system_driven() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let store = Arc::new(InMemoryMemoryStore::new());
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .memory(store)
         .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
@@ -2280,7 +2780,7 @@ async fn remember_derives_identity_from_attached_session() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
     let store = Arc::new(InMemoryMemoryStore::new());
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .memory(store)
         .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
@@ -2326,7 +2826,7 @@ async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
     ];
     for provider in providers {
         let (spec, client) = test_spec_and_client();
-        let mut builder = AgentRun::builder(spec, client)
+        let mut builder = qualified_anthropic_run_builder(spec, client)
             .bus(Arc::new(InProcessMessageBus::new()))
             .memory(Arc::new(InMemoryMemoryStore::new()));
         if let Some(provider) = provider {
@@ -2357,7 +2857,7 @@ async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
 async fn remember_fails_without_memory_configured() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -2371,7 +2871,7 @@ async fn remember_fails_without_memory_configured() {
 async fn memory_tools_empty_without_memory_configured() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -2405,7 +2905,7 @@ fn typed_attachments_become_provider_content_blocks() {
 async fn join_and_leave_session() {
     let bus = Arc::new(InProcessMessageBus::new());
     let (spec, client) = test_spec_and_client();
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus)
         .build()
         .expect("build");
@@ -2428,7 +2928,7 @@ async fn subscription_filter_matches_agent_and_broadcast() {
         .api_key("test-key")
         .build()
         .expect("client");
-    let run = AgentRun::builder(spec, client)
+    let run = qualified_anthropic_run_builder(spec, client)
         .bus(bus.clone())
         .build()
         .expect("build");
