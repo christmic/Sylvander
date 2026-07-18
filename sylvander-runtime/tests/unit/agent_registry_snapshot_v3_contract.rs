@@ -4,7 +4,6 @@ use sylvander_protocol::ModelSelection;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::agent_registry_snapshot::AgentSnapshotSelection;
 use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 use crate::config::ServerConfig;
 use crate::registry_bootstrap::RegistryBootstrapPlan;
@@ -46,6 +45,10 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [
+  { provider_id = "alpha", model_id = "shared" },
+  { provider_id = "beta", model_id = "shared" },
+]
 "#,
     )
     .unwrap()
@@ -310,133 +313,23 @@ async fn same_revision_rejects_changed_component_heads() {
 }
 
 #[tokio::test]
-async fn v2_identity_prevents_parallel_v3_snapshot() {
-    let directory = tempdir().unwrap();
-    let registry = AgentRegistry::open(directory.path().join("registry.db"))
-        .await
-        .unwrap();
-    install(&registry).await;
-    registry
-        .stage_agent_snapshot(AgentSnapshotSelection {
-            agent_id: "assistant".into(),
-            agent_revision: 1,
-            provider_id: "alpha".into(),
-            allowed_model_ids: BTreeSet::from(["shared".into()]),
-            default_model_id: "shared".into(),
-        })
-        .await
-        .unwrap();
-
-    assert!(matches!(
-        registry.stage_agent_snapshot_v3(selection()).await,
-        Err(AgentSnapshotV3Error::SchemaConflict {
-            agent_id,
-            revision: 1
-        }) if agent_id == "assistant"
-    ));
-}
-
-#[tokio::test]
-async fn v3_identity_prevents_parallel_v2_snapshot() {
+async fn damaged_current_snapshot_fails_without_fallback() {
     let directory = tempdir().unwrap();
     let registry = AgentRegistry::open(directory.path().join("registry.db"))
         .await
         .unwrap();
     install(&registry).await;
     registry.stage_agent_snapshot_v3(selection()).await.unwrap();
-
-    assert!(matches!(
-        registry
-            .stage_agent_snapshot(AgentSnapshotSelection {
-                agent_id: "assistant".into(),
-                agent_revision: 1,
-                provider_id: "alpha".into(),
-                allowed_model_ids: BTreeSet::from(["shared".into()]),
-                default_model_id: "shared".into(),
-            })
-            .await,
-        Err(crate::agent_registry_snapshot::AgentSnapshotError::SnapshotSchemaConflict {
-            agent_id,
-            revision: 1
-        }) if agent_id == "assistant"
-    ));
-}
-
-#[tokio::test]
-async fn versioned_loader_lifts_a_valid_legacy_snapshot() {
-    let directory = tempdir().unwrap();
-    let registry = AgentRegistry::open(directory.path().join("registry.db"))
-        .await
-        .unwrap();
-    install(&registry).await;
-    registry
-        .stage_agent_snapshot(AgentSnapshotSelection {
-            agent_id: "assistant".into(),
-            agent_revision: 1,
-            provider_id: "alpha".into(),
-            allowed_model_ids: BTreeSet::from(["shared".into()]),
-            default_model_id: "shared".into(),
-        })
-        .await
-        .unwrap();
-
-    let lifted = registry
-        .load_agent_snapshot_versioned("assistant", 1)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(lifted.default_model, model("alpha", "shared"));
-    assert_eq!(lifted.providers, [("alpha".into(), 1)].into());
-    assert_eq!(lifted.models.len(), 1);
-    assert_eq!(lifted.models[0].model, model("alpha", "shared"));
-    assert_eq!(lifted.models[0].revision, 1);
-}
-
-#[tokio::test]
-async fn damaged_v3_never_falls_back_to_a_valid_legacy_snapshot() {
-    let directory = tempdir().unwrap();
-    let registry = AgentRegistry::open(directory.path().join("registry.db"))
-        .await
-        .unwrap();
-    install(&registry).await;
-    registry
-        .stage_agent_snapshot(AgentSnapshotSelection {
-            agent_id: "assistant".into(),
-            agent_revision: 1,
-            provider_id: "alpha".into(),
-            allowed_model_ids: BTreeSet::from(["shared".into()]),
-            default_model_id: "shared".into(),
-        })
-        .await
-        .unwrap();
     registry
         .run(|connection| {
-            let transaction = connection.transaction().map_err(AgentRegistryError::sqlite)?;
-            transaction
+            connection
                 .execute(
-                    "INSERT INTO agent_registry_snapshots_v3 \
-                     (agent_id,agent_revision,default_provider_id,default_model_id,digest,created_at) \
-                     VALUES ('assistant',1,'alpha','shared','tampered',0)",
+                    "UPDATE agent_registry_snapshots_v3 SET digest='tampered' \
+                     WHERE agent_id='assistant' AND agent_revision=1",
                     [],
                 )
                 .map_err(AgentRegistryError::sqlite)?;
-            transaction
-                .execute(
-                    "INSERT INTO agent_registry_snapshot_providers_v3 \
-                     (agent_id,agent_revision,provider_id,provider_revision) \
-                     VALUES ('assistant',1,'alpha',1)",
-                    [],
-                )
-                .map_err(AgentRegistryError::sqlite)?;
-            transaction
-                .execute(
-                    "INSERT INTO agent_registry_snapshot_models_v3 \
-                     (agent_id,agent_revision,provider_id,model_id,model_revision,is_default) \
-                     VALUES ('assistant',1,'alpha','shared',1,1)",
-                    [],
-                )
-                .map_err(AgentRegistryError::sqlite)?;
-            transaction.commit().map_err(AgentRegistryError::sqlite)
+            Ok(())
         })
         .await
         .unwrap();
@@ -450,7 +343,7 @@ async fn damaged_v3_never_falls_back_to_a_valid_legacy_snapshot() {
 }
 
 #[tokio::test]
-async fn versioned_loader_rejects_dual_schema_ownership() {
+async fn current_loader_rejects_a_mixed_schema_added_after_open() {
     let directory = tempdir().unwrap();
     let registry = AgentRegistry::open(directory.path().join("registry.db"))
         .await
@@ -460,11 +353,16 @@ async fn versioned_loader_rejects_dual_schema_ownership() {
     registry
         .run(|connection| {
             connection
-                .execute(
-                    "INSERT INTO agent_registry_snapshots \
-                     (agent_id,agent_revision,provider_id,provider_revision,digest,created_at) \
-                     VALUES ('assistant',1,'alpha',1,'dual-schema',0)",
-                    [],
+                .execute_batch(
+                    "CREATE TABLE agent_registry_snapshots (
+                        agent_id TEXT NOT NULL,
+                        agent_revision INTEGER NOT NULL,
+                        provider_id TEXT NOT NULL,
+                        provider_revision INTEGER NOT NULL,
+                        digest TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        PRIMARY KEY(agent_id,agent_revision)
+                    );",
                 )
                 .map_err(AgentRegistryError::sqlite)?;
             Ok(())
@@ -473,12 +371,9 @@ async fn versioned_loader_rejects_dual_schema_ownership() {
         .unwrap();
 
     assert!(matches!(
-        registry
-            .load_agent_snapshot_versioned("assistant", 1)
-            .await,
-        Err(AgentSnapshotV3Error::SchemaConflict {
-            agent_id,
-            revision: 1
-        }) if agent_id == "assistant"
+        registry.load_agent_snapshot_versioned("assistant", 1).await,
+        Err(AgentSnapshotV3Error::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
     ));
 }

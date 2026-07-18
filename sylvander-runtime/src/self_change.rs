@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use sylvander_protocol::EvidenceReference;
 
 use crate::EvidenceStore;
@@ -15,7 +16,8 @@ use crate::evidence::{
 };
 use crate::git_worktree::{GitWorktreeManager, PreparedChange, WorkspaceLease};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvaluationMeasurements {
     pub baseline_id: String,
     pub measurements: Vec<MetricMeasurement>,
@@ -303,6 +305,78 @@ impl SelfChangeExperimentManager {
         }
         self.worktrees.discard(&lease)?;
         Ok(observed)
+    }
+
+    /// Apply an explicit human rollback to a previously merged experiment.
+    ///
+    /// The durable state first enters observation, then `rollback_required`;
+    /// only after those decisions are recorded does Git create the revert.
+    pub async fn rollback(
+        &self,
+        experiment_id: &str,
+        principal_digest: &str,
+        reason: &str,
+        occurred_at: i64,
+    ) -> Result<StoredSelfChangeExperiment, String> {
+        let mut experiment = self.experiment(experiment_id).await?;
+        if experiment.status == SelfChangeExperimentStatus::Merged {
+            experiment = self
+                .evidence
+                .begin_experiment_observation(ExperimentTransition {
+                    experiment_id: experiment_id.to_string(),
+                    expected_state_revision: experiment.state_revision,
+                    principal_digest: principal_digest.to_string(),
+                    reason: Some("human opened rollback review".into()),
+                    occurred_at,
+                })
+                .await
+                .map_err(display_error)?;
+        }
+        let required = match experiment.status {
+            SelfChangeExperimentStatus::Observing => self
+                .evidence
+                .require_experiment_rollback(ExperimentTransition {
+                    experiment_id: experiment_id.to_string(),
+                    expected_state_revision: experiment.state_revision,
+                    principal_digest: principal_digest.to_string(),
+                    reason: Some(reason.to_string()),
+                    occurred_at,
+                })
+                .await
+                .map_err(display_error)?,
+            // Git may have failed after the durable decision was recorded.
+            // Retrying must resume the mutation instead of stranding the
+            // experiment in a terminal-looking intermediate state.
+            SelfChangeExperimentStatus::RollbackRequired => experiment,
+            _ => {
+                return Err(
+                    "only a merged, observing, or rollback-required experiment can be rolled back"
+                        .into(),
+                );
+            }
+        };
+        let merge_commit = required
+            .merge_commit
+            .clone()
+            .ok_or_else(|| "merge commit is missing".to_string())?;
+        let lease = self.worktrees.open(&required.definition.lease_id)?;
+        let rollback_commit = self.worktrees.rollback_reviewed(&lease, &merge_commit)?;
+        let rolled_back = self
+            .evidence
+            .record_experiment_rollback(
+                ExperimentTransition {
+                    experiment_id: experiment_id.to_string(),
+                    expected_state_revision: required.state_revision,
+                    principal_digest: principal_digest.to_string(),
+                    reason: Some(reason.to_string()),
+                    occurred_at,
+                },
+                rollback_commit,
+            )
+            .await
+            .map_err(display_error)?;
+        self.worktrees.discard(&lease)?;
+        Ok(rolled_back)
     }
 
     async fn evaluate(

@@ -6,6 +6,10 @@ use sylvander_protocol::{
 
 use super::*;
 use crate::config::{SecretRef, SystemSecretResolver};
+use crate::credential_audit::{
+    CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
+    CredentialOperationAuditLedger,
+};
 use crate::registry_domain::CredentialBindingRevision;
 use crate::request_scoped_provider::ProviderFactoryError;
 
@@ -857,7 +861,10 @@ async fn credential_mutations_preflight_cas_and_redact_every_response() {
     let registry = AgentRegistry::open(directory.path().join("registry.db"))
         .await
         .unwrap();
-    let service = CredentialRegistryMutationService::new(&registry, &SystemSecretResolver);
+    let audit = CredentialOperationAuditLedger::open(directory.path().join("credential-audit.db"))
+        .await
+        .unwrap();
+    let service = CredentialRegistryMutationService::new(&registry, &SystemSecretResolver, &audit);
 
     let created = service
         .dispatch(
@@ -962,8 +969,41 @@ async fn credential_mutations_preflight_cas_and_redact_every_response() {
                     }
                 ))
     ));
+    let revoked = service
+        .dispatch(
+            Some(&admin()),
+            RegistryAdminRequest::RollbackCredentialGeneration {
+                binding_id: binding_id.into(),
+                target_generation: 1,
+                expected_active_generation: 2,
+            },
+        )
+        .await;
+    assert!(matches!(revoked, RegistryAdminResponse::Success { .. }));
 
-    for response in [&created, &staged, &unavailable, &activated, &conflict] {
+    let subject = CredentialAuditSubject::provider_binding(binding_id).unwrap();
+    let events = audit.list(&subject, 20).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.operation == CredentialAuditOperation::Create
+            && event.result == CredentialAuditResult::Succeeded
+    }));
+    assert!(events.iter().any(|event| {
+        event.operation == CredentialAuditOperation::Revoke
+            && event.result == CredentialAuditResult::Succeeded
+    }));
+    assert!(events.iter().any(|event| {
+        event.operation == CredentialAuditOperation::Failure
+            && event.result == CredentialAuditResult::Conflict
+    }));
+
+    for response in [
+        &created,
+        &staged,
+        &unavailable,
+        &activated,
+        &conflict,
+        &revoked,
+    ] {
         let rendered = format!("{response:?} {}", serde_json::to_string(response).unwrap());
         for secret in [
             binding_id,

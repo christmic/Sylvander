@@ -1,5 +1,6 @@
 //! Durable, immutable Agent definitions and explicit revision activation.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,6 +20,7 @@ use crate::config::{AgentDefinitionConfig, ServerConfig};
 #[derive(Clone)]
 pub struct AgentRegistry {
     connection: Arc<Mutex<Connection>>,
+    allowed_foreign_objects: Arc<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,16 +34,37 @@ pub struct AgentRevision {
 impl AgentRegistry {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, AgentRegistryError> {
         let path = path.as_ref().to_path_buf();
-        Self::open_connection(move || Connection::open(path)).await
+        Self::open_connection(move || Connection::open(path), Vec::new()).await
+    }
+
+    /// Open a registry in a database shared with another component.
+    ///
+    /// The caller supplies the other component's complete current object-name
+    /// allowlist. Registry-owned SQL remains exact-match validated and any
+    /// object outside the two declared namespaces fails closed.
+    pub async fn open_shared(
+        path: impl AsRef<Path>,
+        allowed_foreign_objects: &[&str],
+    ) -> Result<Self, AgentRegistryError> {
+        let path = path.as_ref().to_path_buf();
+        Self::open_connection(
+            move || Connection::open(path),
+            allowed_foreign_objects
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        )
+        .await
     }
 
     #[cfg(test)]
     async fn open_in_memory() -> Result<Self, AgentRegistryError> {
-        Self::open_connection(Connection::open_in_memory).await
+        Self::open_connection(Connection::open_in_memory, Vec::new()).await
     }
 
     async fn open_connection(
         open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
+        allowed_foreign_objects: Vec<String>,
     ) -> Result<Self, AgentRegistryError> {
         task::spawn_blocking(move || {
             let mut connection = open().map_err(AgentRegistryError::sqlite)?;
@@ -51,12 +74,10 @@ impl AgentRegistry {
             connection
                 .execute_batch("PRAGMA foreign_keys=ON;")
                 .map_err(AgentRegistryError::sqlite)?;
-            connection
-                .execute_batch(SCHEMA)
-                .map_err(AgentRegistryError::sqlite)?;
-            run_registry_migrations(&mut connection)?;
+            initialize_or_validate_registry_schema(&mut connection, &allowed_foreign_objects)?;
             Ok(Self {
                 connection: Arc::new(Mutex::new(connection)),
+                allowed_foreign_objects: Arc::new(allowed_foreign_objects),
             })
         })
         .await
@@ -68,8 +89,13 @@ impl AgentRegistry {
         operation: impl FnOnce(&mut Connection) -> Result<T, AgentRegistryError> + Send + 'static,
     ) -> Result<T, AgentRegistryError> {
         let connection = self.connection.clone();
+        let allowed_foreign_objects = self.allowed_foreign_objects.clone();
         task::spawn_blocking(move || {
             let mut connection = connection.blocking_lock();
+            validate_registry_object_namespace(
+                &registry_schema_objects(&connection)?,
+                &allowed_foreign_objects,
+            )?;
             operation(&mut connection)
         })
         .await
@@ -85,8 +111,14 @@ impl AgentRegistry {
         E: From<AgentRegistryError> + Send + 'static,
     {
         let connection = self.connection.clone();
+        let allowed_foreign_objects = self.allowed_foreign_objects.clone();
         task::spawn_blocking(move || {
             let mut connection = connection.blocking_lock();
+            validate_registry_object_namespace(
+                &registry_schema_objects(&connection).map_err(E::from)?,
+                &allowed_foreign_objects,
+            )
+            .map_err(E::from)?;
             operation(&mut connection)
         })
         .await
@@ -576,50 +608,215 @@ impl AgentRegistryError {
     }
 }
 
-fn run_registry_migrations(connection: &mut Connection) -> Result<(), AgentRegistryError> {
-    connection
-        .execute_batch(MIGRATION_SCHEMA)
-        .map_err(AgentRegistryError::sqlite)?;
-    let current = connection
-        .query_row(
-            "SELECT MAX(version) FROM schema_migrations WHERE component=?1",
-            [REGISTRY_COMPONENT],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .map_err(AgentRegistryError::sqlite)?
-        .unwrap_or(0);
-    if current > REGISTRY_SCHEMA_VERSION {
-        return Err(AgentRegistryError::Integrity(format!(
-            "registry schema version {current} is newer than supported version {REGISTRY_SCHEMA_VERSION}"
-        )));
-    }
-    for (version, migration) in REGISTRY_MIGRATIONS {
-        if *version <= current {
-            continue;
-        }
+fn initialize_or_validate_registry_schema(
+    connection: &mut Connection,
+    allowed_foreign_objects: &[String],
+) -> Result<(), AgentRegistryError> {
+    validate_allowed_foreign_objects(allowed_foreign_objects)?;
+    let objects = registry_schema_objects(connection)?;
+    validate_registry_object_namespace(&objects, allowed_foreign_objects)?;
+    let has_registry_objects = objects
+        .iter()
+        .any(|object| REGISTRY_SCHEMA_OBJECT_NAMES.contains(&object.1.as_str()));
+    if !has_registry_objects {
         let transaction = connection
             .transaction()
             .map_err(AgentRegistryError::sqlite)?;
-        transaction
-            .execute_batch(migration)
-            .map_err(AgentRegistryError::sqlite)?;
+        for schema in [
+            SCHEMA,
+            MIGRATION_SCHEMA,
+            REGISTRY_CATALOG_SCHEMA,
+            REGISTRY_SCHEMA_V3,
+        ] {
+            transaction
+                .execute_batch(schema)
+                .map_err(AgentRegistryError::sqlite)?;
+        }
         transaction
             .execute(
                 "INSERT INTO schema_migrations(component,version,applied_at) VALUES (?1,?2,?3)",
-                params![REGISTRY_COMPONENT, version, now()],
+                params![REGISTRY_COMPONENT, REGISTRY_SCHEMA_VERSION, now()],
             )
             .map_err(AgentRegistryError::sqlite)?;
         transaction.commit().map_err(AgentRegistryError::sqlite)?;
     }
+    ensure_current_registry_schema(connection)
+}
+
+pub(crate) fn ensure_current_registry_schema(
+    connection: &Connection,
+) -> Result<(), AgentRegistryError> {
+    let expected = canonical_registry_schema()?;
+    let actual = owned_registry_schema_objects(registry_schema_objects(connection)?);
+    if actual != expected {
+        return Err(AgentRegistryError::Integrity(
+            "registry schema does not exactly match the current version".into(),
+        ));
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT component,version,applied_at FROM schema_migrations \
+             ORDER BY component,version",
+        )
+        .map_err(AgentRegistryError::sqlite)?;
+    let ledger = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(AgentRegistryError::sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AgentRegistryError::sqlite)?;
+    if ledger.len() != 1
+        || ledger[0].0 != REGISTRY_COMPONENT
+        || ledger[0].1 != REGISTRY_SCHEMA_VERSION
+        || ledger[0].2 <= 0
+    {
+        return Err(AgentRegistryError::Integrity(
+            "registry schema ledger does not exactly match the current version".into(),
+        ));
+    }
+
+    let owned = REGISTRY_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut foreign_keys = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(AgentRegistryError::sqlite)?;
+    let mut rows = foreign_keys.query([]).map_err(AgentRegistryError::sqlite)?;
+    while let Some(row) = rows.next().map_err(AgentRegistryError::sqlite)? {
+        let table = row
+            .get::<_, String>(0)
+            .map_err(AgentRegistryError::sqlite)?;
+        if owned.contains(table.as_str()) {
+            return Err(AgentRegistryError::Integrity(
+                "registry foreign-key integrity check failed".into(),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_allowed_foreign_objects(
+    allowed_foreign_objects: &[String],
+) -> Result<(), AgentRegistryError> {
+    let owned = REGISTRY_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut allowed = HashSet::new();
+    for name in allowed_foreign_objects {
+        if name.is_empty() || owned.contains(name.as_str()) || !allowed.insert(name.as_str()) {
+            return Err(AgentRegistryError::Integrity(
+                "registry shared-object allowlist is invalid".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_registry_object_namespace(
+    objects: &[RegistrySchemaObject],
+    allowed_foreign_objects: &[String],
+) -> Result<(), AgentRegistryError> {
+    let owned = REGISTRY_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let allowed = allowed_foreign_objects
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    if objects
+        .iter()
+        .all(|object| owned.contains(object.1.as_str()) || allowed.contains(object.1.as_str()))
+    {
+        Ok(())
+    } else {
+        Err(AgentRegistryError::Integrity(
+            "registry database contains an undeclared schema object".into(),
+        ))
+    }
+}
+
+fn owned_registry_schema_objects(objects: Vec<RegistrySchemaObject>) -> Vec<RegistrySchemaObject> {
+    let owned = REGISTRY_SCHEMA_OBJECT_NAMES
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    objects
+        .into_iter()
+        .filter(|object| owned.contains(object.1.as_str()))
+        .collect()
+}
+
+fn canonical_registry_schema() -> Result<Vec<RegistrySchemaObject>, AgentRegistryError> {
+    let canonical = Connection::open_in_memory().map_err(AgentRegistryError::sqlite)?;
+    canonical
+        .execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(AgentRegistryError::sqlite)?;
+    for schema in [
+        SCHEMA,
+        MIGRATION_SCHEMA,
+        REGISTRY_CATALOG_SCHEMA,
+        REGISTRY_SCHEMA_V3,
+    ] {
+        canonical
+            .execute_batch(schema)
+            .map_err(AgentRegistryError::sqlite)?;
+    }
+    registry_schema_objects(&canonical)
+}
+
+type RegistrySchemaObject = (String, String, String, String);
+
+fn registry_schema_objects(
+    connection: &Connection,
+) -> Result<Vec<RegistrySchemaObject>, AgentRegistryError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema \
+             WHERE name NOT LIKE 'sqlite_%' AND type IN ('table','index','trigger','view') \
+             ORDER BY type,name",
+        )
+        .map_err(AgentRegistryError::sqlite)?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(AgentRegistryError::sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AgentRegistryError::sqlite)
 }
 
 const REGISTRY_COMPONENT: &str = "runtime_registry";
 const REGISTRY_SCHEMA_VERSION: i64 = 3;
-const REGISTRY_MIGRATIONS: &[(i64, &str)] = &[
-    (1, REGISTRY_SCHEMA_V1),
-    (2, REGISTRY_SCHEMA_V2),
-    (3, REGISTRY_SCHEMA_V3),
+
+/// `SQLite` objects owned and exact-match validated by the current registry.
+pub const REGISTRY_SCHEMA_OBJECT_NAMES: &[&str] = &[
+    "schema_migrations",
+    "agent_definitions",
+    "agent_registry_heads",
+    "credential_binding_revisions",
+    "credential_binding_heads",
+    "provider_definitions",
+    "provider_registry_heads",
+    "model_definitions",
+    "model_registry_heads",
+    "agent_registry_snapshots_v3",
+    "agent_registry_snapshot_providers_v3",
+    "agent_registry_snapshot_models_v3",
+    "one_default_model_per_agent_snapshot_v3",
 ];
 
 const MIGRATION_SCHEMA: &str = r"
@@ -631,7 +828,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 ";
 
-const REGISTRY_SCHEMA_V1: &str = r"
+const REGISTRY_CATALOG_SCHEMA: &str = r"
 CREATE TABLE credential_binding_revisions (
     binding_id TEXT NOT NULL,
     generation INTEGER NOT NULL CHECK(generation > 0),
@@ -683,42 +880,9 @@ CREATE TABLE model_registry_heads (
 );
 ";
 
-const REGISTRY_SCHEMA_V2: &str = r"
-CREATE TABLE agent_registry_snapshots (
-    agent_id TEXT NOT NULL,
-    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
-    provider_id TEXT NOT NULL,
-    provider_revision INTEGER NOT NULL CHECK(provider_revision > 0),
-    digest TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(agent_id, agent_revision),
-    UNIQUE(agent_id, agent_revision, provider_id),
-    FOREIGN KEY(agent_id, agent_revision)
-        REFERENCES agent_definitions(agent_id, revision),
-    FOREIGN KEY(provider_id, provider_revision)
-        REFERENCES provider_definitions(provider_id, revision)
-);
-CREATE TABLE agent_registry_snapshot_models (
-    agent_id TEXT NOT NULL,
-    agent_revision INTEGER NOT NULL CHECK(agent_revision > 0),
-    provider_id TEXT NOT NULL,
-    model_id TEXT NOT NULL,
-    model_revision INTEGER NOT NULL CHECK(model_revision > 0),
-    is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)),
-    PRIMARY KEY(agent_id, agent_revision, provider_id, model_id),
-    FOREIGN KEY(agent_id, agent_revision, provider_id)
-        REFERENCES agent_registry_snapshots(agent_id, agent_revision, provider_id),
-    FOREIGN KEY(provider_id, model_id, model_revision)
-        REFERENCES model_definitions(provider_id, model_id, revision)
-);
-CREATE UNIQUE INDEX one_default_model_per_agent_snapshot
-    ON agent_registry_snapshot_models(agent_id, agent_revision)
-    WHERE is_default = 1;
-";
-
-// V3 is intentionally side-by-side with V2. Historical single-provider
-// snapshots remain immutable while new snapshots can pin more than one
-// Provider and a provider-qualified Model allowlist.
+// The current schema creates every required snapshot table atomically. Older
+// snapshot table shapes are not part of a valid database and fail the exact
+// schema check during open.
 const REGISTRY_SCHEMA_V3: &str = r"
 CREATE TABLE agent_registry_snapshots_v3 (
     agent_id TEXT NOT NULL CHECK(length(trim(agent_id)) > 0),

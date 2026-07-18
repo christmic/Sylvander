@@ -1,8 +1,8 @@
 //! Resolve one immutable, multi-Provider registry composition.
 //!
-//! Resolution never consults Provider or Model heads. Native V3 and lifted
-//! V2 snapshots both arrive through the versioned snapshot loader, after
-//! which every component is loaded at its exact persisted revision.
+//! Resolution never consults Provider or Model heads. The loader accepts only
+//! the exact current V3 snapshot and then loads every component at its exact
+//! persisted revision; obsolete V2 rows are detected and rejected.
 
 use std::collections::BTreeMap;
 

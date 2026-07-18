@@ -4,8 +4,7 @@ use sylvander_protocol::ModelSelection;
 use tempfile::tempdir;
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError};
-use crate::agent_registry_snapshot::AgentSnapshotSelection;
-use crate::agent_registry_snapshot_v3::AgentSnapshotSelectionV3;
+use crate::agent_registry_snapshot_v3::{AgentSnapshotSelectionV3, AgentSnapshotV3Error};
 use crate::config::ServerConfig;
 use crate::registry_composition_v3::VersionedRegistryCompositionError;
 
@@ -46,6 +45,10 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [
+  { provider_id = "alpha", model_id = "shared" },
+  { provider_id = "beta", model_id = "shared" },
+]
 "#,
     )
     .unwrap()
@@ -105,36 +108,6 @@ async fn native_v3_composes_same_model_id_from_two_exact_providers() {
     );
 }
 
-#[tokio::test]
-async fn legacy_v2_snapshot_composes_through_the_versioned_loader() {
-    let directory = tempdir().unwrap();
-    let registry = AgentRegistry::open(directory.path().join("registry.db"))
-        .await
-        .unwrap();
-    let config = install(&registry).await;
-    registry
-        .stage_agent_snapshot(AgentSnapshotSelection {
-            agent_id: "assistant".into(),
-            agent_revision: 1,
-            provider_id: "alpha".into(),
-            allowed_model_ids: BTreeSet::from(["shared".into()]),
-            default_model_id: "shared".into(),
-        })
-        .await
-        .unwrap();
-
-    let composed = registry
-        .resolve_registry_composition_versioned(&config.agents[0].spec.id, 1)
-        .await
-        .unwrap();
-    assert_eq!(composed.default_model, model("alpha"));
-    assert_eq!(composed.providers.keys().collect::<Vec<_>>(), vec!["alpha"]);
-    assert_eq!(
-        composed.models.keys().cloned().collect::<Vec<_>>(),
-        vec![model("alpha")]
-    );
-}
-
 async fn composition_after_corruption(sql: &'static str) -> VersionedRegistryCompositionError {
     let directory = tempdir().unwrap();
     let registry = AgentRegistry::open(directory.path().join("registry.db"))
@@ -180,8 +153,9 @@ async fn any_missing_or_tampered_component_fails_the_whole_composition() {
     .await;
     assert!(matches!(
         model_error,
-        VersionedRegistryCompositionError::UnknownModelRevision { model: missing, revision: 1 }
-            if missing == model("beta")
+        VersionedRegistryCompositionError::Snapshot(AgentSnapshotV3Error::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
     ));
 
     let credential = composition_after_corruption(
@@ -193,10 +167,9 @@ async fn any_missing_or_tampered_component_fails_the_whole_composition() {
     .await;
     assert!(matches!(
         credential,
-        VersionedRegistryCompositionError::MissingActiveCredentialBinding {
-            provider_id,
-            binding_id
-        } if provider_id == "beta" && binding_id == "provider:beta:api_key"
+        VersionedRegistryCompositionError::Snapshot(AgentSnapshotV3Error::Registry(
+            AgentRegistryError::Integrity(_)
+        ))
     ));
 }
 
