@@ -12,6 +12,7 @@ sylvander-protocol = { path = "../sylvander-protocol" }
 serde_json = { workspace = true }
 async-trait = "0.1"
 tokio = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

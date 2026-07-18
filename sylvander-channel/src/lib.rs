@@ -28,6 +28,8 @@
 //! └──────────────────────────────────────────────┘
 //! ```
 
+pub mod credential;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,12 +52,19 @@ use sylvander_protocol::{
 
 /// Complete normalized input for one authenticated external chat turn.
 pub struct ExternalChatRequest {
+    /// Existing durable session selected by a transport-specific mapping.
     pub existing_session: Option<SessionId>,
+    /// Requested Agent; Runtime reauthorizes access before use.
     pub agent_id: AgentId,
+    /// Human-readable label used only when Runtime creates a session.
     pub label: String,
+    /// Requested session configuration layered over channel defaults.
     pub overrides: SessionConfigOverrides,
+    /// User message content.
     pub text: String,
+    /// Typed UI attachments forwarded without flattening.
     pub attachments: Vec<sylvander_protocol::MessageAttachment>,
+    /// Transport-owned identifiers used for future session lookup.
     pub external_meta: BTreeMap<String, String>,
 }
 
@@ -65,7 +74,9 @@ pub struct ExternalChatRequest {
 /// cannot miss the first response event while installing its relay.
 #[derive(Debug)]
 pub struct SubmittedChat {
+    /// Runtime-authorized session receiving the turn.
     pub session_id: SessionId,
+    /// Session-scoped event subscription installed before message publication.
     pub events: tokio::sync::mpsc::Receiver<BusMessage>,
 }
 
@@ -179,25 +190,30 @@ pub trait UiService: Send + Sync {
             retry_after_ms: None,
         })
     }
+    /// Return Agent definitions visible to the authenticated principal.
     async fn discover_agents(
         &self,
         boundary: &BoundaryContext,
     ) -> Result<Vec<AgentDescriptor>, BoundaryError>;
+    /// Create and persist one authorized session.
     async fn create_session(
         &self,
         boundary: &BoundaryContext,
         request: SessionCreateRequest,
     ) -> Result<SessionConfigState, BoundaryError>;
+    /// Read the effective configuration of one visible session.
     async fn session_config(
         &self,
         boundary: &BoundaryContext,
         session_id: &SessionId,
     ) -> Result<SessionConfigState, BoundaryError>;
+    /// Validate and apply a typed configuration update.
     async fn update_session_config(
         &self,
         boundary: &BoundaryContext,
         request: SessionConfigUpdateRequest,
     ) -> Result<SessionConfigState, BoundaryError>;
+    /// Persist bounded run feedback and return its stable identifier.
     async fn submit_feedback(
         &self,
         boundary: &BoundaryContext,
@@ -351,6 +367,19 @@ pub trait UiService: Send + Sync {
         Err(unavailable_ui_control(boundary, "discard_coding_session"))
     }
 
+    /// Permanently close a session through the Runtime lifecycle boundary.
+    ///
+    /// Transports must not delete the shared session store directly because
+    /// Agent detachment, worktree cleanup, and Guardian curation are one
+    /// Runtime-owned lifecycle.
+    async fn delete_session(
+        &self,
+        boundary: &BoundaryContext,
+        _session_id: &SessionId,
+    ) -> Result<(), BoundaryError> {
+        Err(unavailable_ui_control(boundary, "delete_session"))
+    }
+
     /// Apply one privileged Agent registry operation.
     ///
     /// Runtimes that have not installed an administration service fail closed.
@@ -500,6 +529,7 @@ pub struct ChannelContext {
 }
 
 impl ChannelContext {
+    /// Construct a test or explicitly ephemeral context without Runtime UI services.
     #[must_use]
     pub fn new(bus: Arc<dyn MessageBus>, sessions: Arc<dyn SessionStore>) -> Self {
         Self {
@@ -511,6 +541,7 @@ impl ChannelContext {
         }
     }
 
+    /// Construct the production context supplied to a supervised channel.
     #[must_use]
     pub fn with_runtime_services(
         bus: Arc<dyn MessageBus>,
@@ -656,12 +687,14 @@ impl ChannelContext {
         ui.identity_binding(boundary, identity, request).await
     }
 
+    /// Notify Runtime that the adapter can accept external input.
     pub fn mark_ready(&self) {
         if let Some(readiness) = &self.readiness {
             readiness.mark_ready();
         }
     }
 
+    /// Wait until Runtime asks this channel attempt to drain and stop.
     pub async fn shutdown_requested(&self) {
         if let Some(readiness) = &self.readiness {
             readiness.shutdown_requested().await;
@@ -812,6 +845,7 @@ fn inherit_session_defaults(
     }
 }
 
+/// Shared lifecycle gate between Runtime supervision and one channel instance.
 #[derive(Clone)]
 pub struct ChannelReadiness {
     inner: Arc<ReadinessInner>,
@@ -824,6 +858,7 @@ struct ReadinessInner {
 }
 
 impl ChannelReadiness {
+    /// Create a not-ready lifecycle with an open shutdown signal.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -835,23 +870,34 @@ impl ChannelReadiness {
         }
     }
 
+    /// Mark this channel attempt ready exactly once.
     pub fn mark_ready(&self) {
         if !self.inner.ready.swap(true, Ordering::SeqCst) {
-            self.inner.notify.notify_one();
+            self.inner.notify.notify_waiters();
         }
     }
 
     #[must_use]
+    /// Return whether this attempt has reported readiness.
     pub fn is_ready(&self) -> bool {
         self.inner.ready.load(Ordering::SeqCst)
     }
 
+    /// Wait until this attempt reports readiness.
     pub async fn wait(&self) {
-        if !self.inner.ready.load(Ordering::SeqCst) {
-            self.inner.notify.notified().await;
+        loop {
+            // Register before observing `ready`; otherwise a mark between the
+            // load and `notified().await` can be lost and block startup
+            // forever.
+            let notified = self.inner.notify.notified();
+            if self.inner.ready.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
         }
     }
 
+    /// Broadcast a shutdown request to this instance and all restart attempts.
     pub fn request_shutdown(&self) {
         let _ = self.inner.shutdown.send(true);
     }
@@ -872,10 +918,12 @@ impl ChannelReadiness {
     }
 
     #[must_use]
+    /// Return whether Runtime has requested shutdown.
     pub fn is_shutdown_requested(&self) -> bool {
         *self.inner.shutdown.borrow()
     }
 
+    /// Wait until Runtime requests shutdown.
     pub async fn shutdown_requested(&self) {
         let mut shutdown = self.inner.shutdown.subscribe();
         if *shutdown.borrow() {

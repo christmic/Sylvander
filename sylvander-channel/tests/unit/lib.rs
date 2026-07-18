@@ -446,3 +446,25 @@ async fn unauthenticated_or_non_user_ingress_never_reaches_identity_service() {
     ));
     assert!(service.observed_parts.lock().unwrap().is_none());
 }
+
+#[tokio::test]
+async fn readiness_wait_returns_before_and_after_the_ready_transition() {
+    let readiness = ChannelReadiness::new();
+    let waiter = |readiness: ChannelReadiness| tokio::spawn(async move { readiness.wait().await });
+    let first = waiter(readiness.clone());
+    let second = waiter(readiness.clone());
+    tokio::task::yield_now().await;
+    assert!(!first.is_finished());
+    assert!(!second.is_finished());
+
+    readiness.mark_ready();
+    for waiter in [first, second] {
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+            .await
+            .expect("every registered waiter must observe readiness")
+            .expect("waiter task");
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), readiness.wait())
+        .await
+        .expect("late waiter must return immediately");
+}

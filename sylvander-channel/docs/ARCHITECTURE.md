@@ -32,6 +32,12 @@ pick a user identity from model input, or write a session store directly.
 - `AuthenticatedTransportIdentity` is the transport-scoped source identity.
   It is deliberately distinct from the durable `UserId`; principal binding is
   a Runtime operation.
+- `CredentialLeaseSource` is the object-safe, transport-neutral boundary for
+  renewable channel credentials. An adapter requests named slots for its
+  stable `instance_id` at the authentication or outbound-operation boundary.
+  A returned `CredentialLeaseBundle` is atomic, generation-stamped, expires
+  within five minutes, clears owned bytes on drop, and never formats secret
+  content.
 - `parse_external_control` recognizes only the explicitly supported chat
   controls. It does not give an adapter a generic administrative backdoor.
 
@@ -48,6 +54,9 @@ pick a user identity from model input, or write a session store directly.
    routing isolated across multiple bots of the same provider.
 4. The common crate contains no provider tokens, socket paths, or HTTP server
    state. Those remain in the adapter crate and Runtime configuration.
+5. Credential leases are exact-slot and instance-scoped. An expired,
+   malformed, partially resolved, or unavailable lease rejects the current
+   operation; adapters must not retain or fall back to a previous credential.
 
 ## Adding an adapter
 
@@ -56,15 +65,35 @@ pick a user identity from model input, or write a session store directly.
    `BoundaryContext`; do not invent authenticated principals.
 3. Subscribe only to the configured Agent and instance-owned sessions before
    rendering outbound events.
-4. Return bind, protocol, or delivery failures to Runtime supervision instead
+4. Declare each credential as a named lease slot and acquire it at the native
+   operation boundary. Multi-value protocol credentials must be requested as
+   one bundle.
+5. Return bind, protocol, or delivery failures to Runtime supervision instead
    of retrying indefinitely inside the adapter.
-5. Add the adapter's module reference under `docs/` and update
+6. Add the adapter's module reference under `docs/` and update
    [`../../docs/INDEX.md`](../../docs/INDEX.md).
+
+## Verification
+
+The common contract's white-box tests live in `tests/unit/lib.rs`. Every
+adapter keeps its own protocol, authentication, replay, size-limit, identity,
+and delivery tests below that adapter's `tests/` tree. A new adapter is not
+complete until it proves both successful authenticated submission and
+content-safe denial through the Runtime-owned UI service.
+
+```bash
+cargo test -p sylvander-channel --all-targets --locked
+cargo test -p sylvander-channel-unix --all-targets --locked
+cargo test -p sylvander-channel-http --all-targets --locked
+cargo test -p sylvander-channel-ws --all-targets --locked
+```
 
 ## Related documentation
 
 - [`../../docs/boundary-authorization.md`](../../docs/boundary-authorization.md)
   — authentication and authorization ownership.
+- [`../../docs/credential-leases.md`](../../docs/credential-leases.md)
+  — renewable Provider and channel credential invariants.
 - [`../../sylvander-runtime/docs/channel-supervision.md`](../../sylvander-runtime/docs/channel-supervision.md)
   — instance lifecycle and bounded restart policy.
 - [`../../docs/module-sylvander-channel-unix.md`](../../docs/module-sylvander-channel-unix.md)
