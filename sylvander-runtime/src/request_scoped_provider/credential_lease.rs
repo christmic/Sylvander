@@ -19,6 +19,10 @@ use super::{
 };
 use crate::agent_registry::AgentRegistry;
 use crate::config::SecretRef;
+use crate::credential_audit::{
+    CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
+    CredentialOperationAuditLedger,
+};
 use crate::credential_registry::CredentialSecretResolver;
 
 /// Maximum lease lifetime accepted from an external provider.
@@ -246,18 +250,21 @@ pub(crate) struct RegistryCredentialSource {
     clock: Arc<dyn LeaseClock>,
     renew_before_seconds: i64,
     leases: Arc<Mutex<HashMap<String, ExternalSecretLease>>>,
+    audit: Arc<CredentialOperationAuditLedger>,
 }
 
 impl RegistryCredentialSource {
     pub(crate) fn new(
         registry: AgentRegistry,
         resolver: Arc<dyn CredentialSecretResolver>,
+        audit: Arc<CredentialOperationAuditLedger>,
     ) -> Self {
         Self::with_provider(
             registry,
             Arc::new(SystemExternalSecretProvider::new(resolver)),
             Arc::new(SystemLeaseClock),
             DEFAULT_RENEW_BEFORE_SECONDS,
+            audit,
         )
         .expect("built-in credential lease policy is valid")
     }
@@ -267,6 +274,7 @@ impl RegistryCredentialSource {
         provider: Arc<dyn RenewableExternalSecretProvider>,
         clock: Arc<dyn LeaseClock>,
         renew_before_seconds: i64,
+        audit: Arc<CredentialOperationAuditLedger>,
     ) -> Result<Self, CredentialAccessError> {
         if !(0..=MAX_EXTERNAL_SECRET_LEASE_SECONDS).contains(&renew_before_seconds) {
             return Err(CredentialAccessError::Unavailable);
@@ -277,78 +285,187 @@ impl RegistryCredentialSource {
             clock,
             renew_before_seconds,
             leases: Arc::new(Mutex::new(HashMap::new())),
+            audit,
         })
     }
 
     pub(crate) fn with_external_provider(
         registry: AgentRegistry,
         provider: Arc<dyn RenewableExternalSecretProvider>,
+        audit: Arc<CredentialOperationAuditLedger>,
     ) -> Self {
         Self::with_provider(
             registry,
             provider,
             Arc::new(SystemLeaseClock),
             DEFAULT_RENEW_BEFORE_SECONDS,
+            audit,
         )
         .expect("built-in external credential lease policy is valid")
     }
 
     async fn resolve(
         &self,
+        provider_id: &str,
         binding_id: &str,
     ) -> Result<RequestCredentialLease, CredentialAccessError> {
-        let stored = self
-            .registry
-            .load_active_credential(binding_id)
-            .await
-            .map_err(CredentialAccessError::from_registry)?
-            .ok_or(CredentialAccessError::Unavailable)?;
+        let subject = CredentialAuditSubject::provider(provider_id, binding_id)
+            .map_err(|_| CredentialAccessError::Unavailable)?;
+        let stored = match self.registry.load_active_credential(binding_id).await {
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                self.record_failure(&subject, None, CredentialAuditResult::Unavailable)
+                    .await;
+                return Err(CredentialAccessError::Unavailable);
+            }
+            Err(error) => {
+                let error = CredentialAccessError::from_registry(error);
+                self.record_failure(&subject, None, audit_result(error))
+                    .await;
+                return Err(error);
+            }
+        };
         let reference = &stored.definition.reference;
         let credential_generation = stored.definition.generation;
         let now = self.clock.now_unix_secs();
         let mut leases = self.leases.lock().await;
 
-        let replacement = match leases.get(binding_id) {
+        let previous = leases.get(binding_id);
+        let (replacement, operation) = match previous {
             Some(current)
                 if current.metadata.credential_generation == credential_generation
                     && now < current.metadata.expires_at_unix_secs
                     && current.metadata.expires_at_unix_secs.saturating_sub(now)
                         > self.renew_before_seconds =>
             {
-                None
+                (None, None)
             }
             Some(current)
                 if current.metadata.credential_generation == credential_generation
                     && now < current.metadata.expires_at_unix_secs =>
             {
-                Some(
-                    self.provider
-                        .renew(reference, current.metadata(), now)
-                        .await
-                        .map_err(map_external_error)?,
-                )
+                let replacement = match self
+                    .provider
+                    .renew(reference, current.metadata(), now)
+                    .await
+                {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        self.record_failure(
+                            &subject,
+                            Some(credential_generation),
+                            audit_external_result(error),
+                        )
+                        .await;
+                        return Err(map_external_error(error));
+                    }
+                };
+                (Some(replacement), Some(CredentialAuditOperation::Renew))
             }
-            _ => Some(
-                self.provider
+            current => {
+                let replacement = match self
+                    .provider
                     .acquire(reference, credential_generation, now)
                     .await
-                    .map_err(map_external_error)?,
-            ),
+                {
+                    Ok(replacement) => replacement,
+                    Err(error) => {
+                        self.record_failure(
+                            &subject,
+                            Some(credential_generation),
+                            audit_external_result(error),
+                        )
+                        .await;
+                        return Err(map_external_error(error));
+                    }
+                };
+                let operation = match current {
+                    None => CredentialAuditOperation::Create,
+                    Some(current)
+                        if current.metadata.credential_generation != credential_generation =>
+                    {
+                        CredentialAuditOperation::Rotate
+                    }
+                    Some(_) => CredentialAuditOperation::Renew,
+                };
+                (Some(replacement), Some(operation))
+            }
         };
 
         if let Some(replacement) = replacement {
-            validate_replacement(
+            if let Err(error) = validate_replacement(
                 leases.get(binding_id),
                 &replacement,
                 credential_generation,
                 now,
-            )?;
+            ) {
+                self.record_failure(
+                    &subject,
+                    Some(credential_generation),
+                    CredentialAuditResult::InvalidLease,
+                )
+                .await;
+                return Err(error);
+            }
+            let request = match replacement.request_lease(self.clock.clone()) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.record_failure(&subject, Some(credential_generation), audit_result(error))
+                        .await;
+                    return Err(error);
+                }
+            };
+            self.audit
+                .record(
+                    &subject,
+                    operation.expect("replacement operations are classified"),
+                    Some(credential_generation),
+                    CredentialAuditResult::Succeeded,
+                )
+                .await
+                .map_err(|_| CredentialAccessError::RegistryUnavailable)?;
             leases.insert(binding_id.to_owned(), replacement);
+            return Ok(request);
         }
-        leases
+        let request = match leases
             .get(binding_id)
             .ok_or(CredentialAccessError::Unavailable)?
             .request_lease(self.clock.clone())
+        {
+            Ok(request) => request,
+            Err(error) => {
+                self.record_failure(&subject, Some(credential_generation), audit_result(error))
+                    .await;
+                return Err(error);
+            }
+        };
+        self.audit
+            .record(
+                &subject,
+                CredentialAuditOperation::Renew,
+                Some(credential_generation),
+                CredentialAuditResult::Succeeded,
+            )
+            .await
+            .map_err(|_| CredentialAccessError::RegistryUnavailable)?;
+        Ok(request)
+    }
+
+    async fn record_failure(
+        &self,
+        subject: &CredentialAuditSubject,
+        credential_revision: Option<u64>,
+        result: CredentialAuditResult,
+    ) {
+        let _ = self
+            .audit
+            .record(
+                subject,
+                CredentialAuditOperation::Failure,
+                credential_revision,
+                result,
+            )
+            .await;
     }
 }
 
@@ -361,9 +478,13 @@ impl std::fmt::Debug for RegistryCredentialSource {
 }
 
 impl ActiveCredentialSource for RegistryCredentialSource {
-    fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a> {
+    fn resolve_active<'a>(
+        &'a self,
+        provider_id: &'a str,
+        binding_id: &'a str,
+    ) -> CredentialLeaseFuture<'a> {
         Box::pin(async move {
-            self.resolve(binding_id)
+            self.resolve(provider_id, binding_id)
                 .await
                 .map(|lease| Box::new(lease) as Box<dyn ActiveCredentialLease>)
         })
@@ -394,6 +515,23 @@ fn validate_replacement(
 
 fn map_external_error(_: ExternalSecretLeaseError) -> CredentialAccessError {
     CredentialAccessError::Unavailable
+}
+
+const fn audit_external_result(error: ExternalSecretLeaseError) -> CredentialAuditResult {
+    match error {
+        ExternalSecretLeaseError::Unavailable => CredentialAuditResult::Unavailable,
+        ExternalSecretLeaseError::InvalidLease => CredentialAuditResult::InvalidLease,
+    }
+}
+
+const fn audit_result(error: CredentialAccessError) -> CredentialAuditResult {
+    match error {
+        CredentialAccessError::Unavailable => CredentialAuditResult::Unavailable,
+        CredentialAccessError::RegistryUnavailable => CredentialAuditResult::RegistryUnavailable,
+        CredentialAccessError::Integrity => CredentialAuditResult::Integrity,
+        CredentialAccessError::InvalidEncoding => CredentialAuditResult::InvalidEncoding,
+        CredentialAccessError::Expired => CredentialAuditResult::Expired,
+    }
 }
 
 struct RequestCredentialLease {

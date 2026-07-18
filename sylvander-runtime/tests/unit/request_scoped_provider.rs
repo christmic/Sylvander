@@ -14,6 +14,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::agent_registry::AgentRegistry;
 use crate::config::{SecretRef, SystemSecretResolver};
+use crate::credential_audit::CredentialOperationAuditLedger;
 use crate::registry_domain::{CredentialBindingRevision, ModelDefinition};
 
 const TEXT_STREAM: &str = "\
@@ -174,7 +175,11 @@ impl MockSource {
 }
 
 impl ActiveCredentialSource for MockSource {
-    fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a> {
+    fn resolve_active<'a>(
+        &'a self,
+        _provider_id: &'a str,
+        binding_id: &'a str,
+    ) -> CredentialLeaseFuture<'a> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.bindings.lock().unwrap().push(binding_id.into());
@@ -286,6 +291,11 @@ async fn registry_source_refreshes_files_and_rotates_generations() {
     let source: Arc<dyn ActiveCredentialSource> = Arc::new(RegistryCredentialSource::new(
         registry.clone(),
         Arc::new(SystemSecretResolver),
+        Arc::new(
+            CredentialOperationAuditLedger::open_in_memory_with_policy(1_000, 100)
+                .await
+                .unwrap(),
+        ),
     ));
     let provider = provider(&server, source);
 

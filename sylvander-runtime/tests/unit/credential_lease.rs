@@ -140,13 +140,18 @@ async fn registry_with_generation_one() -> (tempfile::TempDir, AgentRegistry) {
     (directory, registry)
 }
 
-fn source(
+async fn source(
     registry: AgentRegistry,
     provider: Arc<TestProvider>,
     clock: Arc<TestClock>,
     renew_before: i64,
 ) -> RegistryCredentialSource {
-    RegistryCredentialSource::with_provider(registry, provider, clock, renew_before).unwrap()
+    let audit = Arc::new(
+        CredentialOperationAuditLedger::open_in_memory_with_policy(1_000, 100)
+            .await
+            .unwrap(),
+    );
+    RegistryCredentialSource::with_provider(registry, provider, clock, renew_before, audit).unwrap()
 }
 
 #[tokio::test]
@@ -165,27 +170,35 @@ async fn live_lease_is_reused_then_renewed_before_expiry() {
         }],
     ));
     let clock = Arc::new(TestClock::at(100));
-    let source = source(registry, provider.clone(), clock.clone(), 5);
+    let source = source(registry, provider.clone(), clock.clone(), 5).await;
 
-    let first = source.resolve_active(BINDING).await.unwrap();
+    let first = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(first.generation(), 1);
     assert_eq!(first.lease_generation(), 1);
     assert_eq!(first.expires_at_unix_secs(), 120);
     assert_eq!(first.secret().unwrap(), "first");
 
     clock.set(110);
-    let reused = source.resolve_active(BINDING).await.unwrap();
+    let reused = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(reused.lease_generation(), 1);
     assert_eq!(reused.secret().unwrap(), "first");
 
     clock.set(116);
-    let renewed = source.resolve_active(BINDING).await.unwrap();
+    let renewed = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(renewed.lease_generation(), 2);
     assert_eq!(renewed.expires_at_unix_secs(), 136);
     assert_eq!(renewed.secret().unwrap(), "renewed");
-    let calls = provider.calls.lock().unwrap();
-    assert_eq!(calls.acquire, 1);
-    assert_eq!(calls.renew, 1);
+    {
+        let calls = provider.calls.lock().unwrap();
+        assert_eq!(calls.acquire, 1);
+        assert_eq!(calls.renew, 1);
+    }
+    let subject = CredentialAuditSubject::provider("anthropic", BINDING).unwrap();
+    let events = source.audit.list(&subject, 10).await.unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].operation, CredentialAuditOperation::Renew);
+    assert_eq!(events[1].operation, CredentialAuditOperation::Renew);
+    assert_eq!(events[2].operation, CredentialAuditOperation::Create);
 }
 
 #[tokio::test]
@@ -200,13 +213,17 @@ async fn renewal_failure_never_falls_back_to_still_live_cached_bytes() {
         [Reply::Error],
     ));
     let clock = Arc::new(TestClock::at(200));
-    let source = source(registry, provider, clock.clone(), 3);
-    source.resolve_active(BINDING).await.unwrap();
+    let source = source(registry, provider, clock.clone(), 3).await;
+    source.resolve_active("anthropic", BINDING).await.unwrap();
 
     clock.set(208);
-    let result = source.resolve_active(BINDING).await;
+    let result = source.resolve_active("anthropic", BINDING).await;
 
     assert!(matches!(result, Err(CredentialAccessError::Unavailable)));
+    let subject = CredentialAuditSubject::provider("anthropic", BINDING).unwrap();
+    let events = source.audit.list(&subject, 10).await.unwrap();
+    assert_eq!(events[0].operation, CredentialAuditOperation::Failure);
+    assert_eq!(events[0].result, CredentialAuditResult::Unavailable);
 }
 
 #[tokio::test]
@@ -221,8 +238,8 @@ async fn expired_request_lease_fails_closed_after_it_was_issued() {
         [],
     ));
     let clock = Arc::new(TestClock::at(300));
-    let source = source(registry, provider, clock.clone(), 0);
-    let lease = source.resolve_active(BINDING).await.unwrap();
+    let source = source(registry, provider, clock.clone(), 0).await;
+    let lease = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(lease.secret().unwrap(), "short-lived");
 
     clock.set(304);
@@ -248,11 +265,11 @@ async fn expired_cache_is_never_used_when_reacquisition_fails() {
         [],
     ));
     let clock = Arc::new(TestClock::at(400));
-    let source = source(registry, provider.clone(), clock.clone(), 0);
-    source.resolve_active(BINDING).await.unwrap();
+    let source = source(registry, provider.clone(), clock.clone(), 0).await;
+    source.resolve_active("anthropic", BINDING).await.unwrap();
 
     clock.set(405);
-    let result = source.resolve_active(BINDING).await;
+    let result = source.resolve_active("anthropic", BINDING).await;
 
     assert!(matches!(result, Err(CredentialAccessError::Unavailable)));
     let calls = provider.calls.lock().unwrap();
@@ -279,8 +296,8 @@ async fn registry_generation_rotation_invalidates_a_live_lease() {
         [],
     ));
     let clock = Arc::new(TestClock::at(500));
-    let source = source(registry.clone(), provider.clone(), clock, 5);
-    let first = source.resolve_active(BINDING).await.unwrap();
+    let source = source(registry.clone(), provider.clone(), clock, 5).await;
+    let first = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(first.secret().unwrap(), "generation-one");
 
     registry
@@ -298,11 +315,15 @@ async fn registry_generation_rotation_invalidates_a_live_lease() {
         .unwrap();
     registry.activate_credential(BINDING, 2, 1).await.unwrap();
 
-    let rotated = source.resolve_active(BINDING).await.unwrap();
+    let rotated = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(rotated.generation(), 2);
     assert_eq!(rotated.lease_generation(), 2);
     assert_eq!(rotated.secret().unwrap(), "generation-two");
     assert_eq!(provider.calls.lock().unwrap().acquire, 2);
+    let subject = CredentialAuditSubject::provider("anthropic", BINDING).unwrap();
+    let events = source.audit.list(&subject, 10).await.unwrap();
+    assert_eq!(events[0].operation, CredentialAuditOperation::Rotate);
+    assert_eq!(events[0].credential_revision, Some(2));
 }
 
 #[tokio::test]
@@ -322,13 +343,13 @@ async fn malformed_external_generations_are_rejected_and_not_cached() {
         [],
     ));
     let clock = Arc::new(TestClock::at(600));
-    let source = source(registry, provider.clone(), clock, 1);
+    let source = source(registry, provider.clone(), clock, 1).await;
 
     assert!(matches!(
-        source.resolve_active(BINDING).await,
+        source.resolve_active("anthropic", BINDING).await,
         Err(CredentialAccessError::Unavailable)
     ));
-    let valid = source.resolve_active(BINDING).await.unwrap();
+    let valid = source.resolve_active("anthropic", BINDING).await.unwrap();
     assert_eq!(valid.secret().unwrap(), "valid");
     assert_eq!(provider.calls.lock().unwrap().acquire, 2);
 }
