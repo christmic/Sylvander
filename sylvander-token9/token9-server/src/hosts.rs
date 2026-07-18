@@ -6,7 +6,9 @@ use tracing::{info, warn};
 const HOSTS_PATH: &str = "/etc/hosts";
 
 fn valid_domain(d: &str) -> bool {
-    !d.is_empty() && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    !d.is_empty()
+        && d.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
 }
 
 /// Ensure the branded-domain hosts entry exists at startup:
@@ -18,11 +20,11 @@ pub fn ensure(domain: &str, port: u16) {
         return; // already present — never prompts again
     }
     // Already root (e.g. `sudo token9 serve`): write directly.
-    if let Ok(mut f) = OpenOptions::new().append(true).open(HOSTS_PATH) {
-        if writeln!(f, "\n{}", entry_line(domain)).is_ok() {
-            info!(%domain, "added hosts entry (127.0.0.1 -> {domain})");
-            return;
-        }
+    if let Ok(mut f) = OpenOptions::new().append(true).open(HOSTS_PATH)
+        && writeln!(f, "\n{}", entry_line(domain)).is_ok()
+    {
+        info!(%domain, "added hosts entry (127.0.0.1 -> {domain})");
+        return;
     }
     // Not writable → request authorization from the user via a macOS admin prompt.
     if !valid_domain(domain) {
@@ -43,7 +45,11 @@ pub fn ensure(domain: &str, port: u16) {
          buttons {{\"以后再说\", \"好的\"}} default button \"好的\"\n\
          do shell script \"{sh}\" with administrator privileges"
     );
-    match std::process::Command::new("osascript").arg("-e").arg(&script).output() {
+    match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+    {
         Ok(o) if o.status.success() => info!(%domain, "added hosts entry via authorization"),
         Ok(o) => warn!(
             "hosts entry not added (cancelled/failed): {}",
@@ -66,7 +72,9 @@ fn has_entry(content: &str, domain: &str) -> bool {
         }
         let mut toks = line.split_whitespace();
         matches!(toks.next(), Some("127.0.0.1"))
-            && toks.take_while(|t| !t.starts_with('#')).any(|t| t == domain)
+            && toks
+                .take_while(|t| !t.starts_with('#'))
+                .any(|t| t == domain)
     })
 }
 
@@ -130,25 +138,5 @@ pub fn install(domain: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detects_entry() {
-        let c = "127.0.0.1 localhost\n127.0.0.1\ttoken9.test\t# token9\n";
-        assert!(has_entry(c, "token9.test"));
-        assert!(!has_entry(c, "other.test"));
-    }
-
-    #[test]
-    fn ignores_commented_lines() {
-        let c = "# 127.0.0.1 token9.test\n";
-        assert!(!has_entry(c, "token9.test"));
-    }
-
-    #[test]
-    fn requires_loopback_ip() {
-        let c = "10.0.0.1 token9.test\n";
-        assert!(!has_entry(c, "token9.test"));
-    }
-}
+#[path = "../tests/unit/hosts.rs"]
+mod tests;

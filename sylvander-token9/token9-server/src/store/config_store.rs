@@ -1,3 +1,5 @@
+//! Persisted token9 provider, model, routing, and tool-rule configuration.
+
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,10 +55,10 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
         // Seed a key row so the provider is usable by the router (dedup by value).
-        if let Some(key) = api_key {
-            if !key.is_empty() {
-                self.add_provider_key(name, key, Some("default")).await?;
-            }
+        if let Some(key) = api_key
+            && !key.is_empty()
+        {
+            self.add_provider_key(name, key, Some("default")).await?;
         }
         Ok(())
     }
@@ -99,7 +101,10 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn list_provider_keys(&self, provider: Option<&str>) -> anyhow::Result<Vec<ProviderKeyRow>> {
+    pub async fn list_provider_keys(
+        &self,
+        provider: Option<&str>,
+    ) -> anyhow::Result<Vec<ProviderKeyRow>> {
         let rows = if let Some(p) = provider {
             sqlx::query(
                 r#"SELECT pk.id, pr.name AS provider, pk.api_key, pk.label, pk.enabled
@@ -139,11 +144,10 @@ impl SqliteStore {
     }
 
     pub async fn list_providers(&self) -> anyhow::Result<Vec<ProviderRow>> {
-        let rows = sqlx::query(
-            "SELECT name, base_url, dialect, api_key FROM providers ORDER BY name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query("SELECT name, base_url, dialect, api_key FROM providers ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .into_iter()
             .map(|r| ProviderRow {
@@ -201,7 +205,8 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
         // Back-compat: ensure a primary route for this model exists.
-        self.add_route(model_id, provider_name, real_model, 1, 100).await?;
+        self.add_route(model_id, provider_name, real_model, 1, 100)
+            .await?;
         Ok(())
     }
 
@@ -216,15 +221,14 @@ impl SqliteStore {
         weight: i64,
         priority: i64,
     ) -> anyhow::Result<()> {
-        let dup: Option<i64> = sqlx::query(
-            "SELECT id FROM routes WHERE model_id=? AND provider=? AND real_model=?",
-        )
-        .bind(model_id)
-        .bind(provider)
-        .bind(real_model)
-        .fetch_optional(&self.pool)
-        .await?
-        .map(|r| r.get::<i64, _>("id"));
+        let dup: Option<i64> =
+            sqlx::query("SELECT id FROM routes WHERE model_id=? AND provider=? AND real_model=?")
+                .bind(model_id)
+                .bind(provider)
+                .bind(real_model)
+                .fetch_optional(&self.pool)
+                .await?
+                .map(|r| r.get::<i64, _>("id"));
         if dup.is_some() {
             return Ok(());
         }
@@ -313,7 +317,9 @@ impl SqliteStore {
         .await?;
         let mut keys: HashMap<String, Vec<String>> = HashMap::new();
         for r in key_rows {
-            keys.entry(r.get("provider")).or_default().push(r.get("api_key"));
+            keys.entry(r.get("provider"))
+                .or_default()
+                .push(r.get("api_key"));
         }
 
         // inject_usage per model
@@ -441,7 +447,10 @@ impl SqliteStore {
         let rows = sqlx::query("SELECT key, value FROM settings ORDER BY key")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(|r| (r.get("key"), r.get("value"))).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("key"), r.get("value")))
+            .collect())
     }
 
     // ---- tool rules ----
@@ -515,9 +524,12 @@ impl SqliteStore {
             .await?
             .get("c");
         if count == 0 {
-            self.add_tool_rule("claude-code", "user-agent", "claude-cli", 10).await?;
-            self.add_tool_rule("codex", "originator", "codex", 10).await?;
-            self.add_tool_rule("codex", "user-agent", "codex", 20).await?;
+            self.add_tool_rule("claude-code", "user-agent", "claude-cli", 10)
+                .await?;
+            self.add_tool_rule("codex", "originator", "codex", 10)
+                .await?;
+            self.add_tool_rule("codex", "user-agent", "codex", 20)
+                .await?;
         }
         Ok(())
     }
@@ -568,89 +580,5 @@ impl SqliteStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn store() -> SqliteStore {
-        SqliteStore::open(":memory:").await.unwrap()
-    }
-
-    #[tokio::test]
-    async fn provider_and_model_crud() {
-        let s = store().await;
-        s.add_provider("anthropic", "https://api.anthropic.com", Dialect::Anthropic, Some("sk-1"))
-            .await
-            .unwrap();
-        s.add_provider("deepseek", "https://api.deepseek.com", Dialect::OpenaiChat, Some("sk-2"))
-            .await
-            .unwrap();
-
-        let ps = s.list_providers().await.unwrap();
-        assert_eq!(ps.len(), 2);
-
-        s.add_model("claude-opus-4-6", "anthropic", "claude-opus-4-6", false)
-            .await
-            .unwrap();
-        s.add_model("my-cheap-coder", "deepseek", "deepseek-chat", true)
-            .await
-            .unwrap();
-
-        let ms = s.list_models().await.unwrap();
-        assert_eq!(ms.len(), 2);
-
-        let sets = s.load_routes().await.unwrap();
-        assert_eq!(sets.len(), 2);
-        let coder = sets.iter().find(|r| r.model_id == "my-cheap-coder").unwrap();
-        assert!(coder.inject_usage);
-        assert_eq!(coder.targets.len(), 1);
-        let t = &coder.targets[0];
-        assert_eq!(t.provider, "deepseek");
-        assert_eq!(t.real_model, "deepseek-chat");
-        assert_eq!(t.dialect, Dialect::OpenaiChat);
-        assert_eq!(t.keys, vec!["sk-2".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn multi_key_and_multi_target() {
-        let s = store().await;
-        s.add_provider("a", "https://a", Dialect::Anthropic, Some("k1")).await.unwrap();
-        s.add_provider_key("a", "k2", Some("second")).await.unwrap();
-        s.add_provider("b", "https://b", Dialect::OpenaiChat, Some("kb")).await.unwrap();
-        s.add_model("m", "a", "real-a", false).await.unwrap(); // primary route
-        s.add_route("m", "b", "real-b", 1, 200).await.unwrap(); // fallback tier
-
-        let sets = s.load_routes().await.unwrap();
-        let m = sets.iter().find(|r| r.model_id == "m").unwrap();
-        assert_eq!(m.targets.len(), 2);
-        // priority order: a (100) before b (200)
-        assert_eq!(m.targets[0].provider, "a");
-        assert_eq!(m.targets[0].keys.len(), 2); // k1 + k2
-        assert_eq!(m.targets[1].provider, "b");
-    }
-
-    #[tokio::test]
-    async fn cascade_delete() {
-        let s = store().await;
-        s.add_provider("p", "https://x", Dialect::Anthropic, None).await.unwrap();
-        s.add_model("m", "p", "m", false).await.unwrap();
-        assert_eq!(s.remove_provider("p").await.unwrap(), 1);
-        assert_eq!(s.list_models().await.unwrap().len(), 0); // cascaded
-    }
-
-    #[tokio::test]
-    async fn add_model_unknown_provider_fails() {
-        let s = store().await;
-        assert!(s.add_model("m", "ghost", "m", false).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn upsert_provider() {
-        let s = store().await;
-        s.add_provider("p", "https://a", Dialect::Anthropic, Some("k1")).await.unwrap();
-        s.add_provider("p", "https://b", Dialect::Anthropic, Some("k2")).await.unwrap();
-        let ps = s.list_providers().await.unwrap();
-        assert_eq!(ps.len(), 1);
-        assert_eq!(ps[0].base_url, "https://b");
-        assert_eq!(ps[0].api_key.as_deref(), Some("k2"));
-    }
-}
+#[path = "../../tests/unit/store_config_store.rs"]
+mod tests;

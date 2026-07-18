@@ -38,8 +38,7 @@ impl LbState {
 
 fn exhausted(provider: &str, rl: &[RateLimitRow]) -> bool {
     rl.iter().any(|r| {
-        r.provider == provider
-            && (r.requests_remaining == Some(0) || r.tokens_remaining == Some(0))
+        r.provider == provider && (r.requests_remaining == Some(0) || r.tokens_remaining == Some(0))
     })
 }
 
@@ -47,7 +46,11 @@ fn exhausted(provider: &str, rl: &[RateLimitRow]) -> bool {
 /// priority tiers → rate-limit skip → weighted round-robin within the top tier.
 pub fn plan(rs: &RouteSet, model_id: &str, rl: &[RateLimitRow], lb: &LbState) -> Vec<Attempt> {
     // Drop rate-limit-exhausted providers; if that leaves nothing, keep all.
-    let mut pool: Vec<&TargetDef> = rs.targets.iter().filter(|t| !exhausted(&t.provider, rl)).collect();
+    let mut pool: Vec<&TargetDef> = rs
+        .targets
+        .iter()
+        .filter(|t| !exhausted(&t.provider, rl))
+        .collect();
     if pool.is_empty() {
         pool = rs.targets.iter().collect();
     }
@@ -70,7 +73,11 @@ pub fn plan(rs: &RouteSet, model_id: &str, rl: &[RateLimitRow], lb: &LbState) ->
         let ordered = weighted_order(model_id, tier, lb);
         for (i, t) in ordered.iter().enumerate() {
             let reason = if ti == 0 && i == 0 {
-                if tier.len() > 1 { "load_balance" } else { "primary" }
+                if tier.len() > 1 {
+                    "load_balance"
+                } else {
+                    "primary"
+                }
             } else {
                 "fallback"
             };
@@ -124,71 +131,5 @@ fn pick_key(provider: &str, keys: &[String], lb: &LbState) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn target(provider: &str, weight: i64, priority: i64, keys: &[&str]) -> TargetDef {
-        TargetDef {
-            provider: provider.into(),
-            base_url: format!("https://{provider}"),
-            dialect: Dialect::Anthropic,
-            real_model: "m".into(),
-            weight,
-            priority,
-            keys: keys.iter().map(|s| s.to_string()).collect(),
-        }
-    }
-
-    fn rs(targets: Vec<TargetDef>) -> RouteSet {
-        RouteSet { model_id: "m".into(), inject_usage: false, targets }
-    }
-
-    #[test]
-    fn priority_order_is_fallback_sequence() {
-        let set = rs(vec![target("a", 1, 100, &["k"]), target("b", 1, 200, &["k"])]);
-        let lb = LbState::default();
-        let attempts = plan(&set, "m", &[], &lb);
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].provider, "a");
-        assert_eq!(attempts[0].reason, "primary");
-        assert_eq!(attempts[1].provider, "b");
-        assert_eq!(attempts[1].reason, "fallback");
-    }
-
-    #[test]
-    fn rate_limited_provider_skipped() {
-        let set = rs(vec![target("a", 1, 100, &["k"]), target("b", 1, 200, &["k"])]);
-        let rl = vec![RateLimitRow {
-            provider: "a".into(),
-            updated_at: 0,
-            requests_limit: Some(100),
-            requests_remaining: Some(0),
-            requests_reset: None,
-            tokens_limit: None,
-            tokens_remaining: None,
-            tokens_reset: None,
-        }];
-        let lb = LbState::default();
-        let attempts = plan(&set, "m", &rl, &lb);
-        assert_eq!(attempts[0].provider, "b"); // a skipped
-    }
-
-    #[test]
-    fn weighted_round_robin_spreads_same_tier() {
-        let set = rs(vec![target("a", 1, 100, &["k"]), target("b", 1, 100, &["k"])]);
-        let lb = LbState::default();
-        let p0 = plan(&set, "m", &[], &lb)[0].provider.clone();
-        let p1 = plan(&set, "m", &[], &lb)[0].provider.clone();
-        assert_ne!(p0, p1); // alternates across requests
-        assert_eq!(plan(&set, "m", &[], &lb)[0].reason, "load_balance");
-    }
-
-    #[test]
-    fn key_round_robin() {
-        let set = rs(vec![target("a", 1, 100, &["k1", "k2"])]);
-        let lb = LbState::default();
-        let t0 = plan(&set, "m", &[], &lb)[0].token.clone();
-        let t1 = plan(&set, "m", &[], &lb)[0].token.clone();
-        assert_ne!(t0, t1);
-    }
-}
+#[path = "../tests/unit/select.rs"]
+mod tests;
