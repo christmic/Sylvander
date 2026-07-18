@@ -16,16 +16,27 @@
 //! cargo run -p sylvander-protocol --example generate_ui_schema
 //! ```
 
+/// Versioned administrative messages for Agent definition revisions.
 pub mod agent_admin;
+/// Authenticated ingress context and content-safe boundary failures.
 pub mod boundary;
+/// Transport-neutral message-bus contract and diagnostics.
 pub mod bus_trait;
+/// Link-code protocol for mapping trusted transport identities to users.
 pub mod identity_binding;
+/// In-process implementation of the message-bus contract.
 pub mod in_process;
+/// Versioned administrative messages for provider and credential registries.
 pub mod registry_admin;
+/// JSON Schema generation for UI and boundary protocol types.
 pub mod schema;
+/// Session-scoped context, metadata, and immutable snapshots.
 pub mod session_context;
+/// Language-neutral identities, events, and cross-boundary data types.
 pub mod types;
+/// Client-to-server UI messages and server-facing session configuration types.
 pub mod ui;
+/// Versioned global user-profile protocol and privacy classifications.
 pub mod user_profile;
 
 pub use agent_admin::*;

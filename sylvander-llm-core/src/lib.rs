@@ -4,11 +4,17 @@
 //! deliberately contains no HTTP client, vendor wire type, runtime config, or
 //! UI protocol type.
 
+/// Provider-independent failure classification and retry metadata.
 pub mod error;
+/// Model identity, advertised capabilities, and catalog records.
 pub mod model;
+/// Asynchronous provider invocation and model-catalog contracts.
 pub mod provider;
+/// Normalized requests, responses, stream events, and multimodal content.
 pub mod types;
+/// Usage accounting shared across provider implementations.
 pub mod usage;
+/// Pre-dispatch validation of requested model capabilities.
 pub mod validation;
 
 pub use error::{ProviderError, ProviderErrorKind, ProviderErrorPhase};

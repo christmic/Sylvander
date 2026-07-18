@@ -76,10 +76,12 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-llm-anthropic/0.1.0")]
 
+/// Typed direct Anthropic Messages API client and wire models.
 pub mod api;
 pub(crate) mod convert;
 mod provider;
 
+/// Provider-neutral adapter that implements `sylvander_llm_core::ModelProvider`.
 pub use provider::AnthropicProvider;
 
 /// Convenient re-exports for the most commonly used types.
