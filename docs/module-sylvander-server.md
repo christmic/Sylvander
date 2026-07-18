@@ -184,14 +184,17 @@ The verified code path (`sylvander-server/src/main.rs:19`) is:
 | `Runtime::boot_config` | `sylvander-runtime` integration tests | Verifies supervisor behaviour for enabled/disabled channels |
 | `Runtime::start_channels` + shutdown | `sylvander-runtime` integration tests | End-to-end channel lifecycle |
 | channel credential source | `sylvander-server/tests/unit/credential.rs` | Rotation, atomic partial-failure handling, instance/slot isolation, redacted debug |
-| `build_channels` paths | exercise via runtime tests | Channel construction logic depends only on `ServerConfig` |
+| production composition and same-kind instances | `sylvander-server/tests/channel_instances.rs` | Starts the shipped server binary with a real `ServerConfig`; proves two HTTP instances bind independently, reject each other's bearer token, keep separate credential-audit subjects, and drain on `SIGINT` |
 | current config entry point | `sylvander-server/tests/unit/server_main.rs` | Missing/empty `SYLVANDER_CONFIG` fails; a present path is preserved |
 | `init_tracing` | smoke test via `RUST_LOG` override | Logs are not asserted in unit tests |
 
 The production files contain only test-module path bridges; every test body
 lives under `sylvander-server/tests/`. Server behavior is verified through
 those white-box tests, runtime/channel integration tests, and the operations
-runbook drills.
+runbook drills. The multi-instance journey is deliberately black-box: it
+launches `CARGO_BIN_EXE_sylvander` instead of reproducing `build_channels` in a
+test factory, so its lifecycle and credential evidence comes from the same
+composition root that operators run.
 
 ## 8. Related docs
 

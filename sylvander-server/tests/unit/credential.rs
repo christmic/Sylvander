@@ -4,6 +4,10 @@ use sylvander_channel::credential::{
     CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_runtime::config::{SecretRef, SystemSecretResolver};
+use sylvander_runtime::credential_audit::{
+    CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
+    CredentialOperationAuditLedger,
+};
 use tempfile::tempdir;
 
 use super::*;
@@ -21,6 +25,12 @@ async fn resolves_atomic_bundle_and_observes_rotation_without_restart() {
     let webhook = directory.path().join("webhook");
     std::fs::write(&token, "token-one\n").unwrap();
     std::fs::write(&webhook, "webhook-one\n").unwrap();
+    let audit_path = directory.path().join("credential-audit.db");
+    let audit = Arc::new(
+        CredentialOperationAuditLedger::open(&audit_path)
+            .await
+            .unwrap(),
+    );
     let source = SystemChannelCredentialSource::new(
         "telegram-primary",
         [
@@ -28,6 +38,7 @@ async fn resolves_atomic_bundle_and_observes_rotation_without_restart() {
             ("webhook_secret".into(), reference(&webhook)),
         ],
         Arc::new(SystemSecretResolver),
+        audit.clone(),
     )
     .unwrap();
     let request =
@@ -49,6 +60,19 @@ async fn resolves_atomic_bundle_and_observes_rotation_without_restart() {
         rotated.secret_at("bot_token", rotated.expires_at_unix_secs()),
         Err(CredentialLeaseError::Expired)
     ));
+    let subject = CredentialAuditSubject::channel_instance("telegram-primary").unwrap();
+    let events = audit.list(&subject, 10).await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].operation, CredentialAuditOperation::Rotate);
+    assert_eq!(events[1].operation, CredentialAuditOperation::Create);
+    let persisted = std::fs::read(audit_path).unwrap();
+    for secret in ["token-one", "token-two", "webhook-one"] {
+        assert!(
+            !persisted
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes())
+        );
+    }
 }
 
 #[tokio::test]
@@ -58,6 +82,11 @@ async fn partial_resolution_failure_never_publishes_or_advances_a_bundle() {
     let webhook = directory.path().join("webhook");
     std::fs::write(&token, "token-one").unwrap();
     std::fs::write(&webhook, "webhook-one").unwrap();
+    let audit = Arc::new(
+        CredentialOperationAuditLedger::open(directory.path().join("credential-audit.db"))
+            .await
+            .unwrap(),
+    );
     let source = SystemChannelCredentialSource::new(
         "telegram-primary",
         [
@@ -65,6 +94,7 @@ async fn partial_resolution_failure_never_publishes_or_advances_a_bundle() {
             ("webhook_secret".into(), reference(&webhook)),
         ],
         Arc::new(SystemSecretResolver),
+        audit.clone(),
     )
     .unwrap();
     let request =
@@ -93,6 +123,12 @@ async fn partial_resolution_failure_never_publishes_or_advances_a_bundle() {
         recovered.secret("token-does-not-exist"),
         Err(CredentialLeaseError::MissingSlot)
     );
+    let subject = CredentialAuditSubject::channel_instance("telegram-primary").unwrap();
+    let events = audit.list(&subject, 10).await.unwrap();
+    assert!(events.iter().any(|event| {
+        event.operation == CredentialAuditOperation::Failure
+            && event.result == CredentialAuditResult::Unavailable
+    }));
 }
 
 #[tokio::test]
@@ -100,10 +136,16 @@ async fn instance_and_slot_boundaries_fail_closed_and_debug_is_redacted() {
     let directory = tempdir().unwrap();
     let secret = directory.path().join("secret-locator");
     std::fs::write(&secret, "do-not-print").unwrap();
+    let audit = Arc::new(
+        CredentialOperationAuditLedger::open(directory.path().join("credential-audit.db"))
+            .await
+            .unwrap(),
+    );
     let source = SystemChannelCredentialSource::new(
         "http-primary",
         [("bearer_token".into(), reference(&secret))],
         Arc::new(SystemSecretResolver),
+        audit.clone(),
     )
     .unwrap();
 
@@ -122,4 +164,8 @@ async fn instance_and_slot_boundaries_fail_closed_and_debug_is_redacted() {
     assert!(!debug.contains("do-not-print"));
     assert!(!debug.contains("secret-locator"));
     assert!(debug.contains("[REDACTED]"));
+    let primary = CredentialAuditSubject::channel_instance("http-primary").unwrap();
+    let secondary = CredentialAuditSubject::channel_instance("http-secondary").unwrap();
+    assert_eq!(audit.list(&primary, 10).await.unwrap().len(), 2);
+    assert!(audit.list(&secondary, 10).await.unwrap().is_empty());
 }

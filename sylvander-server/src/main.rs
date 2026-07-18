@@ -93,6 +93,11 @@ fn build_channels(
     config: &ServerConfig,
     runtime: &Arc<Runtime>,
 ) -> Result<Vec<ChannelRegistration>, ServerError> {
+    let credential_audit = runtime.credential_audit_ledger().ok_or_else(|| {
+        ServerError::Runtime(sylvander_runtime::RuntimeError::Store(
+            "credential audit ledger is unavailable".into(),
+        ))
+    })?;
     config
         .channels
         .iter()
@@ -174,6 +179,7 @@ fn build_channels(
                             channel_credential_source(
                                 &channel.id,
                                 [("bearer_token", bearer_token)],
+                                credential_audit.clone(),
                             )?,
                         )
                         .map_err(|error| ServerError::Channel {
@@ -222,6 +228,7 @@ fn build_channels(
                             channel_credential_source(
                                 &channel.id,
                                 [("bearer_token", bearer_token)],
+                                credential_audit.clone(),
                             )?,
                         )
                         .map_err(|error| ServerError::Channel {
@@ -239,6 +246,7 @@ fn build_channels(
                         channel_credential_source(
                             &channel.id,
                             [("app_key", app_key), ("app_secret", app_secret)],
+                            credential_audit.clone(),
                         )?,
                     )
                     .map_err(|error| ServerError::Channel {
@@ -259,6 +267,7 @@ fn build_channels(
                         channel_credential_source(
                             &channel.id,
                             [("bot_token", token), ("webhook_secret", webhook_secret)],
+                            credential_audit.clone(),
                         )?,
                     )
                     .map_err(|error| ServerError::Channel {
@@ -288,6 +297,7 @@ fn build_channels(
                                 ("callback_token", token),
                                 ("encoding_aes_key", encoding_aes_key),
                             ],
+                            credential_audit.clone(),
                         )?,
                     )
                     .map_err(|message| ServerError::Channel {
@@ -333,6 +343,7 @@ fn build_channels(
 fn channel_credential_source<'a>(
     channel_id: &str,
     references: impl IntoIterator<Item = (&'a str, &'a SecretRef)>,
+    audit: Arc<sylvander_runtime::credential_audit::CredentialOperationAuditLedger>,
 ) -> Result<Arc<dyn CredentialLeaseSource>, ServerError> {
     SystemChannelCredentialSource::new(
         channel_id,
@@ -340,6 +351,7 @@ fn channel_credential_source<'a>(
             .into_iter()
             .map(|(slot, reference)| (slot.to_owned(), reference.clone())),
         Arc::new(SystemSecretResolver),
+        audit,
     )
     .map(|source| Arc::new(source) as Arc<dyn CredentialLeaseSource>)
     .map_err(|error| ServerError::Channel {
