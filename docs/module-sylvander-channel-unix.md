@@ -63,7 +63,7 @@ the configured `instance_id` and the `unix` transport.
 
 ## 6. Tests
 
-Unit tests live in `sylvander-channel-unix/src/lib.rs` (`mod tests`),
+Unit tests live in `sylvander-channel-unix/tests/unit/lib.rs`,
 covering replay buffer, line framing, and request-size enforcement.
 
 ## 7. Common pitfalls

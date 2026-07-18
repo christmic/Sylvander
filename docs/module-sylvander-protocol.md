@@ -149,17 +149,17 @@ user_profile_protocol_schema}`.
 
 | Submodule | Test file | Coverage |
 |-----------|-----------|----------|
-| `types` | `sylvander-protocol/src/types.rs` (`mod tests`) | Round-trip, revision pins, prompt manifest, legacy compatibility, model selection resolution |
-| `boundary` | `sylvander-protocol/src/boundary.rs` (`mod tests`) | Credentials never appear in serialized context, `AuthenticationFailure` is content-free |
-| `identity_binding` | `sylvander-protocol/src/identity_binding/tests.rs` | Secret validation, serialization redaction, one-time-secret exhaustion |
-| `user_profile` | `sylvander-protocol/src/user_profile/tests.rs` | Privacy classifications, constraint count limit, owner-free envelopes |
+| `types` | `sylvander-protocol/tests/unit/types.rs` | Round-trip, revision pins, prompt manifest, legacy compatibility, model selection resolution |
+| `boundary` | `sylvander-protocol/tests/unit/boundary.rs` | Credentials never appear in serialized context, `AuthenticationFailure` is content-free |
+| `identity_binding` | `sylvander-protocol/tests/unit/identity_binding.rs` | Secret validation, serialization redaction, one-time-secret exhaustion |
+| `user_profile` | `sylvander-protocol/tests/unit/user_profile.rs` | Privacy classifications, constraint count limit, owner-free envelopes |
 | `bus_trait` | exercised by `in_process/tests` | filter matching semantics |
-| `in_process` | `sylvander-protocol/src/in_process.rs` (`mod t`) | publish/subscribe, filter, backpressure rejection, concurrent publisher burst |
-| `session_context` | `sylvander-protocol/src/session_context.rs` (`mod tests`) | builder methods, attribute bag, system sentinel |
-| `schema` | `sylvander-protocol/src/schema.rs` (`mod tests`) | UI v3 schema exposes legacy + current operations, secrets redacted |
-| `ui` | `sylvander-protocol/src/ui.rs` (`mod tests`) | strict-shape parsing, registry/user-profile/identity-binding envelopes |
-| `agent_admin` | `sylvander-protocol/src/agent_admin.rs` (`mod tests`) | conflict errors, allowed_models round-trip, prompt redaction |
-| `registry_admin` | `sylvander-protocol/src/registry_admin/tests.rs` | generation reads, credential redaction |
+| `in_process` | `sylvander-protocol/tests/unit/in_process.rs` | publish/subscribe, filter, backpressure rejection, concurrent publisher burst |
+| `session_context` | `sylvander-protocol/tests/unit/session_context.rs` | builder methods, attribute bag, system sentinel |
+| `schema` | `sylvander-protocol/tests/unit/schema.rs` | UI v3 schema exposes legacy + current operations, secrets redacted |
+| `ui` | `sylvander-protocol/tests/unit/ui.rs` | strict-shape parsing, registry/user-profile/identity-binding envelopes |
+| `agent_admin` | `sylvander-protocol/tests/unit/agent_admin.rs` | conflict errors, allowed_models round-trip, prompt redaction |
+| `registry_admin` | `sylvander-protocol/tests/unit/registry_admin.rs` | generation reads, credential redaction |
 
 ## 7. Related docs
 
