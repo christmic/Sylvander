@@ -10,7 +10,10 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::error;
 
-use super::{EvidenceError, EvidenceEvent, EvidenceStore, StepStart, TurnStart};
+use super::{
+    EvidenceClassification, EvidenceError, EvidenceEvent, EvidenceStore, GovernedRecordInput,
+    GovernedRecordKind, StepStart, TurnStart, structured_redact,
+};
 use crate::config::EvidenceContentPolicy;
 
 /// Records bus activity into a durable evidence store and drains on shutdown.
@@ -29,10 +32,16 @@ impl EvidenceRecorder {
         content: EvidenceContentPolicy,
         retention_days: u32,
     ) -> Result<Self, EvidenceError> {
+        if content != EvidenceContentPolicy::MetadataOnly && !store.governance_enabled() {
+            return Err(EvidenceError::EncryptionRequired);
+        }
         let retention_seconds = i64::from(retention_days).saturating_mul(86_400);
         store
             .prune_before(now_secs().saturating_sub(retention_seconds))
             .await?;
+        if store.governance_enabled() {
+            store.sweep_governed_retention(now_secs(), 1_000).await?;
+        }
         let run_id = uuid::Uuid::new_v4().to_string();
         store
             .start_run(run_id.clone(), server_name, now_secs())
@@ -56,9 +65,9 @@ impl EvidenceRecorder {
                             record_message(&task_store, &task_run_id, content, &mut active_turns, message).await;
                         }
                         let ended_at = now_secs();
-                        for turn_id in active_turns.into_values() {
+                        for active in active_turns.into_values() {
                             if let Err(error) = task_store
-                                .finish_turn(turn_id, ended_at, "interrupted", 0)
+                                .finish_turn(active.turn_id, ended_at, "interrupted", 0)
                                 .await
                             {
                                 error!(%error, "failed to close active turn during shutdown");
@@ -100,7 +109,7 @@ async fn record_message(
     store: &EvidenceStore,
     run_id: &str,
     content: EvidenceContentPolicy,
-    active_turns: &mut HashMap<String, String>,
+    active_turns: &mut HashMap<String, ActiveTurn>,
     message: BusMessage,
 ) {
     if let Err(error) = record_message_inner(store, run_id, content, active_turns, message).await {
@@ -112,7 +121,7 @@ async fn record_message_inner(
     store: &EvidenceStore,
     run_id: &str,
     content: EvidenceContentPolicy,
-    active_turns: &mut HashMap<String, String>,
+    active_turns: &mut HashMap<String, ActiveTurn>,
     message: BusMessage,
 ) -> Result<(), EvidenceError> {
     let session_id = message.session_id.to_string();
@@ -138,10 +147,28 @@ async fn record_message_inner(
                     input_digest: Some(sha256(message.payload.as_bytes())),
                 })
                 .await?;
-            active_turns.insert(session_id.clone(), id.clone());
+            let user_id = match &message.sender {
+                Sender::User(user_id) => user_id.clone(),
+                _ => "__system__".into(),
+            };
+            active_turns.insert(
+                session_id.clone(),
+                ActiveTurn {
+                    turn_id: id.clone(),
+                    user_id,
+                },
+            );
             Some(id)
         }
-        _ => active_turns.get(&session_id).cloned(),
+        _ => active_turns
+            .get(&session_id)
+            .map(|active| active.turn_id.clone()),
+    };
+    let governed_user_id = match &message.sender {
+        Sender::User(user_id) => user_id.clone(),
+        _ => active_turns
+            .get(&session_id)
+            .map_or_else(|| "__system__".into(), |active| active.user_id.clone()),
     };
 
     if let (Some(turn_id), MessageKind::Stream(stream)) = (&turn_id, &message.kind) {
@@ -163,18 +190,6 @@ async fn record_message_inner(
         }
     }
 
-    let payload_json = match content {
-        EvidenceContentPolicy::MetadataOnly => None,
-        EvidenceContentPolicy::Redacted => Some(
-            serde_json::json!({
-                "event_type": event_type,
-                "payload": "[REDACTED]",
-                "attachments": message.attachments.len()
-            })
-            .to_string(),
-        ),
-        EvidenceContentPolicy::Full => String::from_utf8(serialized.clone()).ok(),
-    };
     store
         .append_event(EvidenceEvent {
             id: message.id.0.to_string(),
@@ -186,10 +201,42 @@ async fn record_message_inner(
             observed_at: now_secs(),
             payload_bytes: serialized.len() as u64,
             payload_digest: Some(digest),
-            payload_json,
+            // Raw/redacted content is always routed through the encrypted
+            // governance table; the normalized event table stays metadata-only.
+            payload_json: None,
             privacy_class: privacy_class(&message.kind).into(),
         })
-        .await
+        .await?;
+    if content != EvidenceContentPolicy::MetadataOnly {
+        let payload = match content {
+            EvidenceContentPolicy::MetadataOnly => unreachable!(),
+            EvidenceContentPolicy::Redacted => {
+                let value = serde_json::from_slice::<serde_json::Value>(&serialized)
+                    .map_err(|error| EvidenceError::Serialize(error.to_string()))?;
+                serde_json::to_vec(&structured_redact(&value))
+                    .map_err(|error| EvidenceError::Serialize(error.to_string()))?
+            }
+            EvidenceContentPolicy::Full => serialized,
+        };
+        store
+            .put_governed_record(GovernedRecordInput {
+                id: format!("event:{}", message.id.0),
+                scope: store.governed_scope(governed_user_id)?,
+                kind: GovernedRecordKind::Event,
+                classification: classification(&message),
+                source_ref: format!("bus-message:{}", message.id.0),
+                media_type: "application/json".into(),
+                payload,
+                created_at: message.timestamp,
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+struct ActiveTurn {
+    turn_id: String,
+    user_id: String,
 }
 
 async fn record_stream(
@@ -288,6 +335,17 @@ fn privacy_class(kind: &MessageKind) -> &'static str {
     match kind {
         MessageKind::System(_) => "operational",
         MessageKind::Chat | MessageKind::Stream(_) => "user_content",
+    }
+}
+
+fn classification(message: &BusMessage) -> EvidenceClassification {
+    if message.attachments.is_empty() {
+        match &message.kind {
+            MessageKind::System(_) => EvidenceClassification::Operational,
+            MessageKind::Chat | MessageKind::Stream(_) => EvidenceClassification::Confidential,
+        }
+    } else {
+        EvidenceClassification::Restricted
     }
 }
 
