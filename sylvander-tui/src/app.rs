@@ -15,7 +15,8 @@ use crate::event::{Action, DomainEvent};
 use crate::input::Composer;
 use crate::keymap::{KeyAction, KeyMap};
 use crate::modal::{
-    ModalStack, SessionEntry, SessionStatus, SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
+    ModalStack, ProfileDeleteModal, ProfileEditMode, ProfileEditor, SessionEntry, SessionStatus,
+    SessionsOverlay, ToolInspector, WorkspaceRollbackModal,
 };
 
 const MAX_TRANSCRIPT_ENTRIES: usize = 2_000;
@@ -56,6 +57,10 @@ pub struct AppState {
     pub connected: bool,
     pub protocol_version: Option<u16>,
     pub protocol_capabilities: Vec<String>,
+    /// Latest owner-scoped profile returned by Runtime. Mutations always bind
+    /// to this server revision; conflict responses invalidate the cache.
+    pub user_profile: Option<sylvander_protocol::UserProfileView>,
+    pub(crate) pending_profile_intent: Option<PendingProfileIntent>,
     pub platform: sylvander_protocol::PlatformSnapshot,
     pub status: String,
     pub mode: AppMode,
@@ -121,6 +126,13 @@ pub struct AppState {
     pub dirty: DirtyFlag,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingProfileIntent {
+    Edit { correction: bool },
+    SetDoNotLearn(bool),
+    Delete,
+}
+
 impl AppState {
     pub fn new() -> Self {
         Self::with_history_path(None)
@@ -161,6 +173,8 @@ impl AppState {
             connected: false,
             protocol_version: None,
             protocol_capabilities: Vec::new(),
+            user_profile: None,
+            pending_profile_intent: None,
             platform: sylvander_protocol::PlatformSnapshot::default(),
             status: "Connecting...".into(),
             mode: AppMode::Normal,
@@ -573,6 +587,8 @@ impl AppState {
                 self.connected = false;
                 self.protocol_version = None;
                 self.protocol_capabilities.clear();
+                self.user_profile = None;
+                self.pending_profile_intent = None;
                 self.turn_active = false;
                 self.interrupt_requested = false;
                 while self.modals.top().is_some_and(|modal| {
@@ -803,6 +819,9 @@ impl AppState {
                 }
                 self.status = format!("{operation} failed: {message}");
                 self.messages.push(ChatMessage::Info(self.status.clone()));
+            }
+            DomainEvent::UserProfileReceived { response } => {
+                self.apply_user_profile_response(response);
             }
             DomainEvent::TextChunk { delta } => {
                 self.turn_active = true;
@@ -1589,6 +1608,195 @@ impl AppState {
     }
 }
 
+impl AppState {
+    fn apply_user_profile_response(&mut self, response: sylvander_protocol::UserProfileResponse) {
+        use sylvander_protocol::UserProfileResponse;
+        match response {
+            UserProfileResponse::Created { profile, .. } => {
+                self.user_profile = Some(profile);
+                self.pending_profile_intent = None;
+                self.status = "User profile created".into();
+                self.push_user_profile_summary("created");
+            }
+            UserProfileResponse::Read { profile, .. } => {
+                self.user_profile = Some(profile);
+                if !self.resume_pending_profile_intent() {
+                    self.status = "User profile loaded".into();
+                    self.push_user_profile_summary("current");
+                }
+            }
+            UserProfileResponse::Updated { profile, .. } => {
+                self.user_profile = Some(profile);
+                self.pending_profile_intent = None;
+                self.status = "User profile updated".into();
+                self.push_user_profile_summary("updated");
+            }
+            UserProfileResponse::Corrected { profile, .. } => {
+                self.user_profile = Some(profile);
+                self.pending_profile_intent = None;
+                self.status = "User profile corrected".into();
+                self.push_user_profile_summary("corrected");
+            }
+            UserProfileResponse::DoNotLearnUpdated { profile, .. } => {
+                let enabled = profile.do_not_learn;
+                self.user_profile = Some(profile);
+                self.pending_profile_intent = None;
+                self.status = format!(
+                    "Do-not-learn {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+                self.push_user_profile_summary("privacy updated");
+            }
+            UserProfileResponse::Exported { export, .. } => {
+                self.user_profile = Some(export.profile.clone());
+                self.pending_profile_intent = None;
+                match serde_json::to_string_pretty(&export) {
+                    Ok(text) => {
+                        self.pending_actions.push(Action::CopyText { text });
+                        self.status = "User profile export copied".into();
+                        self.messages.push(ChatMessage::Info(format!(
+                            "user profile · export copied · revision r{} · JSON v{}",
+                            export.profile.revision, export.schema_version
+                        )));
+                    }
+                    Err(error) => {
+                        self.status = format!("User profile export failed: {error}");
+                        self.messages.push(ChatMessage::Info(self.status.clone()));
+                    }
+                }
+            }
+            UserProfileResponse::Deleted {
+                deleted_revision,
+                do_not_learn_preserved,
+                ..
+            } => {
+                self.user_profile = None;
+                self.pending_profile_intent = None;
+                self.status = "User profile deleted".into();
+                self.messages.push(ChatMessage::Info(format!(
+                    "user profile · deleted r{deleted_revision} · do-not-learn {}",
+                    if do_not_learn_preserved {
+                        "preserved"
+                    } else {
+                        "not set"
+                    }
+                )));
+            }
+            UserProfileResponse::NotFound { .. } => {
+                self.user_profile = None;
+                match self.pending_profile_intent.take() {
+                    Some(PendingProfileIntent::Edit { correction: false }) => {
+                        self.modals
+                            .push(Box::new(ProfileEditor::new(ProfileEditMode::Create, None)));
+                        self.status = "No stored profile · creating a new one".into();
+                    }
+                    Some(PendingProfileIntent::Edit { correction: true }) => {
+                        self.status = "No stored profile to correct".into();
+                        self.messages.push(ChatMessage::Info(self.status.clone()));
+                    }
+                    Some(PendingProfileIntent::SetDoNotLearn(_)) => {
+                        self.status = "Create a profile before changing do-not-learn".into();
+                        self.messages.push(ChatMessage::Info(self.status.clone()));
+                    }
+                    Some(PendingProfileIntent::Delete) => {
+                        self.status = "No stored user profile to delete".into();
+                        self.messages.push(ChatMessage::Info(self.status.clone()));
+                    }
+                    None => {
+                        self.status = "No stored user profile".into();
+                        self.messages.push(ChatMessage::Info(
+                            "user profile · not created · use /profile edit".into(),
+                        ));
+                    }
+                }
+            }
+            UserProfileResponse::Error { error, .. } => {
+                self.pending_profile_intent = None;
+                let operation = format!("{:?}", error.operation).to_ascii_lowercase();
+                if error.code == sylvander_protocol::UserProfileErrorCode::Conflict {
+                    self.user_profile = None;
+                    self.pending_actions.push(Action::UserProfile {
+                        request: sylvander_protocol::UserProfileRequest {
+                            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+                            action: sylvander_protocol::UserProfileAction::Read {},
+                        },
+                    });
+                    self.status = "User profile changed elsewhere · reloading".into();
+                    self.messages.push(ChatMessage::Info(format!(
+                        "user profile · conflict on {operation}{} · your stale edit was not applied",
+                        error
+                            .current_revision
+                            .map_or_else(String::new, |revision| format!(" · current r{revision}"))
+                    )));
+                } else {
+                    self.status = format!("User profile {operation} failed");
+                    self.messages.push(ChatMessage::Info(format!(
+                        "user profile · {operation} failed · {:?}{}",
+                        error.code,
+                        error
+                            .retry_after_ms
+                            .map_or_else(String::new, |delay| format!(" · retry in {delay} ms"))
+                    )));
+                }
+            }
+        }
+    }
+
+    fn resume_pending_profile_intent(&mut self) -> bool {
+        let Some(intent) = self.pending_profile_intent.take() else {
+            return false;
+        };
+        let Some(profile) = self.user_profile.as_ref() else {
+            return false;
+        };
+        match intent {
+            PendingProfileIntent::Edit { correction } => {
+                let mode = if correction {
+                    ProfileEditMode::Correct
+                } else {
+                    ProfileEditMode::Update
+                };
+                let modal = ProfileEditor::new(mode, Some(profile));
+                self.modals.push(Box::new(modal));
+                self.status = if correction {
+                    "Correcting server profile".into()
+                } else {
+                    "Editing server profile".into()
+                };
+            }
+            PendingProfileIntent::SetDoNotLearn(enabled) => {
+                self.pending_actions.push(Action::UserProfile {
+                    request: sylvander_protocol::UserProfileRequest {
+                        version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+                        action: sylvander_protocol::UserProfileAction::SetDoNotLearn {
+                            expected_revision: profile.revision,
+                            enabled,
+                        },
+                    },
+                });
+                self.status = "Updating do-not-learn…".into();
+            }
+            PendingProfileIntent::Delete => {
+                self.modals
+                    .push(Box::new(ProfileDeleteModal::new(profile.revision)));
+                self.status = "Confirm user profile deletion".into();
+            }
+        }
+        true
+    }
+
+    fn push_user_profile_summary(&mut self, state: &str) {
+        if let Some(profile) = &self.user_profile {
+            self.messages.push(ChatMessage::Info(format!(
+                "user profile · {state} · r{} · do-not-learn {}\n{}",
+                profile.revision,
+                if profile.do_not_learn { "on" } else { "off" },
+                user_profile_summary(&profile.profile)
+            )));
+        }
+    }
+}
+
 fn update_task(messages: &mut [ChatMessage], task_id: &str, state: TaskState, detail: String) {
     for message in messages.iter_mut().rev() {
         let ChatMessage::TaskList { tasks } = message else {
@@ -1621,6 +1829,67 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::TaskCompleted { .. }
             | DomainEvent::TaskFailed { .. }
             | DomainEvent::TaskCancelled { .. }
+            | DomainEvent::UserProfileReceived { .. }
+    )
+}
+
+fn user_profile_summary(profile: &sylvander_protocol::UserProfileData) -> String {
+    let language = profile
+        .preferred_language
+        .as_ref()
+        .map_or("not set", |value| value.value.as_str());
+    let locale = profile
+        .locale
+        .as_ref()
+        .map_or("not set", |value| value.value.as_str());
+    let detail = profile
+        .response_detail
+        .as_ref()
+        .map_or("not set", |value| match value.value {
+            sylvander_protocol::ResponseDetail::Concise => "concise",
+            sylvander_protocol::ResponseDetail::Balanced => "balanced",
+            sylvander_protocol::ResponseDetail::Detailed => "detailed",
+        });
+    let tone = profile
+        .communication_tone
+        .as_ref()
+        .map_or("not set", |value| match value.value {
+            sylvander_protocol::CommunicationTone::Direct => "direct",
+            sylvander_protocol::CommunicationTone::Warm => "warm",
+            sylvander_protocol::CommunicationTone::Formal => "formal",
+        });
+    let accessibility = profile.accessibility.as_ref().map_or_else(
+        || "default".into(),
+        |value| {
+            let mut enabled = Vec::new();
+            if value.value.screen_reader_optimized {
+                enabled.push("screen-reader");
+            }
+            if value.value.reduce_motion {
+                enabled.push("reduced-motion");
+            }
+            if value.value.high_contrast {
+                enabled.push("high-contrast");
+            }
+            if enabled.is_empty() {
+                "default".into()
+            } else {
+                enabled.join(", ")
+            }
+        },
+    );
+    let constraints = if profile.constraints.is_empty() {
+        "none".into()
+    } else {
+        profile
+            .constraints
+            .iter()
+            .map(|value| value.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    format!(
+        "language {language} · locale {locale} · detail {detail} · tone {tone}\naccessibility {accessibility}\nconstraints {constraints}"
     )
 }
 

@@ -38,6 +38,7 @@ pub enum CommandId {
     Hooks,
     Extensions,
     Memory,
+    Profile,
     Inspect,
     Copy,
     Editor,
@@ -258,6 +259,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "server truth",
     },
     CommandSpec {
+        id: CommandId::Profile,
+        name: "profile",
+        usage: "/profile [show|create|edit|correct|do-not-learn on|off|export|delete]",
+        description: "View or edit your owner-scoped user profile",
+        hint: "server revision",
+    },
+    CommandSpec {
         id: CommandId::Preview,
         name: "preview",
         usage: "/preview <image|web> <path-or-url>",
@@ -455,6 +463,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Hooks
             | CommandId::Extensions
             | CommandId::Memory
+            | CommandId::Profile
     );
     if needs_connection && !state.connected {
         return Unavailable("connect to the Agent first".into());
@@ -500,6 +509,14 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
     }
     if spec.id == CommandId::Preview && !state.host_preview_available {
         return Unavailable("requires a trusted desktop host".into());
+    }
+    if spec.id == CommandId::Profile
+        && !state
+            .protocol_capabilities
+            .iter()
+            .any(|capability| capability == sylvander_protocol::USER_PROFILE_CAPABILITY)
+    {
+        return Unavailable("server does not advertise user_profile_v1".into());
     }
     if matches!(spec.id, CommandId::Inspect | CommandId::Copy)
         && find_tool_output(state, None).is_err()
@@ -1262,6 +1279,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
                 &state.platform,
             )));
         }
+        CommandId::Profile => execute_profile(&invocation, state)?,
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -1444,6 +1462,81 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
     state.recent_commands.push_front(invoked_id);
     state.recent_commands.truncate(8);
     state.dirty.mark();
+    Ok(())
+}
+
+fn execute_profile(invocation: &Invocation<'_>, state: &mut AppState) -> Result<(), String> {
+    use sylvander_protocol::{
+        USER_PROFILE_PROTOCOL_VERSION, UserProfileAction, UserProfileExportFormat,
+        UserProfileRequest,
+    };
+
+    let request = |action| crate::event::Action::UserProfile {
+        request: UserProfileRequest {
+            version: USER_PROFILE_PROTOCOL_VERSION,
+            action,
+        },
+    };
+    match invocation.args.as_slice() {
+        [] | ["show" | "read"] => {
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Read {}));
+            state.status = "Loading user profile…".into();
+        }
+        ["create"] => {
+            state.modals.push(Box::new(crate::modal::ProfileEditor::new(
+                crate::modal::ProfileEditMode::Create,
+                None,
+            )));
+            state.status = "Creating a typed user profile".into();
+        }
+        ["edit" | "update"] => {
+            state.pending_profile_intent =
+                Some(crate::app::PendingProfileIntent::Edit { correction: false });
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Read {}));
+            state.status = "Loading the current profile revision…".into();
+        }
+        ["correct"] => {
+            state.pending_profile_intent =
+                Some(crate::app::PendingProfileIntent::Edit { correction: true });
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Read {}));
+            state.status = "Loading the current profile revision…".into();
+        }
+        ["do-not-learn" | "do_not_learn" | "dnl", enabled] => {
+            let enabled = match enabled.to_ascii_lowercase().as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("Usage: /profile do-not-learn <on|off>".into()),
+            };
+            state.pending_profile_intent =
+                Some(crate::app::PendingProfileIntent::SetDoNotLearn(enabled));
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Read {}));
+            state.status = "Loading the current profile revision…".into();
+        }
+        ["export"] => {
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Export {
+                    format: UserProfileExportFormat::Json,
+                }));
+            state.status = "Exporting user profile…".into();
+        }
+        ["delete"] => {
+            state.pending_profile_intent = Some(crate::app::PendingProfileIntent::Delete);
+            state
+                .pending_actions
+                .push(request(UserProfileAction::Read {}));
+            state.status = "Loading the current profile revision…".into();
+        }
+        _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+    }
     Ok(())
 }
 

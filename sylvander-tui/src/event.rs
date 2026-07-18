@@ -140,6 +140,9 @@ pub enum DomainEvent {
         operation: String,
         message: String,
     },
+    UserProfileReceived {
+        response: sylvander_protocol::UserProfileResponse,
+    },
 
     /// Streaming text chunk from the model.
     TextChunk {
@@ -315,6 +318,7 @@ impl DomainEvent {
             | Self::SessionUpdated { .. }
             | Self::SessionDeleted { .. }
             | Self::OperationFailed { .. }
+            | Self::UserProfileReceived { .. }
             | Self::TextChunk { .. }
             | Self::ThinkingChunk { .. }
             | Self::ModelRetry { .. }
@@ -442,6 +446,9 @@ pub enum Action {
     },
     DeleteSession {
         session_id: String,
+    },
+    UserProfile {
+        request: sylvander_protocol::UserProfileRequest,
     },
     CopyText {
         text: String,

@@ -554,6 +554,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             archived,
         },
         ServerMsg::SessionDeleted { session_id } => DomainEvent::SessionDeleted { session_id },
+        ServerMsg::UserProfile { response } => DomainEvent::UserProfileReceived { response },
         ServerMsg::OperationError { operation, message } => {
             DomainEvent::OperationFailed { operation, message }
         }
@@ -581,7 +582,6 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
-        | ServerMsg::UserProfile { .. }
         | ServerMsg::IdentityBinding { .. }
         | ServerMsg::Pong => return None,
     })

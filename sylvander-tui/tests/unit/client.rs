@@ -177,6 +177,46 @@ fn permission_selection_is_a_typed_wire_profile() {
 }
 
 #[test]
+fn user_profile_response_crosses_the_domain_adapter() {
+    let event = parse_server_msg(ServerMsg::UserProfile {
+        response: sylvander_protocol::UserProfileResponse::Read {
+            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+            profile: sylvander_protocol::UserProfileView {
+                revision: 9,
+                profile: sylvander_protocol::UserProfileData::default(),
+                do_not_learn: true,
+                created_at_unix_secs: 1,
+                updated_at_unix_secs: 2,
+            },
+        },
+    });
+    assert!(matches!(
+        event,
+        Some(DomainEvent::UserProfileReceived {
+            response: sylvander_protocol::UserProfileResponse::Read { profile, .. }
+        }) if profile.revision == 9 && profile.do_not_learn
+    ));
+}
+
+#[test]
+fn user_profile_request_remains_typed_on_the_wire() {
+    let value = serde_json::to_value(ClientMsg::UserProfile {
+        request: sylvander_protocol::UserProfileRequest {
+            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+            action: sylvander_protocol::UserProfileAction::SetDoNotLearn {
+                expected_revision: 4,
+                enabled: true,
+            },
+        },
+    })
+    .expect("serialize");
+    assert_eq!(value["type"], "user_profile");
+    assert_eq!(value["request"]["version"], 1);
+    assert_eq!(value["request"]["action"]["operation"], "set_do_not_learn");
+    assert_eq!(value["request"]["action"]["expected_revision"], 4);
+}
+
+#[test]
 fn context_report_round_trips_as_typed_server_truth() {
     let request = serde_json::to_value(ClientMsg::GetContext {
         session_id: Some("session-1".into()),

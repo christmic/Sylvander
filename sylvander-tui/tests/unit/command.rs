@@ -97,6 +97,67 @@ fn context_command_requests_server_truth_for_the_active_session() {
 }
 
 #[test]
+fn profile_command_fails_closed_until_capability_negotiation() {
+    let mut state = AppState::new();
+    state.connected = true;
+    let profile = resolve("profile").expect("profile command");
+    assert_eq!(
+        availability(profile, &state).reason(),
+        Some("server does not advertise user_profile_v1")
+    );
+    state
+        .protocol_capabilities
+        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+    assert!(availability(profile, &state).is_available());
+}
+
+#[test]
+fn profile_mutations_read_the_server_revision_before_editing() {
+    let mut state = AppState::new();
+    state.connected = true;
+    state
+        .protocol_capabilities
+        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+
+    execute(parse("/profile edit").expect("parse"), &mut state).expect("execute");
+    assert!(matches!(
+        state.pending_profile_intent,
+        Some(crate::app::PendingProfileIntent::Edit { correction: false })
+    ));
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [crate::event::Action::UserProfile {
+            request: sylvander_protocol::UserProfileRequest {
+                action: sylvander_protocol::UserProfileAction::Read {},
+                ..
+            }
+        }]
+    ));
+}
+
+#[test]
+fn profile_export_is_a_typed_json_request() {
+    let mut state = AppState::new();
+    state.connected = true;
+    state
+        .protocol_capabilities
+        .push(sylvander_protocol::USER_PROFILE_CAPABILITY.into());
+
+    execute(parse("/profile export").expect("parse"), &mut state).expect("execute");
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [crate::event::Action::UserProfile {
+            request: sylvander_protocol::UserProfileRequest {
+                action: sylvander_protocol::UserProfileAction::Export {
+                    format: sylvander_protocol::UserProfileExportFormat::Json,
+                },
+                ..
+            }
+        }]
+    ));
+}
+
+#[test]
 fn compact_command_requires_an_idle_persisted_session() {
     let mut state = AppState::new();
     state.connected = true;
