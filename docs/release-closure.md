@@ -2,14 +2,15 @@
 
 Status date: 2026-07-18
 
-This record describes the implemented surface and separates deterministic
-default gates from deployment-specific acceptance journeys. It does not by
-itself close the active
-[`production-expansion-checklist.md`](production-expansion-checklist.md):
-the current commit must still pass the complete matrix. The unified
-actor-aware capability router is implemented and covered by focused
-Worker/Guardian, invocation, approval, artifact, and learning-opt-out tests;
-that focused evidence does not replace the same-state workspace gate.
+This record closes the implemented local product scope and separates
+deterministic default gates from deployment-specific acceptance journeys. The
+active
+[`production-expansion-checklist.md`](production-expansion-checklist.md) is
+fully checked. The same tracked implementation state passed the complete root
+workspace, nested Token9, security, performance, clean-room, and deterministic
+Ghostty matrices described below. The unified actor-aware capability router is
+also covered by focused Worker/Guardian, invocation, approval, artifact, and
+learning-opt-out tests.
 
 ## Supported release scope
 
@@ -107,8 +108,9 @@ deletion. The performance gate completes the locked release build and verifies
 bounded concurrent delivery, parallel tools, long transcripts, large local
 workspaces, bursts, and executor ceilings within the documented budgets.
 
-No critical or high-severity defect is currently recorded in the supported
-scope. That statement is not a substitute for the current-commit closure gate.
+No critical or high-severity defect is recorded in the supported scope. The
+closure matrix completed with a clean worktree and no generated snapshot
+drift.
 
 ## Residual risk and non-claims
 
