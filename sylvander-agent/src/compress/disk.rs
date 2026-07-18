@@ -10,9 +10,9 @@
 //! ## Why a trait
 //!
 //! Production uses [`FilesystemToolResultDisk`] (writes to
-//! `std::env::temp_dir()`). Tests use [`InMemoryToolResultDisk`] to
-//! avoid touching the real filesystem. A future `S3ToolResultDisk`
-//! can drop in without changing the layer.
+//! `std::env::temp_dir()`). Tests provide their in-memory implementation from
+//! the crate's `tests/` tree. A future object-store implementation can drop in
+//! without changing the layer.
 //!
 //! ## Sync by design
 //!
@@ -22,10 +22,8 @@
 //! without breaking the layer signature (`Pin<Box<…>>` is
 //! already async-capable).
 
-use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 /// Handle to content persisted to disk by a [`ToolResultDisk`].
 ///
@@ -72,8 +70,7 @@ impl FilesystemToolResultDisk {
         Ok(Self { root })
     }
 
-    /// Create a disk rooted at an explicit path. Useful for tests
-    /// (pass a `tempfile::TempDir` path).
+    /// Create a disk rooted at an explicit application-managed path.
     pub fn with_root(root: PathBuf) -> io::Result<Self> {
         std::fs::create_dir_all(&root)?;
         Ok(Self { root })
@@ -92,60 +89,6 @@ impl ToolResultDisk for FilesystemToolResultDisk {
         std::fs::write(&path, body)?;
         Ok(DiskHandle {
             path,
-            original_bytes: body.len(),
-        })
-    }
-}
-
-// =============================================================================
-// InMemoryToolResultDisk — test impl.
-// =============================================================================
-
-/// In-memory disk for tests. Tracks writes and lets tests assert on
-/// what's been persisted without touching the filesystem.
-#[derive(Default, Clone)]
-pub struct InMemoryToolResultDisk {
-    inner: Arc<Mutex<HashMap<String, String>>>,
-    write_count: Arc<Mutex<usize>>,
-}
-
-impl InMemoryToolResultDisk {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Retrieve content previously persisted for `tool_use_id`.
-    #[must_use]
-    pub fn get(&self, tool_use_id: &str) -> Option<String> {
-        self.inner.lock().unwrap().get(tool_use_id).cloned()
-    }
-
-    /// Total number of `persist` calls.
-    #[must_use]
-    pub fn write_count(&self) -> usize {
-        *self.write_count.lock().unwrap()
-    }
-
-    /// All `tool_use_id`s that have been persisted (sorted for stable
-    /// assertions).
-    #[must_use]
-    pub fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.inner.lock().unwrap().keys().cloned().collect();
-        ids.sort();
-        ids
-    }
-}
-
-impl ToolResultDisk for InMemoryToolResultDisk {
-    fn persist(&self, tool_use_id: &str, body: &str) -> io::Result<DiskHandle> {
-        self.inner
-            .lock()
-            .unwrap()
-            .insert(tool_use_id.to_string(), body.to_string());
-        *self.write_count.lock().unwrap() += 1;
-        Ok(DiskHandle {
-            path: PathBuf::from(format!("<in-memory>/{tool_use_id}")),
             original_bytes: body.len(),
         })
     }

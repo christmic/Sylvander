@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -6,6 +9,7 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
+use crate::compress::disk::{DiskHandle, ToolResultDisk};
 
 /// In-memory tool double shared by white-box unit tests.
 #[derive(Debug, Clone)]
@@ -71,5 +75,52 @@ impl Tool for MockTool {
             .or_else(|| self.responses.last())
             .cloned()
             .ok_or_else(|| ToolError::Other("no responses configured".into()))
+    }
+}
+
+/// In-memory oversized-result sink shared by white-box unit tests.
+#[derive(Default, Clone)]
+pub(crate) struct InMemoryToolResultDisk {
+    inner: Arc<Mutex<HashMap<String, String>>>,
+    write_count: Arc<Mutex<usize>>,
+}
+
+impl InMemoryToolResultDisk {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn get(&self, tool_use_id: &str) -> Option<String> {
+        self.inner.lock().unwrap().get(tool_use_id).cloned()
+    }
+
+    pub(crate) fn write_count(&self) -> usize {
+        *self.write_count.lock().unwrap()
+    }
+
+    pub(crate) fn ids(&self) -> Vec<String> {
+        let mut ids = self
+            .inner
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+}
+
+impl ToolResultDisk for InMemoryToolResultDisk {
+    fn persist(&self, tool_use_id: &str, body: &str) -> io::Result<DiskHandle> {
+        self.inner
+            .lock()
+            .unwrap()
+            .insert(tool_use_id.to_owned(), body.to_owned());
+        *self.write_count.lock().unwrap() += 1;
+        Ok(DiskHandle {
+            path: PathBuf::from(format!("<in-memory>/{tool_use_id}")),
+            original_bytes: body.len(),
+        })
     }
 }

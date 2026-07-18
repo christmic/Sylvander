@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::InMemoryToolResultDisk;
 
 #[test]
 fn filesystem_disk_writes_and_returns_handle() {

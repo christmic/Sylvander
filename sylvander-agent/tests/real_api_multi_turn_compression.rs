@@ -9,7 +9,10 @@
 use std::env;
 use std::sync::Arc;
 
-use sylvander_agent::compress::disk::{InMemoryToolResultDisk, ToolResultDisk};
+mod support;
+
+use support::InMemoryToolResultDisk;
+use sylvander_agent::compress::disk::ToolResultDisk;
 use sylvander_agent::compress::layers::tool_result_budget::ToolResultBudgetLayer;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;

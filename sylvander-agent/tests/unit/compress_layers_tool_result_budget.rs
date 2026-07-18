@@ -1,5 +1,5 @@
 use super::*;
-use crate::compress::disk::InMemoryToolResultDisk;
+use crate::test_support::InMemoryToolResultDisk;
 use sylvander_llm_anthropic::api::model::ModelInfo;
 use sylvander_llm_anthropic::api::types::{
     MessageParam, MessageRole, ToolResultBlock, Usage, UserContent, UserContentBlock,
