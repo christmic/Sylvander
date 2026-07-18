@@ -2,8 +2,41 @@ use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
 use sylvander_agent::session_store::{SessionStore, SqliteSessionStore};
 use sylvander_channel::UiService;
+use sylvander_channel::credential::{
+    CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 
 struct DenyAgentAccess;
+
+struct RotatingLeaseSource {
+    state: std::sync::Mutex<(u64, String, bool)>,
+}
+
+#[async_trait]
+impl CredentialLeaseSource for RotatingLeaseSource {
+    async fn lease(
+        &self,
+        request: &CredentialLeaseRequest,
+    ) -> Result<CredentialLeaseBundle, CredentialLeaseError> {
+        let (generation, value, unavailable) = self.state.lock().unwrap().clone();
+        if unavailable {
+            return Err(CredentialLeaseError::Unavailable);
+        }
+        let now: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .try_into()
+            .unwrap();
+        CredentialLeaseBundle::new(
+            generation,
+            generation,
+            now,
+            now + 30,
+            [(request.slots[0].clone(), value.into_bytes())],
+        )
+    }
+}
 
 struct SessionConfigUi {
     states: Mutex<HashMap<String, sylvander_protocol::SessionConfigState>>,
@@ -145,14 +178,18 @@ fn config_state(id: &str) -> sylvander_protocol::SessionConfigState {
             agent_id: AgentId::new("agent-1"),
             agent_revision: 1,
             provider_id: "test".into(),
-            provider_revision: None,
+            provider_revision: 1,
             model_id: "default-model".into(),
-            model_revision: None,
+            model_revision: 1,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             permissions: sylvander_protocol::PermissionProfile::default(),
             prompt_profile: None,
             system_prompt_sha256: "digest".into(),
-            prompt_manifest: None,
+            prompt_manifest: sylvander_protocol::PromptManifest {
+                layers: Vec::new(),
+                aggregate_sha256: "manifest".into(),
+                total_bytes: 0,
+            },
             agent_workspace: None,
             user_workspace: None,
             workspace_mounts: Vec::new(),
@@ -190,6 +227,26 @@ impl UiService for SessionConfigUi {
             ));
         }
         Ok(())
+    }
+
+    async fn list_sessions(
+        &self,
+        _: &sylvander_protocol::BoundaryContext,
+    ) -> Result<Vec<sylvander_protocol::UiSessionInfo>, sylvander_protocol::BoundaryError> {
+        let mut sessions = self
+            .states
+            .lock()
+            .await
+            .keys()
+            .map(|id| sylvander_protocol::UiSessionInfo {
+                id: id.clone(),
+                label: format!("Session {id}"),
+                workspace: "/workspace".into(),
+                last_seen_secs: 7,
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(sessions)
     }
 
     async fn discover_agents(
@@ -376,6 +433,7 @@ async fn welcome_declares_administration_and_credential_lifecycle_capabilities()
         "registry_administration",
         "credential_registry_lifecycle",
         "provider_model_registry_lifecycle",
+        "sessions",
         sylvander_protocol::IDENTITY_BINDING_CAPABILITY,
     ] {
         assert!(
@@ -383,6 +441,43 @@ async fn welcome_declares_administration_and_credential_lifecycle_capabilities()
             "missing {capability} capability"
         );
     }
+}
+
+#[tokio::test]
+async fn list_sessions_dispatches_to_runtime_ui_service_and_returns_typed_rows() {
+    let context = ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some(Arc::new(SessionConfigUi {
+            states: Mutex::new(HashMap::from([
+                ("session-b".into(), config_state("session-b")),
+                ("session-a".into(), config_state("session-a")),
+            ])),
+        })),
+        None,
+    );
+    let principal = sylvander_protocol::AuthenticatedPrincipal::user(
+        "client",
+        sylvander_protocol::AuthenticationMethod::BearerToken,
+    );
+    let (tx, mut rx) = mpsc::unbounded_channel();
+
+    handle_client_msg(
+        ClientMsg::ListSessions,
+        &context,
+        &AgentId::new("agent-1"),
+        &tx,
+        &principal,
+        "websocket-test",
+    )
+    .await;
+
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::SessionsList { sessions })
+            if sessions.iter().map(|session| session.id.as_str()).collect::<Vec<_>>()
+                == ["session-a", "session-b"]
+    ));
 }
 
 fn hello(version: u16) -> ClientMsg {
@@ -429,8 +524,8 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
     ));
 
     assert!(
-        handle_protocol_message(
-            hello(1),
+        !handle_protocol_message(
+            hello(sylvander_protocol::UI_PROTOCOL_VERSION - 1),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -440,26 +535,14 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
         )
         .await
     );
-    let Some(ServerMsg::Welcome { protocol }) = rx.recv().await else {
-        panic!("expected v1 Welcome")
-    };
-    assert!(
-        !protocol
-            .capabilities
-            .iter()
-            .any(|item| item.contains("administration"))
-    );
-    assert!(
-        !protocol
-            .capabilities
-            .iter()
-            .any(|item| item == "provider_model_registry_lifecycle")
-    );
-    selected = None;
+    assert!(matches!(
+        rx.recv().await,
+        Some(ServerMsg::ProtocolError { error }) if error.code == "incompatible_protocol"
+    ));
 
     assert!(
         handle_protocol_message(
-            hello(2),
+            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -479,13 +562,13 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
             .any(|item| item == "registry_administration")
     );
     assert!(
-        !protocol
+        protocol
             .capabilities
             .iter()
             .any(|item| item == "credential_registry_lifecycle")
     );
     assert!(
-        !protocol
+        protocol
             .capabilities
             .iter()
             .any(|item| item == "provider_model_registry_lifecycle")
@@ -493,7 +576,7 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 
     assert!(
         handle_protocol_message(
-            hello(2),
+            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -510,7 +593,7 @@ async fn protocol_session_requires_one_leading_hello_and_filters_capabilities() 
 }
 
 #[tokio::test]
-async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
+async fn credential_mutation_requires_the_current_protocol_before_dispatch() {
     let ui = Arc::new(CredentialRegistryUi {
         received: Mutex::new(None),
     });
@@ -537,21 +620,8 @@ async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
     let mut selected = None;
 
     assert!(
-        handle_protocol_message(
-            hello(2),
-            &mut selected,
-            &context,
-            &AgentId::new("agent-1"),
-            &tx,
-            &principal,
-            "ws"
-        )
-        .await
-    );
-    let _ = rx.recv().await;
-    assert!(
-        handle_protocol_message(
-            request(),
+        !handle_protocol_message(
+            hello(sylvander_protocol::UI_PROTOCOL_VERSION - 1),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -565,20 +635,20 @@ async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
     assert!(matches!(
         &rejected,
         ServerMsg::ProtocolError { error }
-            if error.code == "unsupported_message_version"
+            if error.code == "incompatible_protocol"
     ));
     let rejected_wire = serde_json::to_string(&rejected).unwrap();
     assert!(!rejected_wire.contains("private"));
     assert!(!rejected_wire.contains("PRIVATE_TOKEN"));
     assert!(
         ui.received.lock().await.is_none(),
-        "v2 request reached UI service"
+        "old protocol reached UI service"
     );
 
     selected = None;
     assert!(
         handle_protocol_message(
-            hello(3),
+            hello(sylvander_protocol::UI_PROTOCOL_VERSION),
             &mut selected,
             &context,
             &AgentId::new("agent-1"),
@@ -607,7 +677,7 @@ async fn credential_mutation_requires_v3_before_authorization_and_dispatch() {
     ));
     assert!(
         ui.received.lock().await.is_some(),
-        "v3 request was not dispatched"
+        "current-protocol request was not dispatched"
     );
 }
 
@@ -1024,6 +1094,64 @@ fn bearer_comparison_checks_content_and_length() {
 }
 
 #[tokio::test]
+async fn websocket_upgrade_uses_live_rotating_bearer_lease() {
+    let source = Arc::new(RotatingLeaseSource {
+        state: std::sync::Mutex::new((1, "first-token".into(), false)),
+    });
+    let state = AppState {
+        ctx: Arc::new(ChannelContext::with_services(
+            Arc::new(InProcessMessageBus::new()),
+            Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+            None,
+            None,
+        )),
+        agent_id: AgentId::new("agent"),
+        clients: Arc::new(Mutex::new(HashMap::new())),
+        next_id: Arc::new(Mutex::new(0)),
+        instance_id: "ws-primary".into(),
+        auth: Some(WsAuth {
+            principal_id: "caller".into(),
+            bearer_lease: BearerLease {
+                source: source.clone(),
+                request: CredentialLeaseRequest::new("ws-primary", ["bearer_token"]).unwrap(),
+            },
+        }),
+        max_request_bytes: 4096,
+    };
+    let headers = |value: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {value}").parse().unwrap(),
+        );
+        headers
+    };
+
+    assert!(
+        authenticate(&state, &headers("first-token"))
+            .await
+            .is_some()
+    );
+    *source.state.lock().unwrap() = (2, "second-token".into(), false);
+    assert!(
+        authenticate(&state, &headers("first-token"))
+            .await
+            .is_none()
+    );
+    assert!(
+        authenticate(&state, &headers("second-token"))
+            .await
+            .is_some()
+    );
+    *source.state.lock().unwrap() = (2, "second-token".into(), true);
+    assert!(
+        authenticate(&state, &headers("second-token"))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn first_chat_cannot_create_a_session_without_agent_access() {
     let sessions: Arc<dyn SessionStore> =
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap());
@@ -1107,12 +1235,10 @@ async fn selection_updates_only_the_addressed_session() {
     handle_client_msg(
         ClientMsg::SelectModel {
             session_id: Some("session-a".into()),
-            model: sylvander_protocol::ModelSelectionInput::Qualified(
-                sylvander_protocol::ModelSelection {
-                    provider_id: "test".into(),
-                    model_id: "thinking-model".into(),
-                },
-            ),
+            model: sylvander_protocol::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "thinking-model".into(),
+            },
             reasoning_effort: sylvander_protocol::ReasoningEffort::High,
         },
         &context,
@@ -1140,7 +1266,6 @@ async fn selection_updates_only_the_addressed_session() {
             model_id: "thinking-model".into(),
         })
     );
-    assert!(states["session-a"].overrides.model_id.is_none());
     assert_eq!(states["session-b"], config_state("session-b"));
 }
 
@@ -1151,7 +1276,7 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
     let mut state = config_state("session-secret");
     state.overrides.system_prompt = Some(SENTINEL.into());
     state.effective.system_prompt_sha256 = DIGEST.into();
-    state.effective.prompt_manifest = Some(sylvander_protocol::PromptManifest {
+    state.effective.prompt_manifest = sylvander_protocol::PromptManifest {
         layers: vec![sylvander_protocol::PromptLayerDigest {
             kind: sylvander_protocol::PromptLayerKind::SessionInput,
             reference: Some("session".into()),
@@ -1160,7 +1285,7 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
         }],
         aggregate_sha256: "aggregate-digest".into(),
         total_bytes: SENTINEL.len() as u64,
-    });
+    };
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
@@ -1203,7 +1328,7 @@ async fn session_prompt_is_redacted_from_the_websocket_payload() {
 }
 
 #[tokio::test]
-async fn ambiguous_legacy_selection_fails_without_mutating_session() {
+async fn unavailable_qualified_selection_fails_without_mutating_session() {
     let ui = Arc::new(SessionConfigUi {
         states: Mutex::new(HashMap::from([(
             "session-a".into(),
@@ -1225,7 +1350,10 @@ async fn ambiguous_legacy_selection_fails_without_mutating_session() {
     handle_client_msg(
         ClientMsg::SelectModel {
             session_id: Some("session-a".into()),
-            model: sylvander_protocol::ModelSelectionInput::Legacy("shared".into()),
+            model: sylvander_protocol::ModelSelection {
+                provider_id: "missing".into(),
+                model_id: "shared".into(),
+            },
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         },
         &context,
@@ -1239,7 +1367,7 @@ async fn ambiguous_legacy_selection_fails_without_mutating_session() {
     assert!(matches!(
         rx.recv().await,
         Some(ServerMsg::OperationError { operation, message })
-            if operation == "select_model" && message.contains("ambiguous")
+            if operation == "select_model" && message.contains("unavailable")
     ));
     assert_eq!(
         ui.states.lock().await["session-a"],

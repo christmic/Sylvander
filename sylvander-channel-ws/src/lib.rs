@@ -6,6 +6,7 @@
 //!
 //! ## Client → Server (commands)
 //! ```json
+//! {"type":"hello","protocol":{"client_name":"example","min_version":4,"max_version":4,"capabilities":[]}}
 //! {"type":"chat","text":"hello","session_id":"optional"}
 //! {"type":"approve","call_id":"...","approved":true}
 //! {"type":"list_sessions"}
@@ -44,6 +45,9 @@ use tracing::{info, warn};
 
 use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_channel::credential::{
+    CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, submit_external_chat,
     unavailable_agent_admin_response, unavailable_registry_admin_response,
@@ -56,6 +60,7 @@ use sylvander_protocol::{
 // Channel
 // ===========================================================================
 
+/// Authenticated JSON-over-WebSocket adapter for desktop clients.
 pub struct WsChannel {
     addr: SocketAddr,
     agent_id: AgentId,
@@ -67,10 +72,17 @@ pub struct WsChannel {
 #[derive(Clone)]
 struct WsAuth {
     principal_id: String,
-    bearer_token: String,
+    bearer_lease: BearerLease,
+}
+
+#[derive(Clone)]
+struct BearerLease {
+    source: Arc<dyn CredentialLeaseSource>,
+    request: CredentialLeaseRequest,
 }
 
 impl WsChannel {
+    /// Construct an adapter bound to `addr` and one configured Agent.
     pub fn new(addr: SocketAddr, agent_id: impl Into<AgentId>) -> Self {
         Self {
             addr,
@@ -81,24 +93,30 @@ impl WsChannel {
         }
     }
 
+    /// Bound both WebSocket frames and assembled messages.
     #[must_use]
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
         self.max_request_bytes = max_request_bytes;
         self
     }
 
-    pub fn with_bearer_auth(
+    /// Require a renewable bearer lease and bind accepted upgrades to
+    /// `principal_id`.
+    pub fn with_bearer_lease(
         mut self,
         instance_id: impl Into<String>,
         principal_id: impl Into<String>,
-        bearer_token: impl Into<String>,
-    ) -> Self {
+        source: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError> {
         self.instance_id = instance_id.into();
         self.auth = Some(WsAuth {
             principal_id: principal_id.into(),
-            bearer_token: bearer_token.into(),
+            bearer_lease: BearerLease {
+                source,
+                request: CredentialLeaseRequest::new(self.instance_id.clone(), ["bearer_token"])?,
+            },
         });
-        self
+        Ok(self)
     }
 }
 
@@ -173,7 +191,7 @@ async fn ws_handler(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let Some(principal) = authenticate(&state, &headers) else {
+    let Some(principal) = authenticate(&state, &headers).await else {
         warn!(instance = %state.instance_id, "ws: rejected unauthenticated upgrade");
         return reject_ws_authentication(&state).await.into_response();
     };
@@ -214,7 +232,7 @@ fn boundary_status(error: &sylvander_protocol::BoundaryError) -> StatusCode {
     }
 }
 
-fn authenticate(
+async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
@@ -224,7 +242,13 @@ fn authenticate(
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")?;
-    constant_time_eq(supplied.as_bytes(), auth.bearer_token.as_bytes()).then(|| {
+    let lease = &auth.bearer_lease;
+    let leased = lease.source.lease(&lease.request).await.ok()?;
+    if !leased.contains_exact_slots(&lease.request.slots) {
+        return None;
+    }
+    let expected = leased.secret("bearer_token").ok()?;
+    constant_time_eq(supplied.as_bytes(), expected.as_bytes()).then(|| {
         sylvander_protocol::AuthenticatedPrincipal::user(
             auth.principal_id.clone(),
             sylvander_protocol::AuthenticationMethod::BearerToken,
@@ -374,6 +398,7 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
         "agent_discovery".into(),
         sylvander_protocol::IDENTITY_BINDING_CAPABILITY.into(),
         "session_config".into(),
+        "sessions".into(),
         "feedback".into(),
         sylvander_protocol::USER_PROFILE_CAPABILITY.into(),
     ];
@@ -749,15 +774,18 @@ async fn handle_client_msg(
                 }
             };
             let catalog = visible_model_catalog(&agents, &state.effective.agent_id);
-            let selection = match model.resolve(&catalog) {
-                Ok(selection) => selection,
-                Err(error) => {
-                    operation_error(tx, "select_model", error.to_string());
-                    return;
-                }
-            };
-            overrides.model = Some(selection);
-            overrides.model_id = None;
+            if !catalog.contains(&model) {
+                operation_error(
+                    tx,
+                    "select_model",
+                    format!(
+                        "model selection `{}/{}` is unavailable",
+                        model.provider_id, model.model_id
+                    ),
+                );
+                return;
+            }
+            overrides.model = Some(model);
             overrides.reasoning_effort = Some(reasoning_effort);
             match ui
                 .update_session_config(
@@ -820,7 +848,16 @@ async fn handle_client_msg(
             }
         }
         ClientMsg::ListSessions => {
-            info!("ws: client listed sessions (not yet fully implemented)");
+            if let Some(ui) = &ctx.ui {
+                match ui.list_sessions(&boundary).await {
+                    Ok(sessions) => {
+                        let _ = tx.send(ServerMsg::SessionsList { sessions });
+                    }
+                    Err(error) => boundary_denied(tx, error),
+                }
+            } else {
+                operation_error(tx, "list_sessions", "UI service is unavailable");
+            }
         }
         ClientMsg::Ping => {
             let _ = tx.send(ServerMsg::Pong);

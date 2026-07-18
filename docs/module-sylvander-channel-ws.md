@@ -5,18 +5,18 @@
 
 ## 1. Purpose
 
-`sylvander-channel-ws` is the primary bidirectional transport for
-Sylvander desktop clients. It carries the full `UiClientMessage`
-and `UiServerMessage` envelope over a single WebSocket connection,
-giving full-duplex interaction with the agent loop.
+`sylvander-channel-ws` is a bidirectional transport for Sylvander desktop
+clients. It carries the capability-advertised subset of `UiClientMessage` and
+`UiServerMessage` over one WebSocket connection, giving full-duplex
+interaction with the agent loop.
 
 ## 2. Protocol summary
 
 JSON-over-WebSocket. Each frame is a tagged enum value:
 
 - **Client → Server** examples: `chat`, `approve`, `answer`,
-  `interrupt`, `list_sessions`, `discover_agents`, `select_model`,
-  `submit_feedback`, `ping`, ...
+  `list_sessions`, `discover_agents`, `select_model`, `submit_feedback`,
+  `ping`, ...
 - **Server → Client** examples: `session_created`, `text_delta`,
   `thinking_delta`, `tool_call`, `tool_result`, `iteration_start`,
   `iteration_end`, `done`, `approval_request`, `error`, `pong`, ...
@@ -31,42 +31,57 @@ pub struct WsChannel { /* see lib.rs */ }
 impl WsChannel {
     pub fn new(addr: SocketAddr, agent_id: impl Into<AgentId>) -> Self;
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self;
-    pub fn with_bearer_auth(self, instance_id, principal_id, bearer_token) -> Self;
+    pub fn with_bearer_lease(
+        self,
+        instance_id,
+        principal_id,
+        source: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError>;
 }
 ```
 
 ## 4. Auth model
 
 Authentication is bearer-token based, attached via
-`with_bearer_auth`. The resolved token is required on every
-upgrade; rejected upgrades close the socket before any
-`UiClientMessage` is parsed. Tokens are resolved at startup via
-`SystemSecretResolver`.
+`with_bearer_lease`. Every upgrade acquires an exact
+`bearer_token` lease for the channel instance. Rotation therefore applies to
+the next connection without a process restart. Expired, unavailable, or
+malformed leases reject the upgrade before any `UiClientMessage` is parsed;
+an established socket keeps its already-authenticated principal rather than
+re-authenticating individual frames.
 
 ## 5. Lifecycle
 
 1. **Construct** with `WsChannel::new(addr, agent_id)`.
 2. **Configure** with `with_request_limit` (default 1 MiB) and
-   optionally `with_bearer_auth`.
+   `with_bearer_lease`.
 3. **Start** via `Runtime::start_channels`.
 4. **Connect** — clients open one WebSocket per session and send
    `Hello` first; the server replies with `Welcome` carrying the
    negotiated protocol version and capabilities.
-5. **Stream** — chat turns stream `text_delta`, `tool_call`,
-   `tool_result`, `iteration_*`, and finish with `done` or `error`.
-6. **Shutdown** — runtime closes idle connections gracefully and
+5. **Stream** — chat turns stream `text_delta`, `thinking_delta`,
+   `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
+   or `error`.
+6. **Session discovery** — `list_sessions` dispatches through Runtime
+   `UiService`, preserving stable-user visibility rules, and returns one typed
+   `sessions_list` response.
+7. **Shutdown** — runtime closes idle connections gracefully and
    aborts stuck ones on supervisor shutdown.
 
 ## 6. Tests
 
-Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover
-frame parsing, auth enforcement, and request-size limits.
+Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover the mandatory
+handshake, capability negotiation, live bearer rotation and lease failure,
+Runtime-owned identity and administration dispatch, redaction, per-session
+model changes, Runtime-owned session listing, approval transport, and
+request-size limits.
 
 ## 7. Common pitfalls
 
-- Using the legacy client shapes against a v3 server — the channel
-  negotiates a `UiProtocolHello` range, so wire mismatches should
-  surface as a `ProtocolError`.
+- Sending a shape outside the current negotiated protocol contract — the
+  channel rejects business messages before `Hello` and returns a typed
+  `ProtocolError` for a non-overlapping range. It does not translate obsolete
+  envelopes.
 - Assuming one socket per session — the channel allows multi-session
   use; tag every outbound message with the `session_id`.
 - Treating `auth` as transport-only — it scopes the
@@ -77,6 +92,7 @@ frame parsing, auth enforcement, and request-size limits.
 - [`docs/server-configuration.md`](server-configuration.md) — `ChannelTransportConfig::Websocket`.
 - [`docs/boundary-authorization.md`](boundary-authorization.md) — `BoundaryContext` and principal scoping.
 - [`docs/identity-binding-protocol.md`](identity-binding-protocol.md) — identity-link negotiation over WebSocket.
+- [`docs/credential-leases.md`](credential-leases.md) — renewable credential contract.
 - [`AGENTS.md`](../AGENTS.md) — project-wide agent guide.
 
 Co-Authored-By: 🦀 <oraculo@oraculo.ai>

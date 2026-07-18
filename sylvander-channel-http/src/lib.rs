@@ -3,6 +3,7 @@
 //! ```bash
 //! curl -N -X POST http://localhost:8080/chat \
 //!   -H 'Content-Type: application/json' \
+//!   -H "Authorization: Bearer ${SYLVANDER_HTTP_TOKEN}" \
 //!   -d '{"session_id":"test","message":"hello"}'
 //! ```
 
@@ -13,7 +14,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, Sse};
@@ -25,6 +26,9 @@ use tokio::sync::Mutex;
 
 use sylvander_agent::bus::{MessageKind, StreamEvent};
 use sylvander_agent::spec::SessionId;
+use sylvander_channel::credential::{
+    CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 use sylvander_channel::{Channel, ChannelContext, ExternalChatRequest, submit_external_chat};
 
 #[derive(Deserialize)]
@@ -33,67 +37,89 @@ struct ChatRequest {
     message: String,
 }
 
+/// Authenticated HTTP/SSE adapter for bounded debug and automation traffic.
 pub struct HttpChannel {
     addr: SocketAddr,
     agent_id: sylvander_agent::spec::AgentId,
     instance_id: String,
     principal_id: Option<String>,
-    bearer_token: Option<String>,
+    bearer_lease: Option<BearerLease>,
     max_request_bytes: usize,
     operational_health: Option<OperationalHealthProvider>,
 }
 
+/// Boxed future returned by an operational-health provider.
 pub type OperationalHealthFuture =
     Pin<Box<dyn Future<Output = Result<OperationalHealth, String>> + Send>>;
+/// Runtime-owned callback that supplies a fresh operational snapshot.
 pub type OperationalHealthProvider =
     Arc<dyn Fn() -> OperationalHealthFuture + Send + Sync + 'static>;
 
+/// Content-safe health and message-bus counters exposed by operational routes.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OperationalHealth {
+    /// Whether Runtime currently satisfies its readiness contract.
     pub ready: bool,
+    /// Number of configured Agent definitions.
     pub agents: usize,
+    /// Number of durable sessions.
     pub persistent_sessions: usize,
+    /// Number of process-local sessions.
     pub ephemeral_sessions: usize,
+    /// Number of channel instances that reported ready.
     pub ready_channels: usize,
+    /// Total number of supervised channel instances.
     pub total_channels: usize,
+    /// Current message-bus subscriber count.
     pub bus_subscribers: usize,
+    /// Configured per-subscription message capacity.
     pub bus_capacity: usize,
+    /// Cumulative accepted message count.
     pub published_messages: u64,
+    /// Cumulative publish attempts rejected by backpressure.
     pub backpressure_rejections: u64,
 }
 
 impl HttpChannel {
+    /// Construct an adapter bound to `addr` and one configured Agent.
     pub fn new(addr: SocketAddr, agent_id: impl Into<sylvander_agent::spec::AgentId>) -> Self {
         Self {
             addr,
             agent_id: agent_id.into(),
             instance_id: "http".into(),
             principal_id: None,
-            bearer_token: None,
+            bearer_lease: None,
             max_request_bytes: 1024 * 1024,
             operational_health: None,
         }
     }
 
+    /// Bound the decoded request body before JSON parsing.
     #[must_use]
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
         self.max_request_bytes = max_request_bytes;
         self
     }
 
-    pub fn with_bearer_auth(
+    /// Require a renewable bearer lease and bind accepted requests to
+    /// `principal_id`.
+    pub fn with_bearer_lease(
         mut self,
         instance_id: impl Into<String>,
         principal_id: impl Into<String>,
-        bearer_token: impl Into<String>,
-    ) -> Self {
+        source: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError> {
         self.instance_id = instance_id.into();
         self.principal_id = Some(principal_id.into());
-        self.bearer_token = Some(bearer_token.into());
-        self
+        self.bearer_lease = Some(BearerLease {
+            request: CredentialLeaseRequest::new(self.instance_id.clone(), ["bearer_token"])?,
+            source,
+        });
+        Ok(self)
     }
 
     #[must_use]
+    /// Attach Runtime's live operational-health provider.
     pub fn with_operational_health(mut self, provider: OperationalHealthProvider) -> Self {
         self.operational_health = Some(provider);
         self
@@ -114,7 +140,7 @@ impl Channel for HttpChannel {
             sessions: Mutex::new(std::collections::HashMap::new()),
             instance_id: self.instance_id.clone(),
             principal_id: self.principal_id.clone(),
-            bearer_token: self.bearer_token.clone(),
+            bearer_lease: self.bearer_lease.clone(),
             operational_health: self.operational_health.clone(),
         });
 
@@ -155,13 +181,14 @@ impl Channel for HttpChannel {
 async fn require_http_authentication(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    if authenticate(&state, &headers).is_some() {
-        return next.run(request).await;
-    }
-    reject_http_authentication(&state).await.into_response()
+    let Some(principal) = authenticate(&state, &headers).await else {
+        return reject_http_authentication(&state).await.into_response();
+    };
+    request.extensions_mut().insert(principal);
+    next.run(request).await
 }
 
 async fn reject_http_authentication(state: &AppState) -> StatusCode {
@@ -191,7 +218,7 @@ struct AppState {
     sessions: Mutex<std::collections::HashMap<String, SessionId>>,
     instance_id: String,
     principal_id: Option<String>,
-    bearer_token: Option<String>,
+    bearer_lease: Option<BearerLease>,
     operational_health: Option<OperationalHealthProvider>,
 }
 
@@ -273,17 +300,16 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 
 async fn chat(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    Extension(principal): Extension<sylvander_protocol::AuthenticatedPrincipal>,
     Json(req): Json<ChatRequest>,
 ) -> Result<
     Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
     StatusCode,
 > {
-    let principal = authenticate(&state, &headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let mut aliases = state.sessions.lock().await;
     let existing_session = aliases.get(&req.session_id).cloned();
     let boundary = sylvander_protocol::BoundaryContext::authenticated(
-        principal.clone(),
+        principal,
         &state.instance_id,
         "http",
         uuid::Uuid::new_v4().to_string(),
@@ -351,16 +377,21 @@ fn boundary_status(error: sylvander_protocol::BoundaryError) -> StatusCode {
     }
 }
 
-fn authenticate(
+async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<sylvander_protocol::AuthenticatedPrincipal> {
-    let expected = state.bearer_token.as_deref()?;
     let supplied = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")?;
+    let lease = state.bearer_lease.as_ref()?;
+    let leased = lease.source.lease(&lease.request).await.ok()?;
+    if !leased.contains_exact_slots(&lease.request.slots) {
+        return None;
+    }
+    let expected = leased.secret("bearer_token").ok()?;
     if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
         return None;
     }
@@ -368,6 +399,12 @@ fn authenticate(
         state.principal_id.clone()?,
         sylvander_protocol::AuthenticationMethod::BearerToken,
     ))
+}
+
+#[derive(Clone)]
+struct BearerLease {
+    source: Arc<dyn CredentialLeaseSource>,
+    request: CredentialLeaseRequest,
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
