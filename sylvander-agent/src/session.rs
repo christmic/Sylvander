@@ -5,7 +5,9 @@
 //! own isolated history — tool calls from agent A never pollute agent
 //! B's conversation.
 //!
-//! Session persistence (JSONL / `SQLite`) is deferred to a later phase.
+//! This value is the in-memory turn view. Durable ownership belongs to the
+//! injected [`crate::session_store::SessionStore`]; production Runtime uses
+//! the SQLite implementation and rebuilds this view from persisted messages.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

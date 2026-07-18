@@ -17,6 +17,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use sylvander_llm_anthropic::api::types::InputSchema;
+use sylvander_protocol::AgentHookPhase;
 
 use crate::tool_context::ToolContext;
 use crate::tool_invocation::{ToolInvocationClass, ToolInvocationDescriptor};
@@ -185,18 +186,37 @@ pub trait DynamicToolSource: Send + Sync {
     }
 }
 
+/// One immutable hook command bound to an executable lifecycle phase.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolHookConfig {
+    /// Stable, inspection-safe hook identity.
     pub name: String,
+    /// Exact production boundary. No default is accepted.
+    pub phase: AgentHookPhase,
+    /// Operator-owned command; public inspection must redact this field.
     pub command: String,
+    /// Per-invocation hard timeout, clamped again by the executor.
     #[serde(default = "default_hook_timeout_secs")]
     pub timeout_secs: u64,
+    /// Whether failure stops or rejects the owning operation.
     #[serde(default)]
     pub blocking: bool,
 }
 
 const fn default_hook_timeout_secs() -> u64 {
     30
+}
+
+/// A blocking hook denied continuation at a named lifecycle boundary.
+///
+/// Commands and executor errors are deliberately absent from this public
+/// error. Operators receive the phase and hook identity while hook output
+/// remains on the bounded progress channel.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("blocking hook `{hook_name}` failed during `{phase}`")]
+pub(crate) struct HookBlocked {
+    hook_name: String,
+    phase: &'static str,
 }
 
 /// Registry of tools available to the agent. Builder-style.
@@ -227,10 +247,37 @@ impl ToolRegistry {
         self
     }
 
+    /// Replace the hook set for this immutable registry composition.
+    ///
+    /// Runtime installs changed hooks by composing and validating a new Agent
+    /// revision before compare-and-swap activation. Existing sessions and
+    /// frozen turns retain their prior capability revision; newly bound
+    /// sessions receive the activated hook set without a server restart.
     #[must_use]
     pub fn with_hooks(mut self, hooks: Vec<ToolHookConfig>) -> Self {
         self.hooks = hooks;
         self
+    }
+
+    /// Execute a configured turn hook through the selected workspace executor.
+    ///
+    /// A before-turn hook runs exactly once before the first model iteration;
+    /// an after-turn hook runs exactly once before a successful turn is
+    /// published. Advisory failures are traced and do not change the turn.
+    /// Blocking failures stop the turn with a content-safe [`HookBlocked`].
+    pub(crate) async fn run_turn_hooks(
+        &self,
+        phase: AgentHookPhase,
+        ctx: &ToolContext,
+    ) -> Result<(), HookBlocked> {
+        assert!(
+            matches!(
+                phase,
+                AgentHookPhase::BeforeTurn | AgentHookPhase::AfterTurn
+            ),
+            "run_turn_hooks accepts only turn phases"
+        );
+        run_configured_hooks(&self.hooks, phase, ctx, ToolProgressSink::new(|_| {})).await
     }
 
     fn unhooked_snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
@@ -278,15 +325,18 @@ impl ToolRegistry {
                     name: hook.name.clone(),
                     status: sylvander_protocol::PlatformFeatureStatus::Configured,
                     summary: if hook.blocking {
-                        "before-tool · blocking".into()
+                        format!("{} · blocking", hook_phase_name(hook.phase))
                     } else {
-                        "before-tool · advisory".into()
+                        format!("{} · advisory", hook_phase_name(hook.phase))
                     },
                     source: None,
                     trust: Some(sylvander_protocol::PlatformTrust::User),
                     auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
-                    capabilities: vec!["before_tool".into()],
-                    reloadable: false,
+                    capabilities: vec![hook_phase_name(hook.phase).into()],
+                    // Hook changes are installed only through a validated Agent
+                    // revision. Runtime re-composes that revision before CAS
+                    // activation; frozen sessions keep their prior revision.
+                    reloadable: true,
                 }),
         );
         features
@@ -311,7 +361,7 @@ impl ToolRegistry {
     /// Return the content-addressed revision of the executable tool surface.
     ///
     /// The revision covers the current dynamic snapshot, schemas,
-    /// descriptions, and before-tool hooks. Persistent approvals bind to this
+    /// descriptions, and lifecycle hooks. Persistent approvals bind to this
     /// value so a catalog or hook change cannot reuse an older grant.
     #[must_use]
     pub fn capability_revision(&self) -> String {
@@ -363,11 +413,13 @@ impl ToolRegistry {
 
     /// Clone a registry containing only explicitly allowed tool names.
     /// Used to give background work a smaller capability set than its parent.
+    /// Hooks are executable commands, so a restrictive clone must not retain
+    /// them as an authority side channel.
     #[must_use]
     pub fn retain_named(&self, allowed: &[&str]) -> Self {
         Self {
             tools: self
-                .snapshot()
+                .unhooked_snapshot()
                 .into_iter()
                 .filter(|(name, _)| allowed.contains(&name.as_str()))
                 .collect(),
@@ -375,6 +427,112 @@ impl ToolRegistry {
             hooks: Vec::new(),
         }
     }
+}
+
+const MAX_VISIBLE_HOOK_DELTA_CHARS: usize = 4_096;
+
+const fn hook_phase_name(phase: AgentHookPhase) -> &'static str {
+    match phase {
+        AgentHookPhase::BeforeTool => "before_tool",
+        AgentHookPhase::AfterTool => "after_tool",
+        AgentHookPhase::BeforeTurn => "before_turn",
+        AgentHookPhase::AfterTurn => "after_turn",
+    }
+}
+
+fn bounded_hook_delta(delta: &str) -> String {
+    let sanitized = delta
+        .chars()
+        .map(|character| {
+            if character.is_control() && !matches!(character, '\n' | '\r' | '\t') {
+                '\u{fffd}'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let mut chars = sanitized.chars();
+    let visible = chars
+        .by_ref()
+        .take(MAX_VISIBLE_HOOK_DELTA_CHARS)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{visible}\n… hook output delta truncated …\n")
+    } else {
+        visible
+    }
+}
+
+async fn run_configured_hooks(
+    hooks: &[ToolHookConfig],
+    phase: AgentHookPhase,
+    ctx: &ToolContext,
+    progress: ToolProgressSink,
+) -> Result<(), HookBlocked> {
+    for hook in hooks.iter().filter(|hook| hook.phase == phase) {
+        let phase_name = hook_phase_name(phase);
+        progress.emit(format!("hook {} · {phase_name} · running\n", hook.name));
+        let stdout_progress = progress.clone();
+        let stderr_progress = progress.clone();
+        let hook_progress = WorkspaceCommandProgressSink::new(move |stream, delta| match stream {
+            WorkspaceCommandStream::Stdout => {
+                stdout_progress.emit(format!("hook stdout · {}", bounded_hook_delta(&delta)));
+            }
+            WorkspaceCommandStream::Stderr => {
+                stderr_progress.emit(format!("hook stderr · {}", bounded_hook_delta(&delta)));
+            }
+        });
+        let result = ctx
+            .executor
+            .run_command_streaming(
+                &ctx.execution_target,
+                &hook.command,
+                Duration::from_secs(hook.timeout_secs.clamp(1, 300)),
+                hook_progress,
+            )
+            .await;
+        match result {
+            Ok(output) if output.success => {
+                progress.emit(format!("hook {} · {phase_name} · passed\n", hook.name));
+            }
+            Ok(output) => {
+                let decision = if hook.blocking { "blocked" } else { "failed" };
+                progress.emit(format!(
+                    "hook {} · {phase_name} · {decision} · exit {}\n",
+                    hook.name,
+                    output
+                        .status_code
+                        .map_or_else(|| "unknown".into(), |code| code.to_string())
+                ));
+                if hook.blocking {
+                    return Err(HookBlocked {
+                        hook_name: hook.name.clone(),
+                        phase: phase_name,
+                    });
+                }
+            }
+            Err(error) => {
+                let decision = if hook.blocking { "blocked" } else { "failed" };
+                progress.emit(format!(
+                    "hook {} · {phase_name} · {decision} · execution error\n",
+                    hook.name
+                ));
+                tracing::warn!(
+                    hook = %hook.name,
+                    phase = phase_name,
+                    %error,
+                    "hook command execution failed"
+                );
+                if hook.blocking {
+                    return Err(HookBlocked {
+                        hook_name: hook.name.clone(),
+                        phase: phase_name,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 struct HookedTool {
@@ -411,63 +569,35 @@ impl Tool for HookedTool {
         input: JsonValue,
         progress: ToolProgressSink,
     ) -> Result<ToolOutput, ToolError> {
-        for hook in &self.hooks {
-            progress.emit(format!("hook {} · running\n", hook.name));
-            let stdout_progress = progress.clone();
-            let stderr_progress = progress.clone();
-            let hook_progress =
-                WorkspaceCommandProgressSink::new(move |stream, delta| match stream {
-                    WorkspaceCommandStream::Stdout => {
-                        stdout_progress.emit(format!("hook stdout · {delta}"));
-                    }
-                    WorkspaceCommandStream::Stderr => {
-                        stderr_progress.emit(format!("hook stderr · {delta}"));
-                    }
-                });
-            let result = ctx
-                .executor
-                .run_command_streaming(
-                    &ctx.execution_target,
-                    &hook.command,
-                    Duration::from_secs(hook.timeout_secs.clamp(1, 300)),
-                    hook_progress,
-                )
-                .await;
-            match result {
-                Ok(output) if output.success => {
-                    progress.emit(format!("hook {} · passed\n", hook.name));
-                }
-                Ok(output) => {
-                    let decision = if hook.blocking { "blocked" } else { "failed" };
-                    progress.emit(format!(
-                        "hook {} · {decision} · exit {}\n",
-                        hook.name,
-                        output
-                            .status_code
-                            .map_or_else(|| "unknown".into(), |code| code.to_string())
-                    ));
-                    if hook.blocking {
-                        return Ok(ToolOutput::err(format!(
-                            "blocked by hook `{}` before `{}`",
-                            hook.name,
-                            self.inner.name()
-                        )));
-                    }
-                }
-                Err(error) => {
-                    let decision = if hook.blocking { "blocked" } else { "failed" };
-                    progress.emit(format!("hook {} · {decision} · {error}\n", hook.name));
-                    if hook.blocking {
-                        return Ok(ToolOutput::err(format!(
-                            "blocked by hook `{}` before `{}`",
-                            hook.name,
-                            self.inner.name()
-                        )));
-                    }
-                }
-            }
+        if let Err(blocked) = run_configured_hooks(
+            &self.hooks,
+            AgentHookPhase::BeforeTool,
+            ctx,
+            progress.clone(),
+        )
+        .await
+        {
+            return Ok(ToolOutput::err(format!(
+                "{blocked}; tool `{}` was not executed",
+                self.inner.name()
+            )));
         }
-        self.inner.execute_streaming(ctx, input, progress).await
+        let result = self
+            .inner
+            .execute_streaming(ctx, input, progress.clone())
+            .await;
+        if let Err(blocked) =
+            run_configured_hooks(&self.hooks, AgentHookPhase::AfterTool, ctx, progress).await
+        {
+            return match result {
+                Ok(_) => Ok(ToolOutput::err(format!(
+                    "{blocked}; tool `{}` result was rejected",
+                    self.inner.name()
+                ))),
+                Err(_) => Err(ToolError::Other(blocked.to_string())),
+            };
+        }
+        result
     }
 }
 

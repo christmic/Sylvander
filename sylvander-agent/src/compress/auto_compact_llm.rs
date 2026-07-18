@@ -3,7 +3,7 @@
 //!
 //! The trait lets us:
 //! - Test the L4 layer with a mock LLM (no real API calls)
-//! - Swap implementations (production uses `AgentLoopAutoCompactLlm`,
+//! - Swap implementations (the loop uses an internal backend adapter;
 //!   tests use a closure or a recording stub)
 //!
 //! The signature returns `Pin<Box<dyn Future<...>>` so the trait is
@@ -15,10 +15,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures_util::StreamExt as _;
-use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelInfo;
-use sylvander_llm_anthropic::api::request::CreateMessageRequest;
-use sylvander_llm_anthropic::api::types::{ContentBlock, MessageParam, SystemPrompt};
+use sylvander_llm_anthropic::api::types::MessageParam;
 
 use crate::error::AgentLoopError;
 
@@ -46,70 +44,6 @@ pub trait AutoCompactLlm: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>>;
 }
 
-/// Production LLM impl: wraps an `AnthropicClient`.
-pub struct AgentLoopAutoCompactLlm {
-    pub client: AnthropicClient,
-    pub summary_prompt: String,
-}
-
-impl AgentLoopAutoCompactLlm {
-    #[must_use]
-    pub fn new(client: AnthropicClient) -> Self {
-        Self {
-            client,
-            summary_prompt: DEFAULT_SUMMARY_PROMPT.to_string(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_summary_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.summary_prompt = prompt.into();
-        self
-    }
-}
-
-impl AutoCompactLlm for AgentLoopAutoCompactLlm {
-    fn summarize<'a>(
-        &'a self,
-        messages: &'a [MessageParam],
-        model: &'a ModelInfo,
-    ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
-        Box::pin(async move {
-            let req = CreateMessageRequest::builder()
-                .model(model.id.clone())
-                .max_tokens(4096_u32)
-                .messages(messages.to_vec())
-                .system(SystemPrompt::String(self.summary_prompt.clone()))
-                .build()
-                .map_err(|e| {
-                    AgentLoopError::Compression(format!("auto_compact: build request: {e}"))
-                })?;
-
-            let response = self
-                .client
-                .messages()
-                .create(&req)
-                .await
-                .map_err(|source| AgentLoopError::Llm { retries: 0, source })?;
-
-            let text = response
-                .content
-                .iter()
-                .find_map(|block| match block {
-                    ContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
-                .ok_or_else(|| {
-                    AgentLoopError::Compression(
-                        "auto_compact: model returned no text in response".into(),
-                    )
-                })?;
-
-            Ok(text)
-        })
-    }
-}
-
 pub(crate) struct ProviderAutoCompactLlm {
     provider: Arc<dyn sylvander_llm_core::ModelProvider>,
     model: sylvander_llm_core::ModelInfo,
@@ -124,24 +58,6 @@ impl ProviderAutoCompactLlm {
     }
 }
 
-pub(crate) enum BackendAutoCompactLlm {
-    Legacy(AgentLoopAutoCompactLlm),
-    Provider(ProviderAutoCompactLlm),
-}
-
-impl AutoCompactLlm for BackendAutoCompactLlm {
-    fn summarize<'a>(
-        &'a self,
-        messages: &'a [MessageParam],
-        model: &'a ModelInfo,
-    ) -> Pin<Box<dyn Future<Output = Result<String, AgentLoopError>> + Send + 'a>> {
-        match self {
-            Self::Legacy(llm) => llm.summarize(messages, model),
-            Self::Provider(llm) => llm.summarize(messages, model),
-        }
-    }
-}
-
 impl AutoCompactLlm for ProviderAutoCompactLlm {
     fn summarize<'a>(
         &'a self,
@@ -151,7 +67,7 @@ impl AutoCompactLlm for ProviderAutoCompactLlm {
         Box::pin(async move {
             let messages = messages
                 .iter()
-                .map(crate::provider_compat::message_to_core)
+                .map(crate::provider_adapter::message_to_core)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|error| AgentLoopError::Compression(error.to_string()))?;
             let request = sylvander_llm_core::ModelRequest {

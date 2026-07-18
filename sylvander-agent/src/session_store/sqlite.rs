@@ -10,10 +10,9 @@
 //! complete `SQLite` object set exactly; Sylvander does not repair or migrate an
 //! older, newer, unmanaged, or damaged session database.
 //!
-//! Wire-format compatibility: `content_json` stores the same JSON
-//! shape Anthropic uses for `MessageParam` / `Message`, so the
-//! history can be fed straight back into `AgentLoop::run` after a
-//! restart without re-serialization.
+//! Current transcript encoding: `content_json` stores the exact JSON shape
+//! used by `MessageParam` / `Message`, so history can be fed straight back
+//! into `AgentLoop::run` after a restart without a migration or fallback.
 
 use std::collections::HashSet;
 use std::ops::Range;

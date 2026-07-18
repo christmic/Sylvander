@@ -54,9 +54,7 @@ impl CompactionError {
             {
                 Self::new(CompactionFailureCode::Protocol)
             }
-            AgentLoopError::Provider { .. } | AgentLoopError::Llm { .. } => {
-                Self::new(CompactionFailureCode::Provider)
-            }
+            AgentLoopError::Provider { .. } => Self::new(CompactionFailureCode::Provider),
             AgentLoopError::Compression(_) | AgentLoopError::Validation(_) => {
                 Self::new(CompactionFailureCode::Protocol)
             }

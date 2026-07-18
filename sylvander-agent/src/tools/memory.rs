@@ -556,8 +556,9 @@ impl MemoryEntry {
 /// What kind of fact this memory represents.
 ///
 /// Use this to filter recall: `search(kind=Preference)` returns only
-/// the user's preferences. New kinds are non-breaking — older code
-/// just sees an `Unknown` variant.
+/// the user's preferences. Unknown values are rejected: persisted memory uses
+/// the current schema and is never interpreted through a compatibility
+/// fallback.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryKind {
@@ -572,10 +573,6 @@ pub enum MemoryKind {
     ConversationRef { session_id: SessionId },
     /// Free-form note from the agent.
     AgentNote,
-    /// Catch-all for forward compatibility — newer code may add
-    /// kinds the local implementation doesn't recognize.
-    #[serde(other)]
-    Unknown,
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +724,7 @@ pub enum MemoryStoreError {
 ///
 /// Search is case-insensitive substring matching on `content`. This backend is
 /// intentionally ephemeral; persistent Runtime composition uses the exact
-/// schema-validated SQLite backend.
+/// schema-validated `SQLite` backend.
 #[derive(Debug)]
 pub struct InMemoryMemoryStore {
     entries: tokio::sync::RwLock<Vec<MemoryEntry>>,
