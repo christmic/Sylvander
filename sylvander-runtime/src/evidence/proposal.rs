@@ -261,4 +261,5 @@ pub(super) fn parse_status(value: &str) -> Result<ImprovementProposalStatus, Evi
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/evidence_proposal.rs"]
 mod tests;
