@@ -70,6 +70,11 @@ pub struct AgentLoop {
     /// Defaults to a placeholder (system user) if the caller doesn't
     /// supply one — keeps tests / examples working unchanged.
     pub(crate) tool_context: ToolContext,
+    /// Central authorization/audit gateway. Every ordinary executable tool
+    /// enters through this boundary after approval and before execution.
+    pub(crate) invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+    /// Immutable executable + prompt-context feature truth for this turn.
+    pub(crate) invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
 }
 
 #[derive(Clone)]
@@ -144,6 +149,7 @@ pub struct AgentLoopBuilder {
     plan_gate: Option<Arc<dyn crate::plan_gate::PlanGate>>,
     task_gate: Option<Arc<dyn crate::task_gate::TaskGate>>,
     tool_context: Option<ToolContext>,
+    invocation_gateway: Option<Arc<dyn crate::tool_invocation::ToolInvocationGateway>>,
 }
 
 impl Default for AgentLoopBuilder {
@@ -165,6 +171,7 @@ impl Default for AgentLoopBuilder {
             plan_gate: None,
             task_gate: None,
             tool_context: None,
+            invocation_gateway: None,
         }
     }
 }
@@ -375,6 +382,12 @@ impl AgentLoopBuilder {
         let tool_context = self
             .tool_context
             .unwrap_or_else(|| crate::tool_context::defaults::model_tool_context(&model));
+        let invocation_gateway = self.invocation_gateway.unwrap_or_else(|| {
+            crate::tool_invocation::RegistryBoundToolGateway::new(
+                self.tools.invocation_descriptors(),
+            )
+        });
+        let invocation_snapshot = invocation_gateway.snapshot();
 
         Ok(AgentLoop {
             backend,
@@ -390,6 +403,8 @@ impl AgentLoopBuilder {
             plan_gate: self.plan_gate,
             task_gate: self.task_gate,
             tool_context,
+            invocation_gateway,
+            invocation_snapshot,
         })
     }
 
@@ -398,6 +413,17 @@ impl AgentLoopBuilder {
     #[must_use]
     pub fn tool_context(mut self, ctx: ToolContext) -> Self {
         self.tool_context = Some(ctx);
+        self
+    }
+
+    /// Replace the standalone exact-route gateway with a Runtime-owned,
+    /// actor-aware implementation.
+    #[must_use]
+    pub fn invocation_gateway(
+        mut self,
+        gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+    ) -> Self {
+        self.invocation_gateway = Some(gateway);
         self
     }
 }
@@ -916,13 +942,17 @@ pub fn run_stream(
                                     progress_tx.try_send(delta).is_ok()
                                 });
                             let execution = execute_registered_tool(
-                                tool,
-                                &config.tool_context,
-                                input,
-                                &tool_use.id,
-                                &name,
-                                tool_timeout,
-                                progress,
+                                RegisteredToolExecutionRequest {
+                                    tool,
+                                    invocation_gateway: config.invocation_gateway.clone(),
+                                    invocation_snapshot: config.invocation_snapshot.clone(),
+                                    tool_context: config.tool_context.clone(),
+                                    input,
+                                    call_id: tool_use.id.clone(),
+                                    route: name.clone(),
+                                    timeout: tool_timeout,
+                                    progress,
+                                },
                             );
                             tokio::pin!(execution);
                             let execution = loop {
@@ -1014,6 +1044,8 @@ pub fn run_stream(
                         let input = tool_use.input.clone();
                         let decision = decision.clone();
                         let tool = config.tools.get(&name);
+                        let invocation_gateway = config.invocation_gateway.clone();
+                        let invocation_snapshot = config.invocation_snapshot.clone();
                         let context = config.tool_context.clone();
                         let progress_id = id.clone();
                         let progress_name = name.clone();
@@ -1033,13 +1065,17 @@ pub fn run_stream(
                                 crate::approval::ApprovalDecision::Approved => {
                                     ParallelToolOutcome::Executed(
                                         execute_registered_tool(
-                                            tool,
-                                            &context,
-                                            input,
-                                            &id,
-                                            &name,
-                                            tool_timeout,
-                                            progress,
+                                            RegisteredToolExecutionRequest {
+                                                tool,
+                                                invocation_gateway,
+                                                invocation_snapshot,
+                                                tool_context: context,
+                                                input,
+                                                call_id: id.clone(),
+                                                route: name.clone(),
+                                                timeout: tool_timeout,
+                                                progress,
+                                            },
                                         ).await,
                                     )
                                 }
@@ -1252,60 +1288,134 @@ struct ToolExecutionOutcome {
     timed_out_after: Option<std::time::Duration>,
 }
 
-async fn execute_registered_tool(
+struct RegisteredToolExecutionRequest {
     tool: Option<Arc<dyn crate::tool::Tool>>,
-    context: &crate::tool_context::ToolContext,
+    invocation_gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+    invocation_snapshot: crate::tool_invocation::ToolInvocationSnapshot,
+    tool_context: crate::tool_context::ToolContext,
     input: serde_json::Value,
-    call_id: &str,
-    name: &str,
+    call_id: String,
+    route: String,
     timeout: Option<std::time::Duration>,
     progress: crate::tool::ToolProgressSink,
-) -> ToolExecutionOutcome {
-    let session_id = &context.session.identity.session_id;
-    let trace_id = context.session.request.trace_id.as_deref().unwrap_or("");
-    tracing::debug!(%session_id, %trace_id, %call_id, tool = %name, "tool execution started");
+}
+
+async fn execute_registered_tool(request: RegisteredToolExecutionRequest) -> ToolExecutionOutcome {
+    let RegisteredToolExecutionRequest {
+        tool,
+        invocation_gateway,
+        invocation_snapshot,
+        tool_context,
+        input,
+        call_id,
+        route,
+        timeout,
+        progress,
+    } = request;
+    let session_id = &tool_context.session.identity.session_id;
+    let trace_id = tool_context
+        .session
+        .request
+        .trace_id
+        .as_deref()
+        .unwrap_or("");
+    tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, "tool execution started");
+    let request = crate::tool_invocation::ToolInvocationRequest::new(
+        &call_id,
+        &route,
+        tool.as_ref().map(|tool| tool.invocation_class()),
+        &tool_context,
+        input.clone(),
+        invocation_snapshot,
+    );
+    let grant = match invocation_gateway.authorize(request).await {
+        Ok(grant) => grant,
+        Err(error) => {
+            warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool authorization failed");
+            return ToolExecutionOutcome {
+                output: format!("tool authorization failed: {error}"),
+                is_error: true,
+                timed_out_after: None,
+            };
+        }
+    };
     let Some(tool) = tool else {
-        warn!(%session_id, %trace_id, %call_id, tool = %name, "tool not found in registry");
-        return ToolExecutionOutcome {
-            output: format!("tool `{name}` not found in registry"),
+        warn!(%session_id, %trace_id, %call_id, tool = %route, "tool not found in registry");
+        let mut outcome = ToolExecutionOutcome {
+            output: format!("tool `{route}` not found in registry"),
             is_error: true,
             timed_out_after: None,
         };
-    };
-    let result = if let Some(timeout) = timeout {
-        if let Ok(result) =
-            tokio::time::timeout(timeout, tool.execute_streaming(context, input, progress)).await
+        if let Err(error) = grant
+            .finish(crate::tool_invocation::ToolInvocationOutcome::Failed)
+            .await
         {
-            result
+            outcome.output = error.to_string();
+        }
+        return outcome;
+    };
+    let (result, timed_out_after) = if let Some(timeout) = timeout {
+        if let Ok(result) = tokio::time::timeout(
+            timeout,
+            tool.execute_streaming(&tool_context, input, progress),
+        )
+        .await
+        {
+            (Some(result), None)
         } else {
-            warn!(%session_id, %trace_id, %call_id, tool = %name, "tool execution timed out");
-            return ToolExecutionOutcome {
-                output: format!("tool `{name}` timed out after {}s", timeout.as_secs()),
-                is_error: true,
-                timed_out_after: Some(timeout),
-            };
+            warn!(%session_id, %trace_id, %call_id, tool = %route, "tool execution timed out");
+            (None, Some(timeout))
         }
     } else {
-        tool.execute_streaming(context, input, progress).await
+        (
+            Some(tool.execute_streaming(&tool_context, input, progress).await),
+            None,
+        )
     };
-    match result {
-        Ok(output) => {
-            tracing::debug!(%session_id, %trace_id, %call_id, tool = %name, is_error = output.is_error, "tool execution finished");
+    let (mut outcome, terminal) = match (result, timed_out_after) {
+        (None, Some(timeout)) => (
             ToolExecutionOutcome {
-                output: output.content,
-                is_error: output.is_error,
-                timed_out_after: None,
-            }
-        }
-        Err(error) => {
-            warn!(%session_id, %trace_id, %call_id, tool = %name, %error, "tool execution failed");
-            ToolExecutionOutcome {
-                output: format!("tool execution failed: {error}"),
+                output: format!("tool `{route}` timed out after {}s", timeout.as_secs()),
                 is_error: true,
-                timed_out_after: None,
-            }
+                timed_out_after: Some(timeout),
+            },
+            crate::tool_invocation::ToolInvocationOutcome::TimedOut,
+        ),
+        (Some(Ok(output)), None) => {
+            tracing::debug!(%session_id, %trace_id, %call_id, tool = %route, is_error = output.is_error, "tool execution finished");
+            let terminal = if output.is_error {
+                crate::tool_invocation::ToolInvocationOutcome::Failed
+            } else {
+                crate::tool_invocation::ToolInvocationOutcome::Succeeded
+            };
+            (
+                ToolExecutionOutcome {
+                    output: output.content,
+                    is_error: output.is_error,
+                    timed_out_after: None,
+                },
+                terminal,
+            )
         }
+        (Some(Err(error)), None) => {
+            warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool execution failed");
+            (
+                ToolExecutionOutcome {
+                    output: format!("tool execution failed: {error}"),
+                    is_error: true,
+                    timed_out_after: None,
+                },
+                crate::tool_invocation::ToolInvocationOutcome::Failed,
+            )
+        }
+        _ => unreachable!("timeout and execution result are mutually exclusive"),
+    };
+    if let Err(error) = grant.finish(terminal).await {
+        warn!(%session_id, %trace_id, %call_id, tool = %route, %error, "tool terminal audit failed");
+        outcome.output = error.to_string();
+        outcome.is_error = true;
     }
+    outcome
 }
 
 // =====================================================================

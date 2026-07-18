@@ -1268,7 +1268,41 @@ impl AgentRun {
             .ok_or_else(|| MemoryStoreError::Store("no memory store configured".into()))?;
         let session_id = self.authorized_session_id(session)?;
         let context = self.memory_context_for_session(session_id).await?;
+        self.authorize_relationship_learning(&context).await?;
         store.append_relationship(&context, append).await
+    }
+
+    async fn authorize_relationship_learning(
+        &self,
+        context: &MemoryExecutionContext,
+    ) -> Result<(), MemoryStoreError> {
+        let provider = self
+            .inner
+            .user_profile_provider
+            .as_ref()
+            .ok_or(MemoryStoreError::AccessDenied)?;
+        let subject = UserProfileSubject::authenticated(
+            context
+                .user_id()
+                .cloned()
+                .ok_or(MemoryStoreError::AccessDenied)?,
+            context
+                .agent_id()
+                .cloned()
+                .ok_or(MemoryStoreError::AccessDenied)?,
+            context
+                .session_id()
+                .cloned()
+                .ok_or(MemoryStoreError::AccessDenied)?,
+        );
+        let profile = provider
+            .current_profile(&subject)
+            .await
+            .map_err(|_| MemoryStoreError::AccessDenied)?;
+        if profile.is_some_and(|profile| profile.do_not_learn) {
+            return Err(MemoryStoreError::AccessDenied);
+        }
+        Ok(())
     }
 
     /// System-driven memory lookup derived from an attached session.
@@ -2397,8 +2431,21 @@ impl AgentRunInner {
         // 2. Build per-session approval gate and tool surface from one
         // immutable permission/capability snapshot. Changes made mid-turn
         // apply to the next turn and invalidate persistent grants there.
-        let (turn_tools, capability_revision) = loop_config.tools.freeze_with_revision();
+        let (turn_tools, tool_surface_revision) = loop_config.tools.freeze_with_revision();
         loop_config.tools = turn_tools;
+        let prompt_context_features = self
+            .skill_features
+            .read()
+            .unwrap()
+            .iter()
+            .map(|feature| feature.name.clone())
+            .collect::<Vec<_>>();
+        let invocation_snapshot = loop_config
+            .invocation_gateway
+            .snapshot()
+            .for_turn(&tool_surface_revision, prompt_context_features);
+        let capability_revision = invocation_snapshot.revision().to_owned();
+        loop_config.invocation_snapshot = invocation_snapshot;
         let identity_authorized = self
             .authenticated_sessions
             .read()
@@ -2922,7 +2969,7 @@ async fn workspace_turn_context(
                     sylvander_protocol::PlatformFeatureStatus::Degraded
                 }
             },
-            summary: format!("{} ({})", skill.summary, skill.role),
+            summary: format!("prompt context only · {} ({})", skill.summary, skill.role),
             source: Some(format!("{}:{}", skill.target_id, skill.relative_path)),
             trust: Some(if skill.role == "agent-home" {
                 sylvander_protocol::PlatformTrust::BuiltIn
@@ -2930,7 +2977,11 @@ async fn workspace_turn_context(
                 sylvander_protocol::PlatformTrust::Workspace
             }),
             auth: sylvander_protocol::PlatformAuthStatus::NotRequired,
-            capabilities: skill.capabilities.clone(),
+            capabilities: {
+                let mut capabilities = skill.capabilities.clone();
+                capabilities.push("prompt_context_only".into());
+                capabilities
+            },
             reloadable: true,
         })
         .collect();
@@ -2993,33 +3044,6 @@ async fn workspace_turn_context(
         authoritative,
         retrieved,
     })
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-async fn with_workspace_context(
-    prompt: String,
-    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
-    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
-    fallback_task_workspace: &Path,
-    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
-    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
-) -> Result<String, AgentRunError> {
-    let workspace = workspace_turn_context(
-        agent_workspace,
-        task_workspace,
-        workspace_mounts,
-        fallback_task_workspace,
-        workspace_executors,
-        skill_features,
-        "",
-        TurnContextBudgets::default().workspace_knowledge,
-    )
-    .await?;
-    Ok(workspace.authoritative.map_or(prompt.clone(), |context| {
-        format!("{prompt}\n\n{}", context.content())
-    }))
 }
 
 fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
@@ -3235,6 +3259,7 @@ pub struct AgentRunBuilder {
     approval_store_path: Option<PathBuf>,
     workspace_journal_path: Option<PathBuf>,
     workspace_executors: HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    invocation_gateway: Option<Arc<dyn crate::tool_invocation::ToolInvocationGateway>>,
 }
 
 enum AgentRunModelBackend {
@@ -3304,6 +3329,7 @@ impl AgentRunBuilder {
             approval_store_path: None,
             workspace_journal_path: None,
             workspace_executors,
+            invocation_gateway: None,
         }
     }
 
@@ -3328,6 +3354,17 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn override_tools(mut self, tools: ToolRegistry) -> Self {
         self.tool_overrides = Some(tools);
+        self
+    }
+
+    /// Inject the Runtime-owned authorization and durable audit boundary used
+    /// by every ordinary tool invocation.
+    #[must_use]
+    pub fn invocation_gateway(
+        mut self,
+        gateway: Arc<dyn crate::tool_invocation::ToolInvocationGateway>,
+    ) -> Self {
+        self.invocation_gateway = Some(gateway);
         self
     }
 
@@ -3629,6 +3666,9 @@ impl AgentRunBuilder {
         }
         if let Some(tools) = self.tool_overrides {
             loop_builder = loop_builder.tools(tools);
+        }
+        if let Some(gateway) = self.invocation_gateway {
+            loop_builder = loop_builder.invocation_gateway(gateway);
         }
         if let Some(pipeline) = self.compression_overrides {
             loop_builder = loop_builder.compression_pipeline(pipeline);
