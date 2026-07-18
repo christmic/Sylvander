@@ -23,7 +23,7 @@ used by the WebSocket channel.
 pub struct UnixChannel { /* see lib.rs */ }
 #[derive(Clone)]
 pub struct RuntimeInfo {
-    pub model: String,
+    pub model: ModelSelection,
     pub reasoning_effort: ReasoningEffort,
     pub models: Vec<ModelDescriptor>,
     pub permissions: PermissionProfile,

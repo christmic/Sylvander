@@ -56,9 +56,9 @@ re-authenticating individual frames.
 2. **Configure** with `with_request_limit` (default 1 MiB) and
    `with_bearer_lease`.
 3. **Start** via `Runtime::start_channels`.
-4. **Connect** — clients open one WebSocket per session and send
-   `Hello` first; the server replies with `Welcome` carrying the
-   negotiated protocol version and capabilities.
+4. **Connect** — a client surface opens a WebSocket and sends `Hello` first;
+   the server replies with `Welcome` carrying the negotiated protocol version
+   and capabilities. One socket may carry multiple explicitly tagged sessions.
 5. **Stream** — chat turns stream `text_delta`, `thinking_delta`,
    `tool_call`, `tool_result`, and `iteration_start`, then finish with `done`
    or `error`.

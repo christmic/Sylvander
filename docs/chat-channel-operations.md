@@ -1,9 +1,9 @@
 # Chat channel operations
 
-DingTalk and Telegram are production chat adapters over the common Runtime UI
-service. Each configured bot is a separate channel instance with isolated
-credentials, external identity, session mapping, replay cache, routing
-defaults, health, and restart policy.
+DingTalk, Telegram, and WeChat Work are production chat adapters over the
+common Runtime UI service. Each configured bot is a separate channel instance
+with isolated renewable credentials, external identity, session mapping,
+replay cache, routing defaults, health, and restart policy.
 
 ## Interactive controls
 
@@ -30,7 +30,12 @@ Transports do not publish approval messages directly to the Agent bus.
   boundaries, and bounds tool summaries without splitting UTF-8.
 - DingTalk rejects duplicate message IDs with a bounded expiring cache and
   uses the instance's session webhook for outbound delivery.
-- Both adapters retry network failures, HTTP 429, and HTTP 5xx at most three
+- WeChat verifies and decrypts callbacks against the configured enterprise,
+  rejects duplicate message IDs, acquires an API access token for the current
+  credential generation, and sends bounded completed replies plus tool/control
+  status through the active message API. Expired-token responses trigger one
+  refresh; streamed text deltas are not emitted as duplicate messages.
+- All three adapters retry network failures, HTTP 429, and HTTP 5xx at most three
   times with short increasing delays. Other HTTP 4xx responses fail
   immediately. Exhaustion is logged without crashing the Runtime supervisor.
 - Inbound request/frame limits come from the server boundary configuration.
@@ -38,7 +43,7 @@ Transports do not publish approval messages directly to the Agent bus.
 ## Other adapters
 
 Unix and WebSocket expose the complete typed UI protocol directly. HTTP uses
-authenticated chat ingress. WeChat uses authenticated, encrypted callback
-ingress. All adapters share stable instance registration, Runtime readiness,
-health, restart/backoff, failure isolation, and cooperative drain. The TUI
-remains a single-session Unix client; Ghostty owns multi-session presentation.
+bounded authenticated chat ingress. All adapters share stable instance
+registration, Runtime readiness, health, restart/backoff, failure isolation,
+and cooperative drain. The TUI remains a single-session Unix client; Ghostty
+owns multi-session presentation.
