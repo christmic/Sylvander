@@ -14,7 +14,7 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use support::MockTool;
+use support::{MockTool, qualified_anthropic_loop_builder};
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()
@@ -97,9 +97,7 @@ async fn tool_output_deltas_arrive_before_final_result() {
         })))
         .mount(&server)
         .await;
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(ProgressTool)
         .build()
         .expect("build");
@@ -196,9 +194,7 @@ async fn run_burst_progress(include_control_tool: bool) -> Vec<AgentEvent> {
         })))
         .mount(&server)
         .await;
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(BurstProgressTool)
         .build()
         .expect("build");
@@ -304,9 +300,7 @@ async fn ordinary_tool_batch_starts_and_executes_concurrently() {
         .mount(&server)
         .await;
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(BarrierTool {
             barrier: Arc::new(tokio::sync::Barrier::new(2)),
         })
@@ -357,9 +351,7 @@ async fn single_iteration_end_turn_returns_final_message() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .build()
         .expect("build");
 
@@ -399,9 +391,12 @@ async fn tool_use_triggers_tool_execution_and_continues() {
     // First LLM call: returns tool_use
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(
-            json!({"messages": [{"role": "user", "content": "Get weather"}]}),
-        ))
+        .and(body_partial_json(json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Get weather"}]
+            }]
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -451,9 +446,7 @@ async fn tool_use_triggers_tool_execution_and_continues() {
         ToolOutput::ok("sunny, 25C"),
     );
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(weather_tool)
         .build()
         .expect("build");
@@ -538,9 +531,7 @@ async fn max_iterations_returns_the_last_partial_message() {
 
     let noop_tool = MockTool::new("noop", "no-op", ToolOutput::ok(""));
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(noop_tool)
         .max_iterations(3)
         .build()
@@ -560,9 +551,12 @@ async fn tool_error_continues_loop() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(
-            json!({"messages": [{"role": "user", "content": "Try tool"}]}),
-        ))
+        .and(body_partial_json(json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Try tool"}]
+            }]
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -601,9 +595,7 @@ async fn tool_error_continues_loop() {
         ToolOutput::err("intentional failure"),
     );
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .tool(failing_tool)
         .build()
         .expect("build");
@@ -621,9 +613,12 @@ async fn tool_not_found_records_error_and_continues() {
 
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .and(body_partial_json(
-            json!({"messages": [{"role": "user", "content": "Try missing"}]}),
-        ))
+        .and(body_partial_json(json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "Try missing"}]
+            }]
+        })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_1",
             "type": "message",
@@ -657,9 +652,7 @@ async fn tool_not_found_records_error_and_continues() {
         .await;
 
     // No tools registered
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .build()
         .expect("build");
 
@@ -683,18 +676,16 @@ async fn llm_error_propagates_without_retry() {
         .mount(&server)
         .await;
 
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .build()
         .expect("build");
 
     let result = sylvander_agent::prelude::run(&loop_, vec![MessageParam::user("Hi")]).await;
 
-    // 4xx is non-retryable — propagates with retries: 0
+    // 4xx is non-retryable — exactly one provider request is attempted.
     assert!(matches!(
         result,
-        Err(AgentLoopError::Llm { retries: 0, .. })
+        Err(AgentLoopError::Provider { attempts: 1, .. })
     ));
 }
 
@@ -721,9 +712,7 @@ async fn event_order_iteration_start_chunks_end() {
 
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
-    let loop_ = AgentLoop::builder()
-        .client(mock_client(&server))
-        .model(test_model())
+    let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
         .build()
         .expect("build");
 
