@@ -1,6 +1,7 @@
 //! Built-in tool implementations.
 //!
-//! M3+ scope. M2 ships only the `Tool` trait and `MockTool` for tests.
+//! Runtime tools implement the shared [`crate::tool::Tool`] contract. Test
+//! doubles are kept in the crate's `tests/` tree.
 
 pub mod ask_user;
 pub mod background_task;

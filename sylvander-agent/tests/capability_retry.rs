@@ -1,5 +1,7 @@
 //! Integration tests for capability validation + retry/backoff.
 
+mod support;
+
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use sylvander_agent::prelude::*;
@@ -7,6 +9,8 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::MockTool;
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()

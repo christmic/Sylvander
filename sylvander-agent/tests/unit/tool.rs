@@ -1,6 +1,8 @@
 use super::*;
+use crate::test_support::MockTool;
 use crate::tool_context::ToolContext;
 use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 fn ctx() -> ToolContext {
     ToolContext::new(sylvander_protocol::SessionContext::new("u", "a", "s"))
