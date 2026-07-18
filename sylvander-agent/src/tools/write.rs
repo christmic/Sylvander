@@ -1,13 +1,11 @@
 //! `Write` tool — write a file to disk.
 //!
-//! Basic implementation: takes a path (relative to a workdir) and
+//! Basic implementation: takes a path (relative to the current workspace) and
 //! content, writes the content to the file. Creates parent
 //! directories if needed. Overwrites existing files.
 //!
 //! Failures (parent dir not creatable, permission denied, etc.) are
 //! returned as `ToolOutput::err` so the model can react.
-
-use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
@@ -17,26 +15,16 @@ use sylvander_llm_anthropic::api::types::InputSchema;
 use crate::tool::{Tool, ToolError, ToolOutput};
 use crate::tool_context::ToolContext;
 
-/// Write a file to disk. Paths are resolved relative to `workdir`.
+/// Write a file into the invocation's explicit workspace.
 /// If the parent directory does not exist, it is created.
-#[derive(Debug, Clone)]
-pub struct WriteTool {
-    workdir: PathBuf,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WriteTool;
 
 impl WriteTool {
-    /// Create a `WriteTool` rooted at `workdir`.
+    /// Create a stateless write tool.
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
-    }
-
-    /// Current working directory.
-    #[must_use]
-    pub fn workdir(&self) -> &Path {
-        &self.workdir
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -47,7 +35,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write content to a file at the given path (relative to workdir). \
+        "Write content to a file at the given path (relative to the current workspace). \
          Creates parent directories if needed. Overwrites the file if it already exists."
     }
 
@@ -56,7 +44,7 @@ impl Tool for WriteTool {
             json!({
                 "file_path": {
                     "type": "string",
-                    "description": "Path to the file, relative to the workdir"
+                    "description": "Path to the file, relative to the current workspace"
                 },
                 "content": {
                     "type": "string",
@@ -86,7 +74,10 @@ impl Tool for WriteTool {
             .and_then(JsonValue::as_str)
             .ok_or_else(|| ToolError::Other("missing required field `content`".into()))?;
 
-        let target = ctx.execution_target_for(&self.workdir);
+        let target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         if target.read_only {
             return Ok(ToolOutput::err(format!(
                 "execution target `{}` is read-only",
@@ -114,7 +105,7 @@ impl Tool for WriteTool {
 
         match ctx
             .executor
-            .write_file(&target, path_str, content.as_bytes())
+            .write_file(target, path_str, content.as_bytes())
             .await
         {
             Ok(()) => {

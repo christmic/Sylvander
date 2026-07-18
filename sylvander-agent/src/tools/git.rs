@@ -1,6 +1,6 @@
 //! Structured, read-only Git inspection for coding tasks.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,17 +21,13 @@ const SAFE_GIT_PREFIX: &str = "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 ///
 /// Unlike [`super::CommandTool`], this tool accepts a small structured
 /// operation set and never accepts an arbitrary command or revision argument.
-#[derive(Debug, Clone)]
-pub struct GitTool {
-    workdir: PathBuf,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GitTool;
 
 impl GitTool {
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -107,10 +103,11 @@ impl Tool for GitTool {
         };
 
         let workspace = object.get("workspace").and_then(JsonValue::as_str);
-        let target = match ctx
-            .executor
-            .select_mount_target(&ctx.execution_target_for(&self.workdir), workspace)
-        {
+        let base_target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
+        let target = match ctx.executor.select_mount_target(base_target, workspace) {
             Ok(target) => target,
             Err(error) => return Ok(ToolOutput::err(error.to_string())),
         };

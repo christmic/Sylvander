@@ -1,7 +1,5 @@
 //! Structured workspace text search.
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_anthropic::api::types::InputSchema;
@@ -13,17 +11,13 @@ use crate::workspace_executor::{MAX_QUERY_RESULTS, WorkspaceQueryLimits, Workspa
 use super::list::{optional_string, parse_max_results, strict_object};
 
 /// Search workspace text through the invocation's workspace executor.
-#[derive(Debug, Clone)]
-pub struct SearchTool {
-    workdir: PathBuf,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SearchTool;
 
 impl SearchTool {
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -82,11 +76,14 @@ impl Tool for SearchTool {
             max_results,
             ..WorkspaceQueryLimits::default()
         };
-        let target = ctx.execution_target_for(&self.workdir);
+        let target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         let result = match ctx
             .executor
             .search(
-                &target,
+                target,
                 WorkspaceSearchRequest {
                     relative_path: path.into(),
                     query: query.into(),

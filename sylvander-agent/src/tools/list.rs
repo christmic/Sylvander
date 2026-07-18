@@ -1,7 +1,5 @@
 //! Structured workspace directory listing.
 
-use std::path::PathBuf;
-
 use async_trait::async_trait;
 use serde_json::{Value as JsonValue, json};
 use sylvander_llm_anthropic::api::types::InputSchema;
@@ -13,17 +11,13 @@ use crate::workspace_executor::{
 };
 
 /// List files and directories through the invocation's workspace executor.
-#[derive(Debug, Clone)]
-pub struct ListTool {
-    workdir: PathBuf,
-}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ListTool;
 
 impl ListTool {
     #[must_use]
-    pub fn new(workdir: impl Into<PathBuf>) -> Self {
-        Self {
-            workdir: workdir.into(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -78,11 +72,14 @@ impl Tool for ListTool {
             max_results,
             ..WorkspaceQueryLimits::default()
         };
-        let target = ctx.execution_target_for(&self.workdir);
+        let target = match ctx.require_execution_target() {
+            Ok(target) => target,
+            Err(error) => return Ok(ToolOutput::err(error.to_string())),
+        };
         let result = match ctx
             .executor
             .list(
-                &target,
+                target,
                 WorkspaceListRequest {
                     relative_path: path.into(),
                     recursive,
