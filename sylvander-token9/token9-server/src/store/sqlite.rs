@@ -1,3 +1,5 @@
+//! SQLite schema and operational persistence for token9 metering.
+
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 
@@ -105,10 +107,10 @@ pub struct SqliteStore {
 impl SqliteStore {
     pub async fn open(db_path: &str) -> anyhow::Result<Self> {
         let path = expand_tilde(db_path);
-        if let Some(parent) = std::path::Path::new(&path).parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = std::path::Path::new(&path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let opts = SqliteConnectOptions::new()
             .filename(&path)

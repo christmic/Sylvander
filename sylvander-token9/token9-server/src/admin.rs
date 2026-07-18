@@ -79,7 +79,12 @@ pub async fn create_provider(
     let dialect = Dialect::from_str(&input.dialect).map_err(AppError::bad_request)?;
     state
         .store
-        .add_provider(&input.name, &input.base_url, dialect, input.api_key.as_deref())
+        .add_provider(
+            &input.name,
+            &input.base_url,
+            dialect,
+            input.api_key.as_deref(),
+        )
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let routes = reload(&state).await?;
@@ -96,7 +101,9 @@ pub async fn delete_provider(
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let routes = reload(&state).await?;
-    Ok(Json(serde_json::json!({ "removed": removed, "routes": routes })))
+    Ok(Json(
+        serde_json::json!({ "removed": removed, "routes": routes }),
+    ))
 }
 
 // ---- models ----
@@ -110,9 +117,7 @@ pub struct ModelInput {
     pub inject_usage: bool,
 }
 
-pub async fn list_models(
-    State(state): State<AppState>,
-) -> Result<Json<ModelsResponse>, AppError> {
+pub async fn list_models(State(state): State<AppState>) -> Result<Json<ModelsResponse>, AppError> {
     let ms = state
         .store
         .list_models()
@@ -136,7 +141,12 @@ pub async fn create_model(
 ) -> Result<Json<serde_json::Value>, AppError> {
     state
         .store
-        .add_model(&input.model_id, &input.provider, &input.real_model, input.inject_usage)
+        .add_model(
+            &input.model_id,
+            &input.provider,
+            &input.real_model,
+            input.inject_usage,
+        )
         .await
         .map_err(|e| AppError::bad_request(e.to_string()))?;
     let routes = reload(&state).await?;
@@ -153,7 +163,9 @@ pub async fn delete_model(
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let routes = reload(&state).await?;
-    Ok(Json(serde_json::json!({ "removed": removed, "routes": routes })))
+    Ok(Json(
+        serde_json::json!({ "removed": removed, "routes": routes }),
+    ))
 }
 
 // ---- tool rules ----
@@ -296,7 +308,9 @@ fn hundred() -> i64 {
     100
 }
 
-pub async fn list_routes(State(state): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
+pub async fn list_routes(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let rs = state
         .store
         .list_routes()
@@ -321,7 +335,13 @@ pub async fn create_route(
 ) -> Result<Json<serde_json::Value>, AppError> {
     state
         .store
-        .add_route(&input.model_id, &input.provider, &input.real_model, input.weight, input.priority)
+        .add_route(
+            &input.model_id,
+            &input.provider,
+            &input.real_model,
+            input.weight,
+            input.priority,
+        )
         .await
         .map_err(|e| AppError::bad_request(e.to_string()))?;
     reload(&state).await?;

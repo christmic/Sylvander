@@ -1,3 +1,5 @@
+//! OpenAI Chat Completions and Responses usage extraction.
+
 use super::{Usage, as_i64};
 
 /// Extract OpenAI usage from a single JSON object.

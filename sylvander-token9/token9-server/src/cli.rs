@@ -11,7 +11,11 @@ use crate::store::sqlite::SqliteStore;
 #[command(name = "token9", about = "Local LLM API router & token meter")]
 pub struct Cli {
     /// Path to bootstrap config.toml
-    #[arg(long, default_value = "~/.Oraculo/config/token9/config.toml", global = true)]
+    #[arg(
+        long,
+        default_value = "~/.Oraculo/config/token9/config.toml",
+        global = true
+    )]
     pub config: String,
     /// Override the listen port
     #[arg(long, global = true)]
@@ -242,7 +246,10 @@ pub async fn run_provider(store: &SqliteStore, cmd: ProviderCmd) -> anyhow::Resu
                     Some(_) => "****".to_string(),
                     None => "-".to_string(),
                 };
-                println!("{:<16} {:<10} {:<40} key={}", p.name, p.dialect, p.base_url, masked);
+                println!(
+                    "{:<16} {:<10} {:<40} key={}",
+                    p.name, p.dialect, p.base_url, masked
+                );
             }
         }
         ProviderCmd::Rm { name } => {
@@ -289,13 +296,19 @@ pub async fn run_model(store: &SqliteStore, cmd: ModelCmd) -> anyhow::Result<()>
 
 pub async fn run_key(store: &SqliteStore, cmd: KeyCmd) -> anyhow::Result<()> {
     match cmd {
-        KeyCmd::Add { provider, api_key, label } => {
+        KeyCmd::Add {
+            provider,
+            api_key,
+            label,
+        } => {
             let key = match api_key.as_deref() {
                 Some("-") | None => read_secret_from_stdin("API key: ")?,
                 Some(k) => Some(k.to_string()),
             };
             let key = key.ok_or_else(|| anyhow::anyhow!("empty api key"))?;
-            store.add_provider_key(&provider, &key, label.as_deref()).await?;
+            store
+                .add_provider_key(&provider, &key, label.as_deref())
+                .await?;
             println!("key added to `{provider}`");
         }
         KeyCmd::List { provider } => {
@@ -310,7 +323,14 @@ pub async fn run_key(store: &SqliteStore, cmd: KeyCmd) -> anyhow::Result<()> {
                     None => "-".into(),
                 };
                 let en = if k.enabled { "on" } else { "off" };
-                println!("#{:<4} {:<12} {:<10} {} [{}]", k.id, k.provider, en, masked, k.label.unwrap_or_default());
+                println!(
+                    "#{:<4} {:<12} {:<10} {} [{}]",
+                    k.id,
+                    k.provider,
+                    en,
+                    masked,
+                    k.label.unwrap_or_default()
+                );
             }
         }
         KeyCmd::Rm { id } => {
@@ -323,8 +343,16 @@ pub async fn run_key(store: &SqliteStore, cmd: KeyCmd) -> anyhow::Result<()> {
 
 pub async fn run_route(store: &SqliteStore, cmd: RouteCmd) -> anyhow::Result<()> {
     match cmd {
-        RouteCmd::Add { model_id, provider, real_model, weight, priority } => {
-            store.add_route(&model_id, &provider, &real_model, weight, priority).await?;
+        RouteCmd::Add {
+            model_id,
+            provider,
+            real_model,
+            weight,
+            priority,
+        } => {
+            store
+                .add_route(&model_id, &provider, &real_model, weight, priority)
+                .await?;
             println!("route: {model_id} -> {provider}/{real_model} (w{weight} p{priority})");
         }
         RouteCmd::List => {
@@ -356,7 +384,9 @@ pub async fn run_tool(store: &SqliteStore, cmd: ToolCmd) -> anyhow::Result<()> {
             pattern,
             priority,
         } => {
-            let id = store.add_tool_rule(&label, &header, &pattern, priority).await?;
+            let id = store
+                .add_tool_rule(&label, &header, &pattern, priority)
+                .await?;
             println!("tool rule #{id}: [{header} ~ \"{pattern}\"] -> {label}");
         }
         ToolCmd::List => {
@@ -394,12 +424,10 @@ pub async fn run_settings(store: &SqliteStore, cmd: SettingsCmd) -> anyhow::Resu
             store.set_setting(&key, &value).await?;
             println!("{key} = {value} (restart `token9 serve` to apply)");
         }
-        SettingsCmd::Get { key } => {
-            match store.get_setting(&key).await? {
-                Some(v) => println!("{v}"),
-                None => println!("(unset)"),
-            }
-        }
+        SettingsCmd::Get { key } => match store.get_setting(&key).await? {
+            Some(v) => println!("{v}"),
+            None => println!("(unset)"),
+        },
         SettingsCmd::List => {
             let s = store.list_settings().await?;
             if s.is_empty() {
@@ -413,8 +441,14 @@ pub async fn run_settings(store: &SqliteStore, cmd: SettingsCmd) -> anyhow::Resu
     Ok(())
 }
 
-pub async fn run_endpoint(store: &SqliteStore, config: &crate::config::Config) -> anyhow::Result<()> {
-    let domain = store.get_setting("domain").await?.unwrap_or(config.domain.clone());
+pub async fn run_endpoint(
+    store: &SqliteStore,
+    config: &crate::config::Config,
+) -> anyhow::Result<()> {
+    let domain = store
+        .get_setting("domain")
+        .await?
+        .unwrap_or(config.domain.clone());
     let port = store
         .get_setting("port")
         .await?

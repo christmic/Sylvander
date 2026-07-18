@@ -11,7 +11,10 @@ pub struct AppError {
 
 impl AppError {
     pub fn new(status: StatusCode, msg: impl Into<String>) -> Self {
-        Self { status, msg: msg.into() }
+        Self {
+            status,
+            msg: msg.into(),
+        }
     }
     pub fn bad_request(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, msg)

@@ -1,3 +1,9 @@
+//! token9 proxy daemon and administration HTTP composition root.
+//!
+//! This binary wires persisted provider/model routing, metering, rate limits,
+//! and the management API into one process. Business rules remain in the
+//! owning modules so their contracts can be tested independently.
+
 mod admin;
 mod cli;
 mod config;
@@ -42,7 +48,9 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -53,7 +61,10 @@ async fn main() -> anyhow::Result<()> {
         None | Some(Command::Serve) => serve(config, port_override).await,
         Some(cmd) => {
             let store = SqliteStore::open(&config.db_path).await?;
-            let settings_port = store.get_setting("port").await?.and_then(|s| s.parse::<u16>().ok());
+            let settings_port = store
+                .get_setting("port")
+                .await?
+                .and_then(|s| s.parse::<u16>().ok());
             let effective_port = port_override.or(settings_port).unwrap_or(config.port);
 
             let result = match cmd {
@@ -64,7 +75,10 @@ async fn main() -> anyhow::Result<()> {
                 Command::Settings { action } => cli::run_settings(&store, action).await,
                 Command::Endpoint => cli::run_endpoint(&store, &config).await,
                 Command::Hosts { action } => {
-                    let domain = store.get_setting("domain").await?.unwrap_or(config.domain.clone());
+                    let domain = store
+                        .get_setting("domain")
+                        .await?
+                        .unwrap_or(config.domain.clone());
                     cli::run_hosts(&domain, action)
                 }
                 Command::Serve => unreachable!(),
@@ -85,12 +99,22 @@ async fn serve(config: Config, port_override: Option<u16>) -> anyhow::Result<()>
     store.seed_setting("port", &config.port.to_string()).await?;
     let routes = RouteTable::load(&store).await?;
     let tools = store.load_tool_rules().await?;
-    info!(routes = routes.len(), tool_rules = tools.len(), "loaded config");
+    info!(
+        routes = routes.len(),
+        tool_rules = tools.len(),
+        "loaded config"
+    );
     let http = reqwest::Client::builder().build()?;
 
     // Effective settings: --port override > DB setting > bootstrap default.
-    let domain = store.get_setting("domain").await?.unwrap_or(config.domain.clone());
-    let settings_port = store.get_setting("port").await?.and_then(|s| s.parse::<u16>().ok());
+    let domain = store
+        .get_setting("domain")
+        .await?
+        .unwrap_or(config.domain.clone());
+    let settings_port = store
+        .get_setting("port")
+        .await?
+        .and_then(|s| s.parse::<u16>().ok());
     let port = port_override.or(settings_port).unwrap_or(config.port);
     let bind = config.bind.clone();
 
@@ -110,13 +134,25 @@ async fn serve(config: Config, port_override: Option<u16>) -> anyhow::Result<()>
         .route("/stats/summary", get(stats::summary))
         .route("/ratelimits", get(ratelimit::list))
         .route("/tools/observed", get(stats::observed_tools))
-        .route("/admin/providers", get(admin::list_providers).post(admin::create_provider))
+        .route(
+            "/admin/providers",
+            get(admin::list_providers).post(admin::create_provider),
+        )
         .route("/admin/providers/{name}", delete(admin::delete_provider))
-        .route("/admin/models", get(admin::list_models).post(admin::create_model))
+        .route(
+            "/admin/models",
+            get(admin::list_models).post(admin::create_model),
+        )
         .route("/admin/models/{model_id}", delete(admin::delete_model))
-        .route("/admin/tools", get(admin::list_tools).post(admin::create_tool))
+        .route(
+            "/admin/tools",
+            get(admin::list_tools).post(admin::create_tool),
+        )
         .route("/admin/tools/{id}", delete(admin::delete_tool))
-        .route("/admin/routes", get(admin::list_routes).post(admin::create_route))
+        .route(
+            "/admin/routes",
+            get(admin::list_routes).post(admin::create_route),
+        )
         .route("/admin/routes/{id}", delete(admin::delete_route))
         .route("/admin/keys", get(admin::list_keys).post(admin::create_key))
         .route("/admin/keys/{id}", delete(admin::delete_key))

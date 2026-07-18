@@ -54,15 +54,26 @@ pub async fn proxy(
         let rt = state.routes.read().await;
         rt.resolve(&model_id)
     }
-    .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, format!("no route for model `{model_id}`")))?;
+    .ok_or_else(|| {
+        AppError::new(
+            StatusCode::NOT_FOUND,
+            format!("no route for model `{model_id}`"),
+        )
+    })?;
 
-    let stream = json.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let stream = json
+        .get("stream")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
 
     // Plan the ordered attempts (rate-limit snapshot + load-balance state).
     let rl = state.store.list_rate_limits().await.unwrap_or_default();
     let attempts = select::plan(&routeset, &model_id, &rl, &state.lb);
     if attempts.is_empty() {
-        return Err(AppError::new(StatusCode::NOT_FOUND, format!("no usable target for `{model_id}`")));
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            format!("no usable target for `{model_id}`"),
+        ));
     }
 
     let path = uri.path();
@@ -120,8 +131,13 @@ pub async fn proxy(
     let (resp, attempt) = match committed {
         Some(x) => x,
         None => {
-            record_failure(&state, &id, ts, start, &model_id, stream, &tool, &tool_raw, tried, &trail, &last_err);
-            return Err(AppError::bad_gateway(format!("all targets failed: {last_err}")));
+            record_failure(
+                &state, &id, ts, start, &model_id, stream, &tool, &tool_raw, tried, &trail,
+                &last_err,
+            );
+            return Err(AppError::bad_gateway(format!(
+                "all targets failed: {last_err}"
+            )));
         }
     };
 
@@ -205,8 +221,9 @@ fn build_body(
     attempt: &Attempt,
     stream: bool,
 ) -> Result<Bytes, AppError> {
-    let inject =
-        attempt.inject_usage && matches!(attempt.dialect, crate::config::Dialect::OpenaiChat) && stream;
+    let inject = attempt.inject_usage
+        && matches!(attempt.dialect, crate::config::Dialect::OpenaiChat)
+        && stream;
     if !attempt.rewrite_model && !inject {
         return Ok(body.clone());
     }
@@ -214,16 +231,21 @@ fn build_body(
     if attempt.rewrite_model {
         j["model"] = serde_json::Value::String(attempt.real_model.clone());
     }
-    if inject {
-        if let Some(so) = j
-            .as_object_mut()
-            .and_then(|o| o.entry("stream_options").or_insert(serde_json::json!({})).as_object_mut())
-        {
-            so.insert("include_usage".into(), serde_json::Value::Bool(true));
-        }
+    if inject
+        && let Some(so) = j.as_object_mut().and_then(|o| {
+            o.entry("stream_options")
+                .or_insert(serde_json::json!({}))
+                .as_object_mut()
+        })
+    {
+        so.insert("include_usage".into(), serde_json::Value::Bool(true));
     }
-    let vec = serde_json::to_vec(&j)
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize error: {e}")))?;
+    let vec = serde_json::to_vec(&j).map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("serialize error: {e}"),
+        )
+    })?;
     Ok(Bytes::from(vec))
 }
 

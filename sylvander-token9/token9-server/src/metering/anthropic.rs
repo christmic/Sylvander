@@ -1,3 +1,5 @@
+//! Anthropic response-usage extraction for token9 metering.
+
 use super::{Usage, as_i64};
 
 /// Extract Anthropic usage from a single JSON object (SSE event or full response).

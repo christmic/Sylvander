@@ -2,9 +2,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use token9_contracts::{
-    ObservedToolDto, ObservedToolsResponse, StatBucketDto, StatsResponse,
-};
+use token9_contracts::{ObservedToolDto, ObservedToolsResponse, StatBucketDto, StatsResponse};
 
 use crate::AppState;
 use crate::error::AppError;

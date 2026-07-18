@@ -16,6 +16,14 @@ sylvander-token9/
 └─ token9-apps/        client surfaces (currently macOS menu-bar)
 ```
 
+Module boundaries:
+
+- [`token9-contracts/docs/ARCHITECTURE.md`](token9-contracts/docs/ARCHITECTURE.md)
+  owns the serialized management/read DTO contract.
+- [`token9-server/docs/ARCHITECTURE.md`](token9-server/docs/ARCHITECTURE.md)
+  owns proxy routing, persistence, metering, local administration, and its
+  deployment trust boundary.
+
 ## Workspace: intentionally nested
 
 `sylvander-token9/Cargo.toml` declares its own `[workspace]` rather than
