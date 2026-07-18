@@ -64,8 +64,6 @@ pub struct OperationalHealth {
     pub agents: usize,
     /// Number of durable sessions.
     pub persistent_sessions: usize,
-    /// Number of process-local sessions.
-    pub ephemeral_sessions: usize,
     /// Number of channel instances that reported ready.
     pub ready_channels: usize,
     /// Total number of supervised channel instances.
@@ -271,7 +269,6 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
         "sylvander_ready {ready}\n\
          sylvander_agents {}\n\
          sylvander_sessions{{lifetime=\"persistent\"}} {}\n\
-         sylvander_sessions{{lifetime=\"ephemeral\"}} {}\n\
          sylvander_channels{{status=\"ready\"}} {}\n\
          sylvander_channels_total {}\n\
          sylvander_bus_subscribers {}\n\
@@ -280,7 +277,6 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
          sylvander_bus_backpressure_rejections_total {}\n",
         snapshot.agents,
         snapshot.persistent_sessions,
-        snapshot.ephemeral_sessions,
         snapshot.ready_channels,
         snapshot.total_channels,
         snapshot.bus_subscribers,

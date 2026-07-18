@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sylvander_agent::spec::AgentSpec;
 
 use sylvander_agent::prompt::{
-    MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
-    validate_profile_selectors, validate_prompt, validate_unique_identities,
+    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_profile_selectors,
+    validate_prompt, validate_unique_identities,
 };
 
 mod secret;
@@ -430,8 +430,6 @@ const fn default_requests_per_minute() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceSettings {
-    #[serde(default = "enabled")]
-    pub enabled: bool,
     pub path: Option<PathBuf>,
     #[serde(default = "default_evidence_tenant")]
     pub tenant_id: String,
@@ -445,7 +443,6 @@ pub struct EvidenceSettings {
 impl Default for EvidenceSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
             path: None,
             tenant_id: default_evidence_tenant(),
             retention_days: default_evidence_retention_days(),
@@ -658,11 +655,6 @@ pub struct PromptProfileConfig {
     pub id: String,
     #[serde(default)]
     pub qualified_models: Vec<sylvander_protocol::ModelSelection>,
-    /// Legacy singleton selectors retained for schema-v1 compatibility.
-    #[serde(default)]
-    pub providers: Vec<String>,
-    #[serde(default)]
-    pub models: Vec<String>,
     pub system_prompt: String,
 }
 
@@ -826,40 +818,48 @@ impl ServerConfig {
             ));
         }
         require_text("server.name", &self.server.name, &mut errors);
-        if self.server.evidence.enabled
-            && !(1..=3650).contains(&self.server.evidence.retention_days)
-        {
+        for (field, path) in [
+            ("server.session_db", self.server.session_db.as_deref()),
+            ("server.memory_db", self.server.memory_db.as_deref()),
+            (
+                "server.user_profile_db",
+                self.server.user_profile_db.as_deref(),
+            ),
+            ("server.evidence.path", self.server.evidence.path.as_deref()),
+        ] {
+            if let Some(path) = path {
+                validate_durable_database_path(field, path, path.is_absolute(), &mut errors);
+            }
+        }
+        if !(1..=3650).contains(&self.server.evidence.retention_days) {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
         }
-        if self.server.evidence.enabled {
+        require_text(
+            "server evidence tenant_id",
+            &self.server.evidence.tenant_id,
+            &mut errors,
+        );
+        if self.server.evidence.tenant_id.len() > 200
+            || self.server.evidence.tenant_id.chars().any(char::is_control)
+        {
+            errors.push("server evidence tenant_id is invalid".into());
+        }
+        if let Some(encryption) = &self.server.evidence.encryption {
             require_text(
-                "server evidence tenant_id",
-                &self.server.evidence.tenant_id,
+                "server evidence encryption key_id",
+                &encryption.key_id,
                 &mut errors,
             );
-            if self.server.evidence.tenant_id.len() > 200
-                || self.server.evidence.tenant_id.chars().any(char::is_control)
-            {
-                errors.push("server evidence tenant_id is invalid".into());
+            if encryption.key_id.len() > 200 || encryption.key_id.chars().any(char::is_control) {
+                errors.push("server evidence encryption key_id is invalid".into());
             }
-            if let Some(encryption) = &self.server.evidence.encryption {
-                require_text(
-                    "server evidence encryption key_id",
-                    &encryption.key_id,
-                    &mut errors,
-                );
-                if encryption.key_id.len() > 200 || encryption.key_id.chars().any(char::is_control)
-                {
-                    errors.push("server evidence encryption key_id is invalid".into());
-                }
-                encryption
-                    .key
-                    .validate("server evidence encryption key", &mut errors);
-            } else if self.server.evidence.content != EvidenceContentPolicy::MetadataOnly {
-                errors.push("redacted or full evidence content requires encryption-at-rest".into());
-            } else if self.server.mode == ServerMode::Production {
-                errors.push("production mode requires evidence encryption-at-rest".into());
-            }
+            encryption
+                .key
+                .validate("server evidence encryption key", &mut errors);
+        } else if self.server.evidence.content != EvidenceContentPolicy::MetadataOnly {
+            errors.push("redacted or full evidence content requires encryption-at-rest".into());
+        } else if self.server.mode == ServerMode::Production {
+            errors.push("production mode requires evidence encryption-at-rest".into());
         }
         let memory = &self.server.memory_maintenance;
         match (
@@ -1053,6 +1053,35 @@ impl ServerConfig {
 fn require_text(field: &str, value: &str, errors: &mut Vec<String>) {
     if value.trim().is_empty() {
         errors.push(format!("{field} is empty"));
+    }
+}
+
+pub(crate) fn validate_durable_database_path(
+    field: &str,
+    path: &Path,
+    check_file_kind: bool,
+    errors: &mut Vec<String>,
+) {
+    let value = path.as_os_str().to_string_lossy();
+    let value = value.trim();
+    if value.is_empty() {
+        errors.push(format!("{field} must name a durable database file"));
+        return;
+    }
+    if value.eq_ignore_ascii_case(":memory:")
+        || value
+            .get(.."file:".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file:"))
+    {
+        errors.push(format!(
+            "{field} must be a filesystem database path, not an SQLite memory database or file URI"
+        ));
+        return;
+    }
+    if check_file_kind && path.is_dir() {
+        errors.push(format!(
+            "{field} must name a durable database file, not an existing directory"
+        ));
     }
 }
 
@@ -1323,18 +1352,11 @@ fn validate_agent_shape_and_environment(
 }
 
 fn prompt_profile_matches(profile: &PromptProfileConfig, provider: &str, model: &str) -> bool {
-    if !profile.qualified_models.is_empty() {
-        return profile
+    profile.qualified_models.is_empty()
+        || profile
             .qualified_models
             .iter()
-            .any(|selection| selection.provider_id == provider && selection.model_id == model);
-    }
-    profile.providers.is_empty()
-        || (profile
-            .providers
-            .first()
-            .is_some_and(|value| value == provider)
-            && profile.models.first().is_some_and(|value| value == model))
+            .any(|selection| selection.provider_id == provider && selection.model_id == model)
 }
 
 fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String>) {
@@ -1356,19 +1378,7 @@ fn validate_agent_prompts(agent: &AgentDefinitionConfig, errors: &mut Vec<String
         .and_then(|()| {
             for profile in &agent.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
-                validate_profile_selectors(
-                    &profile.qualified_models,
-                    &profile.providers,
-                    &profile.models,
-                )?;
-                validate_unique_identities(
-                    profile.providers.iter().map(String::as_str),
-                    MAX_PROMPT_SELECTORS_PER_KIND,
-                )?;
-                validate_unique_identities(
-                    profile.models.iter().map(String::as_str),
-                    MAX_PROMPT_SELECTORS_PER_KIND,
-                )?;
+                validate_profile_selectors(&profile.qualified_models)?;
             }
             Ok(())
         });

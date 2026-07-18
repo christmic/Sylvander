@@ -286,7 +286,6 @@ async fn operational_health_controls_readiness_and_metrics() {
                     ready: false,
                     agents: 2,
                     persistent_sessions: 3,
-                    ephemeral_sessions: 1,
                     ready_channels: 1,
                     total_channels: 2,
                     bus_subscribers: 4,
