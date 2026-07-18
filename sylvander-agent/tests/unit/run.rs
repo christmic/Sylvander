@@ -3,6 +3,32 @@ use crate::bus::InProcessMessageBus;
 use crate::tools::memory::InMemoryMemoryStore;
 use std::path::PathBuf;
 
+#[allow(clippy::too_many_arguments)]
+async fn with_workspace_context(
+    prompt: String,
+    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    fallback_task_workspace: &Path,
+    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
+) -> Result<String, AgentRunError> {
+    let workspace = workspace_turn_context(
+        agent_workspace,
+        task_workspace,
+        workspace_mounts,
+        fallback_task_workspace,
+        workspace_executors,
+        skill_features,
+        "",
+        TurnContextBudgets::default().workspace_knowledge,
+    )
+    .await?;
+    Ok(workspace.authoritative.map_or(prompt.clone(), |context| {
+        format!("{prompt}\n\n{}", context.content())
+    }))
+}
+
 impl AgentRun {
     async fn join_session(&self, meta: SessionMetadata) -> SessionId {
         let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -167,6 +193,16 @@ struct RecordingProvider {
 #[derive(Clone)]
 struct FixedUserProfile(sylvander_protocol::UserProfileView);
 
+fn profile_with_learning(do_not_learn: bool) -> sylvander_protocol::UserProfileView {
+    sylvander_protocol::UserProfileView {
+        revision: 1,
+        profile: sylvander_protocol::UserProfileData::default(),
+        do_not_learn,
+        created_at_unix_secs: 1,
+        updated_at_unix_secs: 1,
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::user_profile_provider::UserProfileProvider for FixedUserProfile {
     async fn current_profile(
@@ -177,6 +213,21 @@ impl crate::user_profile_provider::UserProfileProvider for FixedUserProfile {
         crate::user_profile_provider::UserProfileProviderError,
     > {
         Ok(Some(self.0.clone()))
+    }
+}
+
+struct UnavailableUserProfile;
+
+#[async_trait::async_trait]
+impl crate::user_profile_provider::UserProfileProvider for UnavailableUserProfile {
+    async fn current_profile(
+        &self,
+        _subject: &crate::user_profile_provider::UserProfileSubject,
+    ) -> Result<
+        Option<sylvander_protocol::UserProfileView>,
+        crate::user_profile_provider::UserProfileProviderError,
+    > {
+        Err(crate::user_profile_provider::UserProfileProviderError::Unavailable)
     }
 }
 
@@ -2123,6 +2174,7 @@ async fn memory_is_infrastructure_not_tool() {
     let run = AgentRun::builder(spec, client)
         .bus(bus)
         .memory(store)
+        .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
         .build()
         .expect("build");
     let tools = run.memory_tools();
@@ -2204,6 +2256,7 @@ async fn remember_is_system_driven() {
     let run = AgentRun::builder(spec, client)
         .bus(bus)
         .memory(store)
+        .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
         .build()
         .expect("build");
     let session_id = run.join_session(test_metadata()).await;
@@ -2230,6 +2283,7 @@ async fn remember_derives_identity_from_attached_session() {
     let run = AgentRun::builder(spec, client)
         .bus(bus)
         .memory(store)
+        .user_profile_provider(Arc::new(FixedUserProfile(profile_with_learning(false))))
         .build()
         .expect("build");
     let session_id = run
@@ -2259,6 +2313,44 @@ async fn remember_derives_identity_from_attached_session() {
         .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn remember_denies_opt_out_missing_and_unavailable_profile_authority() {
+    let providers = [
+        Some(Arc::new(FixedUserProfile(profile_with_learning(true)))
+            as Arc<dyn crate::user_profile_provider::UserProfileProvider>),
+        Some(Arc::new(UnavailableUserProfile)
+            as Arc<dyn crate::user_profile_provider::UserProfileProvider>),
+        None,
+    ];
+    for provider in providers {
+        let (spec, client) = test_spec_and_client();
+        let mut builder = AgentRun::builder(spec, client)
+            .bus(Arc::new(InProcessMessageBus::new()))
+            .memory(Arc::new(InMemoryMemoryStore::new()));
+        if let Some(provider) = provider {
+            builder = builder.user_profile_provider(provider);
+        }
+        let run = builder.build().unwrap();
+        let session_id = run.join_session(test_metadata()).await;
+        let session = run.authenticated_session_for_test(session_id);
+
+        assert!(matches!(
+            run.remember(&session, "must not persist", &[]).await,
+            Err(MemoryStoreError::AccessDenied)
+        ));
+        assert!(
+            run.recall(
+                &session,
+                "must not persist",
+                crate::tools::memory::MemoryFilter::default(),
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+    }
 }
 
 #[tokio::test]
