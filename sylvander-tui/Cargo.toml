@@ -28,6 +28,7 @@ sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
 sylvander-channel-unix = { path = "../sylvander-channel-unix" }
 sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
+sylvander-llm-core = { path = "../sylvander-llm-core" }
 tempfile = "3"
 wiremock = "0.6"
 
