@@ -3,6 +3,8 @@
 //! Verifies the reactive event stream + iteration flow + re-feed logic
 //! without needing a real API.
 
+mod support;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -11,6 +13,8 @@ use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::MockTool;
 
 fn mock_client(server: &MockServer) -> AnthropicClient {
     AnthropicClient::builder()

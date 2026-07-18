@@ -114,6 +114,8 @@ pub mod task_gate;
 pub mod tool;
 /// Runtime-derived capability, identity, workspace, and execution budget context.
 pub mod tool_context;
+/// Central actor-aware authorization and audit contract for tool execution.
+pub mod tool_invocation;
 /// Built-in filesystem, memory, plan, and task tools.
 pub mod tools;
 /// Typed, budgeted, provenance-preserving context for one authenticated turn.
@@ -126,6 +128,10 @@ pub mod user_profile_provider;
 pub mod workspace_executor;
 /// Durable workspace-change journal used for review and recovery.
 pub mod workspace_journal;
+
+#[cfg(test)]
+#[path = "../tests/unit/support.rs"]
+pub(crate) mod test_support;
 
 /// Convenient re-exports for the most commonly used types.
 /// Populated as each module lands in subsequent commits.
@@ -158,7 +164,7 @@ pub mod prelude {
         AgentId, AgentSpec, AgentSpecBuilder, BehaviorConfig, McpServerConfig, MemoryStoreConfig,
         ModelConfig, PersonaConfig, SessionId, ToolRef,
     };
-    pub use crate::tool::{MockTool, Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
+    pub use crate::tool::{Tool, ToolError, ToolOutput, ToolProgressSink, ToolRegistry};
     pub use crate::tool_context::ToolContext;
     pub use crate::tools::{
         EditTool, InMemoryMemoryStore, ListTool, MemoryActorKind, MemoryAppend,

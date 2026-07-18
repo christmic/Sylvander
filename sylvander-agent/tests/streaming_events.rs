@@ -4,6 +4,8 @@
 //! variants (`TextDelta`, `ToolCall`, `ToolResult`, Done, etc.) to the bus
 //! in real-time as the loop executes.
 
+mod support;
+
 use std::sync::Arc;
 
 use serde_json::json;
@@ -20,6 +22,8 @@ use sylvander_protocol::{
 };
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use support::MockTool;
 
 // --- helpers ---
 

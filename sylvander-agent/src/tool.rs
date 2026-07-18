@@ -1,13 +1,13 @@
 //! `Tool` trait + `ToolRegistry`.
 //!
-//! Tools are caller-pluggable. M2 ships `MockTool` for tests; concrete
-//! tools (Read / Bash / Edit / etc.) land in M3+ per the roadmap.
+//! Tools are caller-pluggable. Production tools and runtime-owned dynamic
+//! sources share this contract; test doubles live below `tests/`.
 //!
 //! The trait uses `async_trait` for dyn-compatibility + Send safety.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,6 +19,7 @@ use thiserror::Error;
 use sylvander_llm_anthropic::api::types::InputSchema;
 
 use crate::tool_context::ToolContext;
+use crate::tool_invocation::{ToolInvocationClass, ToolInvocationDescriptor};
 use crate::workspace_executor::{WorkspaceCommandProgressSink, WorkspaceCommandStream};
 
 pub(crate) const TOOL_PROGRESS_CHANNEL_CAPACITY: usize = 64;
@@ -141,6 +142,14 @@ pub trait Tool: Send + Sync {
     /// JSON Schema describing the tool's input. Same as `Tool.input_schema`
     /// in the wire format.
     fn input_schema(&self) -> InputSchema;
+
+    /// Security class used by the Runtime invocation gateway.
+    ///
+    /// New browser, host-control, terminal, and MCP adapters must override
+    /// this method. Generic extensions remain isolated in their own class.
+    fn invocation_class(&self) -> ToolInvocationClass {
+        ToolInvocationClass::Extension
+    }
 
     /// Execute the tool with the given input and invocation context.
     ///
@@ -283,6 +292,22 @@ impl ToolRegistry {
         features
     }
 
+    /// Exact descriptors used to freeze the Runtime authorization surface.
+    #[must_use]
+    pub fn invocation_descriptors(&self) -> Vec<ToolInvocationDescriptor> {
+        let mut descriptors = self
+            .snapshot()
+            .into_values()
+            .map(|tool| ToolInvocationDescriptor {
+                name: tool.name().to_owned(),
+                class: tool.invocation_class(),
+                input_schema: tool.input_schema().schema,
+            })
+            .collect::<Vec<_>>();
+        descriptors.sort_by(|left, right| left.name.cmp(&right.name));
+        descriptors
+    }
+
     /// Return the content-addressed revision of the executable tool surface.
     ///
     /// The revision covers the current dynamic snapshot, schemas,
@@ -369,6 +394,10 @@ impl Tool for HookedTool {
 
     fn input_schema(&self) -> InputSchema {
         self.inner.input_schema()
+    }
+
+    fn invocation_class(&self) -> ToolInvocationClass {
+        self.inner.invocation_class()
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
@@ -482,105 +511,6 @@ impl std::fmt::Debug for ToolRegistry {
         f.debug_struct("ToolRegistry")
             .field("tools", &names)
             .finish()
-    }
-}
-
-// =============================================================================
-// MockTool — testing utility, not part of the public API.
-// Available under #[cfg(test)] for unit tests in this crate, and re-exported
-// for integration tests via `#[cfg(any(test, feature = "test-utils"))]` if needed.
-// =============================================================================
-
-/// In-memory mock tool. Records every call and returns a
-/// pre-configured output. Used by integration tests to simulate
-/// tool execution without spinning up real Read/Bash/etc.
-///
-/// **Note**: `MockTool` is only exposed under `#[cfg(test)]` in this
-/// crate's unit tests. Integration tests in `tests/` use it directly
-/// via the public `tool` module.
-#[derive(Debug, Clone)]
-pub struct MockTool {
-    name: String,
-    description: String,
-    schema: InputSchema,
-    responses: Vec<ToolOutput>,
-    calls: Arc<Mutex<Vec<JsonValue>>>,
-}
-
-impl MockTool {
-    /// Create a mock tool with the given name and a single canned
-    /// response. Successive calls cycle through `responses` (last
-    /// response repeats if exhausted).
-    #[must_use]
-    pub fn new(
-        name: impl Into<String>,
-        description: impl Into<String>,
-        response: ToolOutput,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            description: description.into(),
-            schema: InputSchema::empty(),
-            responses: vec![response],
-            calls: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    /// Set the input schema (defaults to empty object schema).
-    #[must_use]
-    pub fn with_schema(mut self, schema: InputSchema) -> Self {
-        self.schema = schema;
-        self
-    }
-
-    /// Provide multiple canned responses (cycled in order).
-    #[must_use]
-    pub fn with_responses(mut self, responses: Vec<ToolOutput>) -> Self {
-        self.responses = responses;
-        self
-    }
-
-    /// Get a snapshot of all calls made so far.
-    #[must_use]
-    pub fn calls(&self) -> Vec<JsonValue> {
-        self.calls.lock().expect("MockTool lock poisoned").clone()
-    }
-
-    /// Number of calls made.
-    #[must_use]
-    pub fn call_count(&self) -> usize {
-        self.calls.lock().expect("MockTool lock poisoned").len()
-    }
-}
-
-#[async_trait]
-impl Tool for MockTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn input_schema(&self) -> InputSchema {
-        self.schema.clone()
-    }
-
-    async fn execute(&self, _ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
-        self.calls
-            .lock()
-            .expect("MockTool lock poisoned")
-            .push(input);
-        // Cycle through responses
-        let idx = self.calls.lock().expect("MockTool lock poisoned").len() - 1;
-        let response = self
-            .responses
-            .get(idx)
-            .or_else(|| self.responses.last())
-            .cloned()
-            .ok_or_else(|| ToolError::Other("no responses configured".into()))?;
-        Ok(response)
     }
 }
 

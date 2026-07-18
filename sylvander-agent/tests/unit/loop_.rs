@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::MockTool;
 use serde_json::json;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
@@ -76,15 +77,21 @@ impl crate::tool::Tool for SlowTool {
 
 #[tokio::test]
 async fn tool_deadline_is_a_typed_outcome() {
-    let outcome = execute_registered_tool(
-        Some(Arc::new(SlowTool)),
-        &crate::tool_context::defaults::system_tool_context(),
-        serde_json::json!({}),
-        "call-slow",
-        "slow",
-        Some(std::time::Duration::from_millis(1)),
-        crate::tool::ToolProgressSink::new(|_| {}),
-    )
+    let tools = crate::tool::ToolRegistry::new().register(SlowTool);
+    let gateway =
+        crate::tool_invocation::RegistryBoundToolGateway::new(tools.invocation_descriptors());
+    let snapshot = crate::tool_invocation::ToolInvocationGateway::snapshot(gateway.as_ref());
+    let outcome = execute_registered_tool(RegisteredToolExecutionRequest {
+        tool: tools.get("slow"),
+        invocation_gateway: gateway,
+        invocation_snapshot: snapshot,
+        tool_context: crate::tool_context::defaults::system_tool_context(),
+        input: serde_json::json!({}),
+        call_id: "call-slow".into(),
+        route: "slow".into(),
+        timeout: Some(std::time::Duration::from_millis(1)),
+        progress: crate::tool::ToolProgressSink::new(|_| {}),
+    })
     .await;
     assert_eq!(
         outcome.timed_out_after,
@@ -198,7 +205,7 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
             }))
             .provider_model(model)
             .system_prompt("stable instructions")
-            .tool(crate::tool::MockTool::new(
+            .tool(MockTool::new(
                 "read",
                 "read a file",
                 crate::tool::ToolOutput::ok("done"),
@@ -584,7 +591,7 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
             ProviderStopReason::EndTurn,
         )),
     ]));
-    let tool = crate::tool::MockTool::new("echo", "echo input", crate::tool::ToolOutput::ok("7"));
+    let tool = MockTool::new("echo", "echo input", crate::tool::ToolOutput::ok("7"));
     let loop_ = AgentLoop::builder()
         .provider(provider.clone())
         .provider_model(provider_model())
@@ -752,7 +759,6 @@ fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
 
 #[test]
 fn builder_registers_tool() {
-    use super::super::tool::MockTool;
     let tool = MockTool::new("echo", "echoes", super::super::tool::ToolOutput::ok("hi"));
     let loop_ = AgentLoop::builder()
         .client(test_client())
