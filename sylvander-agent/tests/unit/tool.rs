@@ -55,6 +55,32 @@ fn registry_definitions_for_llm() {
     assert_eq!(defs[0].description, "Read a file");
 }
 
+#[test]
+fn capability_revision_tracks_tool_contract_and_hooks() {
+    let base =
+        ToolRegistry::new().register(MockTool::new("Read", "Read a file", ToolOutput::ok("")));
+    let same =
+        ToolRegistry::new().register(MockTool::new("Read", "Read a file", ToolOutput::ok("")));
+    let changed_schema = ToolRegistry::new().register(MockTool::new(
+        "Read",
+        "Read a different contract",
+        ToolOutput::ok(""),
+    ));
+    let hooked = base.clone().with_hooks(vec![ToolHookConfig {
+        name: "policy".into(),
+        command: "exit 0".into(),
+        timeout_secs: 5,
+        blocking: true,
+    }]);
+
+    assert_eq!(base.capability_revision(), same.capability_revision());
+    assert_ne!(
+        base.capability_revision(),
+        changed_schema.capability_revision()
+    );
+    assert_ne!(base.capability_revision(), hooked.capability_revision());
+}
+
 #[tokio::test]
 async fn mock_tool_records_calls() {
     let tool = MockTool::new("echo", "echo", ToolOutput::ok("hi"));

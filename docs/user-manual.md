@@ -86,7 +86,7 @@ Two adjacent concepts also appear in this manual:
 A production Sylvander server needs:
 
 - a Linux or macOS host with a recent stable kernel (Linux 5.x+, macOS 13+);
-- a Rust 1.74+ toolchain if you are building from source; prebuilt binaries
+- a Rust 1.96+ toolchain if you are building from source; prebuilt binaries
   are unsigned and intended for evaluation;
 - 2 GiB of RAM for typical single-Agent workloads; raise the ceiling for
   container or sandbox execution targets because each operation allocates
@@ -573,8 +573,8 @@ emits an `approval_request` (or `tool_approval_required`) event with a
 `batch_id` and the list of tools in the batch. The connected client
 responds with
 `{"type":"approve","call_id":"<batch_id>","approved":true|false}`.
-Approvals match one batch and do not mutate the Agent or the
-persistent policy.
+One-shot approvals match one pending call. Session and persistent choices
+create an exact grant; they do not mutate the Agent or the persistent policy.
 
 Persistent approvals across restarts require both:
 
@@ -583,7 +583,15 @@ export SYLVANDER_APPROVAL=1
 export SYLVANDER_APPROVAL_STORE=/var/lib/sylvander/approvals.json
 ```
 
-Without the store, the approval gate is session-scoped only.
+Without the store, the approval gate offers only one-shot and session scopes.
+Persistent scope also requires a Runtime-authenticated stable user identity.
+Each durable grant is bound to the stable user, Agent, effective approval
+policy revision, frozen capability revision, exact tool operation, and a
+content-safe resource fingerprint. A change to any dimension invalidates the
+grant and prompts again. Old fingerprint-only stores fail startup under the
+latest-only schema policy. See
+[`../sylvander-agent/docs/approval.md`](../sylvander-agent/docs/approval.md)
+for the exact contract and recovery procedure.
 
 ## 17. User Profile
 

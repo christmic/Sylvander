@@ -61,5 +61,7 @@ AgentRun / AgentRunEngine
   rules.
 - [`mcp.md`](mcp.md) — MCP lifecycle and bounded result handling.
 - [`skills.md`](skills.md) — Skill discovery and per-turn budget.
+- [`approval.md`](approval.md) — stable-identity persistent approval keys,
+  invalidation, and durable-store operations.
 - [`../../docs/sylvander-agent-platform.md`](../../docs/sylvander-agent-platform.md)
   — Runtime-to-Agent architecture and product scope.

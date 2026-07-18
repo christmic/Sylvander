@@ -24,7 +24,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
@@ -35,6 +38,9 @@ use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
 use sylvander_llm_core::{ModelInfo as ProviderModelInfo, ModelProvider};
 
 use crate::approval::{ApprovalBatchResult, ApprovalDecision, ApprovalGate, ToolUseRequest};
+use crate::approval_store::{
+    ApprovalGrantContext, ApprovalGrantKey, ApprovalMemory, approval_policy_revision,
+};
 use crate::ask_user_gate::AskUserGate;
 use crate::bus::{
     AgentStatus as BusAgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender,
@@ -100,6 +106,14 @@ pub(crate) struct AgentRunInner {
     sessions: RwLock<HashMap<SessionId, SessionContext>>,
     /// Sessions whose identity was admitted through this run's private issuer.
     authenticated_sessions: RwLock<HashSet<SessionId>>,
+    /// Permanently switches this run from legacy bus admission to Runtime
+    /// issuer admission after the first authenticated lease.
+    ///
+    /// Engine bookkeeping still emits legacy `JoinSession` messages. Once the
+    /// private issuer is active those messages are notifications only: they
+    /// cannot recreate a compensated session or let a transport forge
+    /// admission. Legacy-only runs never activate this boundary.
+    authenticated_session_authority_active: AtomicBool,
     session_authority: Arc<SessionAuthorityMarker>,
     /// Optional durable source of truth shared with channels/runtime.
     session_store: Option<Arc<dyn SessionStore>>,
@@ -137,126 +151,10 @@ enum MemorySource {
 
 struct PendingApproval {
     session_id: SessionId,
-    fingerprint: String,
+    grant: ApprovalGrantKey,
+    persistent_identity_authorized: bool,
     allowed_scopes: Vec<sylvander_protocol::ApprovalScope>,
     sender: oneshot::Sender<crate::approval::ApprovalDecision>,
-}
-
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct PersistentApprovalFile {
-    #[serde(default)]
-    fingerprints: Vec<String>,
-}
-
-struct ApprovalMemory {
-    sessions: HashMap<SessionId, HashSet<String>>,
-    persistent: HashSet<String>,
-    path: Option<PathBuf>,
-}
-
-impl ApprovalMemory {
-    fn load(path: Option<PathBuf>) -> Result<Self, AgentRunError> {
-        let persistent = match path.as_deref() {
-            Some(path) if path.exists() => {
-                let bytes = std::fs::read(path).map_err(|error| {
-                    AgentRunError::Build(format!(
-                        "failed to read approval store {}: {error}",
-                        path.display()
-                    ))
-                })?;
-                serde_json::from_slice::<PersistentApprovalFile>(&bytes)
-                    .map_err(|error| {
-                        AgentRunError::Build(format!(
-                            "failed to parse approval store {}: {error}",
-                            path.display()
-                        ))
-                    })?
-                    .fingerprints
-                    .into_iter()
-                    .collect()
-            }
-            _ => HashSet::new(),
-        };
-        Ok(Self {
-            sessions: HashMap::new(),
-            persistent,
-            path,
-        })
-    }
-
-    fn allowed_scopes(&self) -> Vec<sylvander_protocol::ApprovalScope> {
-        let mut scopes = vec![
-            sylvander_protocol::ApprovalScope::Once,
-            sylvander_protocol::ApprovalScope::Session,
-        ];
-        if self.path.is_some() {
-            scopes.push(sylvander_protocol::ApprovalScope::Persistent);
-        }
-        scopes
-    }
-
-    fn contains(&self, session_id: &SessionId, fingerprint: &str) -> bool {
-        self.persistent.contains(fingerprint)
-            || self
-                .sessions
-                .get(session_id)
-                .is_some_and(|entries| entries.contains(fingerprint))
-    }
-
-    async fn remember(
-        &mut self,
-        session_id: &SessionId,
-        fingerprint: String,
-        scope: sylvander_protocol::ApprovalScope,
-    ) -> Result<(), String> {
-        match scope {
-            sylvander_protocol::ApprovalScope::Once => Ok(()),
-            sylvander_protocol::ApprovalScope::Session => {
-                self.sessions
-                    .entry(session_id.clone())
-                    .or_default()
-                    .insert(fingerprint);
-                Ok(())
-            }
-            sylvander_protocol::ApprovalScope::Persistent => {
-                let path = self.path.clone().ok_or_else(|| {
-                    "persistent approvals are disabled by the operator".to_string()
-                })?;
-                let inserted = self.persistent.insert(fingerprint.clone());
-                if let Err(error) = persist_approval_fingerprints(&path, &self.persistent).await {
-                    if inserted {
-                        self.persistent.remove(&fingerprint);
-                    }
-                    return Err(error);
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-async fn persist_approval_fingerprints(
-    path: &Path,
-    fingerprints: &HashSet<String>,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("failed to create approval store directory: {error}"))?;
-    }
-    let mut entries = fingerprints.iter().cloned().collect::<Vec<_>>();
-    entries.sort();
-    let bytes = serde_json::to_vec_pretty(&PersistentApprovalFile {
-        fingerprints: entries,
-    })
-    .map_err(|error| format!("failed to encode approval store: {error}"))?;
-    let temporary = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    tokio::fs::write(&temporary, bytes)
-        .await
-        .map_err(|error| format!("failed to write approval store: {error}"))?;
-    tokio::fs::rename(&temporary, path)
-        .await
-        .map_err(|error| format!("failed to replace approval store: {error}"))
 }
 
 struct PendingAnswer {
@@ -954,6 +852,16 @@ impl AgentRun {
                 "session capability belongs to another agent run".into(),
             ));
         }
+        // Publish authority before awaiting storage. A delayed legacy
+        // JoinSession must never observe an unguarded admission window.
+        self.inner
+            .authenticated_session_authority_active
+            .store(true, Ordering::Release);
+        self.inner
+            .authenticated_sessions
+            .write()
+            .await
+            .insert(lease.session_id.clone());
         let ctx = self
             .inner
             .restore_session_context(&lease.session_id, &lease.metadata)
@@ -963,11 +871,6 @@ impl AgentRun {
             .write()
             .await
             .insert(lease.session_id.clone(), ctx);
-        self.inner
-            .authenticated_sessions
-            .write()
-            .await
-            .insert(lease.session_id.clone());
         Ok(AuthenticatedSession {
             authority: lease.authority,
             session_id: lease.session_id,
@@ -987,8 +890,7 @@ impl AgentRun {
             .approval_memory
             .lock()
             .await
-            .sessions
-            .remove(session_id);
+            .remove_session(session_id);
     }
 
     /// List all sessions.
@@ -1052,10 +954,8 @@ impl AgentRun {
                     } => {
                         if self
                             .inner
-                            .authenticated_sessions
-                            .read()
-                            .await
-                            .contains(session_id)
+                            .authenticated_session_authority_active
+                            .load(Ordering::Acquire)
                         {
                             continue;
                         }
@@ -1071,6 +971,16 @@ impl AgentRun {
                         info!(agent_id = %self.inner.id, %session_id, "joined session");
                     }
                     SystemMessage::LeaveSession { session_id } => {
+                        // Runtime-authenticated sessions can be revoked only
+                        // through the private issuer path, never by a bus
+                        // message that a transport or plugin could forge.
+                        if self
+                            .inner
+                            .authenticated_session_authority_active
+                            .load(Ordering::Acquire)
+                        {
+                            continue;
+                        }
                         self.inner.sessions.write().await.remove(session_id);
                         self.inner
                             .authenticated_sessions
@@ -1082,8 +992,7 @@ impl AgentRun {
                             .approval_memory
                             .lock()
                             .await
-                            .sessions
-                            .remove(session_id);
+                            .remove_session(session_id);
                         let mut tasks = self.inner.background_tasks.lock().await;
                         let task_ids = tasks
                             .iter()
@@ -1120,7 +1029,12 @@ impl AgentRun {
                                         .approval_memory
                                         .lock()
                                         .await
-                                        .remember(&request.session_id, request.fingerprint, *scope)
+                                        .remember(
+                                            &request.session_id,
+                                            request.grant,
+                                            *scope,
+                                            request.persistent_identity_authorized,
+                                        )
                                         .await
                                     {
                                         Ok(()) => crate::approval::ApprovalDecision::Approved,
@@ -1349,6 +1263,8 @@ struct BusApprovalGate {
     bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     session_id: SessionId,
+    grant_context: ApprovalGrantContext,
+    persistent_identity_authorized: bool,
     pending_approvals: Arc<Mutex<HashMap<(SessionId, String), PendingApproval>>>,
     approval_memory: Arc<Mutex<ApprovalMemory>>,
 }
@@ -1375,16 +1291,21 @@ impl ApprovalGate for BusApprovalGate {
         let batch_id = uuid::Uuid::new_v4().to_string();
         let mut decisions = vec![None; tools.len()];
         let mut receivers = Vec::new();
-        let allowed_scopes = self.approval_memory.lock().await.allowed_scopes();
+        let allowed_scopes = self
+            .approval_memory
+            .lock()
+            .await
+            .allowed_scopes(self.persistent_identity_authorized);
         let mut requested_tools = Vec::new();
 
         for (index, tool) in tools.iter().enumerate() {
-            let fingerprint = approval_fingerprint(tool);
+            let grant = self.grant_context.key_for(tool);
             if self
                 .approval_memory
                 .lock()
                 .await
-                .contains(&self.session_id, &fingerprint)
+                .contains(&self.session_id, &grant)
+                .await
             {
                 decisions[index] = Some(ApprovalDecision::Approved);
                 continue;
@@ -1394,7 +1315,8 @@ impl ApprovalGate for BusApprovalGate {
                 (self.session_id.clone(), tool.call_id.clone()),
                 PendingApproval {
                     session_id: self.session_id.clone(),
-                    fingerprint,
+                    grant,
+                    persistent_identity_authorized: self.persistent_identity_authorized,
                     allowed_scopes: allowed_scopes.clone(),
                     sender: tx,
                 },
@@ -1484,14 +1406,6 @@ async fn publish_interaction_timeout(
         .await;
 }
 
-fn approval_fingerprint(tool: &ToolUseRequest) -> String {
-    format!(
-        "{}:{}",
-        tool.tool_name,
-        serde_json::to_string(&canonical_json(&tool.input)).unwrap_or_default()
-    )
-}
-
 fn normalize_rejection_reason(reason: Option<&str>) -> String {
     reason
         .map(str::trim)
@@ -1500,24 +1414,6 @@ fn normalize_rejection_reason(reason: Option<&str>) -> String {
             || "rejected by user".into(),
             |reason| reason.chars().take(500).collect(),
         )
-}
-
-fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(canonical_json).collect())
-        }
-        serde_json::Value::Object(map) => {
-            let mut keys = map.keys().collect::<Vec<_>>();
-            keys.sort();
-            serde_json::Value::Object(
-                keys.into_iter()
-                    .map(|key| (key.clone(), canonical_json(&map[key])))
-                    .collect(),
-            )
-        }
-        scalar => scalar.clone(),
-    }
 }
 
 fn compaction_summary(layers: &[crate::compress::layer::LayerReport]) -> Option<String> {
@@ -2373,12 +2269,28 @@ impl AgentRunInner {
         };
 
         // 2. Build per-session approval gate and tool surface from one
-        // permission snapshot. Changes made mid-turn apply to the next turn.
+        // immutable permission/capability snapshot. Changes made mid-turn
+        // apply to the next turn and invalidate persistent grants there.
+        let (turn_tools, capability_revision) = loop_config.tools.freeze_with_revision();
+        loop_config.tools = turn_tools;
+        let identity_authorized = self
+            .authenticated_sessions
+            .read()
+            .await
+            .contains(&session_id);
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Ask {
+            let grant_context = ApprovalGrantContext::new(
+                session_metadata.user_id.clone(),
+                self.id.clone(),
+                approval_policy_revision(&permissions, &self.approval_rules),
+                capability_revision,
+            );
             let bus_gate: Arc<dyn ApprovalGate> = Arc::new(BusApprovalGate {
                 bus: self.bus.clone(),
                 agent_id: self.id.clone(),
                 session_id: session_id.clone(),
+                grant_context,
+                persistent_identity_authorized: identity_authorized,
                 pending_approvals: self.pending_approvals.clone(),
                 approval_memory: self.approval_memory.clone(),
             });
@@ -2395,11 +2307,6 @@ impl AgentRunInner {
         if permissions.approval_policy == sylvander_protocol::ApprovalPolicy::Deny {
             loop_config.approval_gate = Some(Arc::new(DenyAllApprovalGate));
         }
-        let memory_authorized = self
-            .authenticated_sessions
-            .read()
-            .await
-            .contains(&session_id);
         let tool_context = tool_context_for_permissions(
             ToolSessionExecution {
                 metadata: &session_metadata,
@@ -2409,7 +2316,7 @@ impl AgentRunInner {
             &self.id,
             &session_id,
             &permissions,
-            self.memory.is_some() && memory_authorized,
+            self.memory.is_some() && identity_authorized,
             self.workspace_journal.clone(),
             Some(turn_id),
         );
@@ -3384,7 +3291,8 @@ impl AgentRunBuilder {
             .bus
             .ok_or_else(|| AgentRunError::Build("bus is required".into()))?;
 
-        let approval_memory = ApprovalMemory::load(self.approval_store_path.clone())?;
+        let approval_memory =
+            ApprovalMemory::load(self.approval_store_path.clone()).map_err(AgentRunError::Build)?;
         let (memory, memory_source) = match self.memory {
             Some(store) => (Some(store), MemorySource::RuntimeInjected),
             None => (None, MemorySource::None),
@@ -3554,6 +3462,7 @@ impl AgentRunBuilder {
                 bus,
                 sessions: RwLock::new(HashMap::new()),
                 authenticated_sessions: RwLock::new(HashSet::new()),
+                authenticated_session_authority_active: AtomicBool::new(false),
                 session_authority,
                 session_store: self.session_store,
                 memory,

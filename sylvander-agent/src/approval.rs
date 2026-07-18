@@ -1,6 +1,7 @@
 //! Tool approval — gate mechanism for controlling tool execution.
 //!
-//! The [`ApprovalGate`] trait is passed into [`AgentLoop`](crate::loop_::AgentLoop).
+//! The [`ApprovalGate`](crate::approval::ApprovalGate) trait is passed into
+//! [`AgentLoop`](crate::loop_::AgentLoop).
 //! Before executing tools, the loop calls `check_batch().await` — the
 //! loop PAUSES here until the gate returns.
 
