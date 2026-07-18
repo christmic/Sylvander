@@ -187,7 +187,6 @@ fn parse_launch_options(
     let mut socket = None;
     let mut session = None;
     let mut workspace = None;
-    let mut positional_socket = None;
     let mut args = args.into_iter();
 
     while let Some(argument) = args.next() {
@@ -198,12 +197,7 @@ fn parse_launch_options(
             value if value.starts_with('-') => {
                 return Err(format!("unknown option {value:?}"));
             }
-            value => {
-                if positional_socket.replace(value.to_owned()).is_some() {
-                    return Err("only one positional socket path is supported".into());
-                }
-                continue;
-            }
+            value => return Err(format!("unknown argument {value:?}")),
         };
         let value = args
             .next()
@@ -216,9 +210,6 @@ fn parse_launch_options(
         }
     }
 
-    if socket.is_some() && positional_socket.is_some() {
-        return Err("use either --socket or the positional socket path, not both".into());
-    }
     let session_id = session.or(env_session).filter(|value| !value.is_empty());
     if let Some(value) = session_id.as_deref()
         && (value.len() > 256 || value.chars().any(char::is_control))
@@ -228,7 +219,6 @@ fn parse_launch_options(
 
     Ok(LaunchOptions {
         socket_path: socket
-            .or(positional_socket)
             .or(env_socket)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_SOCKET.into())
