@@ -8,10 +8,9 @@ export SYLVANDER_CONFIG=/etc/sylvander/server.toml
 sylvander
 ```
 
-When the variable is absent, the server converts the legacy environment
-contract into the same in-memory schema. This retained path is an explicitly
-approved, bounded migration exception; it is not precedent for new fallback or
-automatic migration behavior. New deployments should use TOML.
+The variable is mandatory. Missing, empty, non-Unicode, unreadable, old, or
+unknown configuration fails before Runtime composition; there is no
+environment-only conversion or implicit development fallback.
 
 The maintained example is
 [`config/sylvander.example.toml`](../config/sylvander.example.toml).
@@ -31,6 +30,41 @@ Startup is fail-fast and ordered:
 
 No channel accepts traffic when an Agent, model, secret, bind address, or
 session store fails to initialize.
+
+## Durable sessions and registry
+
+`server.session_db` selects the shared session and Agent-registry SQLite file.
+When omitted it resolves to `<data_dir>/sessions.db`:
+
+```toml
+[server]
+data_dir = "/var/lib/sylvander"
+session_db = "/var/lib/sylvander/sessions.db"
+```
+
+The file has two explicitly owned namespaces. The session store owns the
+session tables and indexes, session `application_id`, and `user_version = 1`.
+The Runtime registry owns the current Agent/Provider/Model/Credential catalog,
+active heads, V3 Agent snapshots, and its single current component-ledger row.
+Runtime opens the session namespace first on a new file, then atomically
+installs or validates the registry namespace, and reuses the resulting session
+store for every Agent.
+
+This shared file is not a permissive multi-component database. Each owner
+exact-matches the SQL definition and foreign-key integrity of every object it
+owns and accepts only the complete current object-name allowlist of the other
+owner. A standalone session or registry open accepts only its own exact object
+set. Unknown, partial, obsolete, duplicated, or damaged objects fail startup.
+Registry reads and mutations revalidate the declared union again, so an
+undeclared object injected after startup also fails closed before registry
+work proceeds.
+Profile, memory, evidence, Guardian, extension, and operator-created objects
+must use their own stores; placing them in `sessions.db` is rejected.
+
+An empty file is initialized directly at the current schema. There is no
+automatic migration, repair, downgrade, mixed-version mode, or production
+in-memory fallback. Back up and restore `sessions.db` as one quiesced unit:
+copying only one logical namespace is not a valid recovery operation.
 
 ## Execution targets
 
@@ -137,6 +171,12 @@ An Agent's `spec.model.provider` and `spec.model.model_name` select its default.
 The runtime constructs a separate provider client for each Agent and exposes
 that provider's model catalog to compatible clients.
 
+`spec.model.allowed_models` is an explicit, non-empty list of qualified
+`(provider_id, model_id)` identities and must contain the Agent default.
+Duplicates, unknown Provider or Model identities, and an omitted/empty list
+fail configuration and administration validation. Runtime never expands an
+empty list from a Provider catalog or treats it as “allow all”.
+
 `agents[].revision` identifies the immutable definition revision.
 `default_prompt_profile` selects an additional provider/model layer; it does
 not replace the Agent persona. Durable sessions store sparse overrides
@@ -196,10 +236,9 @@ qualified_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
 system_prompt = "Prefer small, verified coding changes."
 ```
 
-Qualified selectors match the exact `(provider_id, model_id)` pair. The legacy
-`providers` and `models` fields are accepted only when both are empty
-(universal profile) or when they contain exactly one provider and one model.
-They never form a cross product and never fall back across same-named models.
+Qualified selectors match the exact `(provider_id, model_id)` pair. Prompt
+profiles use `qualified_models`; bare provider/model lists and same-name
+guessing are rejected.
 
 There may be at most 32 profiles per Agent and 64 selectors per selector kind.
 Agent and profile prompt layers are limited to 64 KiB each, session input to
@@ -210,8 +249,8 @@ The effective configuration records layer kind, safe reference, SHA-256,
 byte count, a framed aggregate digest, and the final prompt SHA-256. Before any
 turn record, history mutation, compaction request, tool, or model request, the
 Agent resolves the prompt again and requires the digest and manifest to match
-the durable snapshot exactly. Missing legacy manifests and modified digests
-fail closed.
+the durable snapshot exactly. Missing manifests, missing immutable revision
+pins, and modified digests fail closed.
 
 Raw Agent/profile prompts are never returned by administration reads. Session
 prompt input is write-only through the public UI protocol: configuration
@@ -298,8 +337,9 @@ in-memory store.
 WebSocket channels route the strict `UiClientMessage::UserProfile` envelope to
 Runtime, which derives its owner from the authenticated boundary. Both peers
 must advertise the capability before a client uses it. The TUI currently
-advertises and negotiates the capability but does **not** yet expose a profile
-editing surface; use a protocol client until that UI is implemented.
+advertises and negotiates the capability and exposes the complete typed surface
+through `/profile`. Revision-bound mutations reload server truth first and
+typed conflicts never trigger a blind retry.
 
 Operational requirements:
 
@@ -323,14 +363,44 @@ through the explicit versioned protocol operation.
 
 Runtime currently requires the Evidence store for profile operations and
 records content-safe administration evidence for their outcome. The
-deterministic, bounded User Profile prompt formatter exists in the Agent
-crate, but the live per-turn Agent prompt path does not yet inject that layer.
-Likewise, `do_not_learn` is durable protocol/storage state, not yet a complete
-enforcement gate across Relationship Memory and Agent candidate creation. Do
-not claim those latter controls are active until their Runtime call paths and
-acceptance tests land. See
+deterministic, bounded User Profile prompt formatter is injected by the live
+per-turn Agent path through the Runtime-owned provider. The resulting typed
+layer carries profile revision and digest provenance in the turn-context
+manifest. `do_not_learn` is durable protocol/storage state and appears in that
+layer. Runtime also re-reads it as a fail-closed authorization input before
+Relationship Memory append, Worker memory-candidate invocation, Guardian event
+admission and candidate extraction, and every new governed learning commit.
+Explicit owner correction, export, deletion, decay, and forgetting remain
+available because they govern existing data rather than create a new learned
+fact. See
 [`user-profile-protocol.md`](user-profile-protocol.md) for the wire contract and
-the live completion boundary.
+the exact enforcement boundary.
+
+## Worker/Guardian runtime
+
+Configured boot always opens two additional latest-schema databases beneath
+the resolved `server.data_dir`:
+
+- `guardian-curation.db` — immutable event references, leased curator runs,
+  typed candidates, policy decisions, mutation delivery, and content-safe
+  capability/transition audit;
+- `guardian-canonical.db` — idempotent governed Agent-canonical records and
+  mutation receipts.
+
+The built-in Guardian has a Runtime-issued 15-minute service identity, 30-second
+run/mutation leases, bounded retry and polling, and a fixed deterministic
+policy revision. These are current implementation constants rather than public
+configuration fields. Startup rejects either database when its application
+ID, schema version, object definitions, or integrity checks differ from the
+current contract; there is no repair or in-memory fallback.
+
+Back up both files together with the profile, relationship-memory, session,
+registry, and evidence state while Runtime is quiesced. Restoring only one can
+break idempotency or resurrect work that the other store already completed.
+Raw transcript text, profile values, capability input/output, and service
+credentials do not belong in the curation database. Recovery and audit
+requirements are in
+[`../sylvander-runtime/GUARDIAN.md`](../sylvander-runtime/GUARDIAN.md).
 
 ## Secret references
 
@@ -441,9 +511,41 @@ below that directory. Explicit paths remain useful for containers, backups,
 and restore drills.
 
 `server.evidence` controls the structured run ledger. It is enabled by default
-with a 30-day retention declaration and `metadata_only` content policy. The
-other policies are `redacted` and `full`; `full` is an explicit operator choice
-and must be paired with appropriate access, deletion, and backup controls.
+with tenant `local`, a 30-day finite retention declaration, and
+`metadata_only` content policy. The other policies are `redacted` and `full`.
+Both require encryption. Production requires encryption even when event
+capture is metadata-only because generated artifacts use the same governed
+store.
+
+```toml
+[server.evidence]
+enabled = true
+tenant_id = "tenant-a"
+retention_days = 30
+content = "redacted"
+
+[server.evidence.encryption]
+key_id = "evidence-key-2026-07"
+
+[server.evidence.encryption.key]
+source = "file"
+path = "/run/secrets/sylvander-evidence-key"
+```
+
+The resolved key must be exactly 32 raw bytes or 64 hexadecimal characters.
+The database is permanently bound to the configured tenant, key ID, and key
+material; a mismatch fails startup. Content and generated artifact bytes use
+AES-256-GCM application-layer encryption. Scope/classification/timestamp/
+digest/audit metadata remains visible to SQLite, so deployments requiring
+metadata encryption must also use encrypted storage or an encrypted SQLite
+VFS.
+
+Exports and deletion require an exact tenant/user scope and a bounded list of
+record IDs. They are all-or-nothing and append a content-free audit record.
+Deletion physically removes ciphertext, leaves a tombstone, and prevents ID
+reuse. Startup performs a bounded expiry sweep; maintenance callers can
+continue the same sweep API for larger stores. Events and generated artifacts
+share this policy instead of maintaining independent retention exceptions.
 The ledger is evidence for review and evaluation, never permission for the
 Agent to change or deploy itself without the gated workflow in P5.
 See [`runtime-evidence.md`](runtime-evidence.md) for the data model, recovery,
@@ -456,7 +558,7 @@ superseded rows. The maintenance budget is hourly batches of 500, with at most
 20 batches per run, and no more than 1000 rows in one batch. Every value is
 finite and range-checked; unknown fields and configurations where
 `default_ttl_days` exceeds `max_ttl_days` fail startup.
-There is no unbounded or legacy-environment fallback. Runtime executes
+There is no unbounded or implicit-default fallback. Runtime executes
 retention and scheduled backup rotation in one maintenance lifecycle. Backup
 cadence is finite: one day by default with seven retained copies, bounded to
 1–7 days and 2–30 copies. A new backup is published and exactly verified before
@@ -520,29 +622,32 @@ external anchor's documented host-administrator threat boundary.
 
 Persistent sessions retain their IDs across restart. This identity is shared
 by protocol clients, channel mappings, conversation history, approvals, and
-the future run ledger; replacing it during restore is a correctness defect.
-Legacy sessions are migrated at boot: their prior `metadata.workspace` becomes
-an explicit local user-workspace source, while current Agent defaults are
-resolved and persisted without copying secrets or raw prompts into audit
-fields.
+the durable run ledger; replacing it during restore is a correctness defect.
+Every restored session must already carry the current effective-configuration
+schema, optimistic configuration revision, immutable Agent/Provider/Model pins,
+workspace/executor selection, and prompt manifest. Missing or old state fails
+startup; Runtime does not synthesize current defaults into historical sessions.
 
 ## Channel instances
 
 Every `channels` entry has a stable instance ID and one default Agent. Multiple
-DingTalk or Telegram bots are represented by multiple entries with distinct
-IDs and credential references. Telegram webhooks require
+DingTalk, Telegram, or WeChat bots are represented by multiple entries with
+distinct IDs and credential references. Telegram webhooks require
 `X-Telegram-Bot-Api-Secret-Token` to match `webhook_secret`.
 
-The current server can construct Unix, HTTP, WebSocket, DingTalk, Telegram,
-and WeChat adapters. External principals, session mappings, and outbound
-routing are scoped to the configured instance. Each entry also accepts a
-`channels.supervision` table with `max_restart_attempts`,
+The current server constructs Unix, HTTP, WebSocket, DingTalk, Telegram, and
+WeChat adapters. External principals, session mappings, outbound routing, and
+renewable credential generations are scoped to the configured instance.
+DingTalk, Telegram, and WeChat route authenticated interactive controls through
+Runtime and apply bounded delivery retry; WeChat also refreshes its active-API
+access token when the credential generation changes or the platform reports
+expiry. Each entry accepts a `channels.supervision` table with
+`max_restart_attempts`,
 `initial_backoff_ms`, and `max_backoff_ms`. Runtime health, readiness,
 bounded restart/backoff, failure isolation, and cooperative drain are
-instance-scoped. Interactive channel decisions and transport-specific
-delivery retry remain tracked in P4. See
+instance-scoped. See
 [`boundary-authorization.md`](boundary-authorization.md) for authentication,
-Agent access policy, limits, audit, and migration requirements, and
+Agent access policy, limits, audit, and current-schema requirements, and
 [`channel-supervision.md`](../sylvander-runtime/docs/channel-supervision.md)
 for the lifecycle contract.
 
