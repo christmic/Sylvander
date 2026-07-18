@@ -342,5 +342,5 @@ fn unsupported(message: &str) -> core::ProviderError {
 }
 
 #[cfg(test)]
-#[path = "convert_tests.rs"]
+#[path = "../tests/unit/convert.rs"]
 mod tests;
