@@ -38,7 +38,7 @@
       </element>
     </class>
 
-    <class name="window" code="Gwnd" plural="windows" "description="A Sylvander window containing one or more tabs.">
+    <class name="window" code="Gwnd" plural="windows" description="A Sylvander window containing one or more tabs.">
       <cocoa class="GhosttyScriptWindow"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this window."/>
       <property name="name" code="pnam" type="text" access="r" description="The title of the window.">
@@ -61,7 +61,7 @@
       </element>
     </class>
 
-    <class name="tab" code="Gtab" plural="tabs" "description="A tab within a Sylvander window.">
+    <class name="tab" code="Gtab" plural="tabs" description="A tab within a Sylvander window.">
       <cocoa class="GhosttyScriptTab"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this tab."/>
       <property name="name" code="pnam" type="text" access="r" description="The title of the tab.">
@@ -83,7 +83,7 @@
       </element>
     </class>
 
-    <class name="terminal" code="Gtrm" plural="terminals" "description="An individual terminal surface.">
+    <class name="terminal" code="Gtrm" plural="terminals" description="An individual terminal surface.">
       <cocoa class="GhosttyScriptTerminal"/>
       <property name="id" code="ID  " type="text" access="r" description="Stable ID for this terminal surface."/>
       <property name="name" code="pnam" type="text" access="r" description="Current terminal title.">
@@ -120,8 +120,8 @@
         <cocoa key="waitAfterCommand"/>
       </property>
       <property name="environment variables" code="GScE" description="Environment variables in KEY=VALUE format.">
-        <type type="text" list="yes"/>
         <cocoa key="environmentVariables"/>
+        <type type="text" list="yes"/>
       </property>
     </record-type>
 
