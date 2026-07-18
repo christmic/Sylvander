@@ -820,6 +820,10 @@ impl Tool for McpTool {
         self.input_schema.clone()
     }
 
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::ArbitraryMcp
+    }
+
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
         self.client
             .call_tool(
@@ -898,6 +902,10 @@ impl Tool for McpResourceTool {
                 "additionalProperties": false
             })),
         }
+    }
+
+    fn invocation_class(&self) -> crate::tool_invocation::ToolInvocationClass {
+        crate::tool_invocation::ToolInvocationClass::ArbitraryMcp
     }
 
     async fn execute(&self, ctx: &ToolContext, input: JsonValue) -> Result<ToolOutput, ToolError> {
