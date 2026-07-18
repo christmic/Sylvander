@@ -231,21 +231,22 @@ async fn dropping_an_operation_force_removes_its_named_container() {
             .await
     });
 
-    for _ in 0..100 {
-        if fake.started.exists() {
-            break;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fake.started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(fake.started.exists(), "fake container never started");
+    })
+    .await
+    .expect("fake container never started");
     operation.abort();
     let _ = operation.await;
-    for _ in 0..100 {
-        if fake.cleanup.exists() {
-            break;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !fake.cleanup.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .expect("fake container cleanup did not finish");
     let removed = fs::read_to_string(&fake.cleanup).unwrap();
     assert!(removed.starts_with("sylvander-"), "{removed}");
 }
