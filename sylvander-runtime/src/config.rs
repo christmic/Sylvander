@@ -15,7 +15,6 @@ use sylvander_agent::prompt::{
     validate_profile_selectors, validate_prompt, validate_unique_identities,
 };
 
-mod legacy;
 mod secret;
 
 pub use secret::{SecretResolver, SecretValue, SystemSecretResolver};
@@ -434,10 +433,13 @@ pub struct EvidenceSettings {
     #[serde(default = "enabled")]
     pub enabled: bool,
     pub path: Option<PathBuf>,
+    #[serde(default = "default_evidence_tenant")]
+    pub tenant_id: String,
     #[serde(default = "default_evidence_retention_days")]
     pub retention_days: u32,
     #[serde(default)]
     pub content: EvidenceContentPolicy,
+    pub encryption: Option<EvidenceEncryptionSettings>,
 }
 
 impl Default for EvidenceSettings {
@@ -445,10 +447,16 @@ impl Default for EvidenceSettings {
         Self {
             enabled: true,
             path: None,
+            tenant_id: default_evidence_tenant(),
             retention_days: default_evidence_retention_days(),
             content: EvidenceContentPolicy::MetadataOnly,
+            encryption: None,
         }
     }
+}
+
+fn default_evidence_tenant() -> String {
+    "local".into()
 }
 
 const fn default_evidence_retention_days() -> u32 {
@@ -465,6 +473,15 @@ pub enum EvidenceContentPolicy {
     Redacted,
     /// Store complete payloads. This must be an explicit operator decision.
     Full,
+}
+
+/// Application-layer encryption for evidence content and generated artifacts.
+/// The referenced secret is resolved only during Runtime startup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceEncryptionSettings {
+    pub key_id: String,
+    pub key: SecretRef,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -813,6 +830,36 @@ impl ServerConfig {
             && !(1..=3650).contains(&self.server.evidence.retention_days)
         {
             errors.push("server evidence retention_days must be between 1 and 3650".into());
+        }
+        if self.server.evidence.enabled {
+            require_text(
+                "server evidence tenant_id",
+                &self.server.evidence.tenant_id,
+                &mut errors,
+            );
+            if self.server.evidence.tenant_id.len() > 200
+                || self.server.evidence.tenant_id.chars().any(char::is_control)
+            {
+                errors.push("server evidence tenant_id is invalid".into());
+            }
+            if let Some(encryption) = &self.server.evidence.encryption {
+                require_text(
+                    "server evidence encryption key_id",
+                    &encryption.key_id,
+                    &mut errors,
+                );
+                if encryption.key_id.len() > 200 || encryption.key_id.chars().any(char::is_control)
+                {
+                    errors.push("server evidence encryption key_id is invalid".into());
+                }
+                encryption
+                    .key
+                    .validate("server evidence encryption key", &mut errors);
+            } else if self.server.evidence.content != EvidenceContentPolicy::MetadataOnly {
+                errors.push("redacted or full evidence content requires encryption-at-rest".into());
+            } else if self.server.mode == ServerMode::Production {
+                errors.push("production mode requires evidence encryption-at-rest".into());
+            }
         }
         let memory = &self.server.memory_maintenance;
         match (
@@ -1470,89 +1517,13 @@ fn validate_channel(channel: &ChannelInstanceConfig, errors: &mut Vec<String>) {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/config.rs"]
 mod tests;
 
 #[cfg(test)]
-mod qualified_model_tests {
-    use super::*;
+#[path = "../tests/unit/config_qualified_models.rs"]
+mod qualified_model_tests;
 
-    fn qualified_config() -> ServerConfig {
-        ServerConfig::from_toml(
-            r#"
-schema_version = 1
-
-[server]
-mode = "self_use"
-
-[[model_providers]]
-id = "alpha"
-base_url = "https://alpha.example.invalid"
-[model_providers.api_key]
-source = "env"
-name = "ALPHA_TOKEN"
-[[model_providers.models]]
-id = "shared"
-
-[[model_providers]]
-id = "beta"
-base_url = "https://beta.example.invalid"
-[model_providers.api_key]
-source = "env"
-name = "BETA_TOKEN"
-[[model_providers.models]]
-id = "shared"
-
-[[agents]]
-[agents.spec]
-id = "assistant"
-name = "Assistant"
-[agents.spec.model]
-provider = "alpha"
-model_name = "shared"
-allowed_models = [
-  { provider_id = "alpha", model_id = "shared" },
-  { provider_id = "beta", model_id = "shared" },
-]
-"#,
-        )
-        .expect("qualified configuration")
-    }
-
-    fn validation_text(config: &ServerConfig) -> String {
-        config.validate().unwrap_err().errors.join("\n")
-    }
-
-    #[test]
-    fn qualified_allowlist_accepts_same_model_id_across_providers() {
-        qualified_config().validate().unwrap();
-    }
-
-    #[test]
-    fn qualified_allowlist_rejects_unknown_provider() {
-        let mut config = qualified_config();
-        config.agents[0].spec.model.allowed_models[1].provider_id = "missing".into();
-        assert!(validation_text(&config).contains("references unknown provider missing"));
-    }
-
-    #[test]
-    fn qualified_allowlist_rejects_missing_model() {
-        let mut config = qualified_config();
-        config.agents[0].spec.model.allowed_models[1].model_id = "missing".into();
-        assert!(validation_text(&config).contains("absent from provider beta"));
-    }
-
-    #[test]
-    fn qualified_allowlist_rejects_duplicate_exact_pair() {
-        let mut config = qualified_config();
-        let duplicate = config.agents[0].spec.model.allowed_models[0].clone();
-        config.agents[0].spec.model.allowed_models[1] = duplicate;
-        assert!(validation_text(&config).contains("duplicate allowed Model alpha/shared"));
-    }
-
-    #[test]
-    fn qualified_allowlist_rejects_missing_default_pair() {
-        let mut config = qualified_config();
-        config.agents[0].spec.model.allowed_models.remove(0);
-        assert!(validation_text(&config).contains("do not contain its default alpha/shared"));
-    }
-}
+#[cfg(test)]
+#[path = "../tests/unit/config_evidence_governance.rs"]
+mod evidence_governance_tests;
