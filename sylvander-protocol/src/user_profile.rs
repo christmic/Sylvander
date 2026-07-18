@@ -518,4 +518,5 @@ fn validate_text(
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/user_profile.rs"]
 mod tests;

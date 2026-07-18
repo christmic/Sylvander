@@ -422,4 +422,5 @@ fn validate_secret(value: &str) -> Result<(), IdentityBindingValidationError> {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/identity_binding.rs"]
 mod tests;
