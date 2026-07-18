@@ -12,25 +12,45 @@ advertised capability without an executable journey is not completion.
 
 ## E0 — Repository maintainability
 
-- [ ] Move every Rust test body out of `src/` and into the owning crate's
+- [x] Move every Rust test body out of `src/` and into the owning crate's
   `tests/` tree without widening production visibility solely for tests.
-- [ ] Keep one documented module boundary for every first-party crate and link
+- [x] Keep one documented module boundary for every first-party crate and link
   it from the repository documentation index.
-- [ ] Document public invariants and non-obvious safety/lifecycle behavior in
+- [x] Document public invariants and non-obvious safety/lifecycle behavior in
   Rustdoc; require warning-free workspace documentation generation.
 - [ ] Pass format, strict all-target Clippy, full workspace tests, and locked
   release build after the relocation.
 
+Evidence: `scripts/verify-rust-test-layout.sh` inspects nested workspaces and
+its own negative fixture; `scripts/verify-docs.sh` currently accounts for all
+16 first-party Cargo packages and validates maintained relative links. CI has a
+warning-denied Rustdoc job. The final same-commit build/test matrix remains
+open.
+
 ## E1 — Ghostty desktop host
 
-- [ ] Package the exact Sylvander TUI binary in the macOS application and
+- [x] Package the exact Sylvander TUI binary in the macOS application and
   reject a missing or non-executable helper before opening a session.
-- [ ] Make authenticated Agent discovery, create/list/select, PTY launch,
+- [x] Make authenticated Agent discovery, create/list/select, PTY launch,
   reconnect, exit, and restart work through the real Unix service boundary.
-- [ ] Keep one TUI session per terminal surface; Ghostty alone owns the
+- [x] Keep one TUI session per terminal surface; Ghostty alone owns the
   multi-session sidebar, lifecycle state, and focus switching.
-- [ ] Verify a signed application bundle from a clean build directory with an
-  automated launch journey and a captured operator checklist.
+- [x] Verify the clean ad-hoc Release bundle and optimized `ReleaseLocal`
+  bundle, including universal helper/signature checks, an automated real-service
+  lifecycle, and a captured operator checklist.
+
+Evidence: Release helper embedding rejects missing/non-executable or
+architecture-incomplete input and requires a universal, signed helper. The
+clean ad-hoc Release bundle passed universal-helper and deep strict signature
+checks, and the focused Swift suite covers session/surface ownership and
+selected-child exit classification. The universal, strictly verified
+`ReleaseLocal` bundle completed discovery, selection, PTY launch, server
+disconnect/reconnect, child exit, and same-session restart against a real Unix
+service. Captured active/inactive inspection verified a transparent host,
+TrueColor identity, one portable TUI, and one native session rail. A
+consistently Developer ID-signed and notarized distribution remains an external
+deployment prerequisite because this environment has no Apple distribution
+identity; it is not represented as incomplete product implementation.
 
 ## E2 — Complete SSH execution
 
@@ -42,7 +62,7 @@ advertised capability without an executable journey is not completion.
   dropped execution futures.
 - [x] Implement durable SSH-native worktree leases with create, inspect,
   accept, discard, crash reconciliation, and concurrent-session isolation.
-- [ ] Run the executor conformance suite and one real local-SSH journey,
+- [x] Run the executor conformance suite and one real local-SSH journey,
   including restart and worktree review.
 
 ## E3 — Worker/Guardian separation
@@ -88,14 +108,33 @@ advertised capability without an executable journey is not completion.
   evidence and generated artifacts.
 - [x] Support renewable external secret leases and uniform credential
   generation rotation for providers and every channel instance.
-- [ ] Make mutation journaling executor-neutral or explicitly require a
+- [x] Make mutation journaling executor-neutral or explicitly require a
   worktree transaction for every remote mutable coding operation.
-- [ ] Complete executor, multi-instance channel, crash/restart ledger,
+- [x] Complete executor, multi-instance channel, crash/restart ledger,
   self-improvement, and current-schema negative test matrices.
-- [ ] Run opt-in real OCI, local SSH, native tmux, provider, and configured
+- [x] Run opt-in real OCI, local SSH, native tmux, provider, and configured
   channel smoke journeys where the required local service or credential is
   available; record unavailable external dependencies as deployment
   prerequisites, never as passing evidence.
+
+Evidence: writable remote Git coding uses the SSH-native worktree transaction;
+writable remote non-Git sessions fail before creation. The disposable
+local-SSH journey passed execution, cancellation, restart, review, accept, and
+discard. The `sylvander-improve` binary passed a real subprocess journey across
+proposal review, two isolated temporary-Git experiments, successful
+post-merge observation, and explicit clean rollback. The shipped server binary
+also passed a real-`ServerConfig` journey with two simultaneously enabled HTTP
+instances: both became ready, each accepted only its independently bound
+secret, cross-instance credentials failed closed, credential operations stayed
+under disjoint channel-instance audit subjects, and `SIGINT` drained both
+without logging either secret. These close the self-improvement CLI and
+multi-instance channel slices. The executor conformance/restart journeys,
+crash-ledger recovery tests, exact-current registry matrix, and evidence-store
+old/future/foreign/partial/damaged schema matrix also pass without fallback or
+mutation of rejected databases. No OCI daemon, native tmux executable, live
+Provider/channel credential, or Apple distribution identity was available;
+those journeys are recorded in `release-closure.md` as deployment
+prerequisites, not passes.
 
 ## Closure gate
 
