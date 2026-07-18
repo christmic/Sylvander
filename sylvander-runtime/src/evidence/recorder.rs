@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sha2::{Digest, Sha256};
 use sylvander_agent::bus::{
     BusMessage, MessageBus, MessageKind, Recipient, Sender, StreamEvent, SubscriptionFilter,
 };
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, RwLock, oneshot};
 use tokio::task::JoinHandle;
 use tracing::error;
 
@@ -22,6 +24,16 @@ pub struct EvidenceRecorder {
     store: EvidenceStore,
     stop: Mutex<Option<oneshot::Sender<()>>>,
     task: Mutex<Option<JoinHandle<()>>>,
+    last_error: Arc<RwLock<Option<EvidenceRecorderFailure>>>,
+    #[cfg(test)]
+    fail_next_record: Arc<AtomicBool>,
+}
+
+/// Content-safe recorder failure visible to operational health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRecorderFailure {
+    PersistEvent,
+    CloseActiveTurn,
 }
 
 impl EvidenceRecorder {
@@ -53,16 +65,46 @@ impl EvidenceRecorder {
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let task_store = store.clone();
         let task_run_id = run_id.clone();
+        let last_error = Arc::new(RwLock::new(None));
+        let task_last_error = last_error.clone();
+        #[cfg(test)]
+        let fail_next_record = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let task_fail_next_record = fail_next_record.clone();
         let task = tokio::spawn(async move {
             let mut active_turns = HashMap::new();
             loop {
                 tokio::select! {
                     Some(message) = receiver.recv() => {
-                        record_message(&task_store, &task_run_id, content, &mut active_turns, message).await;
+                        #[cfg(test)]
+                        let injected = task_fail_next_record.swap(false, Ordering::AcqRel);
+                        #[cfg(not(test))]
+                        let injected = false;
+                        record_message(
+                            &task_store,
+                            &task_run_id,
+                            content,
+                            &mut active_turns,
+                            message,
+                            &task_last_error,
+                            injected,
+                        ).await;
                     }
                     _ = &mut stop_rx => {
                         while let Ok(message) = receiver.try_recv() {
-                            record_message(&task_store, &task_run_id, content, &mut active_turns, message).await;
+                            #[cfg(test)]
+                            let injected = task_fail_next_record.swap(false, Ordering::AcqRel);
+                            #[cfg(not(test))]
+                            let injected = false;
+                            record_message(
+                                &task_store,
+                                &task_run_id,
+                                content,
+                                &mut active_turns,
+                                message,
+                                &task_last_error,
+                                injected,
+                            ).await;
                         }
                         let ended_at = now_secs();
                         for active in active_turns.into_values() {
@@ -71,6 +113,8 @@ impl EvidenceRecorder {
                                 .await
                             {
                                 error!(%error, "failed to close active turn during shutdown");
+                                *task_last_error.write().await =
+                                    Some(EvidenceRecorderFailure::CloseActiveTurn);
                             }
                         }
                         break;
@@ -83,12 +127,32 @@ impl EvidenceRecorder {
             store,
             stop: Mutex::new(Some(stop_tx)),
             task: Mutex::new(Some(task)),
+            last_error,
+            #[cfg(test)]
+            fail_next_record,
         })
     }
 
     #[must_use]
     pub fn store(&self) -> EvidenceStore {
         self.store.clone()
+    }
+
+    /// Return the active evidence-run identifier used to derive opaque
+    /// per-turn feedback targets at ingress.
+    #[must_use]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Return the latest content-safe background persistence failure.
+    pub async fn last_error(&self) -> Option<EvidenceRecorderFailure> {
+        *self.last_error.read().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_record_for_test(&self) {
+        self.fail_next_record.store(true, Ordering::Release);
     }
 
     pub async fn shutdown(&self) -> Result<(), EvidenceError> {
@@ -111,9 +175,17 @@ async fn record_message(
     content: EvidenceContentPolicy,
     active_turns: &mut HashMap<String, ActiveTurn>,
     message: BusMessage,
+    last_error: &RwLock<Option<EvidenceRecorderFailure>>,
+    injected: bool,
 ) {
-    if let Err(error) = record_message_inner(store, run_id, content, active_turns, message).await {
+    let result = if injected {
+        Err(EvidenceError::Task("injected evidence failure".into()))
+    } else {
+        record_message_inner(store, run_id, content, active_turns, message).await
+    };
+    if let Err(error) = result {
         error!(%error, "failed to persist runtime evidence");
+        *last_error.write().await = Some(EvidenceRecorderFailure::PersistEvent);
     }
 }
 
@@ -302,6 +374,7 @@ async fn record_stream(
 fn terminal(event: &StreamEvent) -> Option<(&'static str, bool, u64)> {
     match event {
         StreamEvent::Done { text } => Some(("succeeded", true, text.len() as u64)),
+        StreamEvent::Error { message } => Some(("failed", false, message.len() as u64)),
         StreamEvent::TurnInterrupted { .. } => Some(("interrupted", false, 0)),
         _ => None,
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::evidence::{EvidenceEvent, FeedbackAttribution, StepStart, TurnStart};
+use crate::evidence::{EvidenceEvent, FeedbackAttribution, StepStart, TurnStart, feedback_target};
 use sylvander_protocol::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
 
 fn event(id: &str, turn_id: &str, event_type: &str, occurred_at: i64) -> EvidenceEvent {
@@ -18,10 +18,9 @@ fn event(id: &str, turn_id: &str, event_type: &str, occurred_at: i64) -> Evidenc
     }
 }
 
-fn feedback(turn_id: Option<&str>, privacy_class: FeedbackPrivacyClass) -> RunFeedback {
+fn feedback(turn_id: &str, privacy_class: FeedbackPrivacyClass) -> RunFeedback {
     RunFeedback {
-        run_id: "run-analysis".into(),
-        turn_id: turn_id.map(str::to_string),
+        target: feedback_target("run-analysis", turn_id),
         rating: FeedbackRating::Positive,
         note: None,
         correction: None,
@@ -116,7 +115,7 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
         (FeedbackPrivacyClass::MetadataOnly, 16),
     ] {
         store
-            .record_feedback(feedback(Some("turn-success"), privacy), attribution(), at)
+            .record_feedback(feedback("turn-success", privacy), attribution(), at)
             .await
             .unwrap();
     }
@@ -160,15 +159,6 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
         .finish_turn("turn-timeout".into(), 22, "interrupted", 0)
         .await
         .unwrap();
-    store
-        .record_feedback(
-            feedback(None, FeedbackPrivacyClass::Shareable),
-            attribution(),
-            23,
-        )
-        .await
-        .unwrap();
-
     let query = CohortQuery {
         agent_id: None,
         started_at_inclusive: 0,
@@ -204,7 +194,6 @@ async fn cohort_is_stable_and_exposes_missing_or_biased_evidence() {
         AnalysisWarning::IncompletePricing,
         AnalysisWarning::SparseFeedback,
         AnalysisWarning::MixedFeedbackPrivacy,
-        AnalysisWarning::RunLevelFeedbackExcluded,
     ] {
         assert!(first.warnings.contains(&warning), "{warning:?}");
     }

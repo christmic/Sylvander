@@ -143,7 +143,7 @@ async fn database_binding_rejects_wrong_tenant_key_id_and_key_material() {
 }
 
 #[tokio::test]
-async fn governance_store_rejects_non_current_schema_without_migration() {
+async fn evidence_store_rejects_partial_unversioned_schema_without_migration() {
     let directory = tempfile::TempDir::new().unwrap();
     let path = directory.path().join("evidence.sqlite");
     let connection = rusqlite::Connection::open(&path).unwrap();
@@ -158,10 +158,7 @@ async fn governance_store_rejects_non_current_schema_without_migration() {
 
     let result = EvidenceStore::open_governed(&path, policy("tenant-a", "key-1", 7)).await;
 
-    assert!(matches!(
-        result,
-        Err(EvidenceError::InvalidGovernanceSchema)
-    ));
+    assert!(matches!(result, Err(EvidenceError::InvalidSchema)));
 }
 
 #[tokio::test]

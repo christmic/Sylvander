@@ -64,6 +64,29 @@ impl EvidenceStore {
         .await
     }
 
+    /// Record an explicit human decision that an observing merge must be
+    /// rolled back before any repository mutation occurs.
+    pub async fn require_experiment_rollback(
+        &self,
+        transition: ExperimentTransition,
+    ) -> Result<StoredSelfChangeExperiment, EvidenceError> {
+        if transition
+            .reason
+            .as_ref()
+            .is_none_or(|reason| reason.trim().is_empty())
+        {
+            return Err(EvidenceError::InvalidExperimentEvidence);
+        }
+        self.transition_experiment(
+            transition,
+            SelfChangeExperimentStatus::Observing,
+            SelfChangeExperimentStatus::RollbackRequired,
+            None,
+            None,
+        )
+        .await
+    }
+
     pub async fn record_experiment_rollback(
         &self,
         transition: ExperimentTransition,
