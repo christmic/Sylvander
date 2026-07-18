@@ -1,6 +1,6 @@
 # Security verification
 
-This is the repeatable release gate for the local-first Sylvander deployment.
+This is the repeatable release gate for a Sylvander deployment.
 Run it from a clean checkout:
 
 ```sh
@@ -18,7 +18,7 @@ matching still uses the freshly fetched RustSec advisory database.
 | Threat | Enforced boundary | Release evidence |
 |---|---|---|
 | malformed or shape-confused client frames | strict tagged protocol types, unknown-field rejection, bounded channel frames | deterministic deletion/replacement corpus proves parsing is total; invalid roots, tags, fields, and UTF-8 fail closed |
-| workspace escape or command argument injection | canonical workspace resolver, non-shell file tools, validated Git paths | traversal, symlink, parent-path, and shell-argument regression tests |
+| workspace escape or command argument injection | canonical workspace resolver, non-shell file tools, validated Git paths, strict OpenSSH argv and remote path validation | traversal, symlink, parent-path, shell-argument, and SSH transport regression tests |
 | cross-user, cross-Agent, or cross-client disclosure | boundary-derived ownership and composite channel identity | User Profile, relationship memory, production memory, and live Unix client isolation tests |
 | credential disclosure | typed secret references and redacted public views/presentation | tracked-file scan, credential round-trip redaction, and TUI header/URL/JWT/private-key redaction tests |
 | undeleted learned data | privileged CAS-guarded chain deletion | complete supersession-chain deletion plus content-safe audit verification |
@@ -31,8 +31,13 @@ process restrictions are specified in
 
 ## Residual risk
 
-- SSH execution is outside the current local release scope and has not passed
-  the remote host-key, process-tree, or transfer threat model.
+- OpenSSH execution is implemented with strict host-key verification, a
+  deployment-owned known-hosts file, bounded control reuse, remote path
+  validation, and remote process-group cancellation. The credentialed
+  real-SSH worktree journey is opt-in. A disposable local SSH daemon passed
+  execution, cancellation, restart, review, accept, and discard on 2026-07-18,
+  but every deployment must still run the journey against its own acceptance
+  host before advertising that target.
 - The secret scan is a high-confidence deterministic gate, not a replacement
   for organization-wide history scanning or provider-side credential
   revocation.

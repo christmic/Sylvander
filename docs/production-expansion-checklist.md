@@ -34,58 +34,59 @@ advertised capability without an executable journey is not completion.
 
 ## E2 — Complete SSH execution
 
-- [ ] Require strict host-key verification and a deployment-owned known-hosts
+- [x] Require strict host-key verification and a deployment-owned known-hosts
   file; never silently accept or learn a host key.
-- [ ] Reuse bounded OpenSSH control connections and expose deterministic
+- [x] Reuse bounded OpenSSH control connections and expose deterministic
   health/failure behavior without leaking credentials.
-- [ ] Terminate the remote command process group on timeout, interruption, and
+- [x] Terminate the remote command process group on timeout, interruption, and
   dropped execution futures.
-- [ ] Implement durable SSH-native worktree leases with create, inspect,
+- [x] Implement durable SSH-native worktree leases with create, inspect,
   accept, discard, crash reconciliation, and concurrent-session isolation.
 - [ ] Run the executor conformance suite and one real local-SSH journey,
   including restart and worktree review.
 
 ## E3 — Worker/Guardian separation
 
-- [ ] Give Worker and Guardian actors independent registries and immutable
+- [x] Give Worker and Guardian actors independent registries and immutable
   per-run capability snapshots. A Worker cannot discover Guardian schemas.
-- [ ] Derive every memory/workspace owner from Runtime context and enforce a
+- [x] Derive every memory/workspace owner from Runtime context and enforce a
   second fail-closed policy check at invocation time.
-- [ ] Run Guardian with a distinct service identity and strict capability
+- [x] Run Guardian with a distinct service identity and strict capability
   allowlist that excludes terminal, browser, host control, and arbitrary MCP.
-- [ ] Prove forged routes, hidden-tool discovery, and cross-owner access fail
+- [x] Prove forged routes, hidden-tool discovery, and cross-owner access fail
   without revealing protected existence.
 
 ## E4 — Guardian curation
 
-- [ ] Persist idempotent outbox events and retryable `CuratorRun` state
+- [x] Persist idempotent outbox events and retryable `CuratorRun` state
   independently from conversational sessions.
-- [ ] Persist typed candidates with evidence, scope, confidence, sensitivity,
+- [x] Persist typed candidates with evidence, scope, confidence, sensitivity,
   consent state, retention, deduplication, and conflict state.
-- [ ] Implement extract, classify, reconcile, confirm, policy-check, commit,
+- [x] Implement extract, classify, reconcile, confirm, policy-check, commit,
   correct, decay, and forget transitions with durable audit.
-- [ ] Require deterministic policy authorization for every canonical-memory or
+- [x] Require deterministic policy authorization for every canonical-memory or
   user-profile mutation; model classification alone is never authority.
 
 ## E5 — Context and capability runtime
 
-- [ ] Compose typed safety, Agent, User Profile, relationship memory, workspace
+- [x] Compose typed safety, Agent, User Profile, relationship memory, workspace
   knowledge, and session layers with provenance, digests, precedence, and
   explicit per-layer token budgets.
-- [ ] Retrieve dynamic relationship/workspace context by relevance and remove
+- [x] Retrieve dynamic relationship/workspace context by relevance and remove
   expired or superseded facts without dumping complete stores into a prompt.
-- [ ] Route built-ins, Skills, MCP, browser, and host capabilities through one
-  actor-aware router, policy gateway, approval contract, artifact store, and
-  content-safe audit record.
+- [x] Bind Skills into immutable prompt context without executable authority,
+  and route built-ins, MCP, browser, host control, memory candidates, and
+  registered extensions through one actor-aware router, policy gateway,
+  approval contract, artifact store, and content-safe audit record.
 - [x] Scope persistent approvals by stable identity, Agent, policy revision,
   capability revision, operation, and resource fingerprint.
 
 ## E6 — Governance and remaining production evidence
 
-- [ ] Apply explicit data classification, redaction, retention, deletion,
+- [x] Apply explicit data classification, redaction, retention, deletion,
   export, encryption-at-rest configuration, and tenant isolation to run
   evidence and generated artifacts.
-- [ ] Support renewable external secret leases and uniform credential
+- [x] Support renewable external secret leases and uniform credential
   generation rotation for providers and every channel instance.
 - [ ] Make mutation journaling executor-neutral or explicitly require a
   worktree transaction for every remote mutable coding operation.
