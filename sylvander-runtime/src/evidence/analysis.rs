@@ -427,4 +427,5 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/evidence_analysis.rs"]
 mod tests;

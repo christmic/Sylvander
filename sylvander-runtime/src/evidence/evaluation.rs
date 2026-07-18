@@ -179,4 +179,5 @@ fn parse_scorer_kind(value: &str) -> Result<ScoringAdapterKind, EvidenceError> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/evidence_evaluation.rs"]
 mod tests;
