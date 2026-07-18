@@ -2234,8 +2234,11 @@ async fn startup_failure_leaves_policy_staged_and_previous_revision_restartable(
 
     let mut failed_rollout = config.clone();
     failed_rollout.server.memory_maintenance.retention.revision = 2;
-    let invalid_evidence_path = directory.path().join("evidence-is-a-directory");
-    std::fs::create_dir_all(&invalid_evidence_path).unwrap();
+    // The latest config boundary rejects directory paths before rollout
+    // staging. Use a regular file with an invalid SQLite header so startup
+    // reaches the evidence store after staging the new retention revision.
+    let invalid_evidence_path = directory.path().join("invalid-evidence.db");
+    std::fs::write(&invalid_evidence_path, b"not a sqlite database").unwrap();
     failed_rollout.server.evidence.path = Some(invalid_evidence_path);
     let error = match Runtime::boot_config(failed_rollout).await {
         Ok(runtime) => {

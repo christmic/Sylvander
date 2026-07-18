@@ -84,6 +84,7 @@ description = "Release verification"
 [agents.spec.model]
 provider = "fixture"
 model_name = "fixture-model"
+allowed_models = [{ provider_id = "fixture", model_id = "fixture-model" }]
 max_tokens = 4096
 
 [agents.agent_workspace]
