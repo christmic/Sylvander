@@ -211,7 +211,7 @@ async fn handle_verify(
         reject_webhook_authentication(&state).await;
         return String::new();
     }
-    if let Ok((msg, _)) = state.crypto.decrypt(&echostr) {
+    if let Ok(msg) = state.crypto.decrypt(&echostr) {
         msg
     } else {
         reject_webhook_authentication(&state).await;
@@ -247,7 +247,7 @@ async fn handle_callback(
         return "success".into();
     }
 
-    let (xml, _corp_id) = match state.crypto.decrypt(&encrypted) {
+    let xml = match state.crypto.decrypt(&encrypted) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, "wechat: decrypt failed");

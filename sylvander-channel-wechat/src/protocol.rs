@@ -13,6 +13,7 @@ pub enum CryptoError {
     Aes,
     InvalidUtf8,
     InvalidLength,
+    CorpIdMismatch,
 }
 
 impl std::fmt::Display for CryptoError {
@@ -22,6 +23,7 @@ impl std::fmt::Display for CryptoError {
             CryptoError::Aes => write!(f, "aes failed"),
             CryptoError::InvalidUtf8 => write!(f, "invalid utf8"),
             CryptoError::InvalidLength => write!(f, "invalid length"),
+            CryptoError::CorpIdMismatch => write!(f, "corp id mismatch"),
         }
     }
 }
@@ -71,7 +73,12 @@ impl WechatCrypto {
         result == signature
     }
 
-    pub fn decrypt(&self, encrypted_b64: &str) -> Result<(String, String), CryptoError> {
+    /// Decrypt one callback and bind it to this configured enterprise.
+    ///
+    /// The embedded Corp ID is part of the encrypted envelope, not ordinary
+    /// message content. Accepting a valid ciphertext for another enterprise
+    /// would cross the configured channel-instance boundary.
+    pub fn decrypt(&self, encrypted_b64: &str) -> Result<String, CryptoError> {
         let ciphertext = B64
             .decode(encrypted_b64.as_bytes())
             .map_err(CryptoError::Base64)?;
@@ -92,7 +99,10 @@ impl WechatCrypto {
         let recv_corp_id = std::str::from_utf8(&plaintext[20 + msg_len..])
             .map_err(|_| CryptoError::InvalidUtf8)?
             .to_string();
-        Ok((msg, recv_corp_id))
+        if recv_corp_id != self.corp_id {
+            return Err(CryptoError::CorpIdMismatch);
+        }
+        Ok(msg)
     }
 
     pub fn encrypt(
