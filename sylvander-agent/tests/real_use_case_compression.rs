@@ -119,7 +119,7 @@ async fn real_use_case_l0_offloads_huge_read_result() {
     let big_body = "x".repeat(10_000);
     std::fs::write(tmp.path().join("notes.md"), &big_body).expect("write big");
 
-    let read_tool = ReadTool::new(tmp.path());
+    let read_tool = ReadTool::new();
 
     // === L0 with tight budget: anything > 1000 chars goes to disk ===
     let disk = Arc::new(InMemoryToolResultDisk::new());
@@ -291,7 +291,7 @@ async fn real_use_case_full_pipeline_l0_l1_l2_l3_over_multiple_iterations() {
         std::fs::write(tmp.path().join(format!("file{i}.md")), &body).expect("write");
     }
 
-    let read_tool = ReadTool::new(tmp.path());
+    let read_tool = ReadTool::new();
 
     let disk = Arc::new(InMemoryToolResultDisk::new());
     let disk_dyn: Arc<dyn ToolResultDisk> = disk.clone();
@@ -710,7 +710,7 @@ async fn real_use_case_l3_trims_old_thinking_blocks() {
 #[tokio::test]
 async fn real_use_case_l4_summarizes_at_high_usage() {
     // Tiny context_window + huge usage forces L4 to fire at iter 2
-    // start. L4 calls the LLM (via AgentLoopAutoCompactLlm) to
+    // start. L4 calls the LLM through ProviderAutoCompactLlm to
     // generate a summary. The summary call is caught by the same
     // wiremock default response (end_turn + text).
     let server = MockServer::start().await;
@@ -807,8 +807,8 @@ async fn real_use_case_l4_summarizes_at_high_usage() {
     // a) fired successfully (removed_count > 0)
     // b) failed gracefully (failure: Some("auto_compact_llm not configured") OR LLM call failed)
     //
-    // The AgentLoop wires the AutoCompactLlm via the AgentLoopAutoCompactLlm
-    // struct, so the LLM IS configured. The L4 call hits wiremock's
+    // AgentLoop wires the AutoCompactLlm through ProviderAutoCompactLlm, so
+    // the LLM IS configured. The L4 call hits wiremock's
     // default mock, which returns end_turn+text. L4 extracts the text
     // as summary, replaces messages.
     let fired = l4_events

@@ -14,9 +14,12 @@
 //!
 //! All configuration is read from env vars — no hardcoded fallbacks.
 
+mod support;
+
 use std::env;
 
 use futures_util::StreamExt;
+use support::qualified_anthropic_loop_builder;
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -69,9 +72,7 @@ async fn real_api_agent_loop_completes() {
     eprintln!("Prompt: {prompt}");
     eprintln!();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .max_iterations(3)
         .build()
         .expect("build");
@@ -169,9 +170,7 @@ async fn real_api_streaming_events_in_order() {
     };
 
     let prompt = prompt_from_env();
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let loop_ = qualified_anthropic_loop_builder(client, model)
         .max_iterations(3)
         .build()
         .expect("build");

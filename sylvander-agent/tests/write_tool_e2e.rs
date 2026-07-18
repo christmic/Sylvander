@@ -121,8 +121,8 @@ async fn write_tool_e2e() {
     let events_clone = events.clone();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
-        .tool(ReadTool::new(tmp.path()))
-        .tool(WriteTool::new(tmp.path()))
+        .tool(ReadTool::new())
+        .tool(WriteTool::new())
         .tool_context(write_context(tmp.path()))
         .max_iterations(5)
         .build()
@@ -218,7 +218,7 @@ async fn write_creates_nested_dirs() {
     let events_clone = events.clone();
 
     let loop_ = qualified_anthropic_loop_builder(mock_client(&server), test_model())
-        .tool(WriteTool::new(tmp.path()))
+        .tool(WriteTool::new())
         .tool_context(write_context(tmp.path()))
         .max_iterations(3)
         .build()

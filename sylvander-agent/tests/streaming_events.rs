@@ -14,8 +14,10 @@ use sylvander_agent::prelude::*;
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
 };
-use sylvander_llm_anthropic::api::client::AnthropicClient;
-use sylvander_llm_anthropic::api::model::ModelCapabilities;
+use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 use sylvander_protocol::{
     PermissionProfile, ReasoningEffort, SessionConfigProvenance, SessionConfigSource,
     SessionConfigSourceKind, SessionEffectiveConfig,
@@ -35,6 +37,22 @@ fn mock_client(server: &MockServer) -> AnthropicClient {
         .expect("client build")
 }
 
+fn qualified_run_builder(spec: AgentSpec, client: AnthropicClient) -> AgentRunBuilder {
+    let provider_id = spec.model.provider.clone();
+    let model = spec.to_model_info().expect("valid test model");
+    let exact = ProviderModelInfo {
+        reference: ModelRef::new(&provider_id, model.id),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        capabilities: ProviderModelCapabilities::TOOL_USE,
+    };
+    AgentRun::qualified_router_builder(
+        spec,
+        Arc::new(AnthropicProvider::new(provider_id, client)),
+        exact,
+    )
+}
+
 async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>, SessionId) {
     let bus = Arc::new(InProcessMessageBus::new());
     let spec = AgentSpec::builder()
@@ -44,7 +62,7 @@ async fn build_agent(server: &MockServer) -> (AgentRun, Arc<InProcessMessageBus>
         .build()
         .expect("spec");
 
-    let (run, issuer) = AgentRun::builder(spec, mock_client(server))
+    let (run, issuer) = qualified_run_builder(spec, mock_client(server))
         .bus(bus.clone())
         .build_with_session_issuer()
         .expect("build");
@@ -103,7 +121,7 @@ async fn session_interrupt_cancels_one_active_turn_and_emits_terminal_event() {
         .model_name("claude-sonnet-5-20260601")
         .build()
         .expect("spec");
-    let run = AgentRun::builder(spec.clone(), mock_client(&server))
+    let run = qualified_run_builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
         .build()
         .expect("build");
@@ -176,6 +194,7 @@ fn event_names(events: &[BusMessage]) -> Vec<String> {
                 StreamEvent::IterationStart { .. } => "IterationStart",
                 StreamEvent::IterationEnd { .. } => "IterationEnd",
                 StreamEvent::Done { .. } => "Done",
+                StreamEvent::Error { .. } => "Error",
                 StreamEvent::ToolApprovalRequired { .. } => "ToolApprovalRequired",
                 StreamEvent::AskUser { .. } => "AskUser",
                 StreamEvent::UserAnswer { .. } => "UserAnswer",
@@ -264,9 +283,8 @@ async fn proposed_plan_blocks_until_typed_resolution_then_continues() {
     let tools = ToolRegistry::new()
         .register(PresentPlanTool::new())
         .register(UpdatePlanTool::new());
-    let run = AgentRun::builder(spec.clone(), mock_client(&server))
+    let run = qualified_run_builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
-        .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
@@ -353,7 +371,10 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "delegate"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "delegate"}]
+            }]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_spawn",
@@ -374,7 +395,10 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(body_partial_json(json!({
-            "messages": [{"role": "user", "content": "inspect only"}]
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "inspect only"}]
+            }]
         })))
         .respond_with(
             ResponseTemplate::new(200)
@@ -413,9 +437,8 @@ async fn background_task_is_real_read_only_work_and_cancels_independently() {
         .build()
         .expect("spec");
     let tools = ToolRegistry::new().register(StartBackgroundTaskTool::new());
-    let run = AgentRun::builder(spec.clone(), mock_client(&server))
+    let run = qualified_run_builder(spec.clone(), mock_client(&server))
         .bus(bus.clone())
-        .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build()
         .expect("build");
@@ -586,9 +609,10 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
             spec.persona.system_prompt.clone(),
             vec![sylvander_agent::prompt::PromptProfile {
                 id: "session".into(),
-                qualified_models: Vec::new(),
-                providers: vec![spec.model.provider.clone()],
-                models: vec![spec.model.model_name.clone()],
+                qualified_models: vec![sylvander_protocol::ModelSelection {
+                    provider_id: spec.model.provider.clone(),
+                    model_id: spec.model.model_name.clone(),
+                }],
                 system_prompt: "session profile".into(),
             }],
             None,
@@ -625,7 +649,7 @@ async fn durable_turn_uses_and_snapshots_effective_session_config() {
         provenance,
     };
 
-    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = qualified_run_builder(spec, mock_client(&server))
         .bus(bus)
         .session_store(store.clone())
         .prompt_resolver(prompt_policy)
@@ -737,9 +761,8 @@ async fn tool_call_events_published() {
         .build()
         .expect("spec");
 
-    let (agent, issuer) = AgentRun::builder(spec, mock_client(&server))
+    let (agent, issuer) = qualified_run_builder(spec, mock_client(&server))
         .bus(bus.clone())
-        .model_capabilities(ModelCapabilities::TOOL_USE)
         .override_tools(tools)
         .build_with_session_issuer()
         .expect("build");
@@ -874,14 +897,18 @@ async fn agent_error_published_and_returns_err() {
     // Should return error
     assert!(result.is_err());
 
-    // An error Chat message should have been published
-    let mut found_error = false;
+    // A typed terminal error must be published so transports can close the
+    // active turn and the UI can leave its working state.
+    let mut terminal_error = None;
     while let Ok(ev) = rx.try_recv() {
-        if let MessageKind::Chat = ev.kind
-            && ev.payload.contains("Error")
-        {
-            found_error = true;
+        if let MessageKind::Stream(StreamEvent::Error { message }) = ev.kind {
+            terminal_error = Some(message);
         }
     }
-    assert!(found_error, "expected an error Chat message on the bus");
+    assert!(
+        terminal_error
+            .as_deref()
+            .is_some_and(|message| !message.is_empty()),
+        "expected a typed terminal error on the bus"
+    );
 }

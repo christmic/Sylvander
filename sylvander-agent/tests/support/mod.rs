@@ -75,6 +75,23 @@ pub(crate) fn qualified_anthropic_loop_builder(
     AgentLoop::builder()
         .qualified_router(Arc::new(AnthropicProvider::new("anthropic", client)))
         .provider_model(provider_model)
+        .tool_context(sylvander_agent::tool_context::defaults::system_tool_context())
+}
+
+/// Build an explicit workspace-bound context for integration tools.
+pub(crate) fn workspace_tool_context(
+    root: &std::path::Path,
+    capabilities: impl IntoIterator<Item = sylvander_agent::tool_context::Cap>,
+) -> ToolContext {
+    capabilities.into_iter().fold(
+        ToolContext::new(sylvander_protocol::SessionContext::new(
+            "test-user",
+            "test-agent",
+            "test-session",
+        ))
+        .with_fs_root(root),
+        ToolContext::with_capability,
+    )
 }
 
 /// In-memory tool double for public-contract integration tests.

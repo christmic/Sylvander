@@ -4,9 +4,12 @@
 //! the result back. Verifies the Edit tool chain end-to-end with
 //! a real LLM.
 
+mod support;
+
 use std::env;
 use std::sync::Arc;
 
+use support::{qualified_anthropic_loop_builder, workspace_tool_context};
 use sylvander_agent::prelude::*;
 use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::{ModelCapabilities, ModelInfo};
@@ -54,11 +57,16 @@ async fn real_api_edit_tool_e2e() {
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = events.clone();
 
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
-        .tool(ReadTool::new(tmp.path()))
-        .tool(EditTool::new(tmp.path()))
+    let loop_ = qualified_anthropic_loop_builder(client, model)
+        .tool(ReadTool::new())
+        .tool(EditTool::new())
+        .tool_context(workspace_tool_context(
+            tmp.path(),
+            [
+                sylvander_agent::tool_context::Cap::Read,
+                sylvander_agent::tool_context::Cap::Write,
+            ],
+        ))
         .max_iterations(4)
         .build()
         .expect("build");
