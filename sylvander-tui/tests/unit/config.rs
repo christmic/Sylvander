@@ -99,16 +99,15 @@ fn desktop_launch_options_bind_one_session_and_workspace() {
 }
 
 #[test]
-fn positional_socket_remains_backward_compatible() {
-    let options = parse_launch_options(
+fn launch_options_reject_removed_positional_socket_syntax() {
+    let error = parse_launch_options(
         ["/tmp/legacy.sock".into()],
         Some("/tmp/env.sock".into()),
         Some("session-env".into()),
         None,
     )
-    .unwrap();
-    assert_eq!(options.socket_path, PathBuf::from("/tmp/legacy.sock"));
-    assert_eq!(options.session_id.as_deref(), Some("session-env"));
+    .unwrap_err();
+    assert_eq!(error, "unknown argument \"/tmp/legacy.sock\"");
 }
 
 #[test]
