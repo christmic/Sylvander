@@ -27,8 +27,6 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use sylvander_llm_anthropic::api::client::AnthropicClient;
-
 use crate::bus::{
     AgentStatus, BusMessage, MessageBus, MessageKind, Recipient, Sender, SystemMessage,
 };
@@ -175,28 +173,6 @@ impl AgentRunEngine {
     }
 
     // -- agent lifecycle --
-
-    /// Spawn a new agent.
-    ///
-    /// 1. Builds the `AgentRun`
-    /// 2. Subscribes to the bus for the agent's messages
-    /// 3. Subscribes to the bus for status updates
-    /// 4. Spawns the tokio task
-    ///
-    /// # Errors
-    /// Returns [`EngineError`] if the agent is already running.
-    pub async fn spawn(
-        &self,
-        spec: AgentSpec,
-        client: AnthropicClient,
-    ) -> Result<AgentHandle, EngineError> {
-        let run = AgentRun::builder(spec.clone(), client)
-            .bus(self.bus.clone())
-            .build()
-            .map_err(EngineError::Build)?;
-
-        self.spawn_run(spec, run).await
-    }
 
     /// Spawn a fully configured Agent run.
     ///

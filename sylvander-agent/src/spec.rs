@@ -104,12 +104,16 @@ pub struct McpServerConfig {
     pub envs: HashMap<String, String>,
 }
 
-/// Configuration for a long-term memory store.
+/// Declarative metadata for a long-term memory store.
+///
+/// Runtime composition resolves this declaration and injects the selected
+/// durable backend. An Agent definition cannot open storage or select an
+/// ephemeral production backend on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryStoreConfig {
-    /// Store type: `"in_memory"`, `"sqlite"`, etc.
+    /// Runtime-owned backend capability name.
     pub store_type: String,
-    /// Path to the store file or directory.
+    /// Deployment-owned location hint interpreted by Runtime composition.
     pub path: PathBuf,
 }
 
@@ -141,33 +145,6 @@ pub struct ToolPresentationConfig {
     pub kind: sylvander_protocol::ToolPresentationKind,
     #[serde(default)]
     pub target_field: Option<String>,
-}
-
-impl MemoryStoreConfig {
-    /// Resolve this config into an actual [`MemoryStore`](crate::tools::MemoryStore) implementation.
-    ///
-    /// Supports `"in_memory"` and `"sqlite"`.
-    ///
-    /// # Errors
-    /// Returns an error for unknown store types.
-    pub fn build(
-        &self,
-    ) -> Result<
-        std::sync::Arc<dyn crate::tools::memory::MemoryStore>,
-        crate::tools::memory::MemoryStoreError,
-    > {
-        match self.store_type.as_str() {
-            "in_memory" => Ok(std::sync::Arc::new(
-                crate::tools::memory::InMemoryMemoryStore::new(),
-            )),
-            "sqlite" => Ok(std::sync::Arc::new(
-                crate::tools::memory_sqlite::SqliteMemoryStore::open(&self.path)?,
-            )),
-            other => Err(crate::tools::memory::MemoryStoreError::Store(format!(
-                "unknown memory store type: {other}"
-            ))),
-        }
-    }
 }
 
 /// Behavior tuning parameters.
@@ -208,6 +185,7 @@ impl Default for BehaviorConfig {
 /// be built programmatically via [`AgentSpecBuilder`] or deserialized
 /// from TOML.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentSpec {
     /// Unique agent identifier.
     pub id: AgentId,
@@ -222,16 +200,13 @@ pub struct AgentSpec {
     /// Tool references (built-in + MCP).
     #[serde(default)]
     pub tools: Vec<ToolRef>,
-    /// MCP server definitions (referenced by [`ToolRef::McpServer`]).
-    #[serde(default)]
-    pub mcp_servers: Vec<McpServerConfig>,
     /// Long-term memory store configurations.
     #[serde(default)]
     pub memory_stores: Vec<MemoryStoreConfig>,
     /// Workspace-owned prompt commands exposed to interactive UIs.
     #[serde(default)]
     pub ui_commands: Vec<UiCommandConfig>,
-    /// Before-tool hooks executed through the selected workspace executor.
+    /// Typed tool/turn hooks executed through the selected workspace executor.
     #[serde(default)]
     pub hooks: Vec<crate::tool::ToolHookConfig>,
     /// Declarative TUI presentation hints for extension-provided tools.
@@ -253,8 +228,12 @@ impl AgentSpec {
     ///
     /// Uses a default 200k context window. Capabilities are left empty
     /// — callers should add them via `ModelInfo::builder().capability()`.
-    #[must_use]
-    pub fn to_model_info(&self) -> ModelInfo {
+    pub fn to_model_info(&self) -> Result<ModelInfo, AgentSpecError> {
+        if self.model.model_name.trim().is_empty()
+            || self.model.max_tokens.is_some_and(|tokens| tokens == 0)
+        {
+            return Err(AgentSpecError::InvalidModel);
+        }
         let mut builder = ModelInfo::builder()
             .id(&self.model.model_name)
             .context_window(200_000);
@@ -265,13 +244,7 @@ impl AgentSpec {
             builder = builder.max_output_tokens(32_000);
         }
 
-        builder.build().unwrap_or_else(|| {
-            panic!(
-                "ModelInfo build failed for spec '{}': \
-                 id/context_window/max_output_tokens required",
-                self.id
-            )
-        })
+        builder.build().ok_or(AgentSpecError::InvalidModel)
     }
 }
 
@@ -290,7 +263,6 @@ pub struct AgentSpecBuilder {
     persona: PersonaConfig,
     model: ModelConfig,
     tools: Vec<ToolRef>,
-    mcp_servers: Vec<McpServerConfig>,
     memory_stores: Vec<MemoryStoreConfig>,
     ui_commands: Vec<UiCommandConfig>,
     hooks: Vec<crate::tool::ToolHookConfig>,
@@ -391,7 +363,7 @@ impl AgentSpecBuilder {
         self
     }
 
-    /// Replace the before-tool hook set.
+    /// Replace the typed lifecycle hook set.
     #[must_use]
     pub fn hooks(mut self, hooks: Vec<crate::tool::ToolHookConfig>) -> Self {
         self.hooks = hooks;
@@ -401,13 +373,6 @@ impl AgentSpecBuilder {
     #[must_use]
     pub fn tool_presentations(mut self, presentations: Vec<ToolPresentationConfig>) -> Self {
         self.tool_presentations = presentations;
-        self
-    }
-
-    /// Register an MCP server definition (does not auto-add to tools).
-    #[must_use]
-    pub fn mcp_server_def(mut self, config: McpServerConfig) -> Self {
-        self.mcp_servers.push(config);
         self
     }
 
@@ -467,7 +432,6 @@ impl AgentSpecBuilder {
             persona: self.persona,
             model: self.model,
             tools: self.tools,
-            mcp_servers: self.mcp_servers,
             memory_stores: self.memory_stores,
             ui_commands: self.ui_commands,
             hooks: self.hooks,
@@ -490,6 +454,9 @@ pub enum AgentSpecError {
     /// The `name` field was not set.
     #[error("agent name is required")]
     MissingName,
+    /// The model name is empty or its output-token budget is zero.
+    #[error("agent model configuration is invalid")]
+    InvalidModel,
 }
 
 // ---------------------------------------------------------------------------

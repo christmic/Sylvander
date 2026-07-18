@@ -1,6 +1,5 @@
 //! Agent loop error type.
 
-use sylvander_llm_anthropic::api::error::AnthropicError;
 use sylvander_llm_core::ProviderError;
 use thiserror::Error;
 
@@ -19,19 +18,7 @@ pub enum AgentLoopError {
     #[error("incompatible model: {0}")]
     IncompatibleModel(String),
 
-    /// LLM call failed after the configured number of retries. The
-    /// inner error preserves the last Anthropic SDK error.
-    #[error("LLM error after {retries} retries: {source}")]
-    Llm {
-        /// Number of retry attempts made (0 = first try, no retries).
-        retries: u32,
-        /// Last error from the LLM SDK.
-        #[source]
-        source: AnthropicError,
-    },
-
-    /// Provider-neutral model invocation failure. New provider-backed paths
-    /// use this variant while the legacy Anthropic path remains compatible.
+    /// Provider-neutral model invocation failure.
     #[error("model provider error after {attempts} attempts: {source}")]
     Provider {
         /// Total provider requests made, including the initial request.
@@ -53,7 +40,7 @@ pub enum AgentLoopError {
     Compression(String),
 
     /// Validation error (e.g., missing model, no messages, invalid
-    /// request shape). Surfaces the underlying `AnthropicError`.
+    /// request shape).
     #[error("validation error: {0}")]
     Validation(String),
 
@@ -71,7 +58,6 @@ impl AgentLoopError {
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::Llm { source, .. } => source.is_retryable(),
             Self::Provider { source, .. } => source.is_retryable(),
             Self::MaxIterationsReached(_)
             | Self::IncompatibleModel(_)
@@ -86,7 +72,6 @@ impl AgentLoopError {
     #[must_use]
     pub fn status(&self) -> Option<u16> {
         match self {
-            Self::Llm { source, .. } => source.status(),
             Self::Provider { source, .. } => source.status,
             _ => None,
         }

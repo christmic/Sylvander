@@ -129,6 +129,7 @@ pub enum TurnContextSource {
     RelationshipMemory,
     WorkspaceInstructions,
     WorkspaceSearch,
+    GuardianCurated,
     SessionOverride,
 }
 
@@ -142,6 +143,7 @@ impl TurnContextSource {
             Self::RelationshipMemory => "relationship_memory",
             Self::WorkspaceInstructions => "workspace_instructions",
             Self::WorkspaceSearch => "workspace_search",
+            Self::GuardianCurated => "guardian_curated",
             Self::SessionOverride => "session_override",
         }
     }

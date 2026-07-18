@@ -106,8 +106,6 @@ pub fn validate_unique_identities<'a>(
 pub struct PromptProfile {
     pub id: String,
     pub qualified_models: Vec<ModelSelection>,
-    pub providers: Vec<String>,
-    pub models: Vec<String>,
     pub system_prompt: String,
 }
 
@@ -171,22 +169,8 @@ impl PromptResolver {
         for profile in profiles {
             validate_identity(&profile.id).map_err(|_| PromptResolveError::Invalid)?;
             validate_prompt(&profile.system_prompt).map_err(|_| PromptResolveError::Invalid)?;
-            validate_profile_selectors(
-                &profile.qualified_models,
-                &profile.providers,
-                &profile.models,
-            )
-            .map_err(|_| PromptResolveError::Invalid)?;
-            validate_unique_identities(
-                profile.providers.iter().map(String::as_str),
-                MAX_PROMPT_SELECTORS_PER_KIND,
-            )
-            .map_err(|_| PromptResolveError::Invalid)?;
-            validate_unique_identities(
-                profile.models.iter().map(String::as_str),
-                MAX_PROMPT_SELECTORS_PER_KIND,
-            )
-            .map_err(|_| PromptResolveError::Invalid)?;
+            validate_profile_selectors(&profile.qualified_models)
+                .map_err(|_| PromptResolveError::Invalid)?;
             if indexed.insert(profile.id.clone(), profile).is_some() {
                 return Err(PromptResolveError::Invalid);
             }
@@ -409,19 +393,12 @@ impl PromptResolver {
 
 impl PromptProfile {
     fn matches(&self, selection: &ModelSelection) -> bool {
-        if !self.qualified_models.is_empty() {
-            return self.qualified_models.contains(selection);
-        }
-        self.providers.is_empty()
-            || (self.providers.first() == Some(&selection.provider_id)
-                && self.models.first() == Some(&selection.model_id))
+        self.qualified_models.is_empty() || self.qualified_models.contains(selection)
     }
 }
 
 pub fn validate_profile_selectors(
     qualified: &[ModelSelection],
-    legacy_providers: &[String],
-    legacy_models: &[String],
 ) -> Result<(), PromptValidationIssue> {
     if qualified.len() > MAX_PROMPT_SELECTORS_PER_KIND {
         return Err(PromptValidationIssue::TooManySelectors);
@@ -434,20 +411,7 @@ pub fn validate_profile_selectors(
             return Err(PromptValidationIssue::DuplicateIdentity);
         }
     }
-    if !qualified.is_empty() {
-        if !legacy_providers.is_empty() || !legacy_models.is_empty() {
-            return Err(PromptValidationIssue::InvalidIdentity);
-        }
-        return Ok(());
-    }
-    if legacy_providers.is_empty() && legacy_models.is_empty() {
-        return Ok(());
-    }
-    if legacy_providers.len() != 1 || legacy_models.len() != 1 {
-        return Err(PromptValidationIssue::InvalidIdentity);
-    }
-    validate_identity(&legacy_providers[0])?;
-    validate_identity(&legacy_models[0])
+    Ok(())
 }
 
 fn push_layer(
