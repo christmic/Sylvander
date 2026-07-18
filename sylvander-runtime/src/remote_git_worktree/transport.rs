@@ -61,6 +61,23 @@ impl RemoteGitTransport {
             .ok_or_else(|| "remote Git process ended without a status code".into())
     }
 
+    /// Resolve the executor's effective working directory on the remote host.
+    ///
+    /// Remote roots may traverse a host-level alias such as macOS `/tmp` to
+    /// `/private/tmp`. Comparing this physical path with Git's reported
+    /// top-level keeps lease validation strict without requiring clients to
+    /// know the host's path aliases.
+    pub(super) async fn physical_working_directory(
+        &self,
+        workspace: &Path,
+    ) -> Result<String, String> {
+        let output = self.command(workspace, "pwd -P", false).await?;
+        let bytes = output_bytes(output, &[0])?;
+        String::from_utf8(bytes)
+            .map(|text| text.trim_end().to_owned())
+            .map_err(|_| "remote working directory is not valid UTF-8".into())
+    }
+
     pub(super) async fn command_ok(
         &self,
         workspace: &Path,

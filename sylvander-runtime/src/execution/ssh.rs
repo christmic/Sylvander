@@ -43,12 +43,11 @@ printf '%s\0' "$total"
 exec head -c "$3" "$resolved""#;
 const WRITE_SCRIPT: &str = "cd -P \"$1\" || exit 125\ntarget=$2\ncase $target in */*) mkdir -p -- \"${target%/*}\" || exit 125;; esac\nexec cat > \"$target\"";
 const COMMAND_SCRIPT: &str = r#"cd -P "$1" || exit 125
-command -v setsid >/dev/null 2>&1 || {
-  printf '%s\n' 'remote host requires setsid for cancellable commands' >&2
-  exit 127
-}
+operation=$2
+case $operation in ""|*[!a-zA-Z0-9-]*) exit 125;; esac
 umask 077
-program=${TMPDIR:-/tmp}/sylvander-command-$$
+program=${TMPDIR:-/tmp}/sylvander-command-$operation
+control=${TMPDIR:-/tmp}/sylvander-command-$operation.pid
 cat > "$program" || exit 125
 child=
 cleanup() {
@@ -59,16 +58,46 @@ cleanup() {
     kill -KILL -- "-$child" 2>/dev/null || true
   fi
   rm -f -- "$program"
+  rm -f -- "$control"
 }
 trap cleanup EXIT HUP INT TERM
-setsid sh "$program" &
+if command -v setsid >/dev/null 2>&1; then
+  setsid sh "$program" &
+else
+  # BSD/macOS does not ship `setsid`. POSIX monitor mode gives the background
+  # job its own process group, preserving the same cancellation boundary.
+  set -m 2>/dev/null || {
+    printf '%s\n' 'remote host cannot create a cancellable process group' >&2
+    exit 127
+  }
+  sh "$program" &
+fi
 child=$!
+printf '%s\n' "$child" > "$control" || exit 125
 wait "$child"
 status=$?
 child=
 rm -f -- "$program"
+rm -f -- "$control"
 trap - EXIT HUP INT TERM
 exit "$status""#;
+const CANCEL_COMMAND_SCRIPT: &str = r#"operation=$2
+case $operation in ""|*[!a-zA-Z0-9-]*) exit 125;; esac
+program=${TMPDIR:-/tmp}/sylvander-command-$operation
+control=${TMPDIR:-/tmp}/sylvander-command-$operation.pid
+attempt=0
+while [ ! -f "$control" ] && [ "$attempt" -lt 20 ]; do
+  sleep 0.05
+  attempt=$((attempt + 1))
+done
+if [ -f "$control" ]; then
+  child=$(cat -- "$control") || exit 125
+  case $child in ""|*[!0-9]*) exit 125;; esac
+  kill -TERM -- "-$child" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$child" 2>/dev/null || true
+fi
+rm -f -- "$program" "$control""#;
 const LIST_SCRIPT: &str = r#"cd -P "$1" || exit 125
 root=$(pwd -P) || exit 125
 start=./$2
@@ -144,6 +173,50 @@ pub struct SshExecutor {
     known_hosts_path: PathBuf,
     control_path: PathBuf,
     file_operation_timeout: Duration,
+}
+
+/// Best-effort async cleanup started whenever an SSH command future ends
+/// without observing a terminal remote status.
+struct RemoteCommandCancellationGuard {
+    executor: Option<SshExecutor>,
+    target: WorkspaceTarget,
+    operation_id: String,
+}
+
+impl RemoteCommandCancellationGuard {
+    fn new(executor: SshExecutor, target: WorkspaceTarget, operation_id: String) -> Self {
+        Self {
+            executor: Some(executor),
+            target,
+            operation_id,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.executor = None;
+    }
+}
+
+impl Drop for RemoteCommandCancellationGuard {
+    fn drop(&mut self) {
+        let Some(executor) = self.executor.take() else {
+            return;
+        };
+        let target = self.target.clone();
+        let operation_id = self.operation_id.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            if let Err(error) = executor.cancel_remote_command(&target, &operation_id).await {
+                tracing::warn!(
+                    target = %target.id,
+                    %error,
+                    "remote SSH command cancellation could not be confirmed"
+                );
+            }
+        });
+    }
 }
 
 impl fmt::Debug for SshExecutor {
@@ -361,11 +434,17 @@ impl SshExecutor {
 
     async fn invoke_command(
         &self,
-        remote_command: OsString,
+        target: &WorkspaceTarget,
         stdin: &[u8],
         timeout: Duration,
         progress: Option<WorkspaceCommandProgressSink>,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
+        let operation_id = uuid::Uuid::new_v4().simple().to_string();
+        let remote_command = Self::remote_query_command(
+            COMMAND_SCRIPT,
+            target,
+            std::slice::from_ref(&operation_id),
+        )?;
         let mut command = Command::new(&self.executable);
         self.configure_command(&mut command);
         command
@@ -377,6 +456,8 @@ impl SshExecutor {
             .kill_on_drop(true);
 
         let mut child = command.spawn()?;
+        let mut cancellation =
+            RemoteCommandCancellationGuard::new(self.clone(), target.clone(), operation_id);
         let mut child_stdin = child
             .stdin
             .take()
@@ -412,9 +493,14 @@ impl SshExecutor {
             )?;
             Ok::<_, io::Error>((status, stdout, stderr))
         };
-        let (status, stdout, stderr) = tokio::time::timeout(timeout, operation)
-            .await
-            .map_err(|_| WorkspaceExecutorError::Timeout(timeout))??;
+        let (status, stdout, stderr) = match tokio::time::timeout(timeout, operation).await {
+            Ok(Ok(output)) => {
+                cancellation.disarm();
+                output
+            }
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => return Err(WorkspaceExecutorError::Timeout(timeout)),
+        };
         Ok(WorkspaceCommandOutput {
             success: status.success(),
             status_code: status.code(),
@@ -425,6 +511,23 @@ impl SshExecutor {
             stdout_total_bytes: stdout.total_bytes,
             stderr_total_bytes: stderr.total_bytes,
         })
+    }
+
+    async fn cancel_remote_command(
+        &self,
+        target: &WorkspaceTarget,
+        operation_id: &str,
+    ) -> Result<(), WorkspaceExecutorError> {
+        let remote =
+            Self::remote_query_command(CANCEL_COMMAND_SCRIPT, target, &[operation_id.to_owned()])?;
+        let output = self
+            .invoke(remote, &[], Some(Duration::from_secs(3)))
+            .await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(remote_failure("command cancellation", &output))
+        }
     }
 
     async fn file_operation(
@@ -501,8 +604,7 @@ impl WorkspaceExecutor for SshExecutor {
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
-        self.invoke_command(remote, command.as_bytes(), timeout, None)
+        self.invoke_command(target, command.as_bytes(), timeout, None)
             .await
     }
 
@@ -514,8 +616,7 @@ impl WorkspaceExecutor for SshExecutor {
         progress: WorkspaceCommandProgressSink,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         ensure_writable(target)?;
-        let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
-        self.invoke_command(remote, command.as_bytes(), timeout, Some(progress))
+        self.invoke_command(target, command.as_bytes(), timeout, Some(progress))
             .await
     }
 
@@ -525,8 +626,7 @@ impl WorkspaceExecutor for SshExecutor {
         command: &str,
         timeout: Duration,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
-        let remote = Self::remote_command(COMMAND_SCRIPT, target, None)?;
-        self.invoke_command(remote, command.as_bytes(), timeout, None)
+        self.invoke_command(target, command.as_bytes(), timeout, None)
             .await
     }
 

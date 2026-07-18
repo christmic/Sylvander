@@ -349,14 +349,19 @@ impl RemoteGitWorktreeManager {
             .git
             .text(&lease.worktree_root, &["rev-parse", "--show-toplevel"])
             .await?;
+        let physical_source = self
+            .git
+            .physical_working_directory(&lease.source_root)
+            .await?;
+        let physical_worktree = self
+            .git
+            .physical_working_directory(&lease.worktree_root)
+            .await?;
         let branch = self
             .git
             .text(&lease.worktree_root, &["branch", "--show-current"])
             .await?;
-        if Path::new(&source) != lease.source_root
-            || Path::new(&worktree) != lease.worktree_root
-            || branch != lease.branch
-        {
+        if source != physical_source || worktree != physical_worktree || branch != lease.branch {
             return Err("remote worktree lease does not match its Git repository".into());
         }
         Ok(())
