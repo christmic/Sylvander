@@ -62,7 +62,11 @@ impl ActiveCredentialLease for ResolvedCredential {
 
 /// Object-safe request boundary, allowing registry-backed and test sources.
 pub(crate) trait ActiveCredentialSource: Send + Sync {
-    fn resolve_active<'a>(&'a self, binding_id: &'a str) -> CredentialLeaseFuture<'a>;
+    fn resolve_active<'a>(
+        &'a self,
+        provider_id: &'a str,
+        binding_id: &'a str,
+    ) -> CredentialLeaseFuture<'a>;
 }
 
 /// Redacted classification only; it deliberately carries no registry cause.
@@ -265,7 +269,7 @@ impl ModelProvider for RequestScopedAnthropicProvider {
 
             let lease = self
                 .credentials
-                .resolve_active(&self.credential_binding_id)
+                .resolve_active(&self.provider_id, &self.credential_binding_id)
                 .await
                 .map_err(map_credential_error)?;
             let credential_generation = lease.generation();
