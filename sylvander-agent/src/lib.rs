@@ -1,17 +1,17 @@
 //! # sylvander-agent
 //!
-//! Sylvander v2 Agent Loop — async reactive driver that calls the
-//! Anthropic Messages API, executes tools, re-feeds results, and emits
-//! events as the loop progresses.
+//! Sylvander Agent execution core — an asynchronous reactive driver that
+//! calls a selected model provider, executes governed tools, persists turn
+//! state, re-feeds results, and emits typed events as work progresses.
 //!
-//! ## Scope (M2)
+//! ## Scope
 //!
-//! - `AgentLoop` struct with builder pattern (OOP class-based)
+//! - Provider-neutral model execution with an Anthropic compatibility adapter
 //! - Reactive event stream (`AgentEvent` + `run_stream()`)
-//! - `Tool` trait + `ToolRegistry` (caller plugs in their own tools)
-//! - `Compressor` trait + simple default impl
-//! - Retry / backoff + capability validation + iteration limit
-//! - **No concrete tools** (Read/Bash/Edit) — those land in M3
+//! - Governed built-in, MCP, and embedding-supplied tools
+//! - Durable sessions, typed prompt/context composition, and memory
+//! - Multi-layer context compression and bounded tool-result handling
+//! - Retry, cancellation, approval, capability, and iteration controls
 //!
 //! ## Quickstart
 //!
@@ -65,13 +65,8 @@
 //! }
 //! ```
 //!
-//! ## References
-//!
-//! - `projects/Sylvander/designs/m1-m2-m3-roadmap.md` — M2 scope
-//! - `projects/Sylvander/designs/sylvander-llm-anthropic-design.md`
-//!   — M1 design notes (the protocol layer this loop drives)
-//! - `projects/Sylvander/designs/anthropic-sdk-capabilities.md` —
-//!   capability analysis
+//! The crate-level design and ownership boundaries are documented in
+//! `sylvander-agent/docs/ARCHITECTURE.md`.
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 

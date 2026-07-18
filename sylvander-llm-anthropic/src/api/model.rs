@@ -1,16 +1,15 @@
 //! Model metadata types.
 //!
-//! v2 SDK provides the **shape** of model metadata (`ModelInfo`,
+//! This adapter provides the **shape** of model metadata (`ModelInfo`,
 //! `ModelCapabilities`) but does **not** populate any specific model
 //! entries — that's the caller's responsibility. Different
 //! deployments/backends have different model catalogs (e.g., Anthropic
 //! direct has `claude-sonnet-5-20260601`, a custom proxy might expose
 //! different IDs).
 //!
-//! M2+ layers (e.g., a `sylvander-core` crate or the Agent Loop) are
-//! expected to maintain their own `HashMap<String, ModelInfo>` registries.
-//! This crate just provides the data types so those registries can be
-//! expressed in a consistent shape.
+//! Runtime owns the provider-qualified model catalog. This crate only
+//! provides the Anthropic-compatible metadata shape needed by legacy
+//! embedding APIs.
 
 use super::types::CacheTtl;
 

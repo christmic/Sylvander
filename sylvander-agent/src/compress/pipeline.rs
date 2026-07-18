@@ -1,8 +1,8 @@
 //! `CompressionPipeline` — ordered composition of compression
 //! `layer`s. Cheap-first, expensive-last.
 //!
-//! The pipeline is the primary way to use compression in M3. Each
-//! `layer` is independent, testable, and replaceable. A layer that
+//! The pipeline is the sole message-history compression path. Each `layer` is
+//! independent, testable, and replaceable. A layer that
 //! records a failure does NOT stop subsequent layers — pipeline
 //! ordering is preserved and partial work is the norm.
 //!
@@ -16,7 +16,7 @@
 //!     .layer(ToolResultBudgetLayer::new(disk.clone()))
 //!     .layer(OrphanSnipLayer::new())
 //!     .layer(MicroCompactLayer::new())
-//!     .layer(ContextCollapseLayer::new()) // L3 stub
+//!     .layer(ContextCollapseLayer::new())
 //!     .build();
 //! ```
 //!
@@ -29,8 +29,8 @@
 //! ## Driver dispatch
 //!
 //! The pipeline's `run_all` is async. The legacy `Compressor::maybe_compress`
-//! is sync. The `CompressionDriver` enum (in `loop_.rs`) decides
-//! which path to take — see commit 8.
+//! is synchronous. The `CompressionDriver` enum in `loop_.rs` owns that
+//! dispatch boundary.
 
 use std::fmt;
 

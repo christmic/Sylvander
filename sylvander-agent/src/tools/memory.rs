@@ -725,8 +725,9 @@ pub enum MemoryStoreError {
 /// per-identity visibility: `search` and `get` only return entries whose typed
 /// relationship owner matches the caller's runtime identity.
 ///
-/// Search is case-insensitive substring matching on `content`. M-B
-/// Phase 2 will replace this with FTS5 / embedding search.
+/// Search is case-insensitive substring matching on `content`. This backend is
+/// intentionally ephemeral; persistent Runtime composition uses the exact
+/// schema-validated SQLite backend.
 #[derive(Debug)]
 pub struct InMemoryMemoryStore {
     entries: tokio::sync::RwLock<Vec<MemoryEntry>>,

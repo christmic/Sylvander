@@ -1,9 +1,8 @@
 //! Compression pipeline for the agent loop's message history.
 //!
-//! M3 ships a multi-layer [`CompressionPipeline`](crate::compress::pipeline::CompressionPipeline) (see
-//! `pipeline.rs` and `layers/`) that runs cheap-to-expensive layers
-//! in sequence. The pipeline is the only compression path — there's
-//! no legacy single-strategy fallback.
+//! A multi-layer [`CompressionPipeline`](crate::compress::pipeline::CompressionPipeline)
+//! runs cheap-to-expensive layers in sequence. It is the only compression
+//! path; there is no legacy single-strategy fallback.
 //!
 //! Layers available:
 //! - L0: [`ToolResultBudgetLayer`](crate::compress::layers::tool_result_budget::ToolResultBudgetLayer)
