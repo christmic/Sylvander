@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 enum SylvanderWorkspacePalette {
-    static let canvas = Color(red: 0.024, green: 0.028, blue: 0.035).opacity(0.54)
+    static let canvas = Color(red: 0.024, green: 0.028, blue: 0.035).opacity(0.36)
     static let panel = Color(red: 0.043, green: 0.050, blue: 0.061).opacity(0.72)
     static let raised = Color(red: 0.063, green: 0.073, blue: 0.088).opacity(0.82)
     static let text = Color(red: 0.925, green: 0.906, blue: 0.871)

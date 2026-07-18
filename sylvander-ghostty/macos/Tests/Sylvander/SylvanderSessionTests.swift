@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Network
 import Testing
@@ -13,6 +14,25 @@ struct SylvanderSessionTests {
         )
 
         #expect(unsetNames == ["NO_COLOR"])
+
+        let session = SylvanderSession(
+            id: "session-color",
+            label: "Color",
+            workspace: "/work/color",
+            lastSeenSeconds: 0
+        )
+        let environment = SylvanderTUILaunchConfiguration(
+            session: session,
+            socketPath: "/tmp/sylvander-test.sock",
+            hostCredential: nil
+        ).environmentVariables()
+
+        #expect(environment["TERM"] == "xterm-ghostty")
+        #expect(environment["COLORTERM"] == "truecolor")
+        #expect(environment["SYLVANDER_TUI_COLOR"] == "truecolor")
+        #expect(environment["CLICOLOR_FORCE"] == "1")
+        #expect(environment["SYLVANDER_SESSION"] == "session-color")
+        #expect(environment["SYLVANDER_WORKSPACE"] == "/work/color")
     }
 
     @Test @MainActor
@@ -63,14 +83,27 @@ struct SylvanderSessionTests {
     }
 
     @Test
-    func validatesNegotiatedProtocolRange() throws {
+    func advertisesAndAcceptsOnlyTheCurrentUIProtocol() throws {
+        let hello = try #require(
+            JSONSerialization.jsonObject(with: Data(SylvanderSessionClient.helloLine.utf8))
+                as? [String: Any]
+        )
+        let protocolInfo = try #require(hello["protocol"] as? [String: Any])
+        #expect(protocolInfo["min_version"] as? Int == 4)
+        #expect(protocolInfo["max_version"] as? Int == 4)
+
         try SylvanderSessionClient.validateHandshake(
-            Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":2,"capabilities":[]}}"#.utf8)
+            Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":4,"capabilities":[]}}"#.utf8)
         )
 
         #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(3)) {
             try SylvanderSessionClient.validateHandshake(
                 Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":3,"capabilities":[]}}"#.utf8)
+            )
+        }
+        #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(5)) {
+            try SylvanderSessionClient.validateHandshake(
+                Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":5,"capabilities":[]}}"#.utf8)
             )
         }
     }
@@ -84,6 +117,49 @@ struct SylvanderSessionTests {
         #expect(agents.map(\.id) == ["code"])
         #expect(agents.first?.name == "Code")
         #expect(agents.first?.agentWorkspace?.path == "/work/code")
+    }
+
+    @Test
+    func publicClientUsesExactV4AcrossRealUnixBoundary() async throws {
+        let server = UnixUIProtocolStub()
+        try server.start()
+        defer { server.stop() }
+        let client = SylvanderSessionClient(socketPath: server.socketPath)
+
+        let sessions = try await client.fetchSessions()
+        let agents = try await client.fetchAgents()
+        let created = try await client.createSession(
+            label: "Desktop work",
+            agentID: "code",
+            workspace: "/work/desktop"
+        )
+
+        #expect(sessions.map(\.id) == ["session-1"])
+        #expect(agents.map(\.id) == ["code"])
+        #expect(created == "session-created")
+
+        let requests = server.requests()
+        #expect(requests.count == 6)
+        for index in stride(from: 0, to: requests.count, by: 2) {
+            let hello = requests[index]
+            let protocolInfo = try #require(hello["protocol"] as? [String: Any])
+            #expect(hello["type"] as? String == "hello")
+            #expect(protocolInfo["min_version"] as? Int == 4)
+            #expect(protocolInfo["max_version"] as? Int == 4)
+        }
+        #expect(requests[1]["type"] as? String == "list_sessions")
+        #expect(requests[3]["type"] as? String == "discover_agents")
+
+        let create = requests[5]
+        #expect(create["type"] as? String == "create_session")
+        let createRequest = try #require(create["request"] as? [String: Any])
+        #expect(createRequest["agent_id"] as? String == "code")
+        #expect(createRequest["label"] as? String == "Desktop work")
+        let overrides = try #require(createRequest["overrides"] as? [String: Any])
+        let workspace = try #require(overrides["user_workspace"] as? [String: Any])
+        #expect(workspace["execution_target"] as? String == "local")
+        #expect(workspace["path"] as? String == "/work/desktop")
+        #expect(workspace["read_only"] as? Bool == false)
     }
 
     @Test
@@ -406,4 +482,199 @@ private final class ManagingSessionClient: SylvanderSessionFetching, @unchecked 
 
     func archiveSession(id: String) async throws { operations.append("archive:\(id)") }
     func deleteSession(id: String) async throws { operations.append("delete:\(id)") }
+}
+
+private final class UnixUIProtocolStub: @unchecked Sendable {
+    enum StubError: Error {
+        case systemCall(String, Int32)
+        case invalidFrame
+        case socketPathTooLong
+    }
+
+    let socketPath = URL(fileURLWithPath: "/tmp", isDirectory: true)
+        .appendingPathComponent("sylvander-ui-\(getpid())-\(UUID().uuidString).sock")
+        .path
+
+    private let queue = DispatchQueue(
+        label: "ai.oraculo.sylvander.ui-protocol-tests",
+        qos: .userInitiated
+    )
+    private var listener: DispatchSourceRead?
+    private var listenerFD: Int32 = -1
+    private var capturedRequests: [[String: Any]] = []
+
+    deinit {
+        stop()
+    }
+
+    func start() throws {
+        try queue.sync {
+            let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else { throw StubError.systemCall("socket", errno) }
+            do {
+                guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) == 0 else {
+                    throw StubError.systemCall("fcntl", errno)
+                }
+                try bindSocket(fd)
+                guard Darwin.listen(fd, 8) == 0 else {
+                    throw StubError.systemCall("listen", errno)
+                }
+            } catch {
+                Darwin.close(fd)
+                unlink(socketPath)
+                throw error
+            }
+
+            listenerFD = fd
+            let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+            source.setEventHandler { [weak self] in self?.acceptPendingConnections() }
+            source.setCancelHandler { Darwin.close(fd) }
+            listener = source
+            source.resume()
+        }
+    }
+
+    func stop() {
+        queue.sync {
+            listener?.cancel()
+            listener = nil
+            listenerFD = -1
+            unlink(socketPath)
+        }
+    }
+
+    func requests() -> [[String: Any]] {
+        queue.sync { capturedRequests }
+    }
+
+    private func bindSocket(_ fd: Int32) throws {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let path = Array(socketPath.utf8CString)
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        guard path.count <= capacity else { throw StubError.socketPathTooLong }
+        withUnsafeMutableBytes(of: &address.sun_path) { bytes in
+            for (index, byte) in path.enumerated() {
+                bytes[index] = UInt8(bitPattern: byte)
+            }
+        }
+        let length = socklen_t(MemoryLayout<sa_family_t>.size + path.count)
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, length)
+            }
+        }
+        guard result == 0 else { throw StubError.systemCall("bind", errno) }
+    }
+
+    private func acceptPendingConnections() {
+        while true {
+            let client = Darwin.accept(listenerFD, nil, nil)
+            if client < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { return }
+                return
+            }
+            _ = fcntl(client, F_SETFL, fcntl(client, F_GETFL) & ~O_NONBLOCK)
+            handle(client)
+        }
+    }
+
+    private func handle(_ client: Int32) {
+        defer { Darwin.close(client) }
+        do {
+            let hello = try readRequest(client)
+            capturedRequests.append(hello)
+            try writeResponse(
+                client,
+                [
+                    "type": "welcome",
+                    "protocol": [
+                        "server_name": "sylvander-test",
+                        "version": 4,
+                        "capabilities": ["sessions"],
+                    ],
+                ]
+            )
+
+            let request = try readRequest(client)
+            capturedRequests.append(request)
+            switch request["type"] as? String {
+            case "list_sessions":
+                try writeResponse(
+                    client,
+                    [
+                        "type": "sessions_list",
+                        "sessions": [[
+                            "id": "session-1",
+                            "label": "Desktop",
+                            "workspace": "/work/desktop",
+                            "last_seen_secs": 0,
+                        ]],
+                    ]
+                )
+            case "discover_agents":
+                try writeResponse(
+                    client,
+                    [
+                        "type": "agents_discovered",
+                        "agents": [[
+                            "id": "code",
+                            "name": "Code",
+                            "agent_workspace": [
+                                "execution_target": "local",
+                                "path": "/work/code",
+                                "read_only": false,
+                            ],
+                        ]],
+                    ]
+                )
+            case "create_session":
+                try writeResponse(
+                    client,
+                    ["type": "session_created", "session_id": "session-created"]
+                )
+            default:
+                try writeResponse(
+                    client,
+                    [
+                        "type": "operation_error",
+                        "operation": "test",
+                        "message": "unexpected request",
+                    ]
+                )
+            }
+        } catch {
+            return
+        }
+    }
+
+    private func readRequest(_ fd: Int32) throws -> [String: Any] {
+        var data = Data()
+        var byte: UInt8 = 0
+        while data.count <= SylvanderSessionClient.maximumLineBytes {
+            let count = Darwin.recv(fd, &byte, 1, 0)
+            guard count == 1 else { throw StubError.systemCall("recv", errno) }
+            if byte == 0x0A {
+                guard let request = try JSONSerialization.jsonObject(with: data)
+                    as? [String: Any] else {
+                    throw StubError.invalidFrame
+                }
+                return request
+            }
+            data.append(byte)
+        }
+        throw StubError.invalidFrame
+    }
+
+    private func writeResponse(_ fd: Int32, _ response: [String: Any]) throws {
+        var data = try JSONSerialization.data(
+            withJSONObject: response,
+            options: [.sortedKeys]
+        )
+        data.append(0x0A)
+        let sent = data.withUnsafeBytes { bytes in
+            Darwin.send(fd, bytes.baseAddress, bytes.count, 0)
+        }
+        guard sent == data.count else { throw StubError.systemCall("send", errno) }
+    }
 }

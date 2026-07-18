@@ -170,7 +170,7 @@ struct ConfigTests {
             .appendingPathExtension("ghostty")
         defer { try? FileManager.default.removeItem(at: overlayFile) }
         try """
-        background-opacity = 0.68
+        background-opacity = 0.46
         background-opacity-cells = true
         background-blur = macos-glass-clear
         """.write(to: overlayFile, atomically: true, encoding: .utf8)
@@ -181,7 +181,7 @@ struct ConfigTests {
         )
 
         #expect(config.errors.isEmpty)
-        #expect(config.backgroundOpacity == 0.68)
+        #expect(config.backgroundOpacity == 0.46)
         if #available(macOS 26.0, *) {
             #expect(config.backgroundBlur == .macosGlassClear)
         }

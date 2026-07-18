@@ -242,7 +242,7 @@ final class SylvanderWorkspaceController: BaseTerminalController {
     }
 }
 
-private struct SylvanderTUILaunchConfiguration {
+struct SylvanderTUILaunchConfiguration {
     let session: SylvanderSession
     let socketPath: String
     let hostCredential: SylvanderHostBroker.SessionCredential?
@@ -252,21 +252,34 @@ private struct SylvanderTUILaunchConfiguration {
         var config = Ghostty.SurfaceConfiguration()
         config.command = Ghostty.Shell.quote(executable)
         config.workingDirectory = session.workspace
-        config.environmentVariables = [
+        config.environmentVariables = environmentVariables()
+        return config
+    }
+
+    /// Environment owned by the desktop host for every embedded TUI.
+    ///
+    /// Ghostty also publishes `TERM` and `COLORTERM` while constructing the
+    /// child process. Keeping them explicit here makes the Sylvander launch
+    /// contract deterministic even when a future surface path changes how the
+    /// inherited environment is assembled.
+    func environmentVariables() -> [String: String] {
+        var environment = [
             "CLICOLOR": "1",
             "CLICOLOR_FORCE": "1",
+            "COLORTERM": "truecolor",
             "SYLVANDER_DESKTOP_HOST": "ghostty",
             "SYLVANDER_SESSION": session.id,
             "SYLVANDER_SOCKET": socketPath,
             "SYLVANDER_TUI_COLOR": "truecolor",
             "SYLVANDER_WORKSPACE": session.workspace,
+            "TERM": "xterm-ghostty",
         ]
         if let hostCredential {
-            config.environmentVariables["SYLVANDER_HOST_CAPABILITIES"] = "image_preview,web_preview"
-            config.environmentVariables["SYLVANDER_HOST_SOCKET"] = hostCredential.socketPath
-            config.environmentVariables["SYLVANDER_HOST_TOKEN"] = hostCredential.token
+            environment["SYLVANDER_HOST_CAPABILITIES"] = "image_preview,web_preview"
+            environment["SYLVANDER_HOST_SOCKET"] = hostCredential.socketPath
+            environment["SYLVANDER_HOST_TOKEN"] = hostCredential.token
         }
-        return config
+        return environment
     }
 
     private func executablePath() throws -> String {

@@ -28,6 +28,9 @@ extension SylvanderSessionFetching {
 struct SylvanderSessionClient: SylvanderSessionFetching {
     static let defaultSocketPath = "/tmp/sylvander.sock"
     static let maximumLineBytes = 1_048_576
+    /// The desktop host deliberately supports only the repository's current
+    /// UI contract. Pre-release protocol revisions are not negotiated.
+    static let protocolVersion = 4
 
     let socketPath: String
 
@@ -173,7 +176,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         let envelope = try JSONDecoder().decode(HandshakeEnvelope.self, from: data)
         switch envelope.type {
         case "welcome":
-            guard let version = envelope.protocolInfo?.version, (1...2).contains(version) else {
+            guard envelope.protocolInfo?.version == protocolVersion else {
                 throw ClientError.unsupportedProtocol(envelope.protocolInfo?.version)
             }
         case "protocol_error":
@@ -230,7 +233,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         return envelope
     }
 
-    private static let helloLine = #"{"type":"hello","protocol":{"client_name":"sylvander-ghostty","min_version":1,"max_version":2,"capabilities":["desktop_host","sessions"]}}"#
+    static let helloLine = #"{"type":"hello","protocol":{"client_name":"sylvander-ghostty","min_version":\#(protocolVersion),"max_version":\#(protocolVersion),"capabilities":["desktop_host","sessions"]}}"#
 
     enum ClientError: LocalizedError, Equatable {
         case connection(String)

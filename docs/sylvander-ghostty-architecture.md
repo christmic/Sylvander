@@ -2,16 +2,15 @@
 
 > A deep-dive into how `sylvander-ghostty/` works — what it does,
 > why it's structured the way it is, where every hook lives, and
-> where our F2-F6 work is supposed to plug in.
+> how the native session host embeds the portable TUI.
 
 > **Product direction update (2026-07-11):**
 > [`sylvander-tui-ux-design.md`](./sylvander-tui-ux-design.md) is the
 > source of truth for the agent conversation experience. Ghostty hosts one
 > session-bound `sylvander-tui` process per retained PTY surface and presents
-> those surfaces through a native left session rail, never top session tabs. The earlier
-> native Swift agent-workbench direction in this document is retained
-> only as historical architecture analysis and must not drive new UI
-> implementation.
+> those surfaces through a native left session rail, never top session tabs.
+> Swift owns desktop session management and optional inspectors; the portable
+> conversation UI remains the Rust TUI.
 
 ### Native session lifecycle
 
@@ -104,9 +103,9 @@ FreeBSD, Windows, and WASM. Concretely:
 | **Native UIs** | macOS (AppKit + AppleScript + Sparkle auto-update); Linux/BSD (GTK 4 + libadwaita) |
 | **Library form** | Embeddable as `libghostty-vt` (VT only) or `GhosttyKit.xcframework` (full C API) |
 
-The piece we're pivoting it into: **a first-class Sylvander AI
-agent frontend**, where a new tab kind (not driven by a PTY but
-by a Sylvander server connection) renders an AI workbench UI.
+Sylvander uses those capabilities as a desktop host: native Swift manages
+durable sessions and desktop-only inspectors, while every conversation remains
+a real PTY surface running the packaged `sylvander-tui`.
 
 ## 2. layered architecture
 
@@ -309,124 +308,151 @@ The umbrella header `macos/GhosttyKit.xcframework/.../Headers/ghostty.h`
 is the only thing Swift code can call. Anything else (Zig objects,
 GPU shaders, C helpers outside the header) is invisible.
 
-### `src/sylvander/` — where Sylvander goes
+### Sylvander integration location
 
-```
-sylvander-ghostty/src/sylvander/
-├── mod.zig            (barrel — @imports submodules, pub const re-exports)
-├── build.zig          (standalone build target — used by CI zig-module job)
-├── build.zig.zon      (its own package — does NOT need to be in main .zon)
-├── connection.zig     (WSS / Unix socket client)
-├── session.zig        (per-session state machine)
-├── event.zig          (wire-format types — JSON tagged-union)
-├── config.zig         (user-facing settings + comptime toggles)
-└── protocol.zig       (framing rules)
-```
+Sylvander does not add a second Zig protocol stack or a non-PTY CoreSurface.
+The integration is intentionally concentrated under
+`macos/Sources/Features/Sylvander/`:
 
-The directory is currently empty (F1.12 reverted the skeleton). It
-can compile in two ways:
-
-- **Standalone** via its own `build.zig` (CI `zig-module` job). Tests
-  pass cleanly in isolation, without needing the full Ghostty tree.
-- **Integrated** by registering it as a Zig `addModule` from the
-  parent `build.zig`, then `step.root_module.addImport("sylvander", …)`
-  in `GhosttyLib.zig`. Swift never directly imports `src/sylvander/`;
-  only the public C API does.
-
-## 7. F2-F6 hook plan
-
-This is **why we are here**. The architectural decision is:
-
-> **A Sylvander tab is *not* a CoreSurface variant**. CoreSurface
-> has a hard invariant that `init()` always allocates a PTY (`Surface.zig:649`).
-> We will not relax this — it would force downstream grid-rendering
-> assumptions into workbench UI code, and would have cascading effects
-> on 7+ files in termio init, threads, env, and child-process
-> management.
-
-Instead, the Sylvander tab lives entirely in the **apprt** layer,
-parallel to the existing Terminal tab kind:
-
-| Phase | Where | What |
-|---|---|---|
-| **F2** | macOS Swift (`macos/Sources/Features/Sylvander/`) + GTK Zig (`src/apprt/gtk/class/sylvander_tab.zig`) | New `SylvanderController`/`SylvanderTab` GObject; an `NSWindowController` that renders a SwiftUI / Metal UI, never calls `ghostty_surface_new` |
-| **F3** | `src/sylvander/` (the directory above) + new termio `Kind` (optional) | Connection / Session via xev + std.http; runs on its own xev.Loop parallel to IO/Renderer threads |
-| **F4** | Same as F2 — UI layer | Sidebar + chat + input + status rendered by the new view, fed by F3 events |
-| **F5** | Reuse `Surface.showDesktopNotification` (`Surface.zig:5968-6012`) → Swift `UNUserNotificationCenter` | Native macOS alerts (already wired) |
-| **F6** | Server-side, not in this codebase — Sylvander server handles session persistence | We mirror server-side state into the tab |
-
-### Concrete files to touch for F2
-
-| File | Change |
+| Component | Responsibility |
 |---|---|
-| `src/config/Config.zig` | `+sylvander_enabled: bool = false` (and the 5 other touchpoints from §5) |
-| `src/apprt/action.zig:351` (`Key` enum) | `+new_sylvander_tab` |
-| `macos/Sources/Features/Sylvander/SylvanderController.swift` | New `NSWindowController` + `NSViewController` hosting a SwiftUI or Metal view |
-| `macos/Sources/App/macOS/AppDelegate.swift:481-685` (`App.action`) | `+case .newSylvanderTab: SylvanderController(ghostty).showWindow(self)` |
-| `macos/Sources/Features/Tab/Tab.swift` (or analogous) | Optional: surface a "+ Sylvander" button in the tab bar |
-| `src/apprt/gtk/class/sylvander_tab.zig` (new) | GObject equivalent for GTK |
-| `src/apprt/gtk/App.zig` | Handle `new_sylvander_tab` in the GTK dispatcher |
+| `SylvanderSessionClient` | Versioned Unix UI-protocol client for Agent/session discovery, lifecycle mutations, and activity streams |
+| `SylvanderSessionStore` | Server-authoritative session list, selection persistence, reconnect, activity, and unread state |
+| `SylvanderWorkspaceController` | One retained `Ghostty.SurfaceView` per server session; launch, focus, occlusion, retry, and reclamation |
+| `SylvanderSessionSidebar` | Native left session rail and confirmed lifecycle actions |
+| `SylvanderHostBroker` | Session-token-bound image/web preview requests from the embedded TUI |
+| `SylvanderWorkspaceChrome` | Translucent desktop material, context bar, and semantic host palette |
+| `SylvanderChangesInspector` / `SylvanderPreviewInspector` | Desktop-only review surfaces outside the portable conversation UI |
 
-### Why this is "forking"-friendly
+`AppDelegate` owns one workspace controller. The controller creates a normal
+Ghostty PTY surface whose command is the bundled `sylvander-tui`, whose working
+directory is the session workspace, and whose environment carries the socket,
+session, workspace, and optional Host Broker capability. Selecting a session
+focuses its retained surface; removing the authoritative server session
+destroys the reference and unregisters the host capability.
 
-- **Upstream-safe**: none of these edits move upstream files in
-  a way that conflicts with `git subtree pull`. Add new files
-  under `macos/Sources/Features/Sylvander/`, `src/apprt/gtk/class/`,
-  and `src/sylvander/`. Touch upstream files (Config.zig,
-  action.zig, AppDelegate.swift) only to add cases or methods.
-- **Rebrand-aware**: the `SylvanderKit` framework name (and
-  Swift `import Ghostty`) is intentional. Renaming it would
-  cascade through every Swift file. The Sylvander *display*
-  brand we have (F1.14) is enough.
-- **Boundary preservation**: any feature regression in core
-  Ghostty (e.g. a Panther X server fix) propagates via
-  `git subtree pull` without crossing into Sylvander territory,
-  because our patches are additive — new files, new enum cases,
-  new actions — not rewrites.
+This shape preserves both boundaries: the TUI remains the single conversation
+implementation, and Ghostty remains the terminal renderer. No Swift message
+view duplicates transcript, composer, approval, or tool rendering.
+
+### Public UI protocol boundary
+
+The desktop host speaks the current public UI protocol exactly; it does not
+carry a pre-release compatibility range. `SylvanderSessionClient` sends
+`min_version=4` and `max_version=4` on every connection and rejects any
+negotiated version other than `4`.
+
+| Desktop action | v4 client message | Expected v4 response |
+|---|---|---|
+| discover Agents | `discover_agents` | `agents_discovered` |
+| list sessions | `list_sessions` | `sessions_list` |
+| create a session | `create_session { request }` | `session_created` |
+| rename/archive/delete | matching lifecycle message | `session_updated` / `session_deleted` |
+| monitor activity | `load_session { session_id }` | session history followed by activity events |
+
+Session creation uses the protocol-owned `SessionCreateRequest`. A desktop
+workspace becomes `overrides.user_workspace` with
+`execution_target="local"`, the selected path, and `read_only=false`. Swift
+decoders intentionally project only fields needed by the desktop; additional
+v4 Agent descriptor fields remain owned by the service.
+
+## 7. transparency and terminal color contract
+
+The workspace window is explicitly non-opaque with a clear AppKit background.
+`SylvanderDesktopMaterial` installs an active behind-window visual-effect view,
+then the SwiftUI canvas, panels, and raised surfaces apply translucent dark
+semantic colors. An opaque root fill is a regression because it hides the
+desktop material even when the `NSWindow` is transparent.
+
+Before launching a session surface, the host removes `NO_COLOR` from the
+process environment. The surface configuration passes:
+
+- `SYLVANDER_TUI_COLOR=truecolor`;
+- `CLICOLOR=1` and `CLICOLOR_FORCE=1`;
+- `TERM=xterm-ghostty` and `COLORTERM=truecolor`;
+- the session/socket/workspace variables.
+
+Ghostty also publishes the same terminal capability while constructing the
+child process. The explicit surface values make the Sylvander contract stable
+if that inherited-environment path changes. The TUI still owns palette
+selection and semantic color mapping; the host only guarantees that monochrome
+state does not leak in from its parent process and that true-color capability
+is visible.
+
+`SylvanderSessionTests` verifies removal of `NO_COLOR`, non-opaque window
+appearance, clear background, active desktop material, and the exact surface
+color environment. The packaged `Sylvander.ghostty` overlay fixes
+`background-opacity=0.46`, applies it to explicitly painted cells, and selects
+the clear macOS glass material. Over the host canvas alpha of `0.36`, the two
+dark layers compose to approximately `0.65` effective opacity; this keeps the
+terminal readable without visually collapsing the desktop material into an
+opaque black panel. TUI PTY tests cover the `xterm-ghostty` terminal contract.
+Any change to launch environment or workspace background must update both
+suites.
+
+### Reproducible verification
+
+From `sylvander-ghostty/macos`:
+
+```sh
+xcodebuild test \
+  -project Sylvander.xcodeproj \
+  -scheme Sylvander \
+  -testPlan Sylvander \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/sylvander-ghostty-dd \
+  -only-testing:GhosttyTests/SylvanderSessionTests
+```
+
+The suite exercises an actual `AF_UNIX` stream for exact-v4
+hello/list/discover/create, store selection and lifecycle behavior, line
+framing, translucent AppKit appearance, and the true-color launch environment.
+After the build, inspect the actual packaged inputs rather than the source
+copies:
+
+```sh
+cat /tmp/sylvander-ghostty-dd/Build/Products/Debug/Sylvander.app/Contents/Resources/Sylvander.ghostty
+file /tmp/sylvander-ghostty-dd/Build/Products/Debug/Sylvander.app/Contents/Resources/bin/sylvander-tui
+codesign --verify --strict \
+  /tmp/sylvander-ghostty-dd/Build/Products/Debug/Sylvander.app/Contents/Resources/bin/sylvander-tui
+```
+
+Surface reuse, child exit, startup retry, and session reclamation are currently
+covered by implementation review plus the real workspace smoke gate because
+`Ghostty.SurfaceView` has no injectable factory. A future lifecycle regression
+suite should add that seam under the Sylvander feature layer; it must not fork
+or mock Ghostty core.
 
 ## 8. cross-cutting concerns
 
-### Network (intentionally absent at F1)
+### Service and capability boundaries
 
-There is **zero** network code in `sylvander-ghostty/src/`. Even
-basic `std.http`/`tls.Client` lookups return no matches. The
-closest analog is PTY handling under `src/termio/`, which has
-the same shape as a socket read handler (registered on xev.Loop,
-notifies via mailbox, surfaces errors as `apprt.surface.Message`
-variants). F3's `Connection` will follow that pattern, with its
-own xev loop running in a new task thread rather than the existing
-IO thread (to avoid competing with PTY IO if both ever coexist).
+The native rail talks only to the public Unix UI protocol. It does not read the
+Runtime database. Host previews use a separate process-private Unix socket and
+256-bit session token; the Agent service never gains ambient desktop control.
+The portable TUI remains usable without those optional capabilities.
 
-### Threading model
+### Threading and lifecycle
 
-- Every long-running async task is an `xev.Loop` running on its
-  own OS thread.
-- Cross-thread communication is `BoundedQueue(Mailbox, 64)` +
-  `xev.Async` wakeup. There is no shared mutable state outside
-  these queues and the rendered `Surface`'s render thread mutex.
-- The main thread is owned by Cocoa; Zig never blocks it.
+Ghostty's PTY and renderer retain their upstream thread model. Swift networking
+and activity streams run asynchronously and publish observable state on the
+main actor. Session refresh is bounded, reconnect uses backoff, activity
+monitoring is capped, and hidden retained surfaces are marked occluded instead
+of continuing foreground rendering.
 
 ### Logging and observability
 
-- Zig has its own `log.scoped(...)` infrastructure
-  (`src/log.zig`). Scoped loggers are wired in
-  `src/main_ghostty.zig` and friends using `bundle_id` for the
-  `os_log` subsystem on macOS (after F1.14, the subsystem is
-  `ai.oraculo.sylvander`).
-- Rate-limited desktop notifications already in place at
-  `Surface.zig:5968-6012` (1/sec cap, 5s dedup). F5 reuses
-  this path with no new code.
+The workspace controller uses the `ai.oraculo.sylvander` subsystem and logs
+session identity plus lifecycle state, never prompt or credential content.
+Host transport failures become visible connection or launch states. The TUI
+continues to own turn/tool diagnostics and redacted exports.
 
-### Performance hot paths
+### Fork maintenance
 
-- `drawFrame()` runs on the renderer thread and is allocation-free
-  in steady state. F4's UI does **not** live on this path —
-  the workbench view is a SwiftUI/MTKView owned by the
-  SylvanderController on its own render budget (probably
-  `CADisplayLink` for vsync).
-- `drainMailbox` runs on the app thread (Cocoa main run loop
-  iteration). F2 events land here via `Action` and Swift
-  `notificationCenter`, which is internally optimal.
+Sylvander-specific Swift files are additive. Upstream-facing edits are limited
+to Xcode project/build hooks, bundle branding, and the AppDelegate entry point.
+Before a Ghostty subtree sync, check `SYNCUP.md`; after it, rebuild the embedded
+helper, run `SylvanderSessionTests`, and verify one real workspace window.
 
 ## 9. naming check-list when forking
 
@@ -470,7 +496,7 @@ src/apprt/surface.zig:158                  NewSurfaceContext enum (window/tab/sp
 src/Surface.zig:62-163                     Core Surface fields
 src/Surface.zig:460-680                    Core Surface init
 src/Surface.zig:649                        termio.Exec.init (PTY hardcoded)
-src/Surface.zig:5968-6012                  showDesktopNotification (F5-reuse)
+src/Surface.zig:5968-6012                  terminal desktop notifications
 src/App.zig:527-576                        App.Message union
 src/App.zig:562                            App mailbox BlockingQueue(64)
 src/App.zig:238-265                        drainMailbox
@@ -488,6 +514,14 @@ macos/Sylvander.xcodeproj/project.pbxproj  Xcode project (patched: bundle id + d
 macos/Sources/Ghostty/Ghostty.App.swift:64  action_cb registration
 macos/Sources/Ghostty/Ghostty.App.swift:434 wakeup_cb
 macos/Sources/Ghostty/Ghostty.App.swift:481 App.action switch (Swift contract)
-macos/Sources/App/macOS/AppDelegate.swift   creates TerminalController on .new_tab
-src/sylvander/                              our addition (empty after F1.12)
+macos/Sources/App/macOS/AppDelegate.swift   owns the Sylvander workspace controller
+macos/Sources/Features/Sylvander/
+  SylvanderSessionClient.swift              public Unix UI-protocol adapter
+  SylvanderSessionStore.swift               server-authoritative session state
+  SylvanderWorkspaceController.swift        PTY surface lifecycle + TUI launch
+  SylvanderSessionSidebar.swift             native left session rail
+  SylvanderHostBroker.swift                 scoped desktop preview capability
+  SylvanderWorkspaceChrome.swift            transparency + semantic host palette
+macos/Scripts/embed-sylvander-tui.sh        packaged-helper validation and signing
+macos/Tests/Sylvander/                      host lifecycle and appearance tests
 ```
