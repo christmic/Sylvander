@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::capability_runtime::{
     CapabilityActor, CapabilityAuditOutcome, CapabilityAuditPhase, CapabilityAuditRecord,
-    CapabilityAuditSink, GuardianServiceIdentity,
+    CapabilityAuditSink, GuardianServiceIdentity, RuntimeOwnerScope,
 };
 
 pub(crate) use models::{
@@ -306,6 +306,201 @@ impl GuardianCurationStore {
                 lease_expires_at_unix_secs: expires_at,
                 ..claim
             })
+        })
+        .await
+    }
+
+    /// Load the immutable event bound to an active claim.
+    pub(crate) async fn event_for_claim(
+        &self,
+        identity: &GuardianServiceIdentity,
+        claim: &ClaimedCuratorRun,
+        now_unix_secs: i64,
+    ) -> Result<GuardianEvent, GuardianCurationError> {
+        identity
+            .authorize(&self.guardian_identity, now_unix_secs)
+            .map_err(|_| GuardianCurationError::AccessDenied)?;
+        let claim = claim.clone();
+        let guardian_digest = identity.content_safe_digest();
+        self.run(move |connection| {
+            let transaction = immediate(connection)?;
+            ensure_claim(&transaction, &claim, now_unix_secs, &guardian_digest)?;
+            let (
+                event_kind,
+                owner_user_id,
+                owner_agent_id,
+                workspace_ids_json,
+                evidence_json,
+                payload_digest,
+                occurred_at,
+            ) = transaction
+                .query_row(
+                    "SELECT event_kind,owner_user_id,owner_agent_id,workspace_ids_json,evidence_json,payload_digest,occurred_at FROM guardian_outbox WHERE event_id=?1",
+                    [&claim.event_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, i64>(6)?,
+                        ))
+                    },
+                )
+                .map_err(storage_error)?;
+            let owner = RuntimeOwnerScope::guardian(
+                AgentId::new(owner_agent_id),
+                owner_user_id.map(UserId::new),
+                decode::<Vec<String>>(&workspace_ids_json)?
+                    .into_iter()
+                    .collect(),
+            );
+            let event = GuardianEvent::new(
+                claim.event_id.clone(),
+                parse_event_kind(&event_kind)?,
+                owner,
+                decode(&evidence_json)?,
+                payload_digest,
+                occurred_at,
+            );
+            transaction.commit().map_err(storage_error)?;
+            Ok(event)
+        })
+        .await
+    }
+
+    /// Finish a claimed learning run after an owner opts out.
+    ///
+    /// No candidate or pending mutation may remain executable. Existing
+    /// terminal values are not retroactively deleted; explicit correction,
+    /// decay, and forget operations remain separate administration paths.
+    pub(crate) async fn reject_run_for_learning_opt_out(
+        &self,
+        identity: &GuardianServiceIdentity,
+        claim: &ClaimedCuratorRun,
+        now_unix_secs: i64,
+    ) -> Result<(), GuardianCurationError> {
+        identity
+            .authorize(&self.guardian_identity, now_unix_secs)
+            .map_err(|_| GuardianCurationError::AccessDenied)?;
+        let claim = claim.clone();
+        let guardian_digest = identity.content_safe_digest();
+        self.run(move |connection| {
+            let transaction = immediate(connection)?;
+            ensure_claim(&transaction, &claim, now_unix_secs, &guardian_digest)?;
+            let candidate_ids = {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT candidate_id FROM memory_candidates
+                         WHERE run_id=?1 AND state NOT IN
+                         ('duplicate','committed','corrected','decayed','forgotten',
+                          'delivery_failed','rejected')
+                         ORDER BY candidate_id",
+                    )
+                    .map_err(storage_error)?;
+                statement
+                    .query_map([&claim.run_id], |row| row.get::<_, String>(0))
+                    .map_err(storage_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage_error)?
+            };
+            for candidate_id in candidate_ids {
+                let candidate = load_candidate(&transaction, &candidate_id)?;
+                let pending_mutations = {
+                    let mut statement = transaction
+                        .prepare(
+                            "SELECT mutation_id,state FROM guardian_mutation_outbox
+                             WHERE candidate_id=?1 AND state IN ('pending','claimed')
+                             ORDER BY mutation_id",
+                        )
+                        .map_err(storage_error)?;
+                    statement
+                        .query_map([&candidate_id], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .map_err(storage_error)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(storage_error)?
+                };
+                for (mutation_id, from_state) in pending_mutations {
+                    let changed = transaction
+                        .execute(
+                            "UPDATE guardian_mutation_outbox
+                             SET state='dead_letter',claim_token=NULL,lease_expires_at=NULL,
+                                 last_error_code='learning_opt_out',updated_at=?2,completed_at=?2
+                             WHERE mutation_id=?1 AND state IN ('pending','claimed')",
+                            params![mutation_id, now_unix_secs],
+                        )
+                        .map_err(storage_error)?;
+                    ensure_changed(changed)?;
+                    audit(
+                        &transaction,
+                        now_unix_secs,
+                        Some(&claim.event_id),
+                        Some(&claim.run_id),
+                        Some(&candidate_id),
+                        Some(&mutation_id),
+                        &guardian_digest,
+                        "mutation_learning_denied",
+                        Some(&from_state),
+                        Some("dead_letter"),
+                        "learning_opt_out",
+                        None,
+                    )?;
+                }
+                transition_candidate(
+                    &transaction,
+                    &candidate,
+                    CandidateState::Rejected,
+                    None,
+                    now_unix_secs,
+                )?;
+                audit_candidate_transition(
+                    &transaction,
+                    &claim,
+                    &guardian_digest,
+                    &candidate_id,
+                    now_unix_secs,
+                    "candidate_rejected",
+                    candidate.state,
+                    CandidateState::Rejected,
+                    "learning_opt_out",
+                    None,
+                )?;
+            }
+            transition_run(
+                &transaction,
+                &claim,
+                "succeeded",
+                Some("learning_opt_out"),
+                now_unix_secs,
+                now_unix_secs,
+            )?;
+            transaction
+                .execute(
+                    "UPDATE guardian_outbox SET state='completed',completed_at=?2
+                     WHERE event_id=?1 AND state='claimed'",
+                    params![claim.event_id, now_unix_secs],
+                )
+                .map_err(storage_error)
+                .and_then(ensure_changed)?;
+            audit(
+                &transaction,
+                now_unix_secs,
+                Some(&claim.event_id),
+                Some(&claim.run_id),
+                None,
+                None,
+                &guardian_digest,
+                "run_completed",
+                Some("running"),
+                Some("succeeded"),
+                "learning_opt_out",
+                None,
+            )?;
+            transaction.commit().map_err(storage_error)
         })
         .await
     }
@@ -758,6 +953,168 @@ impl GuardianCurationStore {
             let stored = load_candidate(&transaction, &candidate_id)?;
             transaction.commit().map_err(storage_error)?;
             Ok(stored)
+        })
+        .await
+    }
+
+    /// Suspend the originating run until an authenticated confirmation event
+    /// advances its only active candidate.
+    pub(crate) async fn wait_for_confirmation(
+        &self,
+        identity: &GuardianServiceIdentity,
+        claim: &ClaimedCuratorRun,
+        candidate_id: &str,
+        now_unix_secs: i64,
+    ) -> Result<(), GuardianCurationError> {
+        identity
+            .authorize(&self.guardian_identity, now_unix_secs)
+            .map_err(|_| GuardianCurationError::AccessDenied)?;
+        let claim = claim.clone();
+        let candidate_id = candidate_id.to_owned();
+        let guardian_digest = identity.content_safe_digest();
+        self.run(move |connection| {
+            let transaction = immediate(connection)?;
+            ensure_claim(&transaction, &claim, now_unix_secs, &guardian_digest)?;
+            let candidate = load_candidate(&transaction, &candidate_id)?;
+            ensure_candidate_run(&candidate, &claim)?;
+            if candidate.state != CandidateState::AwaitingConfirmation {
+                return Err(GuardianCurationError::Conflict);
+            }
+            let active_count: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_candidates WHERE run_id=?1 AND state NOT IN ('duplicate','committed','corrected','decayed','forgotten','delivery_failed','rejected')",
+                    [&claim.run_id],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if active_count != 1 {
+                return Err(GuardianCurationError::Conflict);
+            }
+            let changed = transaction
+                .execute(
+                    "UPDATE curator_runs SET state='waiting',claim_token=NULL,lease_expires_at=NULL,updated_at=?2 WHERE run_id=?1 AND state='running'",
+                    params![claim.run_id, now_unix_secs],
+                )
+                .map_err(storage_error)?;
+            ensure_changed(changed)?;
+            audit(
+                &transaction,
+                now_unix_secs,
+                Some(&claim.event_id),
+                Some(&claim.run_id),
+                Some(&candidate_id),
+                None,
+                &guardian_digest,
+                "confirmation_requested",
+                Some("running"),
+                Some("waiting"),
+                "user_confirmation_required",
+                None,
+            )?;
+            transaction.commit().map_err(storage_error)
+        })
+        .await
+    }
+
+    /// Apply a confirmation from a distinct authenticated outbox event and
+    /// resume the candidate's suspended originating run.
+    pub(crate) async fn confirm_from_event(
+        &self,
+        identity: &GuardianServiceIdentity,
+        claim: &ClaimedCuratorRun,
+        candidate_id: &str,
+        expected_revision: u64,
+        confirmed: bool,
+        now_unix_secs: i64,
+    ) -> Result<(), GuardianCurationError> {
+        identity
+            .authorize(&self.guardian_identity, now_unix_secs)
+            .map_err(|_| GuardianCurationError::AccessDenied)?;
+        let claim = claim.clone();
+        let candidate_id = candidate_id.to_owned();
+        let guardian_digest = identity.content_safe_digest();
+        self.run(move |connection| {
+            let transaction = immediate(connection)?;
+            ensure_claim(&transaction, &claim, now_unix_secs, &guardian_digest)?;
+            let candidate = load_candidate(&transaction, &candidate_id)?;
+            ensure_revision_state(
+                &candidate,
+                expected_revision,
+                &[CandidateState::AwaitingConfirmation],
+            )?;
+            let (event_user, event_agent, event_workspaces) = transaction
+                .query_row(
+                    "SELECT owner_user_id,owner_agent_id,workspace_ids_json FROM guardian_outbox WHERE event_id=?1",
+                    [&claim.event_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .map_err(storage_error)?;
+            let event_workspaces = decode::<Vec<String>>(&event_workspaces)?;
+            if event_agent != candidate.owner_agent_id.0
+                || event_user.as_deref()
+                    != candidate.owner_user_id.as_ref().map(|id| id.0.as_str())
+                || candidate
+                    .workspace_id
+                    .as_ref()
+                    .is_some_and(|workspace| !event_workspaces.contains(workspace))
+            {
+                return Err(GuardianCurationError::AccessDenied);
+            }
+            let next_state = if confirmed {
+                CandidateState::PolicyPending
+            } else {
+                CandidateState::Rejected
+            };
+            let next_revision = next_revision(candidate.revision)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE memory_candidates SET revision=?3,consent_state=?4,state=?5,pending_action=?6,updated_at=?7 WHERE candidate_id=?1 AND revision=?2 AND state='awaiting_confirmation'",
+                    params![
+                        candidate_id,
+                        sql_u64(expected_revision)?,
+                        sql_u64(next_revision)?,
+                        if confirmed { "confirmed" } else { "denied" },
+                        state_value(next_state),
+                        if confirmed { Some("commit") } else { None },
+                        now_unix_secs
+                    ],
+                )
+                .map_err(storage_error)?;
+            ensure_changed(changed)?;
+            let resumed = transaction
+                .execute(
+                    "UPDATE curator_runs SET state='retryable',next_attempt_at=?2,updated_at=?2 WHERE run_id=?1 AND state='waiting'",
+                    params![candidate.run_id, now_unix_secs],
+                )
+                .map_err(storage_error)?;
+            ensure_changed(resumed)?;
+            transaction
+                .execute(
+                    "UPDATE guardian_outbox SET state='pending' WHERE event_id=(SELECT event_id FROM curator_runs WHERE run_id=?1)",
+                    [&candidate.run_id],
+                )
+                .map_err(storage_error)?;
+            audit(
+                &transaction,
+                now_unix_secs,
+                Some(&claim.event_id),
+                Some(&claim.run_id),
+                Some(&candidate_id),
+                None,
+                &guardian_digest,
+                "candidate_confirmation",
+                Some("awaiting_confirmation"),
+                Some(state_value(next_state)),
+                if confirmed { "confirmed" } else { "denied" },
+                None,
+            )?;
+            transaction.commit().map_err(storage_error)
         })
         .await
     }
@@ -1365,6 +1722,37 @@ impl GuardianCurationStore {
         let candidate_id = candidate_id.into();
         self.run(move |connection| load_candidate(connection, &candidate_id))
             .await
+    }
+
+    /// Return pending confirmations for one Runtime-derived owner.
+    ///
+    /// The query accepts no session selector because origin-session binding is
+    /// verified against the separately staged payload by `GuardianRuntime`.
+    pub(crate) async fn pending_confirmations(
+        &self,
+        owner_agent_id: sylvander_protocol::AgentId,
+        owner_user_id: sylvander_protocol::UserId,
+    ) -> Result<Vec<MemoryCandidate>, GuardianCurationError> {
+        validate_id(&owner_agent_id.0)?;
+        validate_id(&owner_user_id.0)?;
+        self.run(move |connection| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT candidate_id FROM memory_candidates WHERE owner_agent_id=?1 AND owner_user_id=?2 AND state='awaiting_confirmation' ORDER BY created_at,candidate_id",
+                )
+                .map_err(storage_error)?;
+            let ids = statement
+                .query_map(params![owner_agent_id.0, owner_user_id.0], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            ids.into_iter()
+                .map(|candidate_id| load_candidate(connection, &candidate_id))
+                .collect()
+        })
+        .await
     }
 
     /// Read the typed terminal/retry state used by supervision.
@@ -1994,6 +2382,17 @@ fn event_kind_value(value: GuardianEventKind) -> &'static str {
         GuardianEventKind::UserFeedbackReceived => "user_feedback_received",
         GuardianEventKind::UserConfirmationReceived => "user_confirmation_received",
         GuardianEventKind::RetentionSweep => "retention_sweep",
+    }
+}
+
+fn parse_event_kind(value: &str) -> Result<GuardianEventKind, GuardianCurationError> {
+    match value {
+        "session_closed" => Ok(GuardianEventKind::SessionClosed),
+        "memory_candidate_created" => Ok(GuardianEventKind::MemoryCandidateCreated),
+        "user_feedback_received" => Ok(GuardianEventKind::UserFeedbackReceived),
+        "user_confirmation_received" => Ok(GuardianEventKind::UserConfirmationReceived),
+        "retention_sweep" => Ok(GuardianEventKind::RetentionSweep),
+        _ => Err(GuardianCurationError::Corrupt),
     }
 }
 
