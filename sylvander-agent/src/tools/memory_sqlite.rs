@@ -22,6 +22,7 @@ mod checkpoint;
 mod integrity;
 mod integrity_anchor;
 #[cfg(test)]
+#[path = "../../tests/unit/memory_sqlite_integrity_anchor.rs"]
 mod integrity_anchor_tests;
 pub use backup::{
     MemoryBackupArtifact, MemoryBackupManifest, MemoryRestoreError, SqliteMemoryAdmin,
@@ -1756,28 +1757,28 @@ fn checkpoint_error() -> MemoryStoreError {
 }
 
 #[cfg(test)]
-#[path = "memory_sqlite_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "memory_sqlite_v2_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_v2.rs"]
 mod v2_tests;
 
 #[cfg(test)]
-#[path = "memory_sqlite_hardening_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_hardening.rs"]
 mod hardening_tests;
 
 #[cfg(test)]
-#[path = "memory_sqlite_policy_activation_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_policy_activation.rs"]
 mod policy_activation_tests;
 #[cfg(test)]
-#[path = "memory_sqlite_retention_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_retention.rs"]
 mod retention_tests;
 
 #[cfg(test)]
-#[path = "memory_sqlite_clock_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_clock.rs"]
 mod clock_tests;
 
 #[cfg(test)]
-#[path = "memory_sqlite_chain_forget_tests.rs"]
+#[path = "../../tests/unit/memory_sqlite_chain_forget.rs"]
 mod chain_forget_tests;
