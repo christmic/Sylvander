@@ -155,10 +155,9 @@ TUI snapshot drift is its own gate:
 INSTA_UPDATE=no cargo test -p sylvander-tui --test snapshots --locked
 ```
 
-See [§19](#19-common-pitfalls) for the deferred test-relocation note;
-the recovery and release-recovery tests live under
-`sylvander-runtime --lib` and should be run before each release (see
-[§20](#20-release-drill)).
+Rust test bodies live under each owning crate's `tests/` tree; see
+[`rust-test-layout.md`](rust-test-layout.md). Recovery and release-recovery
+tests should be run before each release (see [§21](#21-release-drill)).
 
 ## 7. Lint / format
 
@@ -502,9 +501,10 @@ like schema evolution:
 - Update the Agent access policy tests under
   `sylvander-agent --lib boundary` if the cross-owner isolation rules
   change.
-- Migration guidance belongs at the bottom of
+- Current-schema rollout and rollback guidance belongs at the bottom of
   [`server-configuration.md §Stable user identity binding`](server-configuration.md)
-  so operators see it during a deploy.
+  so operators see it during a deploy. Add compatibility/migration guidance
+  only when the task explicitly approves the source version and transition.
 
 ## 15. Identity binding changes
 
@@ -527,23 +527,41 @@ source of truth. When extending it:
   identity_binding` that confirms a restart restores the exact owner
   profile and isolates other users.
 
-## 16. Schema evolution (`sylvander-protocol` codegen)
+## 16. Pre-release version policy
+
+Sylvander has not shipped a compatibility promise. Unless a task explicitly
+names an old version that must remain supported, change the interface,
+callers, fixtures, generated schemas, tests, examples, and documentation to
+the latest contract in the same bounded change.
+
+- Do not add fallback decoders, dual read/write paths, silent repair,
+  downgrade behavior, or migration adapters “just in case”.
+- Old, unknown, or damaged schemas fail closed with a stable content-safe
+  error. Never guess which current representation an old payload intended.
+- Production state uses the durable Runtime-selected backend. In-memory
+  implementations are for tests, fixtures, or an explicitly selected
+  ephemeral development mode, never a production fallback.
+- A compatibility exception must state the exact source version, supported
+  transition, removal gate, and acceptance tests before implementation.
+- Git history and small reversible commits are the rollback path before the
+  first release.
+
+## 17. Schema evolution (`sylvander-protocol` codegen)
 
 The protocol crate is the cross-language wire-type root. It is hand
-maintained, not `protoc`-generated, but the version flow is identical:
+maintained, not `protoc`-generated. Under the latest-only policy:
 
 - Bump the package `version` in `sylvander-protocol/Cargo.toml` when
-  adding fields.
-- Mark newly added fields `#[serde(default)]` so existing clients
-  remain decoded.
-- Never remove a field without a deprecation cycle recorded in
-  `sylvander-protocol/CHANGELOG.md`.
-- The CLI / TUI / channels must all be updated together; CI's
+  changing the public contract.
+- Add `#[serde(default)]` only when absence has current-contract semantics,
+  not to preserve an unspecified legacy payload.
+- Remove obsolete fields and decoders when all current callers change.
+- The server, TUI, Ghostty host, and channels must all be updated together; CI's
   `cargo build --workspace --locked` catches drift but **not**
   semantic drift — write a contract test under
-  `sylvander-protocol --lib`.
+  `sylvander-protocol/tests/`.
 
-## 17. Configuration schema
+## 18. Configuration schema
 
 The authoritative reference is
 [`server-configuration.md`](server-configuration.md). The maintained
@@ -561,7 +579,7 @@ mirrors the v1 schema. When extending it:
   pulled from somewhere".
 - Test by feeding the example config through `clean-room-verify.sh`.
 
-## 18. Logging & tracing conventions
+## 19. Logging & tracing conventions
 
 Sylvander uses `tracing` everywhere. The server initializes the
 subscriber in `sylvander-server/src/main.rs::init_tracing`:
@@ -578,7 +596,7 @@ subscriber in `sylvander-server/src/main.rs::init_tracing`:
 - Channel hot paths should emit only on state transitions, not per
   message — see `sylvander-channel-unix` for the bounded pattern.
 
-## 19. Common pitfalls
+## 20. Common pitfalls
 
 The project's authoritative list lives in
 [AGENTS.md §"What you should NOT do"](../AGENTS.md). Reproduced in
@@ -602,13 +620,13 @@ CI gotchas worth restating:
 - The CI `rust-linux` job is intentionally build-only — the wiremock
   tests need a running server. Do not add Linux-only test runs in PR
   without confirming the server is reachable from the job.
-- Worktree relocation of the doctest suite into `sylvander-runtime --lib`
-  is a tracked follow-up; until that lands, keep recovery tests
-  physically co-located with the runtime crate.
+- Rust test bodies belong under each crate's `tests/` tree. Production modules
+  may expose a test-only `#[path = "../tests/unit/…"]` bridge for white-box
+  access; never put test bodies back under `src/`.
 - Don't try to cache Nix in `nix.yml` — we deliberately do not have a
   CACHIX account.
 
-## 20. Release drill
+## 21. Release drill
 
 A release drill walks the recovery and security gate end-to-end on a
 clean checkout. Source of truth:

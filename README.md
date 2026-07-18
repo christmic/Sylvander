@@ -48,8 +48,8 @@ sylvander-tui                      standalone single-session terminal client
 | `AGENTS.md`, Skills, and supervised MCP stdio | Implemented |
 | Local executor, isolated Git worktree, OCI container/sandbox policy | Implemented |
 | Multi-instance channel supervision | Implemented for current adapters |
-| OpenSSH executor | Implementation in progress; configuration requires strict host-key verification |
-| Remote worktrees, SSH terminal, native tmux integration | Deferred; not advertised |
+| OpenSSH executor and remote Git worktrees | Implemented; each deployment must pass the opt-in real-SSH acceptance journey |
+| Native SSH terminal and native tmux integration | Not part of the current client contract |
 
 ## Quickstart
 
@@ -59,32 +59,29 @@ to use the default Agent, and does not require a separately administered
 memory-integrity anchor.
 
 ```bash
-# Configure the provider, model, and explicit self-use trust profile.
-cp sylvander.env sylvander.env.local
-$EDITOR sylvander.env.local
-source sylvander.env.local
+# Configure the provider, qualified model, Agent, channel, and self-use mode.
+cp config/sylvander.example.toml /tmp/sylvander.toml
+$EDITOR /tmp/sylvander.toml
+export SYLVANDER_CONFIG=/tmp/sylvander.toml
+
+# Export every secret named by that document.
+export ANTHROPIC_API_KEY=...
+export SYLVANDER_MEMORY_INTEGRITY_KEY=...
+export SYLVANDER_EVIDENCE_ENCRYPTION_KEY=...
 
 # Start the server and TUI in separate terminals.
 cargo run -p sylvander-server --release
-source sylvander.env.local
 cargo run -p sylvander-tui --release -- /tmp/sylvander.sock
 ```
 
-The required self-use setting is:
-
-```bash
-export SYLVANDER_MODE=self_use
-```
-
-Production does not use this mode. Set `SYLVANDER_CONFIG` to a TOML document
-whose explicit `server.mode = "production"` configures both a memory-integrity
-key and an independent file or HTTP anchor; see
+For self-use, set `server.mode = "self_use"` in that document. Production uses
+`server.mode = "production"` and requires both a memory-integrity key and an
+independent file or HTTP anchor; see
 [`docs/server-configuration.md`](docs/server-configuration.md).
 
-For tool approval, set `SYLVANDER_APPROVAL=1`. Add
-`SYLVANDER_APPROVAL_STORE=/path/to/approvals.json` only when durable
-exact-request approval is permitted; otherwise the TUI offers one-shot and
-session scopes only.
+Tool approval is configured under `[server.approval]`. Set `enabled = true`;
+add `persistent_store` only when durable exact-request approval is permitted.
+Otherwise the TUI offers one-shot and session scopes only.
 
 ## AskUser tool
 
