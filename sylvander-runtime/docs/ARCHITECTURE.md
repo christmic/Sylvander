@@ -33,7 +33,8 @@ Runtime owns the binding between them.
   immutable for a run and expose administrator-facing updates through explicit
   revision checks. A new database atomically creates only the current catalog
   and V3 snapshot schema with one current ledger row. Old, mixed, future, or
-  damaged schemas fail open-time fingerprint validation without migration.
+  damaged schemas are rejected during open-time fingerprint validation without
+  migration.
   Runtime deliberately shares `sessions.db` with the session store but not
   schema ownership: it opens the exact session schema first, then opens the
   registry with the session store's complete current object-name allowlist.
@@ -46,6 +47,17 @@ Runtime owns the binding between them.
 - `principal_binding` and the private boundary/identity modules map trusted
   transport principals to stable users without display-name inference.
 - `evidence` records privacy-classified run/feedback/authorization metadata.
+  Configured Runtime always starts the recorder; content policy and
+  `do_not_learn` control payload/learning use without dropping runtime facts.
+  A background write failure is retained as a content-safe health issue and
+  remains sticky for the process lifetime; a later write cannot repair the
+  missing event.
+  Only an atomically reserved new path (or an in-memory test store) may install
+  its one current schema, identified by a Sylvander application ID and schema
+  version. Every reopen fingerprints the exact owned `sqlite_schema` object set
+  and verifies database and foreign-key integrity. Existing empty/unknown, old,
+  future, unversioned, partial, foreign, or object-injected databases fail
+  closed without migration, repair, or ephemeral fallback.
   Its `governance` submodule is the only persistence path for content-bearing
   events and generated artifacts: it binds one database to a tenant and
   AES-256-GCM key, enforces exact user scope, and owns retention,
@@ -54,6 +66,11 @@ Runtime owns the binding between them.
   Provider credentials per request. Production can inject an external lease
   source through `ProviderCredentialSources`; the built-in environment/file
   adapter uses the same fail-closed generation contract.
+- `credential_audit` owns the separate exact-schema
+  `credential-operations.db` ledger. The live Provider request source,
+  registry mutation service, and server-composed Channel credential source
+  append content-safe create/acquire/renew/rotate/revoke/failure facts to it;
+  no secret or secret reference enters the ledger.
 - `capability_runtime` freezes disjoint Worker and Guardian registries and
   re-authorizes Runtime-derived owner scope at invocation time. The production
   `ToolInvocationGateway` freezes the exact executable tool catalog and routes
@@ -78,12 +95,20 @@ Runtime owns the binding between them.
 
 1. Bootstrap fails closed when durable configuration, identity keys, memory
    integrity, evidence tenant/key binding, or the configured store cannot be
-   validated.
+   validated. Session, memory, User Profile, and evidence database paths are
+   normalized at this boundary: relative values resolve beneath `data_dir`,
+   while empty values, `:memory:`, SQLite `file:` URIs, and existing
+   directories are rejected before any store opens.
 2. A channel submits every operation through the authenticated `UiService`.
    Runtime derives `user_id`, `agent_id`, session authority, workspace, and
    policy from trusted state; request payloads may request but not establish
    them.
-3. Current-schema effective session configuration is persisted at creation
+3. Production sessions are durable. Runtime has no process-local session
+   creation API or ephemeral health count; session creation must commit its
+   record before Agent attachment. A persistent-session read, turn start,
+   usage, assistant append, restore, or history replacement failure is a typed
+   terminal error and cannot publish a successful turn.
+4. Current-schema effective session configuration is persisted at creation
    with its optimistic revision, immutable Agent/Provider/Model pins,
    workspace/executor selection, and prompt manifest. Model overrides are
    provider-qualified and may shadow Agent defaults only after registry and
@@ -92,13 +117,13 @@ Runtime owns the binding between them.
    non-current ledger, or any non-exact schema fails closed without migration,
    repair, downgrade, or in-memory fallback. Workspace and execution-target
    changes require a new session.
-4. Channel instances are supervised by stable ID with bounded restart and
+5. Channel instances are supervised by stable ID with bounded restart and
    cooperative drain. One failed adapter does not erase another instance's
    session routing.
-5. A writable remote coding workspace must obtain a Git worktree transaction.
+6. A writable remote coding workspace must obtain a Git worktree transaction.
    Remote non-Git mutation fails before session creation rather than falling
    back to an unjournaled host path.
-6. Shutdown drains channels and Agent work, then completes the active Guardian
+7. Shutdown drains channels and Agent work, then completes the active Guardian
    pass before closing evidence and maintenance resources.
 
 ## Related documentation
@@ -111,6 +136,8 @@ Runtime owns the binding between them.
   ledger, feedback, and self-improvement boundary.
 - [`../../docs/credential-leases.md`](../../docs/credential-leases.md) —
   Provider and channel lease generation, expiry, and rotation.
+- [`../CREDENTIAL_AUDIT.md`](../CREDENTIAL_AUDIT.md) — Provider/Channel
+  credential-operation audit, subject isolation, and retention.
 - [`../GUARDIAN.md`](../GUARDIAN.md) — Worker/Guardian capability isolation,
   curation state machine, and recovery.
 - [`../../docs/module-sylvander-server.md`](../../docs/module-sylvander-server.md)

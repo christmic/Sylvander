@@ -1,4 +1,12 @@
-# token9 macOS Dashboard v2 — Verification Report
+# token9 macOS Dashboard v2 — Historical Verification Report
+
+This file records the original dashboard implementation run. It is not the
+current Sylvander Agent/TUI release SSOT; current nested-workspace build, test,
+Clippy, and Rustdoc evidence belongs in
+[`../../../../docs/release-closure.md`](../../../../docs/release-closure.md).
+Deferred Token9 menu-bar visual capture remains a separate manual UI acceptance
+item and does not describe the status of Sylvander's standalone TUI or Ghostty
+host.
 
 Captured during the implementation of `feature/token9-dashboard-v2`.
 Each numbered commit was verified independently.
@@ -48,7 +56,7 @@ Run time: ~0.02 s.
 | 2 | Release build passes | ✅ `swift build -c release` exit 0 (via build-macos.sh) |
 | 3 | Swift tests pass | ✅ 23/23 |
 | 4 | Rust tests pass | ✅ 26/26 (token9 nested workspace) |
-| 5 | `Token9.app` exists and launches on macOS 14+ | ✅ bundle exists; manual launch deferred to maintainer (this is a sandbox run, no GUI) |
+| 5 | `Token9.app` exists and launches on macOS 14+ | ⚠ bundle was produced; launch was not verified in this historical run |
 | 6 | V1–V10 screenshots exist | ⚠ deferred — manual capture requires the dev machine's menu bar; see below |
 | 7 | V1 / V5 / V6 visually match source boards | ⚠ visual review deferred to maintainer |
 | 8 | No numeric rank badges | ✅ GroupRowView renders no rank |
@@ -90,10 +98,12 @@ artifact.
 - **V1–V10 visual captures are deferred** to a maintainer with a live
   menu-bar + `token9 serve`.
 
-## Branch state
+## Historical branch state
 
-`feature/token9-dashboard-v2` — 8 commits on top of `master` at
+The report was captured on `feature/token9-dashboard-v2`, eight commits on top
+of `master` at
 `397ece323` (the merge-base where token9 subtree was already in
 place).
 
-Push authorization still pending from the maintainer.
+That branch note is historical. The nested Token9 workspace is now maintained
+from Sylvander `master`; this report carries no pending push instruction.

@@ -13,7 +13,9 @@ bounded/redacted presentation.
   approval, permission profile, session ID, or workspace path.
 - The Agent derives filesystem roots from server-owned session metadata. A path
   displayed or submitted by the TUI is not an authorization grant.
-- Unknown protocol and tool data remains visible through bounded fallbacks, with
+- An unknown protocol version or envelope fails closed with a bounded diagnostic
+  and cannot mutate UI state. An unknown tool name within the negotiated current
+  protocol remains visible through the bounded generic tool renderer, with
   terminal controls removed and sensitive fields redacted.
 - Diagnostic exports contain compacted paths and never include prompt bodies,
   tool input/output, environment variables, credentials, or socket frames.
@@ -39,17 +41,17 @@ The 2026-07-13 audit verified these controls against implementation and tests:
 - Retained frames, events, transcript entries, drafts, attachments, queues,
   session summaries, and modal backlogs all have explicit memory ceilings.
 
-## Open release blockers
+## Release security status
 
-- Sylvander Agent does not currently expose a shell/exec tool. Process-group
-  termination and descendant cleanup therefore cannot be verified; a visual
-  shell renderer is not evidence of safe shell cancellation.
-- Adversarial two-client PTY verification must still prove that decisions,
-  interrupts, replay, and session history never cross session ownership; live
-  Unix event routing is covered independently.
-- Credentialed live-provider tests remain opt-in and are not security evidence
-  unless they run in the release environment with redacted logs inspected.
+- `CommandTool` executes through the workspace executor. Timeout and dropped
+  futures terminate the complete local process group; the regression tests
+  verify that descendants do not survive.
+- The compiled real-runtime PTY journey exercises colliding multi-client
+  decisions, interrupts, replay, and history and proves session isolation.
+- Credentialed live-provider tests remain opt-in deployment evidence. They do
+  not replace deterministic provider contracts, redaction tests, or the
+  same-commit release gate.
 
-The production security gate stays open until the applicable blockers above
-have executable tests. Do not mark an unavailable backend capability complete
-from TUI fixtures or snapshots.
+There is no open TUI implementation blocker in this document. A deployment
+that enables a live provider or external channel must still run its
+credentialed smoke journey and inspect redacted logs in that environment.

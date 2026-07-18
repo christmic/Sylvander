@@ -59,3 +59,16 @@ reported immediately.
 
 The TUI is a single-session Unix client. Multi-session presentation belongs to
 the Ghostty host and does not change this channel lifecycle contract.
+
+## Executable acceptance
+
+`sylvander-server/tests/channel_instances.rs` starts the production server
+binary from a real `ServerConfig` containing two enabled HTTP adapters. The
+journey requires both listeners to report the same two-instance Runtime
+health, proves that each instance accepts only its own secret lease, checks
+that credential operations are recorded under disjoint
+`channel_instance/<id>` audit subjects, then sends `SIGINT` and requires both
+instances to stop before the process exits. The test also rejects either
+secret appearing in lifecycle logs. This is the production-composition
+acceptance path; in-memory `Channel` doubles remain appropriate only for
+focused supervisor-state tests.
