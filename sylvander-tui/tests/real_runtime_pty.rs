@@ -852,6 +852,7 @@ fn run_tui_with_exit(
         })
         .expect("open pseudo-terminal");
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sylvander-tui"));
+    command.arg("--socket");
     command.arg(socket_path);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");

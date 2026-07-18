@@ -183,6 +183,7 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
         .expect("open pseudo-terminal");
 
     let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sylvander-tui"));
+    command.arg("--socket");
     command.arg(&socket_path);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -370,6 +371,7 @@ fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
             .openpty(initial)
             .expect("open surface PTY");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sylvander-tui"));
+        command.arg("--socket");
         command.arg(&socket_path);
         command.env("TERM", term);
         command.env("COLORTERM", "truecolor");
