@@ -56,7 +56,13 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
             }],
             memory_stores: Vec::new(),
             ui_commands: Vec::new(),
-            hooks: Vec::new(),
+            hooks: vec![AgentHookDraft {
+                name: "verify".into(),
+                phase: AgentHookPhase::AfterTool,
+                command: "verify-result".into(),
+                timeout_secs: 20,
+                blocking: true,
+            }],
             tool_presentations: Vec::new(),
             behavior: AgentBehaviorDraft::default(),
             agent_workspace: None,
@@ -73,10 +79,32 @@ fn update_round_trip_carries_concurrency_and_secret_references_only() {
         json["definition"]["tools"][0]["environment"]["TOKEN"]["name"],
         "MCP_TOKEN"
     );
+    assert_eq!(json["definition"]["hooks"][0]["phase"], "after_tool");
     assert_eq!(
         serde_json::from_value::<AgentAdminRequest>(json).unwrap(),
         request
     );
+}
+
+#[test]
+fn hook_phase_is_required_and_unknown_phases_fail_closed() {
+    for value in [
+        serde_json::json!({
+            "name": "legacy",
+            "command": "check",
+            "timeout_secs": 5,
+            "blocking": true
+        }),
+        serde_json::json!({
+            "name": "future",
+            "phase": "session_start",
+            "command": "check",
+            "timeout_secs": 5,
+            "blocking": true
+        }),
+    ] {
+        assert!(serde_json::from_value::<AgentHookDraft>(value).is_err());
+    }
 }
 
 #[test]
@@ -160,8 +188,6 @@ fn write_draft_debug_redacts_raw_prompts() {
             provider_id: "provider-1".into(),
             model_id: "model-1".into(),
         }],
-        providers: Vec::new(),
-        models: Vec::new(),
         system_prompt: "profile prompt must never reach logs".into(),
     };
     let profile_debug = format!("{profile:?}");

@@ -14,9 +14,11 @@ use uuid::Uuid;
 /// Sylvander intentionally ships one latest schema before its first stable
 /// release. Older or newer revisions fail negotiation instead of entering a
 /// compatibility path.
-pub const UI_PROTOCOL_VERSION: u16 = 4;
+pub const UI_PROTOCOL_VERSION: u16 = 5;
 pub const UI_PROTOCOL_MIN_VERSION: u16 = UI_PROTOCOL_VERSION;
 pub const UI_PROTOCOL_MAX_VERSION: u16 = UI_PROTOCOL_VERSION;
+/// Negotiated UI capability for opaque, evidence-backed turn feedback.
+pub const FEEDBACK_CAPABILITY: &str = "feedback_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct UiProtocolHello {
@@ -918,6 +920,30 @@ pub enum FeedbackPrivacyClass {
     Shareable,
 }
 
+/// Opaque, server-issued handle for one durable execution turn.
+///
+/// Clients must preserve this value verbatim. The wire contract deliberately
+/// does not expose Runtime run or turn identifiers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct FeedbackTarget(pub String);
+
+impl FeedbackTarget {
+    /// Return whether this value has the exact server-issued digest shape.
+    ///
+    /// This validates framing only; Runtime must still resolve the target and
+    /// authorize the owning session before accepting feedback.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.0.strip_prefix("sha256:").is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceReference {
@@ -929,9 +955,7 @@ pub struct EvidenceReference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunFeedback {
-    pub run_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
+    pub target: FeedbackTarget,
     pub rating: FeedbackRating,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -1061,6 +1085,10 @@ pub enum StreamEvent {
     },
     Done {
         text: String,
+    },
+    /// The active turn failed and will emit no later terminal event.
+    Error {
+        message: String,
     },
     ToolApprovalRequired {
         batch_id: String,

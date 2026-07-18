@@ -26,6 +26,8 @@ pub mod bus_trait;
 pub mod identity_binding;
 /// In-process implementation of the message-bus contract.
 pub mod in_process;
+/// Versioned, owner-bound Guardian memory confirmation protocol.
+pub mod memory_confirmation;
 /// Versioned administrative messages for provider and credential registries.
 pub mod registry_admin;
 /// JSON Schema generation for UI and boundary protocol types.
@@ -44,6 +46,7 @@ pub use boundary::*;
 pub use bus_trait::{BusDiagnostics, BusError, MessageBus, SubscriptionFilter};
 pub use identity_binding::*;
 pub use in_process::InProcessMessageBus;
+pub use memory_confirmation::*;
 pub use registry_admin::*;
 pub use session_context::*;
 pub use types::*;

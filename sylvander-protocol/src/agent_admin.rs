@@ -168,11 +168,27 @@ pub struct AgentUiCommandDraft {
 #[serde(deny_unknown_fields)]
 pub struct AgentHookDraft {
     pub name: String,
+    /// Exact lifecycle boundary at which this command executes.
+    ///
+    /// This field is intentionally required. The current protocol exposes only
+    /// phases that have a production execution path; unknown, session-level,
+    /// or future phases fail deserialization instead of becoming inert config.
+    pub phase: AgentHookPhase,
     pub command: String,
     #[serde(default = "default_hook_timeout_secs")]
     pub timeout_secs: u64,
     #[serde(default)]
     pub blocking: bool,
+}
+
+/// Production hook lifecycle boundaries accepted by the latest Agent schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHookPhase {
+    BeforeTool,
+    AfterTool,
+    BeforeTurn,
+    AfterTurn,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -193,15 +209,9 @@ const fn default_hook_timeout_secs() -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct AgentPromptProfileDraft {
     pub id: String,
-    /// Exact Provider/Model selectors. New definitions should use this field.
+    /// Exact Provider/Model selectors. An empty list applies to every model.
     #[serde(default)]
     pub qualified_models: Vec<ModelSelection>,
-    /// Legacy singleton Provider selector retained for wire compatibility.
-    #[serde(default)]
-    pub providers: Vec<String>,
-    /// Legacy singleton Model selector retained for wire compatibility.
-    #[serde(default)]
-    pub models: Vec<String>,
     /// Write-only in the public contract.
     pub system_prompt: String,
 }
@@ -212,8 +222,6 @@ impl fmt::Debug for AgentPromptProfileDraft {
             .debug_struct("AgentPromptProfileDraft")
             .field("id", &self.id)
             .field("qualified_model_count", &self.qualified_models.len())
-            .field("providers", &self.providers)
-            .field("models", &self.models)
             .field("system_prompt", &"[REDACTED]")
             .finish()
     }
@@ -343,6 +351,7 @@ pub struct RedactedAgentUiCommand {
 #[serde(deny_unknown_fields)]
 pub struct RedactedAgentHook {
     pub name: String,
+    pub phase: AgentHookPhase,
     pub timeout_secs: u64,
     pub blocking: bool,
 }
@@ -353,10 +362,6 @@ pub struct RedactedAgentPromptProfile {
     pub id: String,
     #[serde(default)]
     pub qualified_models: Vec<ModelSelection>,
-    #[serde(default)]
-    pub providers: Vec<String>,
-    #[serde(default)]
-    pub models: Vec<String>,
     pub system_prompt_sha256: String,
 }
 
