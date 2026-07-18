@@ -1,4 +1,3 @@
-
 use super::*;
 use sylvander_agent::bus::InProcessMessageBus;
 use sylvander_agent::session_store::SqliteSessionStore;
@@ -190,6 +189,8 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
         Arc::new(InMemoryMemoryStore::new()),
         None,
         Arc::new(crate::config::SystemSecretResolver),
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -233,22 +234,25 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
     .unwrap();
     assert_eq!(beta.provider_id, "beta");
     assert_eq!(beta.model_id, "shared");
-    assert_eq!(beta.provider_revision, Some(4));
-    assert_eq!(beta.model_revision, Some(5));
+    assert_eq!(beta.provider_revision, 4);
+    assert_eq!(beta.model_revision, 5);
 
     assert!(matches!(
         resolve_session_config(
             &configured,
             &SessionConfigOverrides {
-                model_id: Some("shared".into()),
+                model: Some(ModelSelection {
+                    provider_id: "missing".into(),
+                    model_id: "shared".into(),
+                }),
                 ..SessionConfigOverrides::default()
             },
             None,
             None,
         ),
         Err(CompositionError::ModelSelection(
-            ModelSelectionResolutionError::LegacyAmbiguous { model_id, provider_ids }
-        )) if model_id == "shared" && provider_ids == vec!["alpha", "beta"]
+            ModelSelectionResolutionError::Unavailable { provider_id, model_id }
+        )) if provider_id == "missing" && model_id == "shared"
     ));
 }
 
@@ -281,6 +285,8 @@ async fn versioned_builder_preflights_every_model_before_router_construction() {
         Arc::new(InMemoryMemoryStore::new()),
         None,
         Arc::new(crate::config::SystemSecretResolver),
+        None,
+        None,
     )
     .await;
     let Err(error) = result else {
@@ -461,8 +467,8 @@ path = "/tmp/sylvander-test.sock"
     )
     .unwrap();
     assert_eq!(effective.model_id, "model-a");
-    assert_eq!(effective.provider_revision, None);
-    assert_eq!(effective.model_revision, None);
+    assert_eq!(effective.provider_revision, 1);
+    assert_eq!(effective.model_revision, 1);
     assert_eq!(effective.prompt_profile.as_deref(), Some("optimized"));
     assert_eq!(effective.execution_target, "local");
     assert_eq!(
@@ -491,7 +497,7 @@ path = "/tmp/sylvander-test.sock"
     );
     assert_eq!(
         effective.provenance.user_workspace.kind,
-        SessionConfigSourceKind::LegacyMigration
+        SessionConfigSourceKind::RequestOverride
     );
 
     agents[0].definition.workspace_mounts[1].binding.path = "/dependencies/shared-lib".into();
@@ -533,7 +539,7 @@ path = "/tmp/sylvander-test.sock"
     ));
     agents[0].definition.workspace_mounts.pop();
     assert_eq!(effective.system_prompt_sha256.len(), 64);
-    assert!(effective.prompt_manifest.is_some());
+    assert!(!effective.prompt_manifest.layers.is_empty());
 
     agents[0].execution_targets.insert(
         "local".into(),
@@ -581,21 +587,6 @@ path = "/tmp/sylvander-test.sock"
         qualified.provenance.model.kind,
         SessionConfigSourceKind::SessionOverride
     );
-    let legacy_model = resolve_session_config(
-        &agents[0],
-        &SessionConfigOverrides {
-            model_id: Some("model-a".into()),
-            ..SessionConfigOverrides::default()
-        },
-        None,
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        legacy_model.provenance.model.kind,
-        SessionConfigSourceKind::SessionOverride
-    );
-
     let channel_workspace = crate::config::WorkspaceBindingConfig {
         execution_target: "local".into(),
         path: "/channel/project".into(),
@@ -606,7 +597,7 @@ path = "/tmp/sylvander-test.sock"
         &agents[0],
         &SessionConfigOverrides::default(),
         Some(("terminal", &channel_workspace)),
-        Some(std::path::Path::new("/legacy/project")),
+        Some(std::path::Path::new("/request/project")),
     )
     .unwrap();
     assert_eq!(

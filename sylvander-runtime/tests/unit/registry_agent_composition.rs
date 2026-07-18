@@ -395,8 +395,6 @@ async fn registry_agent_pins_provider_and_model_but_rotates_credentials_live() {
     let mut missing = agent.clone();
     missing
         .revision_bindings
-        .as_mut()
-        .unwrap()
         .model_revisions
         .remove(&ModelSelection {
             provider_id: "alpha".into(),
@@ -568,6 +566,8 @@ async fn native_v3_routes_exact_providers_without_fallback_and_keeps_live_creden
         Arc::new(InMemoryMemoryStore::new()),
         None,
         Arc::new(SystemSecretResolver),
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -737,14 +737,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     assert_eq!(updated.effective.model_selection(), beta_selection);
     let expected_effective = updated.effective.clone();
     let expected_prompt_sha256 = expected_effective.system_prompt_sha256.clone();
-    let expected_manifest = expected_effective
-        .prompt_manifest
-        .clone()
-        .expect("new sessions must persist a prompt manifest");
-    let expected_prompt = format!(
-        "{}\n\n{PROFILE_PROMPT}\n\n{AGENT_PROMPT}\n\n{SESSION_PROMPT}",
-        sylvander_agent::prompt::SHARED_SAFETY_PROMPT
-    );
+    let expected_manifest = expected_effective.prompt_manifest.clone();
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(config).await.unwrap();
@@ -763,10 +756,7 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
         expected_prompt_sha256
     );
     assert_eq!(restored.effective, expected_effective);
-    assert_eq!(
-        restored.effective.prompt_manifest.as_ref(),
-        Some(&expected_manifest)
-    );
+    assert_eq!(restored.effective.prompt_manifest, expected_manifest);
 
     let agent = restarted
         .configured_agent(&AgentId::new("assistant"))
@@ -812,9 +802,20 @@ async fn public_session_override_survives_restart_and_never_falls_back() {
     let actual_prompt = beta_body["system"][0]["text"]
         .as_str()
         .expect("system prompt must be text");
+    let expected_layers = [
+        sylvander_agent::prompt::SHARED_SAFETY_PROMPT,
+        PROFILE_PROMPT,
+        AGENT_PROMPT,
+        SESSION_PROMPT,
+    ];
+    let positions = expected_layers.map(|layer| {
+        actual_prompt
+            .find(layer)
+            .expect("the restarted provider call must preserve every persisted prompt layer")
+    });
     assert!(
-        actual_prompt.starts_with(&expected_prompt),
-        "the restarted provider call must preserve the persisted prompt prefix"
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "the restarted provider call must preserve persisted prompt precedence"
     );
 
     let alpha_session = sylvander_channel::UiService::create_session(

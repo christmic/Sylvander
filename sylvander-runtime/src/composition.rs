@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sylvander_agent::bus::MessageBus;
-use sylvander_agent::mcp_stdio::McpStdioClient;
+use sylvander_agent::mcp_stdio::{McpResultArtifactSink, McpStdioClient};
 use sylvander_agent::prompt::{PromptProfile, PromptResolveError, PromptResolver};
 use sylvander_agent::run::{AgentRun, AgentRunError, AgentSessionIssuer, AuthenticatedSession};
 use sylvander_agent::session_store::SessionStore;
@@ -50,7 +50,7 @@ use crate::registry_domain::{
 };
 use crate::request_scoped_provider::{
     AnthropicProviderFactory, PinnedProviderRouter, ProviderAdapterFactory,
-    RegistryCredentialSource,
+    RegistryCredentialSource, RenewableExternalSecretProvider,
 };
 
 /// A configured run plus the metadata needed by protocol adapters.
@@ -72,7 +72,7 @@ pub struct ConfiguredAgent {
     #[cfg(test)]
     memory_store: Arc<dyn MemoryStore>,
     prompt_resolver: Arc<PromptResolver>,
-    revision_bindings: Option<RegistryRevisionBindings>,
+    revision_bindings: RegistryRevisionBindings,
 }
 
 /// Redacted, read-only metadata exposed to transport composition.
@@ -178,6 +178,14 @@ pub(crate) fn build_agent(
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let revision_bindings = RegistryRevisionBindings {
+        provider_revisions: HashMap::from([(provider.id.clone(), 1)]),
+        model_revisions: models
+            .keys()
+            .cloned()
+            .map(|selection| (selection, 1))
+            .collect(),
+    };
     let default_selection = ModelSelection {
         provider_id: provider.id.clone(),
         model_id: definition.spec.model.model_name.clone(),
@@ -223,7 +231,7 @@ pub(crate) fn build_agent(
         #[cfg(test)]
         memory_store: memory,
         prompt_resolver,
-        revision_bindings: None,
+        revision_bindings,
     })
 }
 
@@ -338,7 +346,7 @@ pub(crate) fn build_registry_agent_with_resolver(
         #[cfg(test)]
         memory_store: memory,
         prompt_resolver,
-        revision_bindings: Some(revision_bindings),
+        revision_bindings,
     })
 }
 
@@ -354,6 +362,8 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     memory: Arc<dyn MemoryStore>,
     user_profiles: Option<Arc<dyn UserProfileProvider>>,
     resolver: Arc<dyn CredentialSecretResolver>,
+    external_secret_provider: Option<Arc<dyn RenewableExternalSecretProvider>>,
+    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
 ) -> Result<ConfiguredAgent, CompositionError> {
     let VersionedRegistryCompositionSnapshot {
         agent: definition,
@@ -370,7 +380,10 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
             .preflight(provider, model)
             .map_err(|error| CompositionError::ProviderFactory(error.to_string()))?;
     }
-    let credentials = Arc::new(RegistryCredentialSource::new(registry, resolver.clone()));
+    let credentials = Arc::new(match external_secret_provider {
+        Some(provider) => RegistryCredentialSource::with_external_provider(registry, provider),
+        None => RegistryCredentialSource::new(registry, resolver.clone()),
+    });
     let mut adapters_by_provider =
         HashMap::<String, Arc<dyn ModelProvider>>::with_capacity(providers.len());
     for (provider_id, provider) in providers {
@@ -406,7 +419,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
     let prompt_resolver = configured_prompt_resolver(&definition)?;
     let mut spec = definition.spec.clone();
     apply_default_prompt(&prompt_resolver, &definition, &default_model, &mut spec)?;
-    let tools = configured_tools(config, &spec, memory.clone()).await?;
+    let tools = configured_tools(&spec, memory.clone(), result_artifacts).await?;
     let lifecycles = definitions
         .iter()
         .map(|model| {
@@ -463,7 +476,7 @@ pub(crate) async fn build_registry_agent_versioned_with_resolver(
         #[cfg(test)]
         memory_store: memory,
         prompt_resolver,
-        revision_bindings: Some(revision_bindings),
+        revision_bindings,
     })
 }
 
@@ -495,7 +508,7 @@ pub fn resolve_session_config(
     agent: &ConfiguredAgent,
     overrides: &SessionConfigOverrides,
     channel_workspace: Option<(&str, &crate::config::WorkspaceBindingConfig)>,
-    legacy_workspace: Option<&std::path::Path>,
+    request_workspace_path: Option<&std::path::Path>,
 ) -> Result<SessionEffectiveConfig, CompositionError> {
     let definition = &agent.definition;
     let catalog = agent.models.keys().cloned().collect::<Vec<_>>();
@@ -515,22 +528,21 @@ pub fn resolve_session_config(
         })?;
     let provider_id = selection.provider_id.clone();
     let model_id = selection.model_id.clone();
-    let (provider_revision, model_revision) = match &agent.revision_bindings {
-        None => (None, None),
-        Some(bindings) => {
-            let provider_revision = bindings
-                .provider_revisions
-                .get(&provider_id)
-                .ok_or(CompositionError::RegistryProviderBindingMismatch)?;
-            let model_revision = bindings.model_revisions.get(&selection).ok_or_else(|| {
-                CompositionError::MissingRegistryModelBinding {
-                    provider: provider_id.clone(),
-                    model: model_id.clone(),
-                }
-            })?;
-            (Some(*provider_revision), Some(*model_revision))
-        }
-    };
+    let provider_revision = agent
+        .revision_bindings
+        .provider_revisions
+        .get(&provider_id)
+        .copied()
+        .ok_or(CompositionError::RegistryProviderBindingMismatch)?;
+    let model_revision = agent
+        .revision_bindings
+        .model_revisions
+        .get(&selection)
+        .copied()
+        .ok_or_else(|| CompositionError::MissingRegistryModelBinding {
+            provider: provider_id.clone(),
+            model: model_id.clone(),
+        })?;
     let reasoning_effort = overrides.reasoning_effort.unwrap_or_default();
     if reasoning_effort != ReasoningEffort::Off
         && !model
@@ -568,7 +580,7 @@ pub fn resolve_session_config(
         .clone()
         .or_else(|| channel_workspace.map(|(_, workspace)| workspace_binding(workspace)))
         .or_else(|| {
-            legacy_workspace.map(|path| SessionWorkspaceBinding {
+            request_workspace_path.map(|path| SessionWorkspaceBinding {
                 execution_target: "local".into(),
                 path: path.to_path_buf(),
                 read_only: false,
@@ -611,8 +623,8 @@ pub fn resolve_session_config(
     }
     let agent_default = source(SessionConfigSourceKind::AgentDefault, &definition.spec.id.0);
     let session_override = source(SessionConfigSourceKind::SessionOverride, "session");
-    let legacy = source(
-        SessionConfigSourceKind::LegacyMigration,
+    let request_workspace = source(
+        SessionConfigSourceKind::RequestOverride,
         "metadata.workspace",
     );
     let channel_default = channel_workspace
@@ -629,17 +641,13 @@ pub fn resolve_session_config(
         permissions,
         prompt_profile: resolved_prompt.profile_id,
         system_prompt_sha256: resolved_prompt.system_prompt_sha256,
-        prompt_manifest: Some(resolved_prompt.manifest),
+        prompt_manifest: resolved_prompt.manifest,
         agent_workspace,
         user_workspace,
         workspace_mounts,
         execution_target,
         provenance: SessionConfigProvenance {
-            model: choose(
-                overrides.model.is_some() || overrides.model_id.is_some(),
-                &session_override,
-                &agent_default,
-            ),
+            model: choose(overrides.model.is_some(), &session_override, &agent_default),
             reasoning_effort: choose(
                 overrides.reasoning_effort.is_some(),
                 &session_override,
@@ -665,8 +673,8 @@ pub fn resolve_session_config(
                 session_override.clone()
             } else if let Some(source) = &channel_default {
                 source.clone()
-            } else if legacy_workspace.is_some() {
-                legacy.clone()
+            } else if request_workspace_path.is_some() {
+                request_workspace.clone()
             } else {
                 agent_default.clone()
             },
@@ -679,8 +687,8 @@ pub fn resolve_session_config(
                 )
             } else if let Some(source) = channel_default {
                 source
-            } else if overrides.user_workspace.is_none() && legacy_workspace.is_some() {
-                legacy
+            } else if overrides.user_workspace.is_none() && request_workspace_path.is_some() {
+                request_workspace
             } else {
                 agent_default
             },
@@ -814,9 +822,9 @@ pub(crate) fn default_tools(memory: Arc<dyn MemoryStore>) -> ToolRegistry {
 }
 
 async fn configured_tools(
-    server: &ServerConfig,
     spec: &AgentSpec,
     memory: Arc<dyn MemoryStore>,
+    result_artifacts: Option<Arc<dyn McpResultArtifactSink>>,
 ) -> Result<ToolRegistry, CompositionError> {
     let mut registry = default_tools(memory);
     for reference in &spec.tools {
@@ -824,17 +832,12 @@ async fn configured_tools(
             continue;
         };
         let resolved = resolve_mcp_config(config)?;
-        let artifact_root = server
-            .server
-            .data_dir
-            .as_ref()
-            .map(|directory| directory.join("tool-results/mcp"));
-        let client = match artifact_root {
-            Some(root) => {
-                McpStdioClient::connect_with_result_artifacts(
+        let client = match &result_artifacts {
+            Some(sink) => {
+                McpStdioClient::connect_with_result_artifact_sink(
                     &resolved,
                     Duration::from_secs(30),
-                    root,
+                    sink.clone(),
                 )
                 .await
             }
@@ -1355,5 +1358,5 @@ pub enum CompositionError {
 mod tests;
 
 #[cfg(test)]
-#[path = "registry_agent_composition_tests.rs"]
+#[path = "../tests/unit/registry_agent_composition.rs"]
 mod registry_agent_composition_tests;
