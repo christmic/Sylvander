@@ -180,6 +180,7 @@ impl AgentService {
             Action::ArchiveSession { session_id } => ClientMsg::ArchiveSession { session_id },
             Action::RestoreSession { session_id } => ClientMsg::RestoreSession { session_id },
             Action::DeleteSession { session_id } => ClientMsg::DeleteSession { session_id },
+            Action::UserProfile { request } => ClientMsg::UserProfile { request },
             Action::CopyText { .. }
             | Action::EditDraft
             | Action::InspectWorkspaceDiff { .. }

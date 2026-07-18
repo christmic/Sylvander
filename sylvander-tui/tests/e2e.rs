@@ -118,13 +118,22 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
+    let hello = format!(
+        "{{\"type\":\"hello\",\"protocol\":{{\"client_name\":\"e2e\",\"min_version\":{},\"max_version\":{},\"capabilities\":[]}}}}\n",
+        sylvander_protocol::UI_PROTOCOL_MIN_VERSION,
+        sylvander_protocol::UI_PROTOCOL_MAX_VERSION
+    );
     write
-        .write_all(b"{\"type\":\"hello\",\"protocol\":{\"client_name\":\"e2e\",\"min_version\":1,\"max_version\":1,\"capabilities\":[]}}\n")
+        .write_all(hello.as_bytes())
         .await
         .expect("write hello");
     let line = read_line_with_timeout(reader).await;
     let welcome: ServerMsg = serde_json::from_str(&line).expect("parse welcome");
-    assert!(matches!(welcome, ServerMsg::Welcome { protocol } if protocol.version == 1));
+    assert!(matches!(
+        welcome,
+        ServerMsg::Welcome { protocol }
+            if protocol.version == sylvander_protocol::UI_PROTOCOL_VERSION
+    ));
 }
 
 /// Read the next line from a `BufReader<ReadHalf>` (or anything `AsyncBufRead`)

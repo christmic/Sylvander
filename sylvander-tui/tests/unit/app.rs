@@ -112,6 +112,68 @@ fn protocol_negotiation_records_server_truth() {
 }
 
 #[test]
+fn profile_read_updates_the_revisioned_cache_and_opens_pending_editor() {
+    let mut state = AppState::new();
+    state.pending_profile_intent = Some(PendingProfileIntent::Edit { correction: false });
+    state.apply(DomainEvent::UserProfileReceived {
+        response: sylvander_protocol::UserProfileResponse::Read {
+            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+            profile: sylvander_protocol::UserProfileView {
+                revision: 12,
+                profile: sylvander_protocol::UserProfileData::default(),
+                do_not_learn: false,
+                created_at_unix_secs: 1,
+                updated_at_unix_secs: 2,
+            },
+        },
+    });
+    assert_eq!(
+        state.user_profile.as_ref().map(|profile| profile.revision),
+        Some(12)
+    );
+    assert_eq!(
+        state.modals.top().map(crate::modal::Modal::title),
+        Some("User profile")
+    );
+}
+
+#[test]
+fn profile_conflict_discards_stale_cache_and_reloads_without_retrying_the_write() {
+    let mut state = AppState::new();
+    state.user_profile = Some(sylvander_protocol::UserProfileView {
+        revision: 3,
+        profile: sylvander_protocol::UserProfileData::default(),
+        do_not_learn: false,
+        created_at_unix_secs: 1,
+        updated_at_unix_secs: 2,
+    });
+    state.apply(DomainEvent::UserProfileReceived {
+        response: sylvander_protocol::UserProfileResponse::Error {
+            version: sylvander_protocol::USER_PROFILE_PROTOCOL_VERSION,
+            error: sylvander_protocol::UserProfileError {
+                code: sylvander_protocol::UserProfileErrorCode::Conflict,
+                operation: sylvander_protocol::UserProfileOperation::Update,
+                current_revision: Some(4),
+                retry_after_ms: None,
+            },
+        },
+    });
+    assert!(state.user_profile.is_none());
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [Action::UserProfile {
+            request: sylvander_protocol::UserProfileRequest {
+                action: sylvander_protocol::UserProfileAction::Read {},
+                ..
+            }
+        }]
+    ));
+    assert!(state.messages.iter().any(
+        |message| matches!(message, ChatMessage::Info(text) if text.contains("stale edit was not applied"))
+    ));
+}
+
+#[test]
 fn reconnect_requests_reconciliation_and_preserves_the_local_queue() {
     let mut state = AppState::new();
     state.session_id = Some("session-1".into());
