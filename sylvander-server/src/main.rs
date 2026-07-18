@@ -197,7 +197,6 @@ fn build_channels(
                                     ready: snapshot.ready,
                                     agents: snapshot.agent_count,
                                     persistent_sessions: snapshot.persistent_session_count,
-                                    ephemeral_sessions: snapshot.ephemeral_session_count,
                                     ready_channels: snapshot
                                         .channels
                                         .iter()

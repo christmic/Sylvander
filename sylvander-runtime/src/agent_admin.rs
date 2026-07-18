@@ -21,10 +21,6 @@ use sylvander_protocol::{
     RedactedAgentAccess, RedactedAgentDefinition, RedactedAgentHook, RedactedAgentPromptProfile,
     RedactedAgentTool, RedactedAgentUiCommand,
 };
-#[cfg(test)]
-use sylvander_protocol::{
-    AgentHookDraft, AgentPromptProfileDraft, AgentUiCommandDraft, SessionWorkspaceBinding,
-};
 
 use crate::agent_registry::{AgentRegistry, AgentRegistryError, AgentRevision};
 use crate::config::{
@@ -32,8 +28,8 @@ use crate::config::{
     WorkspaceBindingConfig,
 };
 use sylvander_agent::prompt::{
-    MAX_PROMPT_PROFILES, MAX_PROMPT_SELECTORS_PER_KIND, validate_identity, validate_profile_count,
-    validate_profile_selectors, validate_prompt, validate_unique_identities,
+    MAX_PROMPT_PROFILES, validate_identity, validate_profile_count, validate_profile_selectors,
+    validate_prompt, validate_unique_identities,
 };
 
 pub(crate) const MAX_REVISION_PAGE_SIZE: u16 = 100;
@@ -236,7 +232,6 @@ pub(crate) fn definition_from_draft(
                 max_tokens: draft.max_tokens,
             },
             tools,
-            mcp_servers: Vec::new(),
             memory_stores: draft
                 .memory_stores
                 .into_iter()
@@ -262,6 +257,7 @@ pub(crate) fn definition_from_draft(
                 .into_iter()
                 .map(|hook| ToolHookConfig {
                     name: hook.name,
+                    phase: hook.phase,
                     command: hook.command,
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
@@ -325,8 +321,6 @@ pub(crate) fn definition_from_draft(
             .map(|profile| PromptProfileConfig {
                 id: profile.id,
                 qualified_models: profile.qualified_models,
-                providers: profile.providers,
-                models: profile.models,
                 system_prompt: profile.system_prompt,
             })
             .collect(),
@@ -340,139 +334,15 @@ pub(crate) fn definition_from_draft(
     })
 }
 
-#[cfg(test)]
-pub(crate) fn draft_from_definition(
-    definition: &AgentDefinitionConfig,
-) -> Result<AgentDefinitionDraft, AgentAdminError> {
-    let mut tools = definition
-        .spec
-        .tools
-        .iter()
-        .map(tool_to_draft)
-        .collect::<Result<Vec<_>, _>>()?;
-    tools.extend(
-        definition
-            .spec
-            .mcp_servers
-            .iter()
-            .map(mcp_to_draft)
-            .collect::<Result<Vec<_>, _>>()?,
-    );
-    Ok(AgentDefinitionDraft {
-        agent_id: definition.spec.id.clone(),
-        revision: definition.revision,
-        name: definition.spec.name.clone(),
-        description: definition.spec.persona.description.clone(),
-        provider_id: definition.spec.model.provider.clone(),
-        default_model_id: definition.spec.model.model_name.clone(),
-        allowed_models: definition.spec.model.allowed_models.clone(),
-        temperature: definition.spec.model.temperature,
-        max_tokens: definition.spec.model.max_tokens,
-        system_prompt: definition.spec.persona.system_prompt.clone(),
-        tools,
-        memory_stores: definition
-            .spec
-            .memory_stores
-            .iter()
-            .map(|store| {
-                Ok(sylvander_protocol::AgentMemoryStoreDraft {
-                    store_type: store.store_type.clone(),
-                    path: store
-                        .path
-                        .to_str()
-                        .ok_or_else(|| invalid_definition("memory store path must be valid UTF-8"))?
-                        .to_owned(),
-                })
-            })
-            .collect::<Result<_, AgentAdminError>>()?,
-        ui_commands: definition
-            .spec
-            .ui_commands
-            .iter()
-            .map(command_to_draft)
-            .collect(),
-        hooks: definition
-            .spec
-            .hooks
-            .iter()
-            .map(|hook| AgentHookDraft {
-                name: hook.name.clone(),
-                command: hook.command.clone(),
-                timeout_secs: hook.timeout_secs,
-                blocking: hook.blocking,
-            })
-            .collect(),
-        tool_presentations: definition
-            .spec
-            .tool_presentations
-            .iter()
-            .map(|presentation| AgentToolPresentationDraft {
-                tool_name: presentation.tool_name.clone(),
-                label: presentation.label.clone(),
-                kind: presentation.kind,
-                target_field: presentation.target_field.clone(),
-            })
-            .collect(),
-        behavior: AgentBehaviorDraft {
-            max_iterations: definition.spec.behavior.max_iterations,
-            max_retries: definition.spec.behavior.max_retries,
-        },
-        agent_workspace: definition.agent_workspace.as_ref().map(|workspace| {
-            SessionWorkspaceBinding {
-                execution_target: workspace.execution_target.clone(),
-                path: PathBuf::from(&workspace.path),
-                read_only: workspace.read_only,
-                instruction_focus: workspace.instruction_focus.clone().map(Into::into),
-            }
-        }),
-        workspace_mounts: definition
-            .workspace_mounts
-            .iter()
-            .map(|mount| sylvander_protocol::SessionWorkspaceMount {
-                reference: mount.reference.clone(),
-                role: mount.role,
-                binding: SessionWorkspaceBinding {
-                    execution_target: mount.binding.execution_target.clone(),
-                    path: PathBuf::from(&mount.binding.path),
-                    read_only: mount.binding.read_only,
-                    instruction_focus: mount.binding.instruction_focus.clone().map(Into::into),
-                },
-                capabilities: mount.capabilities,
-            })
-            .collect(),
-        prompt_profiles: definition
-            .prompt_profiles
-            .iter()
-            .map(profile_to_draft)
-            .collect(),
-        default_prompt_profile: definition.default_prompt_profile.clone(),
-        allow_session_prompt: definition.allow_session_prompt,
-        access: sylvander_protocol::AgentAccessDraft {
-            allow_authenticated: definition.access.allow_authenticated,
-            allowed_principals: definition.access.allowed_principals.clone(),
-            allowed_roles: definition.access.allowed_roles.clone(),
-        },
-    })
-}
-
 #[must_use]
 pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
     let definition = &revision.definition;
-    let mut tools = definition
+    let tools = definition
         .spec
         .tools
         .iter()
         .map(redact_tool)
         .collect::<Vec<_>>();
-    tools.extend(
-        definition
-            .spec
-            .mcp_servers
-            .iter()
-            .map(|server| RedactedAgentTool::McpServer {
-                name: server.name.clone(),
-            }),
-    );
     AgentRevisionView {
         definition: RedactedAgentDefinition {
             agent_id: definition.spec.id.clone(),
@@ -502,6 +372,7 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .iter()
                 .map(|hook| RedactedAgentHook {
                     name: hook.name.clone(),
+                    phase: hook.phase,
                     timeout_secs: hook.timeout_secs,
                     blocking: hook.blocking,
                 })
@@ -529,8 +400,6 @@ pub(crate) fn redact_revision(revision: &AgentRevision) -> AgentRevisionView {
                 .map(|profile| RedactedAgentPromptProfile {
                     id: profile.id.clone(),
                     qualified_models: profile.qualified_models.clone(),
-                    providers: profile.providers.clone(),
-                    models: profile.models.clone(),
                     system_prompt_sha256: digest(&profile.system_prompt),
                 })
                 .collect(),
@@ -704,12 +573,14 @@ fn validate_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminError> {
     }
     unique_non_empty(draft.hooks.iter().map(|hook| hook.name.as_str()), "hook")?;
     if draft.hooks.iter().any(|hook| {
-        hook.command.trim().is_empty()
+        hook.name.chars().count() > 128
+            || hook.name.chars().any(char::is_control)
+            || hook.command.trim().is_empty()
             || hook.command.len() > 4096
             || !(1..=300).contains(&hook.timeout_secs)
     }) {
         return Err(invalid_definition(
-            "hook command or timeout is outside the supported bounds",
+            "hook identity, command, or timeout is outside the supported bounds",
         ));
     }
     if draft.tool_presentations.len() > 128 {
@@ -793,19 +664,7 @@ fn validate_prompt_draft(draft: &AgentDefinitionDraft) -> Result<(), AgentAdminE
         .and_then(|()| {
             for profile in &draft.prompt_profiles {
                 validate_prompt(&profile.system_prompt)?;
-                validate_profile_selectors(
-                    &profile.qualified_models,
-                    &profile.providers,
-                    &profile.models,
-                )?;
-                validate_unique_identities(
-                    profile.providers.iter().map(String::as_str),
-                    MAX_PROMPT_SELECTORS_PER_KIND,
-                )?;
-                validate_unique_identities(
-                    profile.models.iter().map(String::as_str),
-                    MAX_PROMPT_SELECTORS_PER_KIND,
-                )?;
+                validate_profile_selectors(&profile.qualified_models)?;
             }
             Ok(())
         });
@@ -841,61 +700,6 @@ fn encode_secret_reference(
     serde_json::to_string(&reference)
         .map(|encoded| (name, format!("{SECRET_REF_PREFIX}{encoded}")))
         .map_err(|_| invalid_definition("MCP secret reference cannot be encoded"))
-}
-
-#[cfg(test)]
-fn decode_secret_reference(value: &str) -> Result<AgentSecretReference, AgentAdminError> {
-    let encoded = value
-        .strip_prefix(SECRET_REF_PREFIX)
-        .ok_or_else(|| invalid_definition("legacy MCP environment values cannot be exported"))?;
-    serde_json::from_str(encoded)
-        .map_err(|_| invalid_definition("stored MCP secret reference is invalid"))
-}
-
-#[cfg(test)]
-fn tool_to_draft(tool: &ToolRef) -> Result<AgentToolDraft, AgentAdminError> {
-    match tool {
-        ToolRef::Builtin { name } => Ok(AgentToolDraft::Builtin { name: name.clone() }),
-        ToolRef::McpServer(server) => mcp_to_draft(server),
-    }
-}
-
-#[cfg(test)]
-fn mcp_to_draft(server: &McpServerConfig) -> Result<AgentToolDraft, AgentAdminError> {
-    let environment = server
-        .envs
-        .iter()
-        .map(|(name, value)| Ok((name.clone(), decode_secret_reference(value)?)))
-        .collect::<Result<_, AgentAdminError>>()?;
-    Ok(AgentToolDraft::McpServer {
-        name: server.name.clone(),
-        command: server.command.clone(),
-        args: server.args.clone(),
-        environment,
-    })
-}
-
-#[cfg(test)]
-fn command_to_draft(command: &UiCommandConfig) -> AgentUiCommandDraft {
-    AgentUiCommandDraft {
-        id: command.id.clone(),
-        name: command.name.clone(),
-        usage: command.usage.clone(),
-        description: command.description.clone(),
-        hint: command.hint.clone(),
-        prompt: command.prompt.clone(),
-    }
-}
-
-#[cfg(test)]
-fn profile_to_draft(profile: &PromptProfileConfig) -> AgentPromptProfileDraft {
-    AgentPromptProfileDraft {
-        id: profile.id.clone(),
-        qualified_models: profile.qualified_models.clone(),
-        providers: profile.providers.clone(),
-        models: profile.models.clone(),
-        system_prompt: profile.system_prompt.clone(),
-    }
 }
 
 fn redact_tool(tool: &ToolRef) -> RedactedAgentTool {
@@ -955,4 +759,4 @@ fn unknown_revision(agent_id: sylvander_protocol::AgentId, revision: u64) -> Age
 
 #[cfg(test)]
 #[path = "../tests/unit/agent_admin.rs"]
-mod tests;
+pub(crate) mod tests;
