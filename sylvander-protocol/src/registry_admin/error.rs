@@ -1,3 +1,9 @@
+//! Content-safe registry administration failures.
+//!
+//! Errors expose stable typed identity and conflict metadata while credential
+//! locators remain hashed and provider definitions remain outside the error
+//! envelope.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

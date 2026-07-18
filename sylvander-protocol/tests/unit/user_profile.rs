@@ -186,13 +186,13 @@ fn response_contract_preserves_privacy_controls_without_owner_identity() {
 fn capability_requires_mutual_explicit_negotiation() {
     let hello = |capabilities: Vec<String>| UiProtocolHello {
         client_name: "test".into(),
-        min_version: 1,
-        max_version: 3,
+        min_version: crate::UI_PROTOCOL_VERSION,
+        max_version: crate::UI_PROTOCOL_VERSION,
         capabilities,
     };
     let welcome = |capabilities: Vec<String>| UiProtocolWelcome {
         server_name: "test".into(),
-        version: 3,
+        version: crate::UI_PROTOCOL_VERSION,
         capabilities,
     };
     let capability = vec![USER_PROFILE_CAPABILITY.to_owned()];

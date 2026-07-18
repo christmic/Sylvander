@@ -5,8 +5,8 @@ use super::*;
 fn hello(capabilities: &[&str]) -> UiProtocolHello {
     UiProtocolHello {
         client_name: "test".into(),
-        min_version: 1,
-        max_version: 3,
+        min_version: crate::UI_PROTOCOL_VERSION,
+        max_version: crate::UI_PROTOCOL_VERSION,
         capabilities: capabilities.iter().map(ToString::to_string).collect(),
     }
 }
@@ -14,7 +14,7 @@ fn hello(capabilities: &[&str]) -> UiProtocolHello {
 fn welcome(capabilities: &[&str]) -> UiProtocolWelcome {
     UiProtocolWelcome {
         server_name: "test".into(),
-        version: 3,
+        version: crate::UI_PROTOCOL_VERSION,
         capabilities: capabilities.iter().map(ToString::to_string).collect(),
     }
 }
@@ -150,7 +150,7 @@ fn capability_negotiation_requires_explicit_mutual_opt_in() {
     ));
 
     let mut invalid_welcome = welcome(&[IDENTITY_BINDING_CAPABILITY]);
-    invalid_welcome.version = 4;
+    invalid_welcome.version = crate::UI_PROTOCOL_VERSION + 1;
     assert!(!identity_binding_is_negotiated(
         &hello(&[IDENTITY_BINDING_CAPABILITY]),
         &invalid_welcome,

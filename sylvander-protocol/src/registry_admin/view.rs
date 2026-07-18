@@ -1,3 +1,8 @@
+//! Redacted registry revision and credential-generation views.
+//!
+//! Administrative reads return digests and non-secret lifecycle metadata
+//! rather than replaying write-only definitions or credential locators.
+
 use serde::{Deserialize, Serialize};
 
 use crate::ModelLifecycle;

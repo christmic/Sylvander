@@ -538,7 +538,10 @@ fn provider_lifecycle_requests_validate_and_have_stable_wire_shapes() {
             serde_json::from_value::<RegistryAdminRequest>(encoded).unwrap(),
             request
         );
-        assert_eq!(request.minimum_ui_protocol_version(), 3);
+        assert_eq!(
+            request.minimum_ui_protocol_version(),
+            crate::UI_PROTOCOL_VERSION
+        );
     }
 
     assert!(
@@ -698,7 +701,7 @@ fn model_draft() -> ModelDefinitionDraft {
 }
 
 #[test]
-fn model_lifecycle_requests_validate_round_trip_and_require_v3() {
+fn model_lifecycle_requests_validate_round_trip_and_require_current_protocol() {
     let requests = [
         RegistryAdminRequest::CreateModel {
             provider_id: "alpha".into(),
@@ -732,7 +735,10 @@ fn model_lifecycle_requests_validate_round_trip_and_require_v3() {
             serde_json::from_value::<RegistryAdminRequest>(wire).unwrap(),
             request
         );
-        assert_eq!(request.minimum_ui_protocol_version(), 3);
+        assert_eq!(
+            request.minimum_ui_protocol_version(),
+            crate::UI_PROTOCOL_VERSION
+        );
     }
 }
 
@@ -906,10 +912,16 @@ fn every_registry_request_has_an_explicit_minimum_protocol_version() {
     ];
     for wire in reads {
         let request: RegistryAdminRequest = serde_json::from_value(wire).unwrap();
-        assert_eq!(request.minimum_ui_protocol_version(), 2);
+        assert_eq!(
+            request.minimum_ui_protocol_version(),
+            crate::UI_PROTOCOL_VERSION
+        );
     }
     for wire in mutations {
         let request: RegistryAdminRequest = serde_json::from_value(wire).unwrap();
-        assert_eq!(request.minimum_ui_protocol_version(), 3);
+        assert_eq!(
+            request.minimum_ui_protocol_version(),
+            crate::UI_PROTOCOL_VERSION
+        );
     }
 }
