@@ -10,6 +10,10 @@ use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 use sylvander_runtime::config::{SecretRef, SecretResolver};
+use sylvander_runtime::credential_audit::{
+    CredentialAuditOperation, CredentialAuditResult, CredentialAuditSubject,
+    CredentialOperationAuditLedger,
+};
 use tokio::sync::Mutex;
 
 const LEASE_SECONDS: i64 = 30;
@@ -20,6 +24,8 @@ pub(crate) struct SystemChannelCredentialSource {
     instance_id: String,
     references: BTreeMap<String, SecretRef>,
     resolver: Arc<dyn SecretResolver>,
+    audit: Arc<CredentialOperationAuditLedger>,
+    audit_subject: CredentialAuditSubject,
     state: Mutex<CredentialState>,
     next_lease_generation: AtomicU64,
 }
@@ -35,6 +41,7 @@ impl SystemChannelCredentialSource {
         instance_id: impl Into<String>,
         references: impl IntoIterator<Item = (String, SecretRef)>,
         resolver: Arc<dyn SecretResolver>,
+        audit: Arc<CredentialOperationAuditLedger>,
     ) -> Result<Self, CredentialLeaseError> {
         let pairs = references.into_iter().collect::<Vec<_>>();
         let pair_count = pairs.len();
@@ -42,13 +49,14 @@ impl SystemChannelCredentialSource {
         if references.len() != pair_count {
             return Err(CredentialLeaseError::InvalidRequest);
         }
-        Self::from_map(instance_id, references, resolver)
+        Self::from_map(instance_id, references, resolver, audit)
     }
 
     pub(crate) fn from_map(
         instance_id: impl Into<String>,
         references: BTreeMap<String, SecretRef>,
         resolver: Arc<dyn SecretResolver>,
+        audit: Arc<CredentialOperationAuditLedger>,
     ) -> Result<Self, CredentialLeaseError> {
         let instance_id = instance_id.into();
         let request = CredentialLeaseRequest::new(instance_id.clone(), references.keys().cloned())?;
@@ -60,9 +68,12 @@ impl SystemChannelCredentialSource {
             return Err(CredentialLeaseError::InvalidRequest);
         }
         Ok(Self {
+            audit_subject: CredentialAuditSubject::channel_instance(instance_id.clone())
+                .map_err(|_| CredentialLeaseError::InvalidRequest)?,
             instance_id,
             references,
             resolver,
+            audit,
             state: Mutex::new(CredentialState::default()),
             next_lease_generation: AtomicU64::new(1),
         })
@@ -93,6 +104,8 @@ impl CredentialLeaseSource for SystemChannelCredentialSource {
                 .iter()
                 .any(|slot| !self.references.contains_key(slot))
         {
+            self.record_failure(None, CredentialAuditResult::InvalidRequest)
+                .await;
             return Err(CredentialLeaseError::Unavailable);
         }
 
@@ -102,14 +115,22 @@ impl CredentialLeaseSource for SystemChannelCredentialSource {
         let mut values = BTreeMap::new();
         let mut fingerprints = HashMap::new();
         for slot in &request.slots {
-            let secret = self
-                .resolver
-                .resolve(
-                    self.references
-                        .get(slot)
-                        .ok_or(CredentialLeaseError::Unavailable)?,
+            let Some(reference) = self.references.get(slot) else {
+                self.record_failure(
+                    nonzero(state.generation),
+                    CredentialAuditResult::MissingSlot,
                 )
-                .map_err(|_| CredentialLeaseError::Unavailable)?;
+                .await;
+                return Err(CredentialLeaseError::Unavailable);
+            };
+            let Ok(secret) = self.resolver.resolve(reference) else {
+                self.record_failure(
+                    nonzero(state.generation),
+                    CredentialAuditResult::Unavailable,
+                )
+                .await;
+                return Err(CredentialLeaseError::Unavailable);
+            };
             let bytes = secret.as_bytes().to_vec();
             fingerprints.insert(slot.clone(), Sha256::digest(&bytes).into());
             values.insert(slot.clone(), bytes);
@@ -120,35 +141,76 @@ impl CredentialLeaseSource for SystemChannelCredentialSource {
             .slots
             .iter()
             .any(|slot| state.fingerprints.get(slot) != fingerprints.get(slot));
-        if state.generation == 0 || changed {
-            state.generation = state
-                .generation
-                .checked_add(1)
-                .ok_or(CredentialLeaseError::Unavailable)?;
-        }
-        for (slot, fingerprint) in fingerprints {
-            state.fingerprints.insert(slot, fingerprint);
-        }
-        let credential_generation = state.generation;
-        drop(state);
+        let operation = if state.generation == 0 {
+            CredentialAuditOperation::Create
+        } else if changed {
+            CredentialAuditOperation::Rotate
+        } else {
+            CredentialAuditOperation::Renew
+        };
+        let credential_generation = if state.generation == 0 || changed {
+            let Some(generation) = state.generation.checked_add(1) else {
+                self.record_failure(
+                    nonzero(state.generation),
+                    CredentialAuditResult::Unavailable,
+                )
+                .await;
+                return Err(CredentialLeaseError::Unavailable);
+            };
+            generation
+        } else {
+            state.generation
+        };
 
-        let lease_generation = self
-            .next_lease_generation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                current.checked_add(1)
-            })
-            .map_err(|_| CredentialLeaseError::Unavailable)?;
+        let Ok(lease_generation) = self.next_lease_generation.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| current.checked_add(1),
+        ) else {
+            self.record_failure(
+                Some(credential_generation),
+                CredentialAuditResult::Unavailable,
+            )
+            .await;
+            return Err(CredentialLeaseError::Unavailable);
+        };
         let now = unix_timestamp();
-        let bundle = CredentialLeaseBundle::new(
+        let bundle = match CredentialLeaseBundle::new(
             credential_generation,
             lease_generation,
             now,
             now.saturating_add(LEASE_SECONDS),
             values,
-        )?;
+        ) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                self.record_failure(Some(credential_generation), audit_result(error))
+                    .await;
+                return Err(error);
+            }
+        };
         if !bundle.contains_exact_slots(&request.slots) {
+            self.record_failure(
+                Some(credential_generation),
+                CredentialAuditResult::InvalidLease,
+            )
+            .await;
             return Err(CredentialLeaseError::InvalidLease);
         }
+        self.audit
+            .record(
+                &self.audit_subject,
+                operation,
+                Some(credential_generation),
+                CredentialAuditResult::Succeeded,
+            )
+            .await
+            .map_err(|_| CredentialLeaseError::Unavailable)?;
+        state.generation = credential_generation;
+        for (slot, fingerprint) in fingerprints {
+            state.fingerprints.insert(slot, fingerprint);
+        }
+        drop(state);
         tracing::debug!(
             instance = %self.instance_id,
             slot_count = request.slots.len(),
@@ -158,6 +220,39 @@ impl CredentialLeaseSource for SystemChannelCredentialSource {
             "channel credential lease opened"
         );
         Ok(bundle)
+    }
+}
+
+impl SystemChannelCredentialSource {
+    async fn record_failure(
+        &self,
+        credential_revision: Option<u64>,
+        result: CredentialAuditResult,
+    ) {
+        let _ = self
+            .audit
+            .record(
+                &self.audit_subject,
+                CredentialAuditOperation::Failure,
+                credential_revision,
+                result,
+            )
+            .await;
+    }
+}
+
+const fn nonzero(value: u64) -> Option<u64> {
+    if value == 0 { None } else { Some(value) }
+}
+
+const fn audit_result(error: CredentialLeaseError) -> CredentialAuditResult {
+    match error {
+        CredentialLeaseError::InvalidRequest => CredentialAuditResult::InvalidRequest,
+        CredentialLeaseError::InvalidLease => CredentialAuditResult::InvalidLease,
+        CredentialLeaseError::Unavailable => CredentialAuditResult::Unavailable,
+        CredentialLeaseError::Expired => CredentialAuditResult::Expired,
+        CredentialLeaseError::MissingSlot => CredentialAuditResult::MissingSlot,
+        CredentialLeaseError::InvalidEncoding => CredentialAuditResult::InvalidEncoding,
     }
 }
 

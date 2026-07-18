@@ -3059,6 +3059,8 @@ name = "sylvander-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde",
+ "serde_json",
  "sha2",
  "sylvander-agent",
  "sylvander-channel",
@@ -3069,6 +3071,7 @@ dependencies = [
  "sylvander-channel-wechat",
  "sylvander-channel-ws",
  "sylvander-llm-anthropic",
+ "sylvander-protocol",
  "sylvander-runtime",
  "tempfile",
  "thiserror 2.0.18",

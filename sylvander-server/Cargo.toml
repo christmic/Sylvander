@@ -10,6 +10,10 @@ license.workspace = true
 name = "sylvander"
 path = "src/main.rs"
 
+[[bin]]
+name = "sylvander-improve"
+path = "src/bin/sylvander-improve.rs"
+
 [dependencies]
 sylvander-agent = { path = "../sylvander-agent" }
 sylvander-channel = { path = "../sylvander-channel" }
@@ -23,12 +27,15 @@ sylvander-llm-anthropic = { path = "../sylvander-llm-anthropic" }
 sylvander-runtime = { path = "../sylvander-runtime" }
 async-trait = "0.1"
 sha2 = "0.10"
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+sylvander-protocol = { path = "../sylvander-protocol" }
 tempfile = "3"
 
 [lints]
