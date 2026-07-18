@@ -372,6 +372,9 @@ fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_sylvander-tui"));
         command.arg(&socket_path);
         command.env("TERM", term);
+        command.env("COLORTERM", "truecolor");
+        command.env("SYLVANDER_TUI_COLOR", "truecolor");
+        command.env_remove("NO_COLOR");
         command.env("SYLVANDER_TUI_REDUCED_MOTION", "true");
         command.env("SYLVANDER_HISTORY_PATH", "");
         let mut child = pair
@@ -436,6 +439,24 @@ fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
         let rendered = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
         assert!(rendered.contains("Sylvander"));
         assert!(rendered.contains("What should we work through?"));
+        if term == "xterm-ghostty" {
+            let sgr_samples = rendered
+                .match_indices("\u{1b}[")
+                .take(32)
+                .map(|(index, _)| {
+                    rendered[index..]
+                        .chars()
+                        .take(32)
+                        .collect::<String>()
+                        .escape_debug()
+                        .to_string()
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                rendered.contains("\u{1b}[38;2;"),
+                "Ghostty did not emit a true-color foreground SGR sequence: {sgr_samples:?}"
+            );
+        }
         server.join().expect("join surface server");
         let _ = std::fs::remove_file(socket_path);
     }

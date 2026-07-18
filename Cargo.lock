@@ -3099,6 +3099,7 @@ dependencies = [
  "sylvander-channel",
  "sylvander-channel-unix",
  "sylvander-llm-anthropic",
+ "sylvander-llm-core",
  "sylvander-protocol",
  "tempfile",
  "tokio",

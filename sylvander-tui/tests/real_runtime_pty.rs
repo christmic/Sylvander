@@ -12,7 +12,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::json;
 use sylvander_agent::prelude::{
     AgentRun, AgentRunEngine, AgentSessionIssuer, AgentSpec, InProcessMessageBus, MessageBus,
-    MessageKind, ModelCapabilities, StreamEvent, SubscriptionFilter, ToolRegistry,
+    MessageKind, StreamEvent, SubscriptionFilter, ToolRegistry,
 };
 use sylvander_agent::session_store::{
     SessionLifetime, SessionStore, SqliteSessionStore, StoredSession,
@@ -20,13 +20,16 @@ use sylvander_agent::session_store::{
 use sylvander_agent::tools::{AskUserTool, WriteTool};
 use sylvander_channel::{Channel, ChannelContext, UiService};
 use sylvander_channel_unix::{RuntimeInfo, UnixChannel};
-use sylvander_llm_anthropic::api::client::AnthropicClient;
+use sylvander_llm_anthropic::{AnthropicProvider, api::client::AnthropicClient};
+use sylvander_llm_core::{
+    ModelCapabilities as ProviderModelCapabilities, ModelInfo as ProviderModelInfo, ModelRef,
+};
 use sylvander_protocol::{
     AgentDescriptor, AgentId, BoundaryContext, BoundaryError, BoundaryErrorCode, BusMessage,
     FileAccess, NetworkAccess, PermissionProfile, ReasoningEffort, RunFeedback,
     SessionConfigProvenance, SessionConfigSource, SessionConfigSourceKind, SessionConfigState,
     SessionConfigUpdateRequest, SessionCreateRequest, SessionEffectiveConfig, SessionId,
-    SessionMetadata, UiClientMessage,
+    SessionMetadata, UiClientMessage, UiSessionInfo,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -320,6 +323,39 @@ impl UiService for HarnessUiService {
         }])
     }
 
+    async fn list_sessions(
+        &self,
+        boundary: &BoundaryContext,
+    ) -> Result<Vec<UiSessionInfo>, BoundaryError> {
+        let principal = Self::principal(boundary, "list_sessions")?;
+        let sessions = self.sessions.list_persistent().await.map_err(|error| {
+            Self::denial(
+                boundary,
+                BoundaryErrorCode::InvalidScope,
+                "list_sessions",
+                &error.to_string(),
+            )
+        })?;
+        let now = sylvander_agent::session::now_secs();
+        Ok(sessions
+            .into_iter()
+            .filter(|session| {
+                session.metadata.user_id == principal
+                    && session.agents.iter().any(|agent| agent == &self.agent_id)
+            })
+            .map(|session| UiSessionInfo {
+                id: session.id.0,
+                label: if session.name.is_empty() {
+                    "untitled session".into()
+                } else {
+                    session.name
+                },
+                workspace: session.metadata.workspace.display().to_string(),
+                last_seen_secs: u64::try_from(now.saturating_sub(session.updated_at)).unwrap_or(0),
+            })
+            .collect())
+    }
+
     async fn create_session(
         &self,
         boundary: &BoundaryContext,
@@ -514,7 +550,11 @@ impl UiService for HarnessUiService {
                     &error.to_string(),
                 )
             })?;
-        Ok(sylvander_channel::SubmittedChat { session_id, events })
+        Ok(sylvander_channel::SubmittedChat {
+            session_id,
+            feedback_target: None,
+            events,
+        })
     }
 
     async fn submit_control(
@@ -645,12 +685,22 @@ async fn start_runtime(
     let prompt = prompt_resolver
         .resolve(&selection, None, None)
         .expect("test prompt snapshot");
-    let builder = AgentRun::builder(spec.clone(), client)
-        .bus(bus.clone())
-        .session_store(store.clone())
-        .override_tools(tools)
-        .prompt_resolver(prompt_resolver)
-        .model_capabilities(ModelCapabilities::TOOL_USE);
+    let model = spec.to_model_info().expect("valid test model");
+    let exact = ProviderModelInfo {
+        reference: ModelRef::new(&provider_id, model.id),
+        context_window: model.context_window,
+        max_output_tokens: model.max_output_tokens,
+        capabilities: ProviderModelCapabilities::TOOL_USE,
+    };
+    let builder = AgentRun::qualified_router_builder(
+        spec.clone(),
+        Arc::new(AnthropicProvider::new(&provider_id, client)),
+        exact,
+    )
+    .bus(bus.clone())
+    .session_store(store.clone())
+    .override_tools(tools)
+    .prompt_resolver(prompt_resolver);
     let run = if approval_enabled {
         builder.enable_approval()
     } else {
@@ -684,7 +734,7 @@ async fn start_runtime(
                 network_access: sylvander_protocol::NetworkAccess::Denied,
                 approval_policy,
             },
-            capabilities: ModelCapabilities::TOOL_USE.bits(),
+            capabilities: sylvander_llm_anthropic::api::model::ModelCapabilities::TOOL_USE.bits(),
             approval_enabled,
             max_attachment_bytes: 512 * 1024,
             platform: sylvander_protocol::PlatformSnapshot::default(),
