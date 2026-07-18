@@ -468,6 +468,12 @@ async fn run_outgoing(ch: Arc<WechatChannel>, ctx: Arc<ChannelContext>) {
                 }
                 continue;
             }
+            StreamEvent::Error { message } => {
+                if let Err(error) = ch.send_text(&user_name, &format!("❌ {message}")).await {
+                    warn!(%error, "wechat: terminal error delivery failed");
+                }
+                continue;
+            }
             StreamEvent::ToolCall { tool_name, .. } => format!("🔧 {tool_name}"),
             StreamEvent::ToolResult {
                 tool_name,

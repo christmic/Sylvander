@@ -481,6 +481,7 @@ fn render_nonterminal_event(event: &StreamEvent) -> Option<String> {
         StreamEvent::CompactionFailed { reason, .. } => {
             Some(format!("⚠️ context compaction failed: {reason}"))
         }
+        StreamEvent::Error { message } => Some(format!("❌ {message}")),
         StreamEvent::TurnInterrupted { reason } => Some(format!("⏹️ interrupted: {reason}")),
         StreamEvent::TaskFailed { task_id, error } => {
             Some(format!("❌ task {task_id} failed: {error}"))

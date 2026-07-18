@@ -50,6 +50,7 @@ struct EmptyUiService {
     allow_registry: bool,
     session_config: Option<sylvander_protocol::SessionConfigState>,
     chat_bus: Option<Arc<dyn MessageBus>>,
+    feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     compaction: Option<sylvander_protocol::CompactionReport>,
     rollback_preview: Option<sylvander_protocol::WorkspaceRollbackPreview>,
     rollback_report: Option<sylvander_protocol::WorkspaceRollbackReport>,
@@ -125,7 +126,11 @@ impl sylvander_channel::UiService for EmptyUiService {
         })
         .await
         .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_chat"))?;
-        Ok(sylvander_channel::SubmittedChat { session_id, events })
+        Ok(sylvander_channel::SubmittedChat {
+            session_id,
+            feedback_target: self.feedback_target.clone(),
+            events,
+        })
     }
 
     async fn submit_control(
@@ -254,6 +259,38 @@ impl sylvander_channel::UiService for EmptyUiService {
         _feedback: sylvander_protocol::RunFeedback,
     ) -> Result<String, sylvander_protocol::BoundaryError> {
         Ok("feedback-1".into())
+    }
+
+    async fn memory_confirmation(
+        &self,
+        _boundary: &sylvander_protocol::BoundaryContext,
+        request: sylvander_protocol::MemoryConfirmationRequest,
+    ) -> sylvander_protocol::MemoryConfirmationResponse {
+        match request {
+            sylvander_protocol::MemoryConfirmationRequest::List { session_id, .. } => {
+                sylvander_protocol::MemoryConfirmationResponse::Pending {
+                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                    session_id,
+                    confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+                        candidate_id: "candidate-1".into(),
+                        expected_revision: 2,
+                        scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+                        summary: "prefers concise answers".into(),
+                    }],
+                }
+            }
+            sylvander_protocol::MemoryConfirmationRequest::Decide {
+                session_id,
+                candidate_id,
+                decision,
+                ..
+            } => sylvander_protocol::MemoryConfirmationResponse::Recorded {
+                version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                session_id,
+                candidate_id,
+                decision,
+            },
+        }
     }
 
     fn identity_binding_capabilities(&self) -> sylvander_protocol::IdentityBindingCapabilities {
@@ -638,8 +675,7 @@ async fn agent_discovery_is_served_through_the_ui_service_boundary() {
     handle_client_msg(
         ClientMsg::SubmitFeedback {
             feedback: sylvander_protocol::RunFeedback {
-                run_id: "run-1".into(),
-                turn_id: None,
+                target: sylvander_protocol::FeedbackTarget("sha256:target".into()),
                 rating: sylvander_protocol::FeedbackRating::Positive,
                 note: None,
                 correction: None,
@@ -1013,6 +1049,67 @@ async fn current_protocol_is_required_before_registry_mutation_dispatch() {
     assert_eq!(accepted["response"]["status"], "success");
     assert_eq!(service.registry_authorizations.load(Ordering::Relaxed), 1);
     assert_eq!(service.registry_dispatches.load(Ordering::Relaxed), 1);
+
+    task.abort();
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn memory_confirmation_round_trips_over_a_real_unix_socket() {
+    let path = socket_path();
+    let channel = Arc::new(UnixChannel::new(&path, "agent-1"));
+    let task = tokio::spawn(channel.run(ChannelContext::with_services(
+        Arc::new(InProcessMessageBus::new()),
+        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store")),
+        Some(Arc::new(EmptyUiService::default())),
+        None,
+    )));
+    let stream = connect(&path).await;
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    negotiate(&mut write, &mut lines).await;
+
+    let pending = send_and_read(
+        &mut write,
+        &mut lines,
+        serde_json::json!({
+            "type": "memory_confirmation",
+            "request": {
+                "operation": "list",
+                "version": sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                "session_id": "session-1"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(pending["type"], "memory_confirmation");
+    assert_eq!(pending["response"]["result"], "pending");
+    assert_eq!(
+        pending["response"]["confirmations"][0]["summary"],
+        "prefers concise answers"
+    );
+    let wire = pending.to_string();
+    assert!(!wire.contains("user_id"));
+    assert!(!wire.contains("agent_id"));
+
+    let recorded = send_and_read(
+        &mut write,
+        &mut lines,
+        serde_json::json!({
+            "type": "memory_confirmation",
+            "request": {
+                "operation": "decide",
+                "version": sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                "session_id": "session-1",
+                "candidate_id": "candidate-1",
+                "expected_revision": 2,
+                "decision": "reject"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(recorded["response"]["result"], "recorded");
+    assert_eq!(recorded["response"]["decision"], "reject");
 
     task.abort();
     let _ = std::fs::remove_file(path);
@@ -1563,6 +1660,85 @@ async fn reconnect_replays_the_complete_in_flight_turn() {
     .join(" ");
     assert!(replayed.contains("before"));
     assert!(replayed.contains("after"));
+
+    task.abort();
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn terminal_error_reaches_the_client_and_releases_the_session_relay() {
+    let path = socket_path();
+    let agent_id = AgentId::new("agent-1");
+    let bus = Arc::new(InProcessMessageBus::new());
+    let store: Arc<dyn SessionStore> =
+        Arc::new(SqliteSessionStore::open_in_memory().await.expect("store"));
+    let feedback_target = sylvander_protocol::FeedbackTarget(format!("sha256:{}", "a".repeat(64)));
+    let channel = Arc::new(UnixChannel::new(&path, agent_id.clone()));
+    let ui = EmptyUiService {
+        chat_bus: Some(bus.clone()),
+        feedback_target: Some(feedback_target.clone()),
+        ..EmptyUiService::default()
+    };
+    let task = tokio::spawn(channel.run(ChannelContext::with_services(
+        bus.clone(),
+        store,
+        Some(Arc::new(ui)),
+        None,
+    )));
+
+    let stream = connect(&path).await;
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    negotiate(&mut write, &mut lines).await;
+    let created = send_and_read(
+        &mut write,
+        &mut lines,
+        serde_json::json!({
+            "type":"chat",
+            "text":"fail",
+            "session_id":"session-1"
+        }),
+    )
+    .await;
+    assert_eq!(created["type"], "session_created");
+
+    bus.publish(BusMessage::stream_event(
+        SessionId::new("session-1"),
+        agent_id,
+        StreamEvent::Error {
+            message: "provider unavailable".into(),
+        },
+    ))
+    .await
+    .expect("publish terminal error");
+    let error: serde_json::Value = serde_json::from_str(
+        &tokio::time::timeout(std::time::Duration::from_secs(1), lines.next_line())
+            .await
+            .expect("error timeout")
+            .expect("error read")
+            .expect("error event"),
+    )
+    .expect("error json");
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["session_id"], "session-1");
+    assert_eq!(error["message"], "provider unavailable");
+    assert_eq!(error["feedback_target"], feedback_target.0);
+
+    tokio::task::yield_now().await;
+    let next = send_and_read(
+        &mut write,
+        &mut lines,
+        serde_json::json!({
+            "type":"chat",
+            "text":"retry",
+            "session_id":"session-1"
+        }),
+    )
+    .await;
+    assert_eq!(
+        next["type"], "session_created",
+        "terminal errors must release the per-session relay"
+    );
 
     task.abort();
     let _ = std::fs::remove_file(path);

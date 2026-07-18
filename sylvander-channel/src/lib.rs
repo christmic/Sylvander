@@ -43,11 +43,12 @@ use sylvander_protocol::{
     AgentId, AuthenticationFailure, BoundaryContext, BoundaryError, BoundaryErrorCode,
     IDENTITY_BINDING_PROTOCOL_VERSION, IdentityBindingCapabilities, IdentityBindingError,
     IdentityBindingErrorCode, IdentityBindingOperation, IdentityBindingRequest,
-    IdentityBindingResponse, IdentityBindingValidationError, PrincipalKind, RegistryAdminError,
-    RegistryAdminErrorCode, RegistryAdminRequest, RegistryAdminResponse, RunFeedback,
-    SessionConfigOverrides, SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest,
-    SessionId, USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo,
-    UserProfileCapabilities, UserProfileError, UserProfileRequest, UserProfileResponse,
+    IdentityBindingResponse, IdentityBindingValidationError, MemoryConfirmationRequest,
+    MemoryConfirmationResponse, PrincipalKind, RegistryAdminError, RegistryAdminErrorCode,
+    RegistryAdminRequest, RegistryAdminResponse, RunFeedback, SessionConfigOverrides,
+    SessionConfigState, SessionConfigUpdateRequest, SessionCreateRequest, SessionId,
+    USER_PROFILE_PROTOCOL_VERSION, UiClientMessage, UiSessionInfo, UserProfileCapabilities,
+    UserProfileError, UserProfileRequest, UserProfileResponse,
 };
 
 /// Complete normalized input for one authenticated external chat turn.
@@ -76,6 +77,8 @@ pub struct ExternalChatRequest {
 pub struct SubmittedChat {
     /// Runtime-authorized session receiving the turn.
     pub session_id: SessionId,
+    /// Opaque handle for feedback about this exact submitted turn.
+    pub feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     /// Session-scoped event subscription installed before message publication.
     pub events: tokio::sync::mpsc::Receiver<BusMessage>,
 }
@@ -266,6 +269,19 @@ pub trait UiService: Send + Sync {
             version: USER_PROFILE_PROTOCOL_VERSION,
             error: UserProfileError::service_unavailable(request.operation()),
         }
+    }
+
+    /// List or resolve owner- and session-bound Guardian confirmations.
+    ///
+    /// Requests carry no owner selector. Runtime must derive the stable user
+    /// from `boundary`, verify session ownership, and compare the candidate's
+    /// persisted origin session before returning or applying a decision.
+    async fn memory_confirmation(
+        &self,
+        _boundary: &BoundaryContext,
+        request: MemoryConfirmationRequest,
+    ) -> MemoryConfirmationResponse {
+        MemoryConfirmationResponse::service_unavailable(request.operation())
     }
 
     /// Authenticate, resolve or create and attach the owned session, then

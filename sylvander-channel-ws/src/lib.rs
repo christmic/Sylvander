@@ -6,7 +6,7 @@
 //!
 //! ## Client → Server (commands)
 //! ```json
-//! {"type":"hello","protocol":{"client_name":"example","min_version":4,"max_version":4,"capabilities":[]}}
+//! {"type":"hello","protocol":{"client_name":"example","min_version":5,"max_version":5,"capabilities":[]}}
 //! {"type":"chat","text":"hello","session_id":"optional"}
 //! {"type":"approve","call_id":"...","approved":true}
 //! {"type":"list_sessions"}
@@ -397,9 +397,10 @@ fn send_welcome(tx: &mpsc::UnboundedSender<ServerMsg>, version: u16) {
     let mut capabilities = vec![
         "agent_discovery".into(),
         sylvander_protocol::IDENTITY_BINDING_CAPABILITY.into(),
+        sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY.into(),
         "session_config".into(),
         "sessions".into(),
-        "feedback".into(),
+        sylvander_protocol::FEEDBACK_CAPABILITY.into(),
         sylvander_protocol::USER_PROFILE_CAPABILITY.into(),
     ];
     if version >= 2 {
@@ -494,8 +495,12 @@ async fn handle_client_msg(
                     return;
                 }
             };
-            let sid = submitted.session_id;
-            let mut rx = submitted.events;
+            let sylvander_channel::SubmittedChat {
+                session_id: sid,
+                feedback_target,
+                events,
+            } = submitted;
+            let mut rx = events;
 
             // Notify client of session
             let _ = tx.send(ServerMsg::SessionCreated {
@@ -578,10 +583,27 @@ async fn handle_client_msg(
                                 options,
                                 multi_select,
                             }),
+                            StreamEvent::TurnInterrupted { reason } => {
+                                let _ = tx_clone.send(ServerMsg::TurnInterrupted {
+                                    session_id: s.0.clone(),
+                                    reason,
+                                    feedback_target: feedback_target.clone(),
+                                });
+                                break;
+                            }
                             StreamEvent::Done { text } => {
                                 let _ = tx_clone.send(ServerMsg::Done {
                                     session_id: s.0.clone(),
                                     text,
+                                    feedback_target: feedback_target.clone(),
+                                });
+                                break;
+                            }
+                            StreamEvent::Error { message } => {
+                                let _ = tx_clone.send(ServerMsg::Error {
+                                    session_id: s.0.clone(),
+                                    message,
+                                    feedback_target: feedback_target.clone(),
                                 });
                                 break;
                             }
@@ -701,6 +723,16 @@ async fn handle_client_msg(
             } else {
                 operation_error(tx, "submit_feedback", "UI service is unavailable");
             }
+        }
+        ClientMsg::MemoryConfirmation { request } => {
+            let response = if let Some(ui) = &ctx.ui {
+                ui.memory_confirmation(&boundary, request).await
+            } else {
+                sylvander_protocol::MemoryConfirmationResponse::service_unavailable(
+                    request.operation(),
+                )
+            };
+            let _ = tx.send(ServerMsg::MemoryConfirmation { response });
         }
         ClientMsg::AgentAdmin { request } => {
             let response = if let Some(ui) = &ctx.ui {
