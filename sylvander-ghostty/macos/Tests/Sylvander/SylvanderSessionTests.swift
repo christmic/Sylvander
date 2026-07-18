@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 import Network
+import SwiftUI
 import Testing
 @testable import Ghostty
 
@@ -56,6 +57,51 @@ struct SylvanderSessionTests {
     }
 
     @Test
+    func workspaceContainerInstallsClearGlassWithoutAnOpaqueRoot() async throws {
+        guard #available(macOS 26.0, *) else { return }
+        let container = await MockTerminalViewContainer(dimsGlassWhenInactive: false) {
+            EmptyView()
+        }
+        let config = try TemporaryConfig("""
+        background = 000000
+        background-opacity = 0.46
+        background-blur = macos-glass-clear
+        """)
+
+        await container.ghosttyConfigDidChange(config, preferredBackgroundColor: nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(config.backgroundBlur == .macosGlassClear)
+        #expect(config.backgroundOpacity == 0.46)
+        #expect(container.isOpaque == false)
+        #expect(container.glassEffectView != nil)
+    }
+
+    @Test
+    func lifecycleRetiresOnlyTheSelectedExitedSurface() {
+        let states = ["selected": true, "background": true, "running": false]
+
+        #expect(
+            SylvanderSurfaceLifecycle.exitedSelectedSession(
+                selectedSessionID: "selected",
+                processExited: { states[$0] }
+            ) == "selected"
+        )
+        #expect(
+            SylvanderSurfaceLifecycle.exitedSelectedSession(
+                selectedSessionID: "running",
+                processExited: { states[$0] }
+            ) == nil
+        )
+        #expect(
+            SylvanderSurfaceLifecycle.exitedSelectedSession(
+                selectedSessionID: nil,
+                processExited: { states[$0] }
+            ) == nil
+        )
+    }
+
+    @Test
     func decodesSessionList() throws {
         let data = Data(#"{"type":"sessions_list","sessions":[{"id":"s-1","label":"Audit auth","workspace":"/work/api","last_seen_secs":7}]}"#.utf8)
 
@@ -89,21 +135,21 @@ struct SylvanderSessionTests {
                 as? [String: Any]
         )
         let protocolInfo = try #require(hello["protocol"] as? [String: Any])
-        #expect(protocolInfo["min_version"] as? Int == 4)
-        #expect(protocolInfo["max_version"] as? Int == 4)
+        #expect(protocolInfo["min_version"] as? Int == 5)
+        #expect(protocolInfo["max_version"] as? Int == 5)
 
         try SylvanderSessionClient.validateHandshake(
-            Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":4,"capabilities":[]}}"#.utf8)
+            Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":5,"capabilities":[]}}"#.utf8)
         )
 
-        #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(3)) {
+        #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(4)) {
             try SylvanderSessionClient.validateHandshake(
-                Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":3,"capabilities":[]}}"#.utf8)
+                Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":4,"capabilities":[]}}"#.utf8)
             )
         }
-        #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(5)) {
+        #expect(throws: SylvanderSessionClient.ClientError.unsupportedProtocol(6)) {
             try SylvanderSessionClient.validateHandshake(
-                Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":5,"capabilities":[]}}"#.utf8)
+                Data(#"{"type":"welcome","protocol":{"server_name":"sylvander","version":6,"capabilities":[]}}"#.utf8)
             )
         }
     }
@@ -120,7 +166,7 @@ struct SylvanderSessionTests {
     }
 
     @Test
-    func publicClientUsesExactV4AcrossRealUnixBoundary() async throws {
+    func publicClientUsesExactV5AcrossRealUnixBoundary() async throws {
         let server = UnixUIProtocolStub()
         try server.start()
         defer { server.stop() }
@@ -144,8 +190,8 @@ struct SylvanderSessionTests {
             let hello = requests[index]
             let protocolInfo = try #require(hello["protocol"] as? [String: Any])
             #expect(hello["type"] as? String == "hello")
-            #expect(protocolInfo["min_version"] as? Int == 4)
-            #expect(protocolInfo["max_version"] as? Int == 4)
+            #expect(protocolInfo["min_version"] as? Int == 5)
+            #expect(protocolInfo["max_version"] as? Int == 5)
         }
         #expect(requests[1]["type"] as? String == "list_sessions")
         #expect(requests[3]["type"] as? String == "discover_agents")
@@ -590,7 +636,7 @@ private final class UnixUIProtocolStub: @unchecked Sendable {
                     "type": "welcome",
                     "protocol": [
                         "server_name": "sylvander-test",
-                        "version": 4,
+                        "version": 5,
                         "capabilities": ["sessions"],
                     ],
                 ]

@@ -82,6 +82,27 @@ final class SylvanderWorkspaceController: BaseTerminalController {
                 self?.reclaimSessions(notIn: sessionIDs)
             }
             .store(in: &cancellables)
+
+        // A selected session does not change identity when its terminal child
+        // exits, so the presence publisher above intentionally remains quiet.
+        // Poll only the active surface and convert process exit into an
+        // explicit, recoverable desktop state.
+        Timer.publish(every: 0.5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.reconcileSelectedSurfaceLifecycle()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .ghosttyConfigDidChange)
+            .filter { $0.object == nil }
+            .compactMap {
+                $0.userInfo?[Notification.Name.GhosttyConfigChangeKey] as? Ghostty.Config
+            }
+            .sink { [weak self] config in
+                self?.applyWorkspaceAppearance(config: config)
+            }
+            .store(in: &cancellables)
     }
 
     required init?(coder: NSCoder) {
@@ -103,7 +124,11 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         window.setFrameAutosaveName(Self.frameAutosaveName)
         SylvanderWorkspaceAppearance.apply(to: window)
         window.delegate = self
-        window.contentView = NSHostingView(rootView: SylvanderWorkspaceView(controller: self))
+        let contentView = TerminalViewContainer(dimsGlassWhenInactive: false) {
+            SylvanderWorkspaceView(controller: self)
+        }
+        window.contentView = contentView
+        contentView.ghosttyConfigDidChange(ghostty.config, preferredBackgroundColor: nil)
         self.window = window
     }
 
@@ -121,12 +146,30 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         windowDidLoad()
     }
 
+    override func windowDidBecomeKey(_ notification: Notification) {
+        super.windowDidBecomeKey(notification)
+        terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: true)
+    }
+
+    override func windowDidResignKey(_ notification: Notification) {
+        super.windowDidResignKey(notification)
+        terminalViewContainer?.updateGlassTintOverlay(isKeyWindow: false)
+    }
+
     func showChangesInspector() {
         guard let session = sessionStore.sessions.first(where: {
             $0.id == sessionStore.selectedSessionID
         }) else { return }
         preview = nil
         changesWorkspace = session.workspace
+    }
+
+    func restartActiveSession() {
+        guard let sessionID = sessionStore.selectedSessionID,
+              let session = sessionStore.sessions.first(where: { $0.id == sessionID })
+        else { return }
+        retireSurface(sessionID: sessionID, failure: nil)
+        activateSession(session)
     }
 
     func activateSession(_ session: SylvanderSession) {
@@ -221,14 +264,47 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         }
     }
 
+    private func applyWorkspaceAppearance(config: Ghostty.Config) {
+        guard let window else { return }
+        SylvanderWorkspaceAppearance.apply(to: window)
+        terminalViewContainer?.ghosttyConfigDidChange(config, preferredBackgroundColor: nil)
+    }
+
+    private func reconcileSelectedSurfaceLifecycle() {
+        guard let sessionID = SylvanderSurfaceLifecycle.exitedSelectedSession(
+            selectedSessionID: sessionStore.selectedSessionID,
+            processExited: { [weak self] sessionID in
+                self?.sessionSurfaces[sessionID]?.processExited
+            }
+        )
+        else { return }
+        retireSurface(
+            sessionID: sessionID,
+            failure: "The embedded TUI exited. Restart the terminal to continue this session."
+        )
+    }
+
+    private func retireSurface(sessionID: String, failure: String?) {
+        guard let surface = sessionSurfaces.removeValue(forKey: sessionID) else {
+            if let failure {
+                launchFailure = failure
+            }
+            return
+        }
+        surface.isWindowVisible = false
+        surface.focusDidChange(false)
+        hostBroker?.unregister(sessionID: sessionID)
+        if sessionStore.selectedSessionID == sessionID {
+            focusedSurface = nil
+            surfaceTree = .init()
+            launchFailure = failure
+        }
+    }
+
     private func reclaimSessions(notIn validSessionIDs: Set<String>) {
         let removedSessionIDs = Set(sessionSurfaces.keys).subtracting(validSessionIDs)
         for sessionID in removedSessionIDs {
-            if let surface = sessionSurfaces.removeValue(forKey: sessionID) {
-                surface.isWindowVisible = false
-                surface.focusDidChange(false)
-            }
-            hostBroker?.unregister(sessionID: sessionID)
+            retireSurface(sessionID: sessionID, failure: nil)
         }
         if let selectedSessionID = sessionStore.selectedSessionID,
            !validSessionIDs.contains(selectedSessionID) {
@@ -239,6 +315,18 @@ final class SylvanderWorkspaceController: BaseTerminalController {
     private func deactivateSessions() {
         focusedSurface = nil
         surfaceTree = .init()
+    }
+}
+
+enum SylvanderSurfaceLifecycle {
+    static func exitedSelectedSession(
+        selectedSessionID: String?,
+        processExited: (String) -> Bool?
+    ) -> String? {
+        guard let selectedSessionID, processExited(selectedSessionID) == true else {
+            return nil
+        }
+        return selectedSessionID
     }
 }
 
@@ -344,6 +432,8 @@ private struct SylvanderWorkspaceView: View {
                     VStack(spacing: 0) {
                         SylvanderSessionContextBar(
                             store: controller.sessionStore,
+                            restartAvailable: controller.launchFailure != nil,
+                            onRestart: controller.restartActiveSession,
                             onShowChanges: controller.showChangesInspector
                         )
                         workspaceRule.frame(height: 1)
@@ -372,8 +462,14 @@ private struct SylvanderWorkspaceView: View {
             .animation(.easeOut(duration: 0.18), value: hasInspector)
         }
         .background {
-            SylvanderDesktopMaterial()
-                .overlay(SylvanderWorkspacePalette.canvas)
+            if #available(macOS 26.0, *) {
+                // TerminalViewContainer owns the product's clear glass on
+                // current macOS. Keeping this layer clear avoids stacking a
+                // second dark material beneath every TUI cell.
+                Color.clear
+            } else {
+                SylvanderDesktopMaterial()
+            }
         }
         .ignoresSafeArea(.container, edges: .top)
     }

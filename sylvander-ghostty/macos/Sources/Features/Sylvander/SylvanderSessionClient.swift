@@ -30,7 +30,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
     static let maximumLineBytes = 1_048_576
     /// The desktop host deliberately supports only the repository's current
     /// UI contract. Pre-release protocol revisions are not negotiated.
-    static let protocolVersion = 4
+    static let protocolVersion = 5
 
     let socketPath: String
 

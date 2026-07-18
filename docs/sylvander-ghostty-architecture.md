@@ -68,8 +68,10 @@ and passes its absolute path to Xcode. The `Embed Sylvander TUI` phase rejects a
 missing or non-executable helper, verifies every architecture in `ARCHS`,
 installs it with executable permissions, and signs it with the app identity.
 
-`SYLVANDER_TUI_PATH` remains an explicit development and CI override. Runtime
-launch prefers this override and otherwise resolves only the bundled helper.
+Debug builds may use `SYLVANDER_TUI_PATH` as an explicit development or CI
+override. Release builds ignore that environment variable and resolve only the
+signed helper inside their own application bundle, so a caller cannot replace
+the shipped TUI at launch time.
 
 Tag releases additionally require `MACOS_CERTIFICATE_P12`,
 `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`, `APPLE_ID`,
@@ -321,7 +323,7 @@ The integration is intentionally concentrated under
 | `SylvanderWorkspaceController` | One retained `Ghostty.SurfaceView` per server session; launch, focus, occlusion, retry, and reclamation |
 | `SylvanderSessionSidebar` | Native left session rail and confirmed lifecycle actions |
 | `SylvanderHostBroker` | Session-token-bound image/web preview requests from the embedded TUI |
-| `SylvanderWorkspaceChrome` | Translucent desktop material, context bar, and semantic host palette |
+| `SylvanderWorkspaceChrome` | Version-aware clear-glass/material fallback, context bar, and semantic host palette |
 | `SylvanderChangesInspector` / `SylvanderPreviewInspector` | Desktop-only review surfaces outside the portable conversation UI |
 
 `AppDelegate` owns one workspace controller. The controller creates a normal
@@ -329,7 +331,11 @@ Ghostty PTY surface whose command is the bundled `sylvander-tui`, whose working
 directory is the session workspace, and whose environment carries the socket,
 session, workspace, and optional Host Broker capability. Selecting a session
 focuses its retained surface; removing the authoritative server session
-destroys the reference and unregisters the host capability.
+destroys the reference and unregisters the host capability. The controller
+also observes the selected PTY child: when the embedded TUI exits it retires
+the dead surface on the next 0.5-second lifecycle poll, unregisters its Host
+Broker capability, exposes a visible **Restart Terminal** action, and creates
+a fresh bundled-helper surface without changing the server session.
 
 This shape preserves both boundaries: the TUI remains the single conversation
 implementation, and Ghostty remains the terminal renderer. No Swift message
@@ -339,10 +345,10 @@ view duplicates transcript, composer, approval, or tool rendering.
 
 The desktop host speaks the current public UI protocol exactly; it does not
 carry a pre-release compatibility range. `SylvanderSessionClient` sends
-`min_version=4` and `max_version=4` on every connection and rejects any
-negotiated version other than `4`.
+`min_version=5` and `max_version=5` on every connection and rejects any
+negotiated version other than `5`.
 
-| Desktop action | v4 client message | Expected v4 response |
+| Desktop action | v5 client message | Expected v5 response |
 |---|---|---|
 | discover Agents | `discover_agents` | `agents_discovered` |
 | list sessions | `list_sessions` | `sessions_list` |
@@ -354,18 +360,29 @@ Session creation uses the protocol-owned `SessionCreateRequest`. A desktop
 workspace becomes `overrides.user_workspace` with
 `execution_target="local"`, the selected path, and `read_only=false`. Swift
 decoders intentionally project only fields needed by the desktop; additional
-v4 Agent descriptor fields remain owned by the service.
+v5 Agent descriptor fields remain owned by the service.
 
 ## 7. transparency and terminal color contract
 
 The workspace window is explicitly non-opaque with a clear AppKit background.
-`SylvanderDesktopMaterial` installs an active behind-window visual-effect view,
-then the SwiftUI canvas, panels, and raised surfaces apply translucent dark
-semantic colors. An opaque root fill is a regression because it hides the
-desktop material even when the `NSWindow` is transparent.
+On macOS 26, `TerminalViewContainer` owns one clear
+`NSGlassEffectView` derived from the packaged Ghostty configuration; the
+Sylvander SwiftUI root stays `Color.clear` so it cannot stack a second dark
+material beneath every terminal cell. On older macOS versions,
+`SylvanderDesktopMaterial` remains the behind-window visual-effect fallback.
+Panels and raised surfaces apply translucent semantic colors on top of either
+host substrate. An opaque root fill is a regression on every version.
 
-Before launching a session surface, the host removes `NO_COLOR` from the
-process environment. The surface configuration passes:
+The workspace constructs `TerminalViewContainer` with
+`dimsGlassWhenInactive=false`. Losing key-window focus must therefore preserve
+the same clear-glass transparency instead of installing Ghostty's inactive
+dark tint. Active/inactive changes may update focus and terminal behavior, but
+must not turn the workspace opaque or visually replace the desktop material.
+
+At application startup the host removes `NO_COLOR` from the process
+environment; an empty value is not sufficient because many clients interpret
+presence alone as a monochrome request. Each surface configuration then
+passes:
 
 - `SYLVANDER_TUI_COLOR=truecolor`;
 - `CLICOLOR=1` and `CLICOLOR_FORCE=1`;
@@ -380,17 +397,24 @@ state does not leak in from its parent process and that true-color capability
 is visible.
 
 `SylvanderSessionTests` verifies removal of `NO_COLOR`, non-opaque window
-appearance, clear background, active desktop material, and the exact surface
-color environment. The packaged `Sylvander.ghostty` overlay fixes
+appearance, clear background, the older-system active material fallback, and
+the exact surface color environment. Its macOS 26 clear-glass regression test
+constructs the undimmed `TerminalViewContainer`, applies the packaged
+clear-glass configuration, and requires a non-opaque host with an installed
+glass effect. The packaged `Sylvander.ghostty` overlay fixes
 `background-opacity=0.46`, applies it to explicitly painted cells, and selects
-the clear macOS glass material. Over the host canvas alpha of `0.36`, the two
-dark layers compose to approximately `0.65` effective opacity; this keeps the
-terminal readable without visually collapsing the desktop material into an
-opaque black panel. TUI PTY tests cover the `xterm-ghostty` terminal contract.
-Any change to launch environment or workspace background must update both
-suites.
+the clear macOS glass material. Terminal background cells therefore remain
+partially transparent over the single host glass effect; the `0.36` canvas
+token is reserved for native empty/inspector surfaces and is not an additional
+full-window layer beneath a running TUI. TUI PTY tests cover the
+`xterm-ghostty` terminal contract. Any change to launch environment or
+workspace background must update both suites.
 
 ### Reproducible verification
+
+Record bundle, lifecycle, and visual evidence in
+[`ghostty-release-verification.md`](ghostty-release-verification.md); its
+unchecked entries are release gates, not optional documentation.
 
 From `sylvander-ghostty/macos`:
 
@@ -404,7 +428,7 @@ xcodebuild test \
   -only-testing:GhosttyTests/SylvanderSessionTests
 ```
 
-The suite exercises an actual `AF_UNIX` stream for exact-v4
+The suite exercises an actual `AF_UNIX` stream for exact-v5
 hello/list/discover/create, store selection and lifecycle behavior, line
 framing, translucent AppKit appearance, and the true-color launch environment.
 After the build, inspect the actual packaged inputs rather than the source
@@ -417,11 +441,49 @@ codesign --verify --strict \
   /tmp/sylvander-ghostty-dd/Build/Products/Debug/Sylvander.app/Contents/Resources/bin/sylvander-tui
 ```
 
-Surface reuse, child exit, startup retry, and session reclamation are currently
-covered by implementation review plus the real workspace smoke gate because
-`Ghostty.SurfaceView` has no injectable factory. A future lifecycle regression
-suite should add that seam under the Sylvander feature layer; it must not fork
-or mock Ghostty core.
+The release-bundle contract is checked separately from the Debug test product:
+
+```sh
+cd sylvander-ghostty
+nu macos/build.nu --configuration Release --action build
+
+app=macos/build/Release/Sylvander.app
+helper="$app/Contents/Resources/bin/sylvander-tui"
+test -x "$helper"
+lipo -archs "$helper"
+codesign --verify --strict "$helper"
+codesign --verify --deep --strict "$app"
+```
+
+The helper must contain both `arm64` and `x86_64`; Release launch resolution
+must still ignore `SYLVANDER_TUI_PATH`. A local ad-hoc signature verifies
+bundle integrity only. It is not evidence of Developer ID distribution
+signing, notarization, or stapling; those remain credentialed release
+prerequisites.
+
+The ad-hoc Release product is intentionally not the local GUI smoke product:
+without a Developer ID Team ID matching the embedded Sparkle framework,
+hardened library validation rejects process launch. Run the same optimized
+application locally with the checked-in `ReleaseLocal` configuration:
+
+```sh
+nu macos/build.nu --configuration ReleaseLocal --action build
+open macos/build/ReleaseLocal/Sylvander.app
+```
+
+`ReleaseLocal` adds the explicit `disable-library-validation` development
+entitlement. It is valid for the real Unix lifecycle, transparency, TrueColor,
+focus, child-exit, and restart smoke checks, but it must never be described as
+a production signature. Before distribution, repeat that lifecycle against a
+consistently Developer ID-signed Release bundle and then run notarization,
+stapling, and Gatekeeper assessment.
+
+The focused suite covers the pure selected-child exit classifier, including
+the invariant that a background or still-running surface is not retired.
+Surface reuse, fresh `Ghostty.SurfaceView` construction, startup retry, and
+session reclamation additionally require the real workspace smoke gate because
+`Ghostty.SurfaceView` has no injectable factory. Any future factory seam must
+stay under the Sylvander feature layer; it must not fork or mock Ghostty core.
 
 ## 8. cross-cutting concerns
 

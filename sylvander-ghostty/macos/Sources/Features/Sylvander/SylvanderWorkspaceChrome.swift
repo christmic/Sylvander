@@ -56,6 +56,8 @@ struct SylvanderDesktopMaterial: NSViewRepresentable {
 
 struct SylvanderSessionContextBar: View {
     @ObservedObject var store: SylvanderSessionStore
+    let restartAvailable: Bool
+    let onRestart: () -> Void
     let onShowChanges: () -> Void
 
     var body: some View {
@@ -72,6 +74,17 @@ struct SylvanderSessionContextBar: View {
             }
 
             Spacer(minLength: 12)
+
+            if restartAvailable {
+                Button(action: onRestart) {
+                    Label("RESTART TERMINAL", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(SylvanderWorkspacePalette.warm)
+                .help("Start a fresh terminal surface for this session")
+            }
 
             Button(action: onShowChanges) {
                 Label("REVIEW CHANGES", systemImage: "arrow.triangle.branch")

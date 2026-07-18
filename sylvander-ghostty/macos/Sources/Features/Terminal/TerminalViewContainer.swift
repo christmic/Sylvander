@@ -5,6 +5,7 @@ import SwiftUI
 /// Modifying `NSThemeFrame` can sometimes be unpredictable.
 class TerminalViewContainer: NSView {
     private let terminalView: NSView
+    private let dimsGlassWhenInactive: Bool
 
     /// Combined glass effect and inactive tint overlay view
     private(set) var glassEffectView: NSView?
@@ -22,8 +23,12 @@ class TerminalViewContainer: NSView {
         return window.value(forKey: "_cornerRadius") as? CGFloat
     }
 
-    init<Root: View>(@ViewBuilder rootView: () -> Root) {
+    init<Root: View>(
+        dimsGlassWhenInactive: Bool = true,
+        @ViewBuilder rootView: () -> Root
+    ) {
         self.terminalView = NSHostingView(rootView: rootView())
+        self.dimsGlassWhenInactive = dimsGlassWhenInactive
         super.init(frame: .zero)
         setup()
     }
@@ -219,7 +224,7 @@ extension TerminalViewContainer {
             backgroundColor: derivedConfig.backgroundColor,
             backgroundOpacity: derivedConfig.backgroundOpacity,
             cornerRadius: derivedConfig.cornerRadius,
-            isKeyWindow: window?.isKeyWindow ?? true
+            isKeyWindow: !dimsGlassWhenInactive || (window?.isKeyWindow ?? true)
         )
 #endif // compiler(>=6.2)
     }
@@ -246,7 +251,10 @@ extension TerminalViewContainer {
         else {
             return
         }
-        effectView.updateKeyStatus(isKeyWindow, backgroundColor: derivedConfig.backgroundColor)
+        effectView.updateKeyStatus(
+            !dimsGlassWhenInactive || isKeyWindow,
+            backgroundColor: derivedConfig.backgroundColor
+        )
 #endif // compiler(>=6.2)
     }
 
