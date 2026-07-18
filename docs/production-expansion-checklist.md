@@ -18,14 +18,16 @@ advertised capability without an executable journey is not completion.
   it from the repository documentation index.
 - [x] Document public invariants and non-obvious safety/lifecycle behavior in
   Rustdoc; require warning-free workspace documentation generation.
-- [ ] Pass format, strict all-target Clippy, full workspace tests, and locked
+- [x] Pass format, strict all-target Clippy, full workspace tests, and locked
   release build after the relocation.
 
 Evidence: `scripts/verify-rust-test-layout.sh` inspects nested workspaces and
 its own negative fixture; `scripts/verify-docs.sh` currently accounts for all
 16 first-party Cargo packages and validates maintained relative links. CI has a
-warning-denied Rustdoc job. The final same-commit build/test matrix remains
-open.
+warning-denied Rustdoc job. The same tracked implementation state passed root
+format, strict all-target Clippy, test compilation, the complete serial
+workspace suite, warning-denied Rustdoc, and the locked release build. The
+nested Token9 workspace passed its independent equivalent matrix.
 
 ## E1 — Ghostty desktop host
 

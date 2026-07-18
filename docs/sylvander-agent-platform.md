@@ -704,13 +704,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   resource ceilings, and explicit latency budgets. SSH and external-service
   latency are outside the current local scope and recorded in
   [`performance-verification.md`](performance-verification.md).
-- [ ] **P6.5 Final closure:** locked full-workspace tests and linting,
+- [x] **P6.5 Final closure:** locked full-workspace tests and linting,
   clean-room release installation/startup/shutdown, compiled real-client
   journeys, security and performance gates, zero known critical/high defects,
   no unchecked current-scope item, and explicit residual risks are recorded in
-  [`release-closure.md`](release-closure.md). This item remains open until the
-  active [`production-expansion-checklist.md`](production-expansion-checklist.md)
-  is fully checked against one tracked commit.
+  [`release-closure.md`](release-closure.md). The active
+  [`production-expansion-checklist.md`](production-expansion-checklist.md) and
+  its same-state release matrix are complete.
 
 ## 6. Verification policy
 
