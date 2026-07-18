@@ -164,6 +164,22 @@ struct RecordingProvider {
     requests: std::sync::Mutex<Vec<sylvander_llm_core::ModelRequest>>,
 }
 
+#[derive(Clone)]
+struct FixedUserProfile(sylvander_protocol::UserProfileView);
+
+#[async_trait::async_trait]
+impl crate::user_profile_provider::UserProfileProvider for FixedUserProfile {
+    async fn current_profile(
+        &self,
+        _subject: &crate::user_profile_provider::UserProfileSubject,
+    ) -> Result<
+        Option<sylvander_protocol::UserProfileView>,
+        crate::user_profile_provider::UserProfileProviderError,
+    > {
+        Ok(Some(self.0.clone()))
+    }
+}
+
 #[derive(Debug)]
 struct MarkerWorkspaceExecutor {
     marker: &'static [u8],
@@ -428,14 +444,173 @@ async fn durable_turn_prompt_uses_attached_workspace_instead_of_stale_binding() 
     .await
     .unwrap();
 
-    let requests = provider.requests.lock().unwrap();
-    let system = requests[0]
-        .system
-        .iter()
-        .map(|instruction| instruction.text.as_str())
-        .collect::<String>();
+    let system = {
+        let requests = provider.requests.lock().unwrap();
+        requests[0]
+            .system
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<String>()
+    };
     assert!(system.contains("effective-worktree-guide"));
     assert!(!system.contains("source-workspace-guide"));
+}
+
+#[tokio::test]
+async fn live_turn_injects_all_typed_context_layers_and_exposes_a_manifest() {
+    let workspace = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        workspace.path().join("AGENTS.md"),
+        "workspace instructions stay below runtime safety",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.path().join("knowledge.md"),
+        "typed context retrieval must stay bounded and relevant\n",
+    )
+    .unwrap();
+
+    let memory = Arc::new(InMemoryMemoryStore::new());
+    let memory_caller =
+        sylvander_protocol::SessionContext::new("user-1", "test-agent", "memory-seed");
+    let memory_context = MemoryExecutionContext::application_worker(&memory_caller);
+    memory
+        .append_relationship(
+            &memory_context,
+            MemoryAppend::new("typed context should prefer relevant relationship memory"),
+        )
+        .await
+        .unwrap();
+    memory
+        .append_relationship(
+            &memory_context,
+            MemoryAppend::new("unrelated favorite lunch"),
+        )
+        .await
+        .unwrap();
+
+    let store: Arc<dyn SessionStore> = Arc::new(
+        crate::session_store::SqliteSessionStore::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let (spec, _) = test_spec_and_client();
+    let selection = sylvander_protocol::ModelSelection {
+        provider_id: spec.model.provider.clone(),
+        model_id: spec.model.model_name.clone(),
+    };
+    let resolver = Arc::new(
+        crate::prompt::PromptResolver::new(
+            "agent:test-agent@3".into(),
+            "agent persona".into(),
+            Vec::new(),
+            None,
+            true,
+        )
+        .unwrap(),
+    );
+    let profile = sylvander_protocol::UserProfileView {
+        revision: 9,
+        profile: sylvander_protocol::UserProfileData {
+            preferred_language: Some(sylvander_protocol::ClassifiedPreference {
+                value: sylvander_protocol::LanguageTag::new("zh-CN").unwrap(),
+                privacy_class: sylvander_protocol::PrivacyClass::Personal,
+            }),
+            ..sylvander_protocol::UserProfileData::default()
+        },
+        do_not_learn: false,
+        created_at_unix_secs: 1,
+        updated_at_unix_secs: 2,
+    };
+    let provider = Arc::new(RecordingProvider::default());
+    let model = ProviderModelInfo {
+        reference: sylvander_llm_core::ModelRef::new(
+            selection.provider_id.clone(),
+            selection.model_id.clone(),
+        ),
+        context_window: 100_000,
+        max_output_tokens: 4096,
+        capabilities: sylvander_llm_core::ModelCapabilities::empty(),
+    };
+    let run = AgentRun::provider_builder(spec, provider.clone(), model)
+        .bus(Arc::new(InProcessMessageBus::new()))
+        .session_store(store.clone())
+        .memory(memory)
+        .prompt_resolver(resolver.clone())
+        .user_profile_provider(Arc::new(FixedUserProfile(profile)))
+        .build()
+        .unwrap();
+    let metadata = SessionMetadata {
+        workspace: workspace.path().to_path_buf(),
+        ..test_metadata()
+    };
+    let session_id = run.join_session(metadata.clone()).await;
+    let authenticated = run.authenticated_session_for_test(session_id.clone());
+    let mut stored = StoredSession::new(
+        session_id.clone(),
+        metadata.name.clone(),
+        SessionLifetime::Persistent,
+        metadata.clone(),
+        vec![run.id().clone()],
+    );
+    stored.config_overrides.system_prompt = Some("respond with evidence".into());
+    let prompt_snapshot = resolver
+        .resolve(&selection, None, Some("respond with evidence"))
+        .unwrap();
+    let mut effective = run.inner.legacy_session_config(&metadata).await;
+    effective.agent_revision = 3;
+    effective.system_prompt_sha256 = prompt_snapshot.system_prompt_sha256;
+    effective.prompt_manifest = Some(prompt_snapshot.manifest);
+    stored.effective_config = Some(effective);
+    store.save(&stored).await.unwrap();
+
+    run.handle_message(BusMessage::user_chat(
+        session_id,
+        metadata.user_id,
+        "explain typed context retrieval",
+    ))
+    .await
+    .unwrap();
+
+    let system = {
+        let requests = provider.requests.lock().unwrap();
+        requests[0]
+            .system
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<String>()
+    };
+    let positions = [
+        "kind=safety",
+        "kind=agent",
+        "kind=user_profile",
+        "kind=relationship_memory",
+        "kind=workspace_knowledge",
+        "kind=session",
+    ]
+    .map(|marker| system.find(marker).unwrap());
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(system.contains("relevant relationship memory"));
+    assert!(system.contains("knowledge.md:1"));
+    assert!(system.contains("respond with evidence"));
+    assert!(!system.contains("favorite lunch"));
+    let manifest = run
+        .turn_context_manifest(&authenticated)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest.schema_version,
+        crate::turn_context::TURN_CONTEXT_SCHEMA_VERSION
+    );
+    assert_eq!(manifest.layers.len(), 6);
+    assert_eq!(manifest.aggregate_sha256.len(), 64);
+    assert!(
+        manifest
+            .layers
+            .iter()
+            .all(|layer| !layer.included_items.is_empty())
+    );
 }
 
 #[tokio::test]

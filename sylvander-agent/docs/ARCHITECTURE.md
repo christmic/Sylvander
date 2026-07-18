@@ -18,6 +18,10 @@ AgentRun / AgentRunEngine
 
 - `run` owns a single authenticated turn, cancellation, transcript persistence,
   prompt construction, and tool-result re-feeding.
+- `turn_context` composes the immutable Safety/Agent/User Profile/
+  Relationship Memory/Workspace Knowledge/Session precedence chain. It applies
+  per-layer byte, token-estimate, and item budgets and records content-safe
+  provenance plus digests for every included item.
 - `engine` serializes work per session and exposes run lifecycle to Runtime.
 - `tool` and `tool_context` define the invocation boundary. Tools receive
   Runtime-derived identity, workspace, capability, and execution-budget data;
@@ -63,5 +67,7 @@ AgentRun / AgentRunEngine
 - [`skills.md`](skills.md) — Skill discovery and per-turn budget.
 - [`approval.md`](approval.md) — stable-identity persistent approval keys,
   invalidation, and durable-store operations.
+- [`turn-context.md`](turn-context.md) — typed precedence, relevance retrieval,
+  provenance, and prompt budgets.
 - [`../../docs/sylvander-agent-platform.md`](../../docs/sylvander-agent-platform.md)
   — Runtime-to-Agent architecture and product scope.
