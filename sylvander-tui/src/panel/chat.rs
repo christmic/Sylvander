@@ -9,6 +9,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{AppState, ChatMessage, ToolStatus};
 use crate::component::Component;
@@ -112,7 +114,7 @@ fn transcript_lines(state: &AppState, width: usize) -> Vec<Line<'_>> {
         );
     }
     if !state.streaming_thinking.is_empty() {
-        for chunk in char_chunks(&state.streaming_thinking, width) {
+        for chunk in display_chunks(&state.streaming_thinking, width) {
             lines.push(Line::from(Span::styled(
                 format!("(thinking) {chunk}"),
                 theme::thinking_text(),
@@ -140,13 +142,13 @@ fn push_message_lines<'a>(
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            for (index, chunk) in char_chunks(text, width.saturating_sub(2))
+            for (index, chunk) in display_chunks(text, width.saturating_sub(2))
                 .into_iter()
                 .enumerate()
             {
                 lines.push(Line::from(vec![
                     Span::styled(if index == 0 { "❯ " } else { "  " }, theme::user_speaker()),
-                    Span::styled(chunk.to_string(), theme::text()),
+                    Span::styled(chunk, theme::text()),
                 ]));
             }
         }
@@ -193,7 +195,10 @@ fn push_message_lines<'a>(
             } else {
                 theme::warning()
             };
-            let summary = truncate(output, width.saturating_sub(name.len() + 6));
+            let summary = truncate_display(
+                output,
+                width.saturating_sub(UnicodeWidthStr::width(name.as_str()) + 6),
+            );
             lines.push(Line::from(vec![
                 Span::styled(icon, st),
                 Span::styled(format!(" {name}: "), theme::text_dim()),
@@ -284,11 +289,8 @@ fn push_message_lines<'a>(
             }
         }
         ChatMessage::Thinking(text) => {
-            for chunk in char_chunks(text, width) {
-                lines.push(Line::from(Span::styled(
-                    chunk.to_string(),
-                    theme::thinking_text(),
-                )));
+            for chunk in display_chunks(text, width) {
+                lines.push(Line::from(Span::styled(chunk, theme::thinking_text())));
             }
         }
         ChatMessage::Info(text) => {
@@ -392,28 +394,76 @@ fn push_agent_turn(text: &str, lines: &mut Vec<Line<'_>>, width: usize) {
 }
 
 fn wrap_words(text: &str, first_prefix: &str, continuation: String, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let first_prefix = wrapping_prefix(first_prefix, width);
+    let continuation = wrapping_prefix(&continuation, width);
     let mut rows = Vec::new();
-    let mut current = first_prefix.to_string();
+    let mut current = first_prefix.clone();
+    let mut current_width = UnicodeWidthStr::width(first_prefix.as_str());
     let mut has_word = false;
 
     for word in text.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
         let separator = usize::from(has_word);
-        if has_word && current.chars().count() + separator + word.chars().count() > width {
+        if has_word && current_width.saturating_add(separator + word_width) > width {
             rows.push(std::mem::take(&mut current));
             current.push_str(&continuation);
+            current_width = UnicodeWidthStr::width(continuation.as_str());
             has_word = false;
         }
+
+        if !has_word && current_width.saturating_add(word_width) > width {
+            for grapheme in word.graphemes(true) {
+                let grapheme_width = UnicodeWidthStr::width(grapheme);
+                if has_word && current_width.saturating_add(grapheme_width) > width {
+                    rows.push(std::mem::take(&mut current));
+                    current.push_str(&continuation);
+                    current_width = UnicodeWidthStr::width(continuation.as_str());
+                }
+                current.push_str(grapheme);
+                current_width = current_width.saturating_add(grapheme_width);
+                has_word = true;
+                // A grapheme wider than the available row is emitted intact
+                // on its own row. This is the only permitted overflow: a
+                // terminal grapheme cluster must never be split.
+                if current_width >= width {
+                    rows.push(std::mem::take(&mut current));
+                    current.push_str(&continuation);
+                    current_width = UnicodeWidthStr::width(continuation.as_str());
+                    has_word = false;
+                }
+            }
+            continue;
+        }
+
         if has_word {
             current.push(' ');
+            current_width = current_width.saturating_add(1);
         }
         current.push_str(word);
+        current_width = current_width.saturating_add(word_width);
         has_word = true;
     }
 
-    if has_word || !first_prefix.is_empty() {
+    if has_word || (rows.is_empty() && !first_prefix.is_empty()) {
         rows.push(current);
     }
     rows
+}
+
+fn wrapping_prefix(prefix: &str, width: usize) -> String {
+    let budget = width.saturating_sub(1);
+    let mut output = String::new();
+    let mut used = 0usize;
+    for grapheme in prefix.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used.saturating_add(grapheme_width) > budget {
+            break;
+        }
+        output.push_str(grapheme);
+        used = used.saturating_add(grapheme_width);
+    }
+    output
 }
 
 fn readable_area(area: Rect) -> Rect {
@@ -435,30 +485,72 @@ fn readable_area(area: Rect) -> Rect {
     }
 }
 
-fn char_chunks(s: &str, width: usize) -> Vec<&str> {
-    if width == 0 {
-        return vec![s];
-    }
+/// Split visible transcript text by terminal display cells.
+///
+/// Grapheme clusters are atomic: combining sequences, emoji modifiers, and
+/// ZWJ emoji never split across rows. A cluster wider than a very narrow
+/// viewport is emitted intact on one row, which gives deterministic progress
+/// without corrupting the text or risking an infinite loop.
+fn display_chunks(text: &str, width: usize) -> Vec<&str> {
+    let width = width.max(1);
     let mut out = Vec::new();
-    let mut start = 0;
-    for (i, _) in s.char_indices() {
-        if i - start >= width {
-            out.push(&s[start..i]);
-            start = i;
-        }
+    for physical_line in text.split('\n') {
+        let physical_line = physical_line.strip_suffix('\r').unwrap_or(physical_line);
+        out.extend(display_line_chunks(physical_line, width));
     }
-    out.push(&s[start..]);
     out
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-        out.push('…');
-        out
+fn display_line_chunks(text: &str, width: usize) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut current_width = 0usize;
+
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if index > start && current_width.saturating_add(grapheme_width) > width {
+            out.push(&text[start..index]);
+            start = index;
+            current_width = 0;
+        }
+        current_width = current_width.saturating_add(grapheme_width);
+        if current_width >= width {
+            let end = index.saturating_add(grapheme.len());
+            out.push(&text[start..end]);
+            start = end;
+            current_width = 0;
+        }
     }
+
+    if start < text.len() {
+        out.push(&text[start..]);
+    } else if out.is_empty() {
+        out.push(&text[0..0]);
+    }
+    out
+}
+
+fn truncate_display(text: &str, max_cells: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_cells {
+        return text.to_string();
+    }
+    if max_cells == 0 {
+        return String::new();
+    }
+
+    let content_cells = max_cells.saturating_sub(UnicodeWidthStr::width("…"));
+    let mut out = String::new();
+    let mut used = 0usize;
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
+        if used.saturating_add(width) > content_cells {
+            break;
+        }
+        out.push_str(grapheme);
+        used = used.saturating_add(width);
+    }
+    out.push('…');
+    out
 }
 
 fn render_json_value(v: &serde_json::Value) -> String {
@@ -499,14 +591,15 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
         serde_json::Value::Object(map) => {
             let label_w = map
                 .keys()
-                .map(|k| k.chars().count())
+                .map(|key| UnicodeWidthStr::width(key.as_str()))
                 .max()
                 .unwrap_or(0)
                 .min(20);
             for (k, v) in map {
                 let rendered = render_json_value(v);
-                let label = format!("  {k:<label_w$}  ");
-                let val_str = truncate(&rendered, width.saturating_sub(label_w + 6));
+                let label_padding = label_w.saturating_sub(UnicodeWidthStr::width(k.as_str()));
+                let label = format!("  {k}{}  ", " ".repeat(label_padding));
+                let val_str = truncate_display(&rendered, width.saturating_sub(label_w + 6));
                 out.push(Line::from(vec![
                     Span::styled(label, theme::kv_label()),
                     Span::styled(val_str, theme::kv_value()),
@@ -516,7 +609,10 @@ fn input_kv_lines(input: &serde_json::Value, width: usize) -> Vec<Line<'static>>
         _ => {
             let rendered = render_json_value(input);
             out.push(Line::from(Span::styled(
-                format!("  → {}", truncate(&rendered, width.saturating_sub(6))),
+                format!(
+                    "  → {}",
+                    truncate_display(&rendered, width.saturating_sub(6))
+                ),
                 theme::text(),
             )));
         }
@@ -570,7 +666,7 @@ fn build_welcome_lockup(width: usize, state: &AppState) -> Vec<Line<'static>> {
     if width >= WELCOME_HORIZONTAL_MIN_WIDTH {
         for (row, right) in TERMINAL_SEED_CRAB.into_iter().zip(info) {
             let mut spans = seed_crab_spans(row);
-            let row_width = row.chars().count();
+            let row_width = UnicodeWidthStr::width(row);
             spans.push(Span::raw(" ".repeat(
                 SEED_CRAB_CELL_WIDTH.saturating_sub(row_width) + WELCOME_GAP,
             )));

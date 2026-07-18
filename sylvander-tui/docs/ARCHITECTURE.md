@@ -91,6 +91,13 @@ privacy toggles, and deletion first read the current server revision. A typed
 conflict invalidates the local cache, reloads server truth, and never retries or
 overwrites the stale draft.
 
+Governed memory confirmation is another capability-gated subflow. The TUI
+requests pending decisions only when `memory_confirmation_v1` was negotiated,
+after session load and terminal turn outcomes. It sends the server-issued
+candidate ID and expected revision with an explicit confirm/reject choice; it
+never constructs or sends an owner identity. Stale, replayed, cross-session,
+and unavailable responses remain server-owned typed failures.
+
 The wire reader converts malformed or unknown messages into bounded diagnostic
 domain events. Raw message bodies are never copied into diagnostics or logs, so
 future event types remain visible without exposing prompt or credential data.
@@ -150,6 +157,12 @@ covering language, locale, response detail, tone, accessibility, and bounded
 constraints. Its destructive delete prompt uses the Decision Dock. Both
 preserve the single transcript and status line; there is no profile sidebar or
 second Composer.
+
+`modal/memory_confirmation.rs` uses the Decision Dock below the Composer. It
+shows the Runtime-sanitized summary and governed destination, defaults to an
+explicit visible selection, and maps escape or cancellation to **Don't save**.
+The dock emits one typed decision and closes; a recorded server response is
+the only event that may describe the memory as saved.
 
 Feature modules provide semantic rows and key handling; they do not calculate
 independent popup rectangles. Centered bordered dialogs and per-feature surface
