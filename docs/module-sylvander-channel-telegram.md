@@ -18,9 +18,9 @@ curl -X POST https://api.telegram.org/bot${TOKEN}/setWebhook \
   -d "url=https://your-host/telegram/webhook"
 ```
 
-The runtime resolves the bot token and the webhook secret through
-`SystemSecretResolver`; nothing is read from the environment at
-runtime.
+The composition root registers the bot token and webhook secret as named
+secret references. The running channel acquires them as one renewable bundle
+at each inbound-authentication or outbound-delivery boundary.
 
 ## 3. Public surface
 
@@ -37,10 +37,12 @@ pub struct Chat { pub id: i64, #[serde(rename = "type")] pub chat_type: String }
 
 pub struct TelegramChannel { /* see lib.rs */ }
 impl TelegramChannel {
-    pub fn new(token: impl Into<String>, addr: SocketAddr,
-               agent_id: impl Into<AgentId>) -> Self;
-    pub fn with_webhook_secret(mut self, secret: impl Into<String>) -> Self;
-    pub fn with_instance_id(mut self, instance_id: impl Into<String>) -> Self;
+    pub fn new(
+        addr: SocketAddr,
+        agent_id: impl Into<AgentId>,
+        instance_id,
+        credentials: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError>;
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self;
 }
 ```
@@ -54,19 +56,31 @@ Two layers:
 - **Sylvander → Telegram**: the bot token authorizes outgoing
   `sendMessage` calls.
 
-The runtime attaches a `BoundaryContext` with
-`AuthenticationMethod::WebhookSignature` to inbound requests.
+Both values are returned in one exact-slot lease. The webhook reads the
+current secret for every update; outbound delivery reads the current token for
+every message chunk. Rotation therefore needs no listener restart. Lease
+failure or expiry rejects the operation rather than retaining the prior
+value.
+
+Webhook-secret failures enter Runtime's denial path as
+`AuthenticationMethod::WebhookSignature`. After the webhook itself is
+authenticated, the stable bot-instance/chat pair becomes a transport-scoped
+`PlatformIdentity` principal for the accepted request; Telegram display names
+never establish identity.
 
 ## 5. Lifecycle
 
-1. **Construct** with `TelegramChannel::new(token, addr, agent_id)`.
-2. **Configure** with `with_webhook_secret`, `with_instance_id`,
-   `with_request_limit`.
+1. **Construct** with `TelegramChannel::new(addr, agent_id, instance_id,
+   credential_source)`.
+2. **Configure** with `with_request_limit`.
 3. **Start** — the channel binds the webhook listener.
 4. **Receive** — Telegram POSTs an `Update`; the channel maps the
-   chat id to a session and submits the chat through the bus.
-5. **Send** — the runtime polls the bus for outgoing
-   `UiServerMessage` events and posts them via `sendMessage`.
+   chat id to authenticated boundary context and submits through Runtime-owned
+   ingress. It cannot publish a raw join/chat message.
+5. **Send** — the channel subscribes to Runtime stream events and posts
+   bounded status messages plus the terminal `Done` text via `sendMessage`.
+   Token-by-token text/thinking deltas are deliberately suppressed because
+   this adapter does not edit one in-place Telegram message.
 6. **Replay** — duplicate updates are dropped via a `ReplayCache`
    keyed on `update_id`.
 7. **Shutdown** — runtime drains in-flight updates and closes the
@@ -74,9 +88,11 @@ The runtime attaches a `BoundaryContext` with
 
 ## 6. Tests
 
-Unit tests live in `sylvander-channel-telegram/src/lib.rs`
-(`mod tests`); they cover webhook-secret validation, replay cache,
-and the `Update` deserialization against sample Telegram payloads.
+White-box unit tests live in
+`sylvander-channel-telegram/tests/unit/lib.rs`, linked by the production
+module's test-only bridge. They cover webhook-secret validation, replay cache,
+principal isolation, Unicode-safe response splitting, bounded retry, live
+credential rotation, lease failure, and request limits.
 
 ## 7. Common pitfalls
 
@@ -93,6 +109,7 @@ and the `Update` deserialization against sample Telegram payloads.
 - [`docs/server-configuration.md`](server-configuration.md) — `ChannelTransportConfig::Telegram`.
 - [`docs/boundary-authorization.md`](boundary-authorization.md) — `AuthenticationMethod::WebhookSignature`.
 - [`docs/chat-channel-operations.md`](chat-channel-operations.md) — operator workflow for chat channels.
+- [`docs/credential-leases.md`](credential-leases.md) — renewable credential contract.
 - [`AGENTS.md`](../AGENTS.md) — project-wide agent guide.
 
 Co-Authored-By: 🦀 <oraculo@oraculo.ai>
