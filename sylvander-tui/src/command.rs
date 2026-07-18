@@ -39,6 +39,7 @@ pub enum CommandId {
     Extensions,
     Memory,
     Profile,
+    Feedback,
     Inspect,
     Copy,
     Editor,
@@ -266,6 +267,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         hint: "server revision",
     },
     CommandSpec {
+        id: CommandId::Feedback,
+        name: "feedback",
+        usage: "/feedback <positive|negative> [note] | correction <text> | note <positive|negative> <text>",
+        description: "Rate or correct the most recently completed turn",
+        hint: "durable evidence",
+    },
+    CommandSpec {
         id: CommandId::Preview,
         name: "preview",
         usage: "/preview <image|web> <path-or-url>",
@@ -464,6 +472,7 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             | CommandId::Extensions
             | CommandId::Memory
             | CommandId::Profile
+            | CommandId::Feedback
     );
     if needs_connection && !state.connected {
         return Unavailable("connect to the Agent first".into());
@@ -517,6 +526,18 @@ pub fn availability(spec: &CommandSpec, state: &AppState) -> CommandAvailability
             .any(|capability| capability == sylvander_protocol::USER_PROFILE_CAPABILITY)
     {
         return Unavailable("server does not advertise user_profile_v1".into());
+    }
+    if spec.id == CommandId::Feedback {
+        if !state
+            .protocol_capabilities
+            .iter()
+            .any(|capability| capability == sylvander_protocol::FEEDBACK_CAPABILITY)
+        {
+            return Unavailable("server does not advertise feedback_v1".into());
+        }
+        if state.feedback_target.is_none() {
+            return Unavailable("complete a turn before recording feedback".into());
+        }
     }
     if matches!(spec.id, CommandId::Inspect | CommandId::Copy)
         && find_tool_output(state, None).is_err()
@@ -782,6 +803,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             state.input_tokens = 0;
             state.output_tokens = 0;
             state.cost_nano_usd = None;
+            state.feedback_target = None;
             state.turn_active = false;
             state.interrupt_requested = false;
             state.queued_prompts.clear();
@@ -1280,6 +1302,7 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
             )));
         }
         CommandId::Profile => execute_profile(&invocation, state)?,
+        CommandId::Feedback => execute_feedback(&invocation, state)?,
         CommandId::Status => {
             require_no_args(&invocation)?;
             let session = state.session_id.as_deref().unwrap_or("new");
@@ -1463,6 +1486,68 @@ pub fn execute(invocation: Invocation<'_>, state: &mut AppState) -> Result<(), S
     state.recent_commands.truncate(8);
     state.dirty.mark();
     Ok(())
+}
+
+fn execute_feedback(invocation: &Invocation<'_>, state: &mut AppState) -> Result<(), String> {
+    use sylvander_protocol::{FeedbackPrivacyClass, FeedbackRating, RunFeedback};
+
+    let target = state
+        .feedback_target
+        .clone()
+        .ok_or_else(|| "Complete a turn before recording feedback".to_string())?;
+    let (rating, note, correction, task_result) = match invocation.args.as_slice() {
+        [kind, rest @ ..] if matches!(*kind, "positive" | "up" | "+") => {
+            (FeedbackRating::Positive, joined_feedback(rest), None, None)
+        }
+        [kind, rest @ ..] if matches!(*kind, "negative" | "down" | "-") => {
+            (FeedbackRating::Negative, joined_feedback(rest), None, None)
+        }
+        ["correction" | "correct", rest @ ..] => {
+            let correction = joined_feedback(rest)
+                .ok_or_else(|| "Usage: /feedback correction <correct response>".to_string())?;
+            (FeedbackRating::Negative, None, Some(correction), None)
+        }
+        ["note", rating, rest @ ..] => {
+            let rating = match *rating {
+                "positive" | "up" | "+" => FeedbackRating::Positive,
+                "negative" | "down" | "-" => FeedbackRating::Negative,
+                _ => {
+                    return Err("Usage: /feedback note <positive|negative> <note>".into());
+                }
+            };
+            let note =
+                joined_feedback(rest).ok_or_else(|| "Feedback note cannot be empty".to_string())?;
+            (rating, Some(note), None, None)
+        }
+        _ => return Err(format!("Usage: {}", invocation.spec.usage)),
+    };
+    if note.as_ref().is_some_and(|value| value.len() > 4096)
+        || correction.as_ref().is_some_and(|value| value.len() > 4096)
+    {
+        return Err("Feedback text must not exceed 4096 bytes".into());
+    }
+    state
+        .pending_actions
+        .push(crate::event::Action::SubmitFeedback {
+            feedback: RunFeedback {
+                target,
+                rating,
+                note,
+                correction,
+                tags: vec!["tui".into()],
+                task_result,
+                artifacts: Vec::new(),
+                validations: Vec::new(),
+                privacy_class: FeedbackPrivacyClass::Private,
+            },
+        });
+    state.status = "Recording feedback…".into();
+    Ok(())
+}
+
+fn joined_feedback(parts: &[&str]) -> Option<String> {
+    let text = parts.join(" ");
+    (!text.is_empty()).then_some(text)
 }
 
 fn execute_profile(invocation: &Invocation<'_>, state: &mut AppState) -> Result<(), String> {

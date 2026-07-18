@@ -60,6 +60,9 @@ pub struct AppState {
     /// Latest owner-scoped profile returned by Runtime. Mutations always bind
     /// to this server revision; conflict responses invalidate the cache.
     pub user_profile: Option<sylvander_protocol::UserProfileView>,
+    /// Server-issued opaque handle for feedback about the most recently
+    /// completed turn in this single-session view.
+    pub feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     pub(crate) pending_profile_intent: Option<PendingProfileIntent>,
     pub platform: sylvander_protocol::PlatformSnapshot,
     pub status: String,
@@ -174,6 +177,7 @@ impl AppState {
             protocol_version: None,
             protocol_capabilities: Vec::new(),
             user_profile: None,
+            feedback_target: None,
             pending_profile_intent: None,
             platform: sylvander_protocol::PlatformSnapshot::default(),
             status: "Connecting...".into(),
@@ -216,6 +220,18 @@ impl AppState {
         {
             self.status = format!("history save failed: {e}");
         }
+    }
+
+    pub(crate) fn sync_decision_dock_mode(&mut self) {
+        self.mode = if self
+            .modals
+            .iter()
+            .any(|modal| matches!(modal.title(), "Tool Approval" | "Memory confirmation"))
+        {
+            AppMode::ApprovalPending
+        } else {
+            AppMode::Normal
+        };
     }
 
     pub fn save_draft(&mut self) {
@@ -357,6 +373,7 @@ impl AppState {
         }
         self.turn_active = true;
         self.interrupt_requested = false;
+        self.feedback_target = None;
         self.status = if self.queued_prompts.is_empty() {
             "Working".into()
         } else {
@@ -400,6 +417,7 @@ impl AppState {
         self.messages.push(ChatMessage::User(text.clone()));
         self.turn_active = true;
         self.interrupt_requested = false;
+        self.feedback_target = None;
         self.chat_scroll = 0;
         self.unread_events = 0;
         self.dirty.mark();
@@ -771,6 +789,18 @@ impl AppState {
                     existing.workspace = session.workspace;
                     existing.last_seen_secs = session.last_seen_secs;
                 }
+                if self
+                    .protocol_capabilities
+                    .iter()
+                    .any(|capability| {
+                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                    })
+                {
+                    self.pending_actions
+                        .push(Action::RequestMemoryConfirmations {
+                            session_id: session.id,
+                        });
+                }
             }
             DomainEvent::SessionUpdated {
                 session_id,
@@ -822,6 +852,62 @@ impl AppState {
             }
             DomainEvent::UserProfileReceived { response } => {
                 self.apply_user_profile_response(response);
+            }
+            DomainEvent::FeedbackRecorded { feedback_id } => {
+                self.status = "Feedback recorded".into();
+                self.messages.push(ChatMessage::Info(format!(
+                    "feedback · recorded · {}",
+                    feedback_id.chars().take(8).collect::<String>()
+                )));
+            }
+            DomainEvent::MemoryConfirmationsLoaded {
+                session_id,
+                confirmations,
+            } => {
+                if self.session_id.as_deref() != Some(session_id.as_str()) {
+                    return None;
+                }
+                let mut added = 0usize;
+                for confirmation in confirmations.into_iter().rev() {
+                    if self.modals.is_full() {
+                        self.status =
+                            "Memory confirmation queue is full; pending decisions remain".into();
+                        break;
+                    }
+                    self.modals.push(Box::new(
+                        crate::modal::MemoryConfirmationModal::new(
+                            session_id.clone(),
+                            confirmation,
+                        ),
+                    ));
+                    added += 1;
+                }
+                if added > 0 {
+                    self.mode = AppMode::ApprovalPending;
+                    self.status = format!(
+                        "{added} memory confirmation{} pending",
+                        if added == 1 { "" } else { "s" }
+                    );
+                }
+            }
+            DomainEvent::MemoryConfirmationRecorded {
+                candidate_id,
+                decision,
+            } => {
+                let verb = match decision {
+                    sylvander_protocol::MemoryConfirmationDecision::Confirm => "saved",
+                    sylvander_protocol::MemoryConfirmationDecision::Reject => "not saved",
+                };
+                self.status = format!("Memory {verb}");
+                self.messages.push(ChatMessage::Info(format!(
+                    "memory · {verb} · {}",
+                    candidate_id.chars().take(8).collect::<String>()
+                )));
+            }
+            DomainEvent::MemoryConfirmationFailed { message } => {
+                self.status.clone_from(&message);
+                self.messages
+                    .push(ChatMessage::Info(format!("memory decision · {message}")));
             }
             DomainEvent::TextChunk { delta } => {
                 self.turn_active = true;
@@ -1150,9 +1236,13 @@ impl AppState {
                 self.output_tokens = output_tokens;
                 self.cost_nano_usd = cost_nano_usd;
             }
-            DomainEvent::AgentDone { final_text } => {
+            DomainEvent::AgentDone {
+                final_text,
+                feedback_target,
+            } => {
                 self.turn_active = false;
                 self.interrupt_requested = false;
+                self.feedback_target = feedback_target;
                 if !self.streaming.is_empty() {
                     self.messages
                         .push(ChatMessage::Agent(self.streaming.clone()));
@@ -1161,20 +1251,50 @@ impl AppState {
                     self.messages.push(ChatMessage::Agent(final_text));
                 }
                 self.streaming_thinking.clear();
+                if self
+                    .protocol_capabilities
+                    .iter()
+                    .any(|capability| {
+                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                    })
+                    && let Some(session_id) = self.session_id.clone()
+                {
+                    self.pending_actions
+                        .push(Action::RequestMemoryConfirmations { session_id });
+                }
                 return self.start_next_queued_prompt();
             }
-            DomainEvent::AgentError { message } => {
+            DomainEvent::AgentError {
+                message,
+                feedback_target,
+            } => {
                 self.turn_active = false;
                 self.interrupt_requested = false;
+                self.feedback_target = feedback_target;
                 self.messages
                     .push(ChatMessage::Info(format!("Error: {message}")));
                 self.streaming.clear();
                 self.streaming_thinking.clear();
+                if self
+                    .protocol_capabilities
+                    .iter()
+                    .any(|capability| {
+                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                    })
+                    && let Some(session_id) = self.session_id.clone()
+                {
+                    self.pending_actions
+                        .push(Action::RequestMemoryConfirmations { session_id });
+                }
                 return self.start_next_queued_prompt();
             }
-            DomainEvent::TurnInterrupted { reason } => {
+            DomainEvent::TurnInterrupted {
+                reason,
+                feedback_target,
+            } => {
                 self.turn_active = false;
                 self.interrupt_requested = false;
+                self.feedback_target = feedback_target;
                 if !self.streaming.is_empty() {
                     self.messages
                         .push(ChatMessage::Agent(std::mem::take(&mut self.streaming)));
@@ -1207,6 +1327,17 @@ impl AppState {
                 self.status = "Interrupted".into();
                 self.messages
                     .push(ChatMessage::Info(format!("Turn interrupted: {reason}")));
+                if self
+                    .protocol_capabilities
+                    .iter()
+                    .any(|capability| {
+                        capability == sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY
+                    })
+                    && let Some(session_id) = self.session_id.clone()
+                {
+                    self.pending_actions
+                        .push(Action::RequestMemoryConfirmations { session_id });
+                }
                 return self.start_next_queued_prompt();
             }
             DomainEvent::ApprovalRequested {
@@ -1830,6 +1961,8 @@ fn event_adds_transcript_content(event: &DomainEvent) -> bool {
             | DomainEvent::TaskFailed { .. }
             | DomainEvent::TaskCancelled { .. }
             | DomainEvent::UserProfileReceived { .. }
+            | DomainEvent::MemoryConfirmationRecorded { .. }
+            | DomainEvent::MemoryConfirmationFailed { .. }
     )
 }
 

@@ -436,6 +436,7 @@ fn apply_agent_done_promotes_streaming_to_messages() {
     s.apply(DomainEvent::TextChunk { delta: "hi".into() });
     s.apply(DomainEvent::AgentDone {
         final_text: "hi".into(),
+        feedback_target: None,
     });
     assert_eq!(s.streaming, "");
     assert_eq!(s.messages.len(), 1);
@@ -447,6 +448,7 @@ fn apply_agent_done_with_empty_streaming_uses_final_text() {
     let mut s = AppState::new();
     s.apply(DomainEvent::AgentDone {
         final_text: "bye".into(),
+        feedback_target: None,
     });
     assert_eq!(s.messages.len(), 1);
 }
@@ -842,6 +844,7 @@ fn interrupted_turn_settles_partial_output_and_pending_tools() {
 
     state.apply(DomainEvent::TurnInterrupted {
         reason: "interrupted by user".into(),
+        feedback_target: None,
     });
 
     assert!(!state.turn_active);
@@ -1222,4 +1225,103 @@ fn at_sign_at_token_boundary_opens_file_picker_instead_of_mutating_draft() {
         Some("Mention file")
     );
     assert!(s.composer.is_empty());
+}
+
+#[test]
+fn memory_confirmation_uses_the_existing_decision_dock_key_path() {
+    let mut state = AppState::new();
+    state.session_id = Some("session-1".into());
+    state.apply(DomainEvent::MemoryConfirmationsLoaded {
+        session_id: "session-1".into(),
+        confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+            candidate_id: "candidate-1".into(),
+            expected_revision: 4,
+            scope: sylvander_protocol::MemoryConfirmationScope::Relationship,
+            summary: "remember concise answers".into(),
+        }],
+    });
+    assert_eq!(
+        state.modals.top().map(crate::modal::Modal::title),
+        Some("Memory confirmation")
+    );
+
+    state.handle_key(&KeyEvent::from(KeyCode::Esc));
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [Action::ResolveMemoryConfirmation {
+            session_id,
+            candidate_id,
+            expected_revision: 4,
+            decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+        }] if session_id == "session-1" && candidate_id == "candidate-1"
+    ));
+    assert!(state.modals.is_empty());
+    assert_eq!(state.mode, AppMode::Normal);
+}
+
+#[test]
+fn memory_confirmation_queue_stays_pending_until_the_last_decision() {
+    let mut state = AppState::new();
+    state.session_id = Some("session-1".into());
+    state.apply(DomainEvent::MemoryConfirmationsLoaded {
+        session_id: "session-1".into(),
+        confirmations: ["candidate-1", "candidate-2"]
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, candidate_id)| sylvander_protocol::PendingMemoryConfirmation {
+                    candidate_id: candidate_id.into(),
+                    expected_revision: index as u64 + 1,
+                    scope: sylvander_protocol::MemoryConfirmationScope::Relationship,
+                    summary: format!("memory {}", index + 1),
+                },
+            )
+            .collect(),
+    });
+
+    assert_eq!(state.modals.len(), 2);
+    assert_eq!(state.mode, AppMode::ApprovalPending);
+    state.handle_key(&KeyEvent::from(KeyCode::Enter));
+    assert_eq!(state.modals.len(), 1);
+    assert_eq!(state.mode, AppMode::ApprovalPending);
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [Action::ResolveMemoryConfirmation { candidate_id, .. }]
+            if candidate_id == "candidate-1"
+    ));
+
+    state.handle_key(&KeyEvent::from(KeyCode::Esc));
+    assert!(state.modals.is_empty());
+    assert_eq!(state.mode, AppMode::Normal);
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [
+            Action::ResolveMemoryConfirmation {
+                candidate_id: first,
+                decision: sylvander_protocol::MemoryConfirmationDecision::Confirm,
+                ..
+            },
+            Action::ResolveMemoryConfirmation {
+                candidate_id: second,
+                decision: sylvander_protocol::MemoryConfirmationDecision::Reject,
+                ..
+            }
+        ] if first == "candidate-1" && second == "candidate-2"
+    ));
+}
+
+#[test]
+fn memory_confirmation_for_a_different_session_is_ignored() {
+    let mut state = AppState::new();
+    state.session_id = Some("session-1".into());
+    state.apply(DomainEvent::MemoryConfirmationsLoaded {
+        session_id: "session-2".into(),
+        confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+            candidate_id: "candidate-1".into(),
+            expected_revision: 1,
+            scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+            summary: "private".into(),
+        }],
+    });
+    assert!(state.modals.is_empty());
 }

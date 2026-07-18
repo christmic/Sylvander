@@ -66,6 +66,7 @@ fn terminal_event_starts_exactly_one_locally_queued_prompt() {
 
     app.apply(DomainEvent::AgentDone {
         final_text: "done".into(),
+        feedback_target: None,
     });
 
     assert!(app.state.turn_active);

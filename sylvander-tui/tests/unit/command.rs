@@ -158,6 +158,73 @@ fn profile_export_is_a_typed_json_request() {
 }
 
 #[test]
+fn feedback_requires_a_completed_turn_and_emits_only_the_opaque_target() {
+    let mut state = AppState::new();
+    state.connected = true;
+    let feedback = resolve("feedback").expect("feedback command");
+    assert_eq!(
+        availability(feedback, &state).reason(),
+        Some("server does not advertise feedback_v1")
+    );
+    state
+        .protocol_capabilities
+        .push(sylvander_protocol::FEEDBACK_CAPABILITY.into());
+    assert_eq!(
+        availability(feedback, &state).reason(),
+        Some("complete a turn before recording feedback")
+    );
+    state.feedback_target = Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into()));
+
+    execute(
+        parse("/feedback correction use the verified output").expect("parse"),
+        &mut state,
+    )
+    .expect("execute");
+    assert!(matches!(
+        state.pending_actions.as_slice(),
+        [crate::event::Action::SubmitFeedback {
+            feedback: sylvander_protocol::RunFeedback {
+                target: sylvander_protocol::FeedbackTarget(target),
+                rating: sylvander_protocol::FeedbackRating::Negative,
+                correction: Some(correction),
+                task_result: None,
+                ..
+            }
+        }] if target == "sha256:opaque" && correction == "use the verified output"
+    ));
+}
+
+#[test]
+fn feedback_note_requires_an_explicit_rating() {
+    let mut state = AppState::new();
+    state.connected = true;
+    state
+        .protocol_capabilities
+        .push(sylvander_protocol::FEEDBACK_CAPABILITY.into());
+    state.feedback_target = Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into()));
+    assert!(
+        execute(parse("/feedback note useful").expect("parse"), &mut state)
+            .unwrap_err()
+            .contains("note <positive|negative>")
+    );
+    execute(
+        parse("/feedback note positive concise and correct").expect("parse"),
+        &mut state,
+    )
+    .expect("execute");
+    assert!(matches!(
+        state.pending_actions.last(),
+        Some(crate::event::Action::SubmitFeedback {
+            feedback: sylvander_protocol::RunFeedback {
+                note: Some(note),
+                rating: sylvander_protocol::FeedbackRating::Positive,
+                ..
+            }
+        }) if note == "concise and correct"
+    ));
+}
+
+#[test]
 fn compact_command_requires_an_idle_persisted_session() {
     let mut state = AppState::new();
     state.connected = true;
