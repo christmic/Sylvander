@@ -98,6 +98,16 @@ path = "/tmp/sylvander.sock"
     .into()
 }
 
+fn set_database_path(config: &mut ServerConfig, field: &str, path: PathBuf) {
+    match field {
+        "server.session_db" => config.server.session_db = Some(path),
+        "server.memory_db" => config.server.memory_db = Some(path),
+        "server.user_profile_db" => config.server.user_profile_db = Some(path),
+        "server.evidence.path" => config.server.evidence.path = Some(path),
+        _ => panic!("unknown database field"),
+    }
+}
+
 #[test]
 fn valid_configuration_parses_and_resolves_references() {
     let config = ServerConfig::from_toml(&valid_toml()).expect("valid configuration");
@@ -130,6 +140,46 @@ fn valid_configuration_parses_and_resolves_references() {
         Some(MemoryIntegrityBackend::File { ref anchor_path })
             if anchor_path == Path::new("/var/lib/sylvander-integrity/anchor.json")
     ));
+}
+
+#[test]
+fn production_database_fields_reject_non_durable_sqlite_paths() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    for field in [
+        "server.session_db",
+        "server.memory_db",
+        "server.user_profile_db",
+        "server.evidence.path",
+    ] {
+        for path in [
+            PathBuf::new(),
+            PathBuf::from("   "),
+            PathBuf::from(":memory:"),
+            PathBuf::from("file:sylvander?mode=memory&cache=shared"),
+            directory.path().to_path_buf(),
+        ] {
+            let mut config = ServerConfig::from_toml(&valid_toml()).unwrap();
+            set_database_path(&mut config, field, path);
+            let errors = config.validate().unwrap_err().errors.join("\n");
+            assert!(errors.contains(field), "{field}: {errors}");
+            assert!(!errors.contains("mode=memory"), "{field}: {errors}");
+        }
+    }
+}
+
+#[test]
+fn evidence_recorder_cannot_be_disabled_by_configuration() {
+    let error = ServerConfig::from_toml(&format!(
+        "{}\n[server.evidence]\nenabled = false\n",
+        valid_toml()
+    ))
+    .expect_err("latest schema must reject the removed evidence switch");
+    assert!(
+        error
+            .errors
+            .iter()
+            .any(|message| message.contains("unknown field `enabled`"))
+    );
 }
 
 #[test]
@@ -535,8 +585,10 @@ fn boot_rejects_noncanonical_and_oversized_prompt_inputs() {
     cases.push(spaced_id);
 
     let mut duplicate_selector = ServerConfig::from_toml(&valid_toml()).unwrap();
-    duplicate_selector.agents[0].prompt_profiles[0].providers =
-        vec!["primary".into(), "primary".into()];
+    let selector = duplicate_selector.agents[0].prompt_profiles[0].qualified_models[0].clone();
+    duplicate_selector.agents[0].prompt_profiles[0]
+        .qualified_models
+        .push(selector);
     cases.push(duplicate_selector);
 
     let mut too_many_profiles = ServerConfig::from_toml(&valid_toml()).unwrap();
@@ -563,6 +615,23 @@ fn boot_rejects_noncanonical_and_oversized_prompt_inputs() {
         let rendered = error.errors.join("\n");
         assert!(rendered.contains("prompt configuration is invalid"));
         assert!(!rendered.contains("private\0prompt"));
+    }
+}
+
+#[test]
+fn latest_prompt_schema_rejects_legacy_selector_fields() {
+    for field in ["providers = [\"primary\"]", "models = [\"model-a\"]"] {
+        let input = valid_toml().replace(
+            "system_prompt = \"Model-specific prompt\"",
+            &format!("system_prompt = \"Model-specific prompt\"\n{field}"),
+        );
+        let error = ServerConfig::from_toml(&input).unwrap_err();
+        assert!(
+            error
+                .errors
+                .iter()
+                .any(|message| message.contains("unknown field"))
+        );
     }
 }
 

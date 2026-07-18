@@ -108,6 +108,7 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [{ provider_id = "alpha", model_id = "shared" }]
 "#,
     )
     .unwrap()
@@ -189,6 +190,14 @@ async fn versioned_builder_preserves_the_full_qualified_catalog() {
         Arc::new(InMemoryMemoryStore::new()),
         None,
         Arc::new(crate::config::SystemSecretResolver),
+        None,
+        Arc::new(
+            crate::credential_audit::CredentialOperationAuditLedger::open_in_memory_with_policy(
+                1_000, 100,
+            )
+            .await
+            .unwrap(),
+        ),
         None,
         None,
     )
@@ -286,6 +295,14 @@ async fn versioned_builder_preflights_every_model_before_router_construction() {
         None,
         Arc::new(crate::config::SystemSecretResolver),
         None,
+        Arc::new(
+            crate::credential_audit::CredentialOperationAuditLedger::open_in_memory_with_policy(
+                1_000, 100,
+            )
+            .await
+            .unwrap(),
+        ),
+        None,
         None,
     )
     .await;
@@ -352,6 +369,7 @@ name = "Sylvander"
 [agents.spec.model]
 provider = "primary"
 model_name = "model-a"
+allowed_models = [{{ provider_id = "primary", model_id = "model-a" }}]
 
 [[agents.prompt_profiles]]
 id = "optimized"
