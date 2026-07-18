@@ -589,6 +589,10 @@ pub enum ExecutionTransportConfig {
         user: String,
         /// Resolves to the absolute path of an OpenSSH identity file.
         credential: SecretRef,
+        /// Dedicated OpenSSH known-hosts file used with strict verification.
+        known_hosts: PathBuf,
+        /// Absolute control-socket path used by OpenSSH connection sharing.
+        control_path: PathBuf,
     },
     Container {
         runtime: String,
@@ -1113,6 +1117,8 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
             port,
             user,
             credential,
+            known_hosts,
+            control_path,
         } => {
             require_text("SSH host", host, errors);
             require_text("SSH user", user, errors);
@@ -1120,6 +1126,18 @@ fn validate_execution_target(target: &ExecutionTargetConfig, errors: &mut Vec<St
                 errors.push(format!("SSH target {} port must be positive", target.id));
             }
             credential.validate("SSH credential", errors);
+            for (field, path) in [("known_hosts", known_hosts), ("control_path", control_path)] {
+                if !path.is_absolute()
+                    || path
+                        .components()
+                        .any(|component| component == std::path::Component::ParentDir)
+                {
+                    errors.push(format!(
+                        "SSH target {} {field} must be an absolute normalized path",
+                        target.id
+                    ));
+                }
+            }
         }
         ExecutionTransportConfig::Container {
             runtime,

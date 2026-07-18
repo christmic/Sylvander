@@ -42,7 +42,33 @@ total=$(wc -c < "$resolved") || exit 125
 printf '%s\0' "$total"
 exec head -c "$3" "$resolved""#;
 const WRITE_SCRIPT: &str = "cd -P \"$1\" || exit 125\ntarget=$2\ncase $target in */*) mkdir -p -- \"${target%/*}\" || exit 125;; esac\nexec cat > \"$target\"";
-const COMMAND_SCRIPT: &str = "cd -P \"$1\" || exit 125\nexec sh -s";
+const COMMAND_SCRIPT: &str = r#"cd -P "$1" || exit 125
+command -v setsid >/dev/null 2>&1 || {
+  printf '%s\n' 'remote host requires setsid for cancellable commands' >&2
+  exit 127
+}
+umask 077
+program=${TMPDIR:-/tmp}/sylvander-command-$$
+cat > "$program" || exit 125
+child=
+cleanup() {
+  trap - EXIT HUP INT TERM
+  if [ -n "$child" ]; then
+    kill -TERM -- "-$child" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- "-$child" 2>/dev/null || true
+  fi
+  rm -f -- "$program"
+}
+trap cleanup EXIT HUP INT TERM
+setsid sh "$program" &
+child=$!
+wait "$child"
+status=$?
+child=
+rm -f -- "$program"
+trap - EXIT HUP INT TERM
+exit "$status""#;
 const LIST_SCRIPT: &str = r#"cd -P "$1" || exit 125
 root=$(pwd -P) || exit 125
 start=./$2
@@ -115,6 +141,8 @@ pub struct SshExecutor {
     port: u16,
     user: String,
     identity_path: PathBuf,
+    known_hosts_path: PathBuf,
+    control_path: PathBuf,
     file_operation_timeout: Duration,
 }
 
@@ -127,6 +155,8 @@ impl fmt::Debug for SshExecutor {
             .field("port", &self.port)
             .field("user", &self.user)
             .field("identity_path", &"[REDACTED]")
+            .field("known_hosts_path", &self.known_hosts_path)
+            .field("control_path", &self.control_path)
             .field("file_operation_timeout", &self.file_operation_timeout)
             .finish()
     }
@@ -139,8 +169,18 @@ impl SshExecutor {
         port: u16,
         user: impl Into<String>,
         identity_path: impl Into<PathBuf>,
+        known_hosts_path: impl Into<PathBuf>,
+        control_path: impl Into<PathBuf>,
     ) -> Result<Self, WorkspaceExecutorError> {
-        Self::with_executable("ssh", host, port, user, identity_path)
+        Self::with_executable(
+            "ssh",
+            host,
+            port,
+            user,
+            identity_path,
+            known_hosts_path,
+            control_path,
+        )
     }
 
     /// Create an executor with a specific OpenSSH-compatible executable.
@@ -152,11 +192,15 @@ impl SshExecutor {
         port: u16,
         user: impl Into<String>,
         identity_path: impl Into<PathBuf>,
+        known_hosts_path: impl Into<PathBuf>,
+        control_path: impl Into<PathBuf>,
     ) -> Result<Self, WorkspaceExecutorError> {
         let executable = executable.into();
         let host = host.into();
         let user = user.into();
         let identity_path = identity_path.into();
+        let known_hosts_path = known_hosts_path.into();
+        let control_path = control_path.into();
         validate_endpoint("SSH host", &host, |character| {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | ':')
         })?;
@@ -172,12 +216,20 @@ impl SshExecutor {
         if !identity_path.is_absolute() {
             return Err(invalid("SSH identity path must be absolute"));
         }
+        if !known_hosts_path.is_absolute() {
+            return Err(invalid("SSH known-hosts path must be absolute"));
+        }
+        if !control_path.is_absolute() {
+            return Err(invalid("SSH control path must be absolute"));
+        }
         Ok(Self {
             executable,
             host,
             port,
             user,
             identity_path,
+            known_hosts_path,
+            control_path,
             file_operation_timeout: DEFAULT_FILE_OPERATION_TIMEOUT,
         })
     }
@@ -191,6 +243,35 @@ impl SshExecutor {
 
     fn destination(&self) -> String {
         format!("{}@{}", self.user, self.host)
+    }
+
+    fn configure_command(&self, command: &mut Command) {
+        command
+            .arg("-o")
+            .arg("BatchMode=yes")
+            .arg("-o")
+            .arg("StrictHostKeyChecking=yes")
+            .arg("-o")
+            .arg(format!(
+                "UserKnownHostsFile={}",
+                self.known_hosts_path.display()
+            ))
+            .arg("-o")
+            .arg("ControlMaster=auto")
+            .arg("-o")
+            .arg("ControlPersist=60")
+            .arg("-o")
+            .arg(format!("ControlPath={}", self.control_path.display()))
+            .arg("-o")
+            .arg("ServerAliveInterval=15")
+            .arg("-o")
+            .arg("ServerAliveCountMax=2")
+            .arg("-o")
+            .arg("ConnectTimeout=10")
+            .arg("-p")
+            .arg(self.port.to_string())
+            .arg("-i")
+            .arg(&self.identity_path);
     }
 
     fn remote_command(
@@ -255,13 +336,8 @@ impl SshExecutor {
         timeout: Option<Duration>,
     ) -> Result<std::process::Output, WorkspaceExecutorError> {
         let mut command = Command::new(&self.executable);
+        self.configure_command(&mut command);
         command
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-p")
-            .arg(self.port.to_string())
-            .arg("-i")
-            .arg(&self.identity_path)
             .arg(self.destination())
             .arg(remote_command)
             .stdin(Stdio::piped())
@@ -291,13 +367,8 @@ impl SshExecutor {
         progress: Option<WorkspaceCommandProgressSink>,
     ) -> Result<WorkspaceCommandOutput, WorkspaceExecutorError> {
         let mut command = Command::new(&self.executable);
+        self.configure_command(&mut command);
         command
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-p")
-            .arg(self.port.to_string())
-            .arg("-i")
-            .arg(&self.identity_path)
             .arg(self.destination())
             .arg(remote_command)
             .stdin(Stdio::piped())
@@ -810,6 +881,8 @@ mod tests {
                 2222,
                 "agent-user",
                 "/keys/id test",
+                "/etc/ssh/sylvander-known-hosts",
+                "/tmp/sylvander-ssh-%C",
             )
             .expect("valid executor")
         }
@@ -834,7 +907,13 @@ mod tests {
         assert_eq!(String::from_utf8(bytes).expect("UTF-8"), "你好，Sylvander");
 
         let argv = fs::read_to_string(&fake.argv_log).expect("argv log");
-        assert!(argv.contains("-o\nBatchMode=yes\n-p\n2222\n-i\n/keys/id test"));
+        assert!(argv.contains("-o\nBatchMode=yes"));
+        assert!(argv.contains("-o\nStrictHostKeyChecking=yes"));
+        assert!(argv.contains("-o\nUserKnownHostsFile=/etc/ssh/sylvander-known-hosts"));
+        assert!(argv.contains("-o\nControlMaster=auto"));
+        assert!(argv.contains("-o\nControlPersist=60"));
+        assert!(argv.contains("-o\nControlPath=/tmp/sylvander-ssh-%C"));
+        assert!(argv.contains("-p\n2222\n-i\n/keys/id test"));
         assert!(argv.contains("agent-user@dev.example"));
         assert!(argv.contains("exec cat -- \"$resolved\""));
         assert!(argv.contains("'/srv/工作区/it'\\''s safe'"));
@@ -1247,8 +1326,20 @@ mod tests {
 
     #[test]
     fn endpoint_and_relative_path_validation_reject_option_and_traversal_inputs() {
-        assert!(SshExecutor::new("-oProxyCommand=bad", 22, "agent", "/key").is_err());
-        assert!(SshExecutor::new("host", 22, "user;bad", "/key").is_err());
+        assert!(
+            SshExecutor::new(
+                "-oProxyCommand=bad",
+                22,
+                "agent",
+                "/key",
+                "/known-hosts",
+                "/control"
+            )
+            .is_err()
+        );
+        assert!(
+            SshExecutor::new("host", 22, "user;bad", "/key", "/known-hosts", "/control").is_err()
+        );
         assert!(validate_relative("../secret").is_err());
         assert!(validate_relative("/absolute").is_err());
     }

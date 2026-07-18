@@ -968,6 +968,8 @@ fn apply_execution_targets(
                 port,
                 user,
                 credential,
+                known_hosts,
+                control_path,
             } => {
                 let identity = resolve(credential)
                     .map_err(|()| CompositionError::ExecutionTarget(target.id.clone()))?;
@@ -975,7 +977,7 @@ fn apply_execution_targets(
                     .as_str()
                     .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?;
                 Arc::new(
-                    SshExecutor::new(host, *port, user, identity_path)
+                    SshExecutor::new(host, *port, user, identity_path, known_hosts, control_path)
                         .map_err(|_| CompositionError::ExecutionTarget(target.id.clone()))?,
                 )
             }
@@ -1728,6 +1730,8 @@ path = "/tmp/sylvander-test.sock"
                     credential: crate::config::SecretRef::File {
                         path: identity_reference,
                     },
+                    known_hosts: std::path::PathBuf::from("/tmp/sylvander-known-hosts"),
+                    control_path: std::path::PathBuf::from("/tmp/sylvander-ssh-control"),
                 },
             });
         config.agents[0].agent_workspace = Some(crate::config::WorkspaceBindingConfig {
