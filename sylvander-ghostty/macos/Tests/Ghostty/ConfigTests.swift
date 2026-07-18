@@ -163,6 +163,30 @@ struct ConfigTests {
         #expect(config.backgroundOpacity == 0.5)
     }
 
+    @Test func productOverlayWinsOverUserBackgroundPolicy() throws {
+        let userConfig = try TemporaryConfig("background-opacity = 0.95")
+        let overlayFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("ghostty")
+        defer { try? FileManager.default.removeItem(at: overlayFile) }
+        try """
+        background-opacity = 0.68
+        background-opacity-cells = true
+        background-blur = macos-glass-clear
+        """.write(to: overlayFile, atomically: true, encoding: .utf8)
+
+        let config = Ghostty.Config(
+            at: userConfig.temporaryFile.path(),
+            overlayPath: overlayFile.path()
+        )
+
+        #expect(config.errors.isEmpty)
+        #expect(config.backgroundOpacity == 0.68)
+        if #available(macOS 26.0, *) {
+            #expect(config.backgroundBlur == .macosGlassClear)
+        }
+    }
+
     @Test func windowPositionDefaultsToNil() throws {
         let config = try TemporaryConfig("")
         #expect(config.windowPositionX == nil)

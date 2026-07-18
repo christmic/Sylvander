@@ -1,10 +1,11 @@
 #if os(macOS)
+import AppKit
 import SwiftUI
 
 enum SylvanderWorkspacePalette {
-    static let canvas = Color(red: 0.024, green: 0.028, blue: 0.035)
-    static let panel = Color(red: 0.043, green: 0.050, blue: 0.061)
-    static let raised = Color(red: 0.063, green: 0.073, blue: 0.088)
+    static let canvas = Color(red: 0.024, green: 0.028, blue: 0.035).opacity(0.54)
+    static let panel = Color(red: 0.043, green: 0.050, blue: 0.061).opacity(0.72)
+    static let raised = Color(red: 0.063, green: 0.073, blue: 0.088).opacity(0.82)
     static let text = Color(red: 0.925, green: 0.906, blue: 0.871)
     static let dim = Color(red: 0.596, green: 0.608, blue: 0.616)
     static let muted = Color(red: 0.400, green: 0.424, blue: 0.447)
@@ -14,6 +15,43 @@ enum SylvanderWorkspacePalette {
     static let idle = Color(red: 0.851, green: 0.686, blue: 0.384)
     static let signal = Color(red: 0.878, green: 0.424, blue: 0.459)
     static let complete = Color(red: 0.345, green: 0.722, blue: 0.655)
+}
+
+/// AppKit appearance policy shared by the workspace window and its SwiftUI
+/// material bridge.
+///
+/// Keeping these values in one place prevents a future window refactor from
+/// silently making the terminal opaque while leaving the decorative material
+/// in the view hierarchy.
+@MainActor
+enum SylvanderWorkspaceAppearance {
+    static func apply(to window: NSWindow) {
+        window.isOpaque = false
+        window.backgroundColor = .clear
+    }
+
+    static func makeDesktopMaterialView() -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = true
+        return view
+    }
+}
+
+/// Native desktop material visible beneath Sylvander's translucent chrome.
+///
+/// Keeping this behind the SwiftUI palette preserves the dark visual system
+/// while allowing wallpaper and neighbouring windows to remain perceptible.
+struct SylvanderDesktopMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        SylvanderWorkspaceAppearance.makeDesktopMaterialView()
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.state = .active
+    }
 }
 
 struct SylvanderSessionContextBar: View {

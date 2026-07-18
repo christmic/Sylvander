@@ -167,10 +167,20 @@ class AppDelegate: NSObject,
     @MainActor private lazy var menuShortcutManager = Ghostty.MenuShortcutManager()
 
     override init() {
+        // The desktop terminal owns its color capability. Remove shell-level
+        // opt-outs before Ghostty snapshots the process environment.
+        SylvanderTUILaunchEnvironment.prepareProcessEnvironment()
+        let configOverlayPath = Bundle.main.url(
+            forResource: "Sylvander",
+            withExtension: "ghostty"
+        )?.path
 #if DEBUG
-        ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
+        ghostty = Ghostty.App(
+            configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"],
+            configOverlayPath: configOverlayPath
+        )
 #else
-        ghostty = Ghostty.App()
+        ghostty = Ghostty.App(configOverlayPath: configOverlayPath)
 #endif
         super.init()
 

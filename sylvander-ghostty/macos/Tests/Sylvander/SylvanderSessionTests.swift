@@ -1,9 +1,40 @@
+import AppKit
 import Foundation
 import Network
 import Testing
 @testable import Ghostty
 
 struct SylvanderSessionTests {
+    @Test
+    func desktopLaunchEnvironmentForcesTrueColorAndRemovesNoColor() {
+        var unsetNames: [String] = []
+        SylvanderTUILaunchEnvironment.prepareProcessEnvironment(
+            unset: { unsetNames.append($0) }
+        )
+
+        #expect(unsetNames == ["NO_COLOR"])
+    }
+
+    @Test @MainActor
+    func workspaceAppearanceKeepsWindowAndMaterialTranslucent() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+
+        SylvanderWorkspaceAppearance.apply(to: window)
+        let material = SylvanderWorkspaceAppearance.makeDesktopMaterialView()
+
+        #expect(window.isOpaque == false)
+        #expect(window.backgroundColor.isEqual(NSColor.clear))
+        #expect(material.material == .underWindowBackground)
+        #expect(material.blendingMode == .behindWindow)
+        #expect(material.state == .active)
+        #expect(material.isEmphasized)
+    }
+
     @Test
     func decodesSessionList() throws {
         let data = Data(#"{"type":"sessions_list","sessions":[{"id":"s-1","label":"Audit auth","workspace":"/work/api","last_seen_secs":7}]}"#.utf8)
@@ -62,6 +93,34 @@ struct SylvanderSessionTests {
         #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"done"}"#.utf8)) == .complete)
         #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"tool_result","is_error":true}"#.utf8)) == .failed)
         #expect(SylvanderSessionClient.decodeActivity(Data(#"{"type":"session_history"}"#.utf8)) == nil)
+    }
+
+    @Test
+    func lineBufferPreservesCoalescedAndPartialProtocolFrames() throws {
+        var buffer = SylvanderLineBuffer(maximumBytes: 32)
+        try buffer.append(Data("first\nsecond\npar".utf8))
+
+        let firstLine = try buffer.popLine()
+        let secondLine = try buffer.popLine()
+        let incomplete = try buffer.popLine()
+        let first = try #require(firstLine)
+        let second = try #require(secondLine)
+        #expect(String(decoding: first, as: UTF8.self) == "first")
+        #expect(String(decoding: second, as: UTF8.self) == "second")
+        #expect(incomplete == nil)
+
+        try buffer.append(Data("tial\n".utf8))
+        let partialLine = try buffer.popLine()
+        let partial = try #require(partialLine)
+        #expect(String(decoding: partial, as: UTF8.self) == "partial")
+    }
+
+    @Test
+    func lineBufferRejectsAnOversizedFrameBeforeNewline() throws {
+        var buffer = SylvanderLineBuffer(maximumBytes: 4)
+        #expect(throws: SylvanderSessionClient.ClientError.lineTooLong) {
+            try buffer.append(Data("12345".utf8))
+        }
     }
 
     @Test @MainActor

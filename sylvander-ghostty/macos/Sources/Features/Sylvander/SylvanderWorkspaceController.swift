@@ -2,10 +2,15 @@
 import Cocoa
 import Combine
 import GhosttyKit
+import OSLog
 import SwiftUI
 
 final class SylvanderWorkspaceController: BaseTerminalController {
     private static let frameAutosaveName = "SylvanderWorkspace"
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "ai.oraculo.sylvander",
+        category: "desktop-sessions"
+    )
 
     let sessionStore: SylvanderSessionStore
     @Published var preview: SylvanderPreview?
@@ -16,6 +21,8 @@ final class SylvanderWorkspaceController: BaseTerminalController {
     private var sessionSurfaces: [String: Ghostty.SurfaceView] = [:]
     private var hostBroker: SylvanderHostBroker?
     private var cancellables: Set<AnyCancellable> = []
+    private var launchRetryAttempts: [String: Int] = [:]
+    private var launchRetryGeneration = 0
 
     init(
         _ ghostty: Ghostty.App,
@@ -42,13 +49,26 @@ final class SylvanderWorkspaceController: BaseTerminalController {
             hostBroker = nil
         }
 
-        self.sessionStore.$selectedSessionID
-            .removeDuplicates()
-            .sink { [weak self] sessionID in
+        Publishers.CombineLatest(
+            self.sessionStore.$selectedSessionID,
+            self.sessionStore.$sessions
+        )
+            .map { selectedSessionID, sessions -> SylvanderSession? in
+                guard let selectedSessionID else { return nil }
+                return sessions.first(where: { $0.id == selectedSessionID })
+            }
+            // Presence is refreshed every few seconds. It must not repeatedly
+            // reset the active surface or serve as an accidental launch retry.
+            .removeDuplicates { previous, current in
+                previous?.id == current?.id &&
+                    previous?.workspace == current?.workspace
+            }
+            .sink { [weak self] session in
+                self?.cancelLaunchRetries()
                 self?.preview = nil
                 self?.changesWorkspace = nil
-                if let sessionID {
-                    self?.activateSession(sessionID)
+                if let session {
+                    self?.activateSession(session)
                 } else {
                     self?.deactivateSessions()
                 }
@@ -81,7 +101,7 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         window.minSize = NSSize(width: 780, height: 520)
         window.isRestorable = false
         window.setFrameAutosaveName(Self.frameAutosaveName)
-        window.backgroundColor = .black
+        SylvanderWorkspaceAppearance.apply(to: window)
         window.delegate = self
         window.contentView = NSHostingView(rootView: SylvanderWorkspaceView(controller: self))
         self.window = window
@@ -109,8 +129,8 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         changesWorkspace = session.workspace
     }
 
-    func activateSession(_ sessionID: String) {
-        guard let session = sessionStore.sessions.first(where: { $0.id == sessionID }) else { return }
+    func activateSession(_ session: SylvanderSession) {
+        let sessionID = session.id
 
         let surface: Ghostty.SurfaceView
         if let existing = sessionSurfaces[sessionID], !existing.processExited {
@@ -118,7 +138,11 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         } else {
             sessionSurfaces[sessionID] = nil
             hostBroker?.unregister(sessionID: sessionID)
-            guard let app = ghostty.app else { return }
+            guard let app = ghostty.app else {
+                launchFailure = "Ghostty is not ready to create the session terminal"
+                Self.logger.error("Ghostty runtime unavailable for session \(sessionID, privacy: .public)")
+                return
+            }
             do {
                 let credential = try hostBroker?.register(
                     sessionID: session.id,
@@ -130,10 +154,20 @@ final class SylvanderWorkspaceController: BaseTerminalController {
                     hostCredential: credential
                 ).surfaceConfiguration()
                 surface = Ghostty.SurfaceView(app, baseConfig: config)
+                if let error = surface.error {
+                    throw error
+                }
                 sessionSurfaces[sessionID] = surface
+                cancelLaunchRetries()
+                Self.logger.info("Created terminal surface for session \(sessionID, privacy: .public)")
             } catch {
                 launchFailure = error.localizedDescription
-                NSSound.beep()
+                Self.logger.error(
+                    "Terminal launch failed for session \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+                if !scheduleLaunchRetry(for: session) {
+                    NSSound.beep()
+                }
                 return
             }
         }
@@ -142,6 +176,40 @@ final class SylvanderWorkspaceController: BaseTerminalController {
         setBackgroundSurfacesOccluded(except: surface)
         surfaceTree = SplitTree(view: surface)
         focusedSurface = surface
+    }
+
+    /// A surface can be requested during the first app tick even though
+    /// `Ghostty.App` already reports ready. Retry that narrow startup race
+    /// explicitly instead of relying on unrelated session-presence updates.
+    @discardableResult
+    private func scheduleLaunchRetry(for session: SylvanderSession) -> Bool {
+        let attempt = (launchRetryAttempts[session.id] ?? 0) + 1
+        let delays: [TimeInterval] = [0.15, 0.4, 0.9]
+        guard attempt <= delays.count else {
+            launchRetryAttempts[session.id] = nil
+            return false
+        }
+
+        launchRetryAttempts[session.id] = attempt
+        launchRetryGeneration &+= 1
+        let generation = launchRetryGeneration
+        Self.logger.notice(
+            "Retrying terminal launch for session \(session.id, privacy: .public), attempt \(attempt)"
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + delays[attempt - 1]) { [weak self] in
+            guard let self,
+                  self.launchRetryGeneration == generation,
+                  self.sessionStore.selectedSessionID == session.id,
+                  let current = self.sessionStore.sessions.first(where: { $0.id == session.id })
+            else { return }
+            self.activateSession(current)
+        }
+        return true
+    }
+
+    private func cancelLaunchRetries() {
+        launchRetryGeneration &+= 1
+        launchRetryAttempts.removeAll()
     }
 
     private func setBackgroundSurfacesOccluded(except visibleSurface: Ghostty.SurfaceView) {
@@ -185,9 +253,12 @@ private struct SylvanderTUILaunchConfiguration {
         config.command = Ghostty.Shell.quote(executable)
         config.workingDirectory = session.workspace
         config.environmentVariables = [
+            "CLICOLOR": "1",
+            "CLICOLOR_FORCE": "1",
             "SYLVANDER_DESKTOP_HOST": "ghostty",
             "SYLVANDER_SESSION": session.id,
             "SYLVANDER_SOCKET": socketPath,
+            "SYLVANDER_TUI_COLOR": "truecolor",
             "SYLVANDER_WORKSPACE": session.workspace,
         ]
         if let hostCredential {
@@ -221,6 +292,20 @@ private struct SylvanderTUILaunchConfiguration {
         var errorDescription: String? {
             "sylvander-tui is not bundled; set SYLVANDER_TUI_PATH for a development build"
         }
+    }
+}
+
+/// The desktop owns the capabilities of its embedded terminal surface.
+///
+/// `NO_COLOR` is intentionally removed from the process instead of being
+/// assigned an empty value: clients commonly treat the mere presence of that
+/// variable as a monochrome request. Ghostty itself publishes the final
+/// `TERM=xterm-ghostty` and `COLORTERM=truecolor` values inside the PTY.
+enum SylvanderTUILaunchEnvironment {
+    static func prepareProcessEnvironment(
+        unset: (String) -> Void = { unsetenv($0) }
+    ) {
+        unset("NO_COLOR")
     }
 }
 
@@ -264,7 +349,10 @@ private struct SylvanderWorkspaceView: View {
             }
             .animation(.easeOut(duration: 0.18), value: hasInspector)
         }
-        .background(SylvanderWorkspacePalette.canvas)
+        .background {
+            SylvanderDesktopMaterial()
+                .overlay(SylvanderWorkspacePalette.canvas)
+        }
         .ignoresSafeArea(.container, edges: .top)
     }
 

@@ -31,6 +31,8 @@ extension Ghostty {
 
         /// Preferred config file than the default ones
         private var configPath: String?
+        /// Product-specific settings applied after user configuration.
+        private var configOverlayPath: String?
         /// The ghostty app instance. We only have one of these for the entire app, although I guess
         /// in theory you can have multiple... I don't know why you would...
         @Published var app: ghostty_app_t? {
@@ -46,10 +48,11 @@ extension Ghostty {
             return ghostty_app_needs_confirm_quit(app)
         }
 
-        init(configPath: String? = nil) {
+        init(configPath: String? = nil, configOverlayPath: String? = nil) {
             self.configPath = configPath
+            self.configOverlayPath = configOverlayPath
             // Initialize the global configuration.
-            self.config = Config(at: configPath)
+            self.config = Config(at: configPath, overlayPath: configOverlayPath)
             if self.config.config == nil {
                 readiness = .error
                 return
@@ -152,7 +155,7 @@ extension Ghostty {
             }
 
             // Hard or full updates have to reload the full configuration
-            let newConfig = Config(at: configPath)
+            let newConfig = Config(at: configPath, overlayPath: configOverlayPath)
             guard newConfig.loaded else {
                 Ghostty.logger.warning("failed to reload configuration")
                 return
@@ -172,7 +175,7 @@ extension Ghostty {
             // Hard or full updates have to reload the full configuration.
             // NOTE: We never set this on self.config because this is a surface-only
             // config. We free it after the call.
-            let newConfig = Config(at: configPath)
+            let newConfig = Config(at: configPath, overlayPath: configOverlayPath)
             guard newConfig.loaded else {
                 Ghostty.logger.warning("failed to reload configuration")
                 return

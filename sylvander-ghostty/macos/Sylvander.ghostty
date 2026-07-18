@@ -1,0 +1,6 @@
+# Sylvander desktop owns translucency so every embedded TUI surface composes
+# with the native workspace material, including cells that explicitly paint
+# their canvas background.
+background-opacity = 0.68
+background-opacity-cells = true
+background-blur = macos-glass-clear

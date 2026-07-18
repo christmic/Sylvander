@@ -13,6 +13,7 @@
 		819324582F24E78800A9ED8F /* DockTilePlugin.plugin in Copy DockTilePlugin */ = {isa = PBXBuildFile; fileRef = 8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		819324642F24FF2100A9ED8F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5B30538299BEAAB0047F10C /* Assets.xcassets */; };
 		8F3A9B4C2FA6B88000A18D13 /* Sylvander.sdef in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4B2FA6B88000A18D13 /* Sylvander.sdef */; };
+		8F3A9B502FA6C91000A18D13 /* Sylvander.ghostty in Resources */ = {isa = PBXBuildFile; fileRef = 8F3A9B4F2FA6C91000A18D13 /* Sylvander.ghostty */; };
 		9351BE8E3D22937F003B3499 /* nvim in Resources */ = {isa = PBXBuildFile; fileRef = 9351BE8E2D22937F003B3499 /* nvim */; };
 		A51BFC272B30F1B800E92F16 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A51BFC262B30F1B800E92F16 /* Sparkle */; };
 		A53D0C8E2B53B0EA00305CE6 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5D495A1299BEC7E00DD1313 /* GhosttyKit.xcframework */; };
@@ -76,6 +77,7 @@
 		810ACC9F2E9D3301004F8F92 /* GhosttyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GhosttyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DockTilePlugin.plugin; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F3A9B4B2FA6B88000A18D13 /* Sylvander.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = Sylvander.sdef; sourceTree = "<group>"; };
+		8F3A9B4F2FA6C91000A18D13 /* Sylvander.ghostty */ = {isa = PBXFileReference; lastKnownFileType = text; path = Sylvander.ghostty; sourceTree = "<group>"; };
 		9351BE8E2D22937F003B3499 /* nvim */ = {isa = PBXFileReference; lastKnownFileType = folder; name = nvim; path = "../zig-out/share/nvim"; sourceTree = "<group>"; };
 		A51BFC282B30F26D00E92F16 /* GhosttyDebug.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhosttyDebug.entitlements; sourceTree = "<group>"; };
 		A546F1132D7B68D7003B11A0 /* locale */ = {isa = PBXFileReference; lastKnownFileType = folder; name = locale; path = "../zig-out/share/locale"; sourceTree = "<group>"; };
@@ -340,6 +342,7 @@
 			children = (
 				A571AB1C2A206FC600248498 /* Sylvander-Info.plist */,
 				8F3A9B4B2FA6B88000A18D13 /* Sylvander.sdef */,
+				8F3A9B4F2FA6C91000A18D13 /* Sylvander.ghostty */,
 				A5B30538299BEAAB0047F10C /* Assets.xcassets */,
 				A553F4122E06EB1600257779 /* Ghostty.icon */,
 				A5B3053D299BEAAB0047F10C /* Ghostty.entitlements */,
@@ -577,6 +580,7 @@
 				29C15B1D2CDC3B2900520DD4 /* bat in Resources */,
 				A586167C2B7703CC009BDB1D /* fish in Resources */,
 				8F3A9B4C2FA6B88000A18D13 /* Sylvander.sdef in Resources */,
+				8F3A9B502FA6C91000A18D13 /* Sylvander.ghostty in Resources */,
 				55154BE02B33911F001622DC /* ghostty in Resources */,
 				A546F1142D7B68D7003B11A0 /* locale in Resources */,
 				A5985CE62C33060F00C57AD3 /* man in Resources */,

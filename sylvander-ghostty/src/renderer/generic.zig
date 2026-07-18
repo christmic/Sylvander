@@ -691,7 +691,17 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const display_link: ?DisplayLink = switch (builtin.os.tag) {
                 .macos => if (options.config.vsync)
-                    try macos.video.DisplayLink.createWithActiveCGDisplays()
+                    macos.video.DisplayLink.createWithActiveCGDisplays() catch |err| fallback: {
+                        // A display-link failure should reduce frame pacing,
+                        // not make the terminal surface impossible to create.
+                        // This can occur transiently while display topology is
+                        // changing or when the OS exhausts display-link slots.
+                        log.warn(
+                            "unable to create display link; continuing without vsync err={}",
+                            .{err},
+                        );
+                        break :fallback null;
+                    }
                 else
                     null,
                 else => null,

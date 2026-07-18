@@ -104,13 +104,15 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         AsyncThrowingStream { continuation in
             let task = Task {
                 let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
+                let reader = SylvanderLineReader(
+                    connection: connection,
+                    maximumBytes: Self.maximumLineBytes
+                )
                 defer { connection.cancel() }
                 do {
                     try await connection.startAndWait()
                     try await connection.sendLine(Self.helloLine)
-                    try Self.validateHandshake(
-                        try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
-                    )
+                    try Self.validateHandshake(try await reader.receiveLine())
                     let message = try JSONSerialization.data(withJSONObject: [
                         "type": "load_session",
                         "session_id": id,
@@ -120,7 +122,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
                     }
                     try await connection.sendLine(line)
                     while !Task.isCancelled {
-                        let data = try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
+                        let data = try await reader.receiveLine()
                         if let activity = Self.decodeActivity(data) {
                             continuation.yield(activity)
                         }
@@ -141,6 +143,10 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         decode: (Data) throws -> T
     ) async throws -> T {
         let connection = NWConnection(to: .unix(path: socketPath), using: .tcp)
+        let reader = SylvanderLineReader(
+            connection: connection,
+            maximumBytes: Self.maximumLineBytes
+        )
         let timeout = DispatchWorkItem { connection.cancel() }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2, execute: timeout)
         defer {
@@ -151,7 +157,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
         try await connection.startAndWait()
         try await connection.sendLine(Self.helloLine)
 
-        let handshake = try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
+        let handshake = try await reader.receiveLine()
         try Self.validateHandshake(handshake)
 
         let requestData = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
@@ -159,7 +165,7 @@ struct SylvanderSessionClient: SylvanderSessionFetching {
             throw ClientError.invalidRequest
         }
         try await connection.sendLine(requestLine)
-        let response = try await connection.receiveLine(maximumBytes: Self.maximumLineBytes)
+        let response = try await reader.receiveLine()
         return try decode(response)
     }
 
@@ -338,19 +344,7 @@ private extension NWConnection {
         }
     }
 
-    func receiveLine(maximumBytes: Int) async throws -> Data {
-        var buffer = Data()
-        while buffer.count <= maximumBytes {
-            let chunk = try await receiveChunk(maximumBytes: min(4096, maximumBytes - buffer.count + 1))
-            buffer.append(chunk)
-            if let newline = buffer.firstIndex(of: 0x0A) {
-                return buffer[..<newline]
-            }
-        }
-        throw SylvanderSessionClient.ClientError.lineTooLong
-    }
-
-    private func receiveChunk(maximumBytes: Int) async throws -> Data {
+    func receiveChunk(maximumBytes: Int) async throws -> Data {
         try await withCheckedThrowingContinuation { continuation in
             receive(minimumIncompleteLength: 1, maximumLength: maximumBytes) { data, _, isComplete, error in
                 if let error {
@@ -364,6 +358,60 @@ private extension NWConnection {
                 }
             }
         }
+    }
+}
+
+/// Stateful NDJSON reader that preserves every byte following the first
+/// newline. `NWConnection.receive` may coalesce several server events in one
+/// callback, so a stateless `receiveLine` would silently discard activity.
+private final class SylvanderLineReader: @unchecked Sendable {
+    private let connection: NWConnection
+    private let maximumBytes: Int
+    private var buffer: SylvanderLineBuffer
+
+    init(connection: NWConnection, maximumBytes: Int) {
+        self.connection = connection
+        self.maximumBytes = maximumBytes
+        self.buffer = SylvanderLineBuffer(maximumBytes: maximumBytes)
+    }
+
+    func receiveLine() async throws -> Data {
+        while true {
+            if let line = try buffer.popLine() {
+                return line
+            }
+            let room = max(1, min(4096, maximumBytes - buffer.byteCount + 1))
+            let chunk = try await connection.receiveChunk(maximumBytes: room)
+            try buffer.append(chunk)
+        }
+    }
+}
+
+struct SylvanderLineBuffer {
+    let maximumBytes: Int
+    private var storage = Data()
+
+    init(maximumBytes: Int) {
+        self.maximumBytes = maximumBytes
+    }
+
+    var byteCount: Int { storage.count }
+
+    mutating func append(_ data: Data) throws {
+        storage.append(data)
+        if storage.firstIndex(of: 0x0A) == nil, storage.count > maximumBytes {
+            throw SylvanderSessionClient.ClientError.lineTooLong
+        }
+    }
+
+    mutating func popLine() throws -> Data? {
+        guard let newline = storage.firstIndex(of: 0x0A) else { return nil }
+        guard newline <= maximumBytes else {
+            throw SylvanderSessionClient.ClientError.lineTooLong
+        }
+        let line = Data(storage[..<newline])
+        storage.removeSubrange(...newline)
+        return line
     }
 }
 

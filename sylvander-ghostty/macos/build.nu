@@ -11,11 +11,16 @@ def main [
     let project = ($env.FILE_PWD | path join "Sylvander.xcodeproj")
     let build_dir = ($env.FILE_PWD | path join "build")
     let repository = ($env.FILE_PWD | path join ".." ".." | path expand)
+    let rust_target_dir = if "CARGO_TARGET_DIR" in $env {
+        $env.CARGO_TARGET_DIR | path expand
+    } else {
+        $repository | path join "target"
+    }
 
     let helper_path = if $scheme == "Sylvander" and $action != "clean" {
         if $configuration == "Debug" {
             ^cargo build --manifest-path ($repository | path join "Cargo.toml") --locked -p sylvander-tui
-            ($repository | path join "target" "debug" "sylvander-tui")
+            ($rust_target_dir | path join "debug" "sylvander-tui")
         } else {
             let output = ($build_dir | path join "helpers" "release" "sylvander-tui")
             ^bash ($env.FILE_PWD | path join "Scripts" "build-sylvander-tui-universal.sh") $repository $output

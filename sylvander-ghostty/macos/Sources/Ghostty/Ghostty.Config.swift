@@ -37,8 +37,16 @@ extension Ghostty {
             self.config = config
         }
 
-        convenience init(at path: String? = nil, finalize: Bool = true) {
-            self.init(config: Self.loadConfig(at: path, finalize: finalize))
+        convenience init(
+            at path: String? = nil,
+            overlayPath: String? = nil,
+            finalize: Bool = true
+        ) {
+            self.init(config: Self.loadConfig(
+                at: path,
+                overlayPath: overlayPath,
+                finalize: finalize
+            ))
         }
 
         convenience init(clone config: ghostty_config_t) {
@@ -57,7 +65,11 @@ extension Ghostty {
         /// - Parameters:
         ///   - path: An optional preferred config file path. Pass `nil` to load the default configuration files.
         ///   - finalize: Whether to finalize the configuration to populate default values.
-        static func loadConfig(at path: String?, finalize: Bool) -> ghostty_config_t? {
+        static func loadConfig(
+            at path: String?,
+            overlayPath: String? = nil,
+            finalize: Bool
+        ) -> ghostty_config_t? {
             // Initialize the global configuration.
             guard let cfg = ghostty_config_new() else {
                 logger.critical("ghostty_config_new failed")
@@ -81,6 +93,15 @@ extension Ghostty {
             }
 
             ghostty_config_load_recursive_files(cfg)
+
+            // Product hosts may need a small, final policy layer while still
+            // retaining the user's normal Ghostty font, key, and shell config.
+            // Load it after recursive user config and CLI arguments so its
+            // invariants cannot be accidentally shadowed by an imported theme.
+            if let overlayPath {
+                ghostty_config_load_file(cfg, overlayPath)
+                ghostty_config_load_recursive_files(cfg)
+            }
 #endif
 
             // TODO: we'd probably do some config loading here... for now we'd
