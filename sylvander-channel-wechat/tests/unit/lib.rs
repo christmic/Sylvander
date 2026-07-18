@@ -14,6 +14,13 @@ use sylvander_channel::credential::{
     CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
 };
 
+impl WechatChannel {
+    fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
+        self.api_base_url = api_base_url.into();
+        self
+    }
+}
+
 struct StaticCredentials;
 
 #[async_trait]

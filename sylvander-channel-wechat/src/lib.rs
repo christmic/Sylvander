@@ -102,14 +102,6 @@ impl WechatChannel {
         })
     }
 
-    /// Override the API origin for a hermetic integration test.
-    #[cfg(test)]
-    #[must_use]
-    fn with_api_base_url(mut self, api_base_url: impl Into<String>) -> Self {
-        self.api_base_url = api_base_url.into();
-        self
-    }
-
     /// Bound the encoded webhook body before XML extraction and decryption.
     #[must_use]
     pub const fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
