@@ -25,6 +25,7 @@ use sylvander_protocol::{
 
 use protocol::{WechatCrypto, parse_message_xml};
 
+/// Enterprise WeChat callback cryptography and XML protocol handling.
 pub mod protocol;
 
 // ===========================================================================
