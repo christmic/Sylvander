@@ -286,7 +286,7 @@ async fn maintenance_fault_rolls_back_rows_audit_ledgers_and_watermark() {
 
 #[test]
 fn worker_facing_memory_contract_has_no_maintenance_operation() {
-    let source = include_str!("memory.rs");
+    let source = include_str!("../../src/tools/memory.rs");
     let trait_body = source
         .split("pub trait MemoryStore")
         .nth(1)

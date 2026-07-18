@@ -489,5 +489,5 @@ fn backup_error() -> MemoryStoreError {
 }
 
 #[cfg(test)]
-#[path = "backup_tests.rs"]
+#[path = "../../../tests/unit/memory_sqlite_backup.rs"]
 mod tests;
