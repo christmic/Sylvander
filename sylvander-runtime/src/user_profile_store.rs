@@ -533,4 +533,5 @@ COMMIT;
 ";
 
 #[cfg(test)]
+#[path = "../tests/unit/user_profile_store.rs"]
 mod tests;

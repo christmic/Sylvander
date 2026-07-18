@@ -383,4 +383,5 @@ fn display_error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/self_change.rs"]
 mod tests;
