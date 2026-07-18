@@ -193,12 +193,12 @@ their own configuration (typically via `sylvander-runtime::config`):
 
 | Submodule | Test file | Coverage |
 |-----------|-----------|----------|
-| `model` | `sylvander-llm-core/src/model.rs` (`mod tests`) | Provider-qualified identity uniqueness |
-| `provider` | `sylvander-llm-core/src/provider.rs` (`mod tests`) | Object-safety, owned stream, default `model_catalog` returns `None` |
-| `error` | `sylvander-llm-core/src/error.rs` (`mod tests`) | Retryability classification per kind |
-| `types` | `sylvander-llm-core/src/types.rs` (`mod tests`) | Rich request/response round-trip without vendor wire types |
-| `usage` | `sylvander-llm-core/src/usage.rs` (`mod tests`) | Saturating add, optional cache dims, total-input accounting |
-| `validation` | `sylvander-llm-core/src/validation.rs` (`mod tests`) | Six-capability scan, history/nested-media stacking, tool-cache hint gating |
+| `model` | `sylvander-llm-core/tests/core_contracts.rs` | Provider-qualified identity uniqueness |
+| `provider` | `sylvander-llm-core/tests/core_contracts.rs` | Object-safety, owned stream, default `model_catalog` returns `None` |
+| `error` | `sylvander-llm-core/tests/core_contracts.rs` | Retryability classification per kind |
+| `types` | `sylvander-llm-core/tests/core_contracts.rs` | Rich request/response round-trip without vendor wire types |
+| `usage` | `sylvander-llm-core/tests/core_contracts.rs` | Saturating add, optional cache dims, total-input accounting |
+| `validation` | `sylvander-llm-core/tests/core_contracts.rs` | Six-capability scan, history/nested-media stacking, tool-cache hint gating |
 
 ## 7. Related docs
 

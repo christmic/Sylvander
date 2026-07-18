@@ -68,9 +68,9 @@ once the stream is established.
 
 ## 6. Tests
 
-- `sylvander-channel-dingtalk/src/lib.rs` (`mod tests`) — session
+- `sylvander-channel-dingtalk/tests/unit/lib.rs` — session
   mapping, replay cache, message routing.
-- `sylvander-channel-dingtalk/src/protocol.rs` (`mod tests`) — pure
+- `sylvander-channel-dingtalk/tests/unit/protocol.rs` — pure
   SDK tests for stream frames and signature verification.
 
 ## 7. Common pitfalls

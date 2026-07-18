@@ -4,17 +4,22 @@ Sylvander v2 Agent Loop — async reactive driver that calls the Anthropic
 Messages API, executes tools, re-feeds results, and emits events as the
 loop progresses.
 
-This is the **M2 Agent Loop** layer. It builds on the M1 protocol SDK
-(`sylvander-llm-anthropic`) and provides the iteration framework.
+This crate is the Agent execution layer. It builds on the provider-neutral
+model contract and contains the iterative model/tool loop, authenticated run
+lifecycle, durable session store, prompt composition, tools, workspace
+executors, Skills, and supervised MCP stdio.
 
-## Scope (M2)
+## Current scope
 
-- `AgentLoop` struct with builder (OOP class-based)
-- Reactive event stream (`AgentEvent` + `on_event` callback)
-- `Tool` trait + `ToolRegistry` (caller plugs in their own tools)
-- `Compressor` trait + simple default impl
-- Retry / backoff + capability validation + iteration limit
-- **No concrete tools** (Read/Bash/Edit) — those land in M3
+- `AgentLoop` for provider-compatible iterative generation and tool re-feeding
+- `AgentRun` / `AgentRunEngine` for authenticated per-session execution
+- `ToolRegistry`, concrete workspace/memory/plan/task tools, and approvals
+- durable SQLite sessions, composition, compression, Skills, and MCP stdio
+- location-neutral workspace executors and isolated local worktree journaling
+
+The authoritative ownership and extension rules are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); this README keeps direct Rust
+usage examples.
 
 ## Usage
 

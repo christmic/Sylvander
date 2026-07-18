@@ -3,6 +3,11 @@
 AI Agent framework in Rust — multi-agent, multi-session, multi-channel,
 with structured tool approval and user clarification.
 
+For an implementation-oriented map of every Rust module, start at the
+[documentation index](docs/INDEX.md). The detailed Agent, Runtime, common
+Channel, provider, and TUI designs live beside their owning crates and are
+linked there.
+
 ## Architecture
 
 The normative server-Agent architecture, implementation audit, and ordered
@@ -19,31 +24,32 @@ in [`docs/boundary-authorization.md`](docs/boundary-authorization.md).
 
 ```
 sylvander-server                  binary — boots the system
-  ├─ sylvander-channel-http       HTTP debug channel (SSE streaming)
-  ├─ sylvander-channel-ws         WebSocket channel (desktop + approval UI)
-  ├─ sylvander-channel-unix       Unix socket (CLI/TUI clients, line JSON)
-  ├─ sylvander-channel-dingtalk   DingTalk bot (Stream protocol)
-  ├─ sylvander-channel-telegram   Telegram bot (webhook + sendMessage)
-  ├─ sylvander-channel-wechat     WeChat enterprise (encrypted XML)
-  ├─ sylvander-channel            Channel trait (lightweight contract)
-  ├─ sylvander-runtime            bootstrap, session persistence
-  ├─ sylvander-agent              engine, AgentRun, bus, tools, memory, approval
-  └─ sylvander-llm-anthropic      Anthropic wire protocol
+  └─ sylvander-runtime             trusted composition, persistence, supervision
+       ├─ sylvander-agent           run engine, prompts, tools, memory, workspaces
+       │   ├─ sylvander-llm-core    provider-neutral model contract
+       │   ├─ sylvander-llm-anthropic
+       │   └─ sylvander-protocol    cross-language IDs and wire envelopes
+       └─ sylvander-channel         authenticated ingress boundary
+           ├─ channel-unix          local TUI protocol
+           ├─ channel-http / channel-ws
+           └─ channel-dingtalk / channel-telegram / channel-wechat
+
+sylvander-tui                      standalone single-session terminal client
 ```
 
 ## Core capabilities
 
 | Feature | Current status |
 |---|---|
-| Multi-agent and isolated concurrent sessions | Implemented in the Agent layer |
-| Bus message routing and streaming | Implemented |
-| Durable session history and usage | Implemented |
-| Tool approval and AskUser | Implemented; policy scoping remains in backlog |
-| Persistent Agent memory | Not implemented |
-| Session-scoped model/workspace overrides | Not implemented |
-| AGENTS.md, Skills, and MCP runtime | Not implemented |
-| Local/SSH/container/sandbox executors | Not implemented |
-| Multi-instance channel supervision | Not implemented |
+| Isolated concurrent sessions and streamed bus routing | Implemented |
+| Durable transcript, usage, relationship memory, and evidence | Implemented |
+| Tool approval, AskUser, plans, and bounded background tasks | Implemented |
+| Agent defaults plus session-scoped model/workspace overrides | Implemented |
+| `AGENTS.md`, Skills, and supervised MCP stdio | Implemented |
+| Local executor, isolated Git worktree, OCI container/sandbox policy | Implemented |
+| Multi-instance channel supervision | Implemented for current adapters |
+| OpenSSH executor | Implementation in progress; configuration requires strict host-key verification |
+| Remote worktrees, SSH terminal, native tmux integration | Deferred; not advertised |
 
 ## Quickstart
 
@@ -106,7 +112,10 @@ cargo test --workspace
 
 - MSRV: 1.96, edition 2024
 - Async: tokio (multi-thread)
-- All 10 crates, 165 tests
+- The workspace is continuously verified by its Rust test, Clippy, format,
+  security, performance, clean-room, and pseudo-terminal gates; see
+  [`docs/release-closure.md`](docs/release-closure.md) for reproducible
+  evidence rather than a stale test count.
 
 ## License
 

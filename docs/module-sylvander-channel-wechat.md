@@ -64,9 +64,9 @@ the resulting `BoundaryContext`.
 
 ## 6. Tests
 
-- `sylvander-channel-wechat/src/lib.rs` (`mod tests`) — webhook
+- `sylvander-channel-wechat/tests/unit/lib.rs` — webhook
   handlers, replay cache, instance-id binding.
-- `sylvander-channel-wechat/src/protocol.rs` (`mod tests`) — pure
+- `sylvander-channel-wechat/tests/unit/protocol.rs` — pure
   crypto tests against the WeChat reference vectors.
 
 ## 7. Common pitfalls

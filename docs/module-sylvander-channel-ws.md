@@ -59,7 +59,7 @@ upgrade; rejected upgrades close the socket before any
 
 ## 6. Tests
 
-Unit tests in `sylvander-channel-ws/src/lib.rs` (`mod tests`) cover
+Unit tests in `sylvander-channel-ws/tests/unit/lib.rs` cover
 frame parsing, auth enforcement, and request-size limits.
 
 ## 7. Common pitfalls
