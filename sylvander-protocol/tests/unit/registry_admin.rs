@@ -171,7 +171,7 @@ fn model_response_exposes_pricing_digest_not_pricing_configuration() {
 }
 
 #[test]
-fn model_error_identity_is_typed_and_legacy_errors_default_it() {
+fn model_error_identity_is_typed_and_irrelevant_fields_remain_optional() {
     let current: RegistryAdminError = serde_json::from_value(json!({
         "code": "unknown_model",
         "message": "model is unknown",
@@ -180,14 +180,14 @@ fn model_error_identity_is_typed_and_legacy_errors_default_it() {
     }))
     .unwrap();
     assert_eq!(current.model_id.as_deref(), Some("model-a"));
-    let legacy: RegistryAdminError = serde_json::from_value(json!({
+    let provider_error: RegistryAdminError = serde_json::from_value(json!({
         "code": "unknown_revision",
         "message": "provider revision is unknown",
         "provider_id": "alpha",
         "revision": 2
     }))
     .unwrap();
-    assert_eq!(legacy.model_id, None);
+    assert_eq!(provider_error.model_id, None);
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn credential_response_only_exposes_binding_and_reference_digests() {
 }
 
 #[test]
-fn credential_error_identity_is_hashed_and_new_fields_default_for_legacy_errors() {
+fn credential_error_identity_is_hashed_and_other_error_fields_are_optional() {
     let current: RegistryAdminError = serde_json::from_value(json!({
         "code": "unknown_generation",
         "message": "credential generation is unknown",
@@ -289,15 +289,15 @@ fn credential_error_identity_is_hashed_and_new_fields_default_for_legacy_errors(
     assert_eq!(current.binding_id_sha256.as_deref(), Some("binding-digest"));
     assert_eq!(current.generation, Some(2));
 
-    let legacy: RegistryAdminError = serde_json::from_value(json!({
+    let provider_error: RegistryAdminError = serde_json::from_value(json!({
         "code": "unknown_revision",
         "message": "provider revision is unknown",
         "provider_id": "alpha",
         "revision": 2
     }))
     .unwrap();
-    assert_eq!(legacy.binding_id_sha256, None);
-    assert_eq!(legacy.generation, None);
+    assert_eq!(provider_error.binding_id_sha256, None);
+    assert_eq!(provider_error.generation, None);
 }
 
 #[test]
@@ -489,14 +489,14 @@ fn credential_lifecycle_results_and_conflicts_are_typed_and_redacted() {
             actual_active_generation: 2,
         })
     );
-    let legacy: RegistryAdminError = serde_json::from_value(json!({
+    let unstructured: RegistryAdminError = serde_json::from_value(json!({
         "code": "unknown_generation",
         "message": "unknown",
         "binding_id_sha256": "binding-digest",
         "generation": 1
     }))
     .unwrap();
-    assert_eq!(legacy.details, None);
+    assert_eq!(unstructured.details, None);
 }
 
 fn provider_draft() -> ProviderDefinitionDraft {

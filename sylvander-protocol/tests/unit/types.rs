@@ -196,11 +196,11 @@ fn three_id_types_share_a_constructor_pattern() {
 }
 
 #[test]
-fn legacy_bus_messages_default_to_no_attachments() {
+fn current_bus_messages_may_omit_an_empty_attachment_list() {
     let mut value =
         serde_json::to_value(BusMessage::user_chat("s".into(), "u", "hi")).expect("serialize");
     value.as_object_mut().unwrap().remove("attachments");
-    let message: BusMessage = serde_json::from_value(value).expect("legacy decode");
+    let message: BusMessage = serde_json::from_value(value).expect("current optional field");
     assert!(message.attachments.is_empty());
 }
 
@@ -213,33 +213,24 @@ fn reasoning_effort_has_stable_provider_neutral_budgets() {
 }
 
 #[test]
-fn legacy_approval_messages_default_to_one_shot_scope() {
-    let system: SystemMessage = serde_json::from_value(serde_json::json!({
-        "type": "approve_tool",
-        "call_id": "call-1",
-        "approved": true
-    }))
-    .expect("legacy system message");
-    assert!(matches!(
-        system,
-        SystemMessage::ApproveTool {
-            scope: ApprovalScope::Once,
-            reason: None,
-            ..
-        }
-    ));
+fn approval_messages_require_explicit_scope_contracts() {
+    assert!(
+        serde_json::from_value::<SystemMessage>(serde_json::json!({
+            "type": "approve_tool",
+            "call_id": "call-1",
+            "approved": true
+        }))
+        .is_err()
+    );
 
-    let event: StreamEvent = serde_json::from_value(serde_json::json!({
-        "type": "tool_approval_required",
-        "batch_id": "batch-1",
-        "tools": []
-    }))
-    .expect("legacy stream event");
-    assert!(matches!(
-        event,
-        StreamEvent::ToolApprovalRequired { allowed_scopes, .. }
-            if allowed_scopes == vec![ApprovalScope::Once]
-    ));
+    assert!(
+        serde_json::from_value::<StreamEvent>(serde_json::json!({
+            "type": "tool_approval_required",
+            "batch_id": "batch-1",
+            "tools": []
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -256,36 +247,30 @@ fn approval_rejection_reason_round_trips_without_transport_semantics() {
 }
 
 #[test]
-fn legacy_retry_events_default_to_other_cause() {
-    let event: StreamEvent = serde_json::from_value(serde_json::json!({
-        "type": "model_retry",
-        "attempt": 1,
-        "max_attempts": 3,
-        "delay_ms": 100,
-        "reason": "temporary"
-    }))
-    .expect("legacy retry event");
-    assert!(matches!(
-        event,
-        StreamEvent::ModelRetry {
-            cause: RetryCause::Other,
-            ..
-        }
-    ));
+fn retry_events_require_an_explicit_typed_cause() {
+    assert!(
+        serde_json::from_value::<StreamEvent>(serde_json::json!({
+            "type": "model_retry",
+            "attempt": 1,
+            "max_attempts": 3,
+            "delay_ms": 100,
+            "reason": "temporary"
+        }))
+        .is_err()
+    );
 }
 
 #[test]
-fn legacy_model_descriptors_default_new_metadata() {
-    let descriptor: ModelDescriptor = serde_json::from_value(serde_json::json!({
-        "id": "model-a",
-        "provider": "test",
-        "capabilities": 0,
-        "reasoning_efforts": ["off"]
-    }))
-    .expect("legacy model descriptor");
-    assert!(descriptor.capability_names.is_empty());
-    assert_eq!(descriptor.lifecycle, ModelLifecycle::Active);
-    assert_eq!(descriptor.pricing, None);
+fn model_descriptors_require_current_capability_and_lifecycle_metadata() {
+    assert!(
+        serde_json::from_value::<ModelDescriptor>(serde_json::json!({
+            "id": "model-a",
+            "provider": "test",
+            "capabilities": 0,
+            "reasoning_efforts": ["off"]
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -295,7 +280,8 @@ fn model_capability_names_are_canonical_and_strict() {
         "provider": "test",
         "capabilities": 8,
         "capability_names": ["tool_use", "vision"],
-        "reasoning_efforts": ["off"]
+        "reasoning_efforts": ["off"],
+        "lifecycle": {"status": "active"}
     }))
     .expect("canonical capability names");
     assert_eq!(
@@ -308,7 +294,8 @@ fn model_capability_names_are_canonical_and_strict() {
             "provider": "test",
             "capabilities": 0,
             "capability_names": ["telepathy"],
-            "reasoning_efforts": ["off"]
+            "reasoning_efforts": ["off"],
+            "lifecycle": {"status": "active"}
         }))
         .is_err()
     );

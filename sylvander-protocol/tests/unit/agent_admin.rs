@@ -139,17 +139,17 @@ fn inspection_response_has_no_sensitive_definition_fields() {
 }
 
 #[test]
-fn legacy_definition_without_allowed_models_defaults_to_empty() {
-    let definition: AgentDefinitionDraft = serde_json::from_value(serde_json::json!({
+fn definition_without_allowed_models_is_rejected() {
+    let error = serde_json::from_value::<AgentDefinitionDraft>(serde_json::json!({
         "agent_id": "oraculo",
         "revision": 1,
         "name": "Oraculo",
         "provider_id": "anthropic",
         "default_model_id": "sonnet"
     }))
-    .unwrap();
+    .unwrap_err();
 
-    assert!(definition.allowed_models.is_empty());
+    assert!(error.to_string().contains("allowed_models"));
 }
 
 #[test]
@@ -175,6 +175,7 @@ fn write_draft_debug_redacts_raw_prompts() {
         "name": "Oraculo",
         "provider_id": "provider-1",
         "default_model_id": "model-1",
+        "allowed_models": [{"provider_id": "provider-1", "model_id": "model-1"}],
         "system_prompt": "definition prompt must never reach logs",
         "prompt_profiles": [profile]
     }))

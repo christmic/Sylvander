@@ -57,9 +57,8 @@ pub struct AgentDefinitionDraft {
     pub provider_id: String,
     pub default_model_id: String,
     /// Provider-qualified models that sessions may select, including the
-    /// Agent default. An empty list is reserved for legacy definitions and is
-    /// materialized by the server from existing immutable state.
-    #[serde(default)]
+    /// Agent default. The exact, non-empty allowlist is required on every
+    /// definition write.
     pub allowed_models: Vec<ModelSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,

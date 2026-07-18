@@ -93,10 +93,8 @@ pub struct ModelDescriptor {
     /// Compact capability bitset used by terminal clients.
     pub capabilities: u8,
     /// Provider-neutral, canonical capabilities for current clients.
-    #[serde(default)]
     pub capability_names: Vec<ModelCapability>,
     pub reasoning_efforts: Vec<ReasoningEffort>,
-    #[serde(default)]
     pub lifecycle: ModelLifecycle,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pricing: Option<ModelPricing>,
@@ -1017,7 +1015,6 @@ pub enum StreamEvent {
         max_attempts: u32,
         delay_ms: u64,
         reason: String,
-        #[serde(default)]
         cause: RetryCause,
     },
     InteractionTimedOut {
@@ -1070,7 +1067,6 @@ pub enum StreamEvent {
         tools: Vec<ToolCallInfo>,
         /// Scopes the operator permits for this request. `Once` is always
         /// present; persistent approval is never implied by the UI.
-        #[serde(default = "default_approval_scopes")]
         allowed_scopes: Vec<ApprovalScope>,
     },
     AskUser {
@@ -1168,7 +1164,6 @@ pub enum SystemMessage {
     ApproveTool {
         call_id: String,
         approved: bool,
-        #[serde(default)]
         scope: ApprovalScope,
         /// Optional user explanation when rejecting the request.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1193,10 +1188,6 @@ pub enum SystemMessage {
         session_id: SessionId,
         task_id: String,
     },
-}
-
-fn default_approval_scopes() -> Vec<ApprovalScope> {
-    vec![ApprovalScope::Once]
 }
 
 // ===========================================================================
