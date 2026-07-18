@@ -89,3 +89,35 @@ async fn unknown_target_never_falls_back_to_server_filesystem() {
     assert!(error.contains("unknown coding worktree target"));
     assert!(!state.path().join("worktrees/session-1").exists());
 }
+
+#[tokio::test]
+async fn writable_remote_non_git_workspace_is_rejected_without_fallback() {
+    let workspace = tempfile::tempdir().expect("non-Git workspace");
+    let remote_root = tempfile::tempdir().expect("remote worktree root");
+    let state = tempfile::tempdir().expect("state");
+    let mut service = CodingWorktreeService::new(Arc::new(GitWorktreeManager::new(state.path())));
+    service
+        .register_remote(
+            "ssh:dev",
+            Arc::new(
+                RemoteGitWorktreeManager::new(
+                    state.path().join("remote"),
+                    remote_root.path(),
+                    "ssh:dev",
+                    Arc::new(sylvander_agent::workspace_executor::LocalExecutor),
+                )
+                .expect("remote manager"),
+            ),
+        )
+        .expect("remote target");
+
+    let error = service
+        .create("session-remote", "ssh:dev", workspace.path())
+        .await
+        .expect_err("remote non-Git mutation must fail closed");
+    assert_eq!(
+        error,
+        "writable remote workspace requires a Git worktree transaction"
+    );
+    assert!(!state.path().join("worktrees/session-remote").exists());
+}
