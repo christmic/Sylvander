@@ -5,7 +5,7 @@
 //! ```text
 //! lib.rs — Channel trait impl (glue: session mapping, bus pub/sub)
 //!   ↓
-//! protocol.rs — DingTalk Stream protocol (pure SDK, no Sylvander deps)
+//! protocol.rs — `DingTalk` Stream protocol (pure SDK, no Sylvander deps)
 //!   Client, RobotMessage, MessageHandler
 //! ```
 
@@ -15,21 +15,8 @@ pub use protocol::{FrameHeaders, MessageHandler, ROBOT_TOPIC, RobotMessage};
 
 pub use protocol::Client as DingTalkClient;
 
-/// Parsed incoming message (alias of `RobotMessage` for legacy tests).
+/// Convenience alias for an incoming robot callback.
 pub type DingTalkCallback = RobotMessage;
-
-/// Wraps `RobotMessage` for transport layer.
-#[derive(Debug, Clone)]
-pub struct DingTalkIncoming {
-    pub callback: RobotMessage,
-}
-
-/// Placeholder for outgoing (`DingTalk` replies via webhook, not via transport trait).
-#[derive(Debug, Clone)]
-pub struct DingTalkOutgoing {
-    pub kind: String,
-    pub text: String,
-}
 
 /// Plain-text content.
 pub type DingTalkTextContent = protocol::TextContent;
@@ -45,6 +32,7 @@ use tracing::{info, warn};
 use sylvander_agent::bus::{MessageKind, SubscriptionFilter};
 use sylvander_agent::session_store::SessionStore;
 use sylvander_agent::spec::{AgentId, SessionId};
+use sylvander_channel::credential::{CredentialLeaseError, CredentialLeaseSource};
 use sylvander_channel::{
     Channel, ChannelContext, ExternalChatRequest, parse_external_control, submit_external_chat,
 };
@@ -66,6 +54,10 @@ struct ChannelMessageHandler {
 
 #[async_trait]
 impl MessageHandler for ChannelMessageHandler {
+    async fn on_connected(&self) {
+        self.ctx.mark_ready();
+    }
+
     async fn on_message(&self, msg: &RobotMessage, _headers: &FrameHeaders) {
         if msg.msg_id.is_empty() {
             warn!("dingtalk: ignored message without a stable id");
@@ -142,7 +134,12 @@ impl MessageHandler for ChannelMessageHandler {
         let session_id = submitted.session_id;
         drop(submitted.events);
 
-        info!(%session_id, sender = %msg.sender_staff_id, text, "dingtalk: message");
+        info!(
+            %session_id,
+            sender = %msg.sender_staff_id,
+            message_bytes = text.len(),
+            "dingtalk: message accepted"
+        );
     }
 }
 
@@ -331,26 +328,21 @@ pub struct DingTalkChannel {
 }
 
 impl DingTalkChannel {
-    pub fn new(app_key: impl Into<String>, app_secret: impl Into<String>) -> Self {
-        Self {
-            client: Client::new(app_key, app_secret),
-            instance_id: "dingtalk".into(),
-            agent_id: AgentId::new("default"),
-        }
-    }
-
-    /// Bind this channel to its configured instance and default Agent.
-    #[must_use]
-    pub fn with_identity(
-        mut self,
+    /// Construct a Stream client with renewable, instance-scoped credentials.
+    pub fn new(
         instance_id: impl Into<String>,
         agent_id: impl Into<AgentId>,
-    ) -> Self {
-        self.instance_id = instance_id.into();
-        self.agent_id = agent_id.into();
-        self
+        credentials: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError> {
+        let instance_id = instance_id.into();
+        Ok(Self {
+            client: Client::new(instance_id.clone(), credentials)?,
+            instance_id,
+            agent_id: agent_id.into(),
+        })
     }
 
+    /// Bound each Stream callback before JSON deserialization.
     #[must_use]
     pub fn with_request_limit(mut self, max_request_bytes: usize) -> Self {
         self.client = self.client.with_message_limit(max_request_bytes);
@@ -384,7 +376,6 @@ impl Channel for DingTalkChannel {
             replay: Arc::new(ReplayCache::default()),
             client: self.client.clone(),
         });
-        handler.ctx.mark_ready();
         tokio::select! {
             () = self.client.run(handler.clone()) => {}
             () = handler.ctx.shutdown_requested() => {}

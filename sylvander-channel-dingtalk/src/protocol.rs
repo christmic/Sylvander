@@ -11,6 +11,9 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use sylvander_channel::credential::{
+    CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -19,6 +22,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 // Constants
 // ===========================================================================
 
+/// Stream topic carrying robot callback frames.
 pub const ROBOT_TOPIC: &str = "/v1.0/im/bot/messages/get";
 
 const GATEWAY_URL: &str = "https://api.dingtalk.com/v1.0/gateway/connections/open";
@@ -62,11 +66,15 @@ struct DownStreamFrame {
     data: String,
 }
 
+/// Header fields carried by a `DingTalk` Stream frame and acknowledgement.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FrameHeaders {
+    /// Stable frame identifier echoed by acknowledgements.
     #[serde(rename = "messageId")]
     pub message_id: String,
+    /// Stream topic when the frame is a callback.
     pub topic: Option<String>,
+    /// Declared frame content type.
     #[serde(rename = "contentType", default)]
     pub content_type: String,
 }
@@ -86,31 +94,43 @@ struct UpStreamAck {
 /// Incoming robot message from `DingTalk`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RobotMessage {
+    /// Stable `DingTalk` conversation identifier.
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
+    /// Stable robot message identifier used for replay suppression.
     #[serde(rename = "msgId")]
     pub msg_id: String,
+    /// Provider sender identifier.
     #[serde(rename = "senderId")]
     pub sender_id: String,
+    /// Sender display name; never used for authorization.
     #[serde(rename = "senderNick")]
     pub sender_nick: String,
+    /// Enterprise staff identifier used to derive the transport principal.
     #[serde(rename = "senderStaffId")]
     pub sender_staff_id: String,
+    /// Per-conversation webhook used for replies.
     #[serde(rename = "sessionWebhook")]
     pub session_webhook: String,
+    /// Provider expiry time for the session webhook.
     #[serde(rename = "sessionWebhookExpiredTime")]
     pub session_webhook_expired: i64,
+    /// `DingTalk` robot application code.
     #[serde(rename = "robotCode", default)]
     pub robot_code: String,
+    /// Provider message kind.
     #[serde(rename = "msgtype")]
     pub msg_type: String,
+    /// Plain-text content when `msg_type` is text.
     pub text: Option<TextContent>,
     #[serde(flatten)]
     _extra: JsonValue,
 }
 
+/// Plain-text robot message payload.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TextContent {
+    /// User-visible message content.
     pub content: String,
 }
 
@@ -148,6 +168,10 @@ struct WebhookMarkdownContent {
 /// Handler called when a robot message is received.
 #[async_trait::async_trait]
 pub trait MessageHandler: Send + Sync {
+    /// Report that the Stream WebSocket is established and can receive
+    /// callbacks.
+    async fn on_connected(&self) {}
+
     /// Process an incoming robot message. Called in the WebSocket read loop.
     async fn on_message(&self, msg: &RobotMessage, headers: &FrameHeaders);
 }
@@ -159,24 +183,33 @@ pub trait MessageHandler: Send + Sync {
 /// `DingTalk` Stream client — manages WebSocket connection + token + replies.
 #[derive(Clone)]
 pub struct Client {
-    app_key: String,
-    app_secret: String,
+    credentials: Arc<dyn CredentialLeaseSource>,
+    credential_request: CredentialLeaseRequest,
     http: reqwest::Client,
-    token_cache: Arc<Mutex<Option<(String, i64)>>>,
+    token_cache: Arc<Mutex<Option<(String, i64, u64)>>>,
     pub(super) max_message_bytes: usize,
 }
 
 impl Client {
-    pub fn new(app_key: impl Into<String>, app_secret: impl Into<String>) -> Self {
-        Self {
-            app_key: app_key.into(),
-            app_secret: app_secret.into(),
+    /// Construct a Stream client from one renewable application credential
+    /// bundle scoped to `instance_id`.
+    pub fn new(
+        instance_id: impl Into<String>,
+        credentials: Arc<dyn CredentialLeaseSource>,
+    ) -> Result<Self, CredentialLeaseError> {
+        Ok(Self {
+            credential_request: CredentialLeaseRequest::new(
+                instance_id,
+                ["app_key", "app_secret"],
+            )?,
+            credentials,
             http: reqwest::Client::new(),
             token_cache: Arc::new(Mutex::new(None)),
             max_message_bytes: 1024 * 1024,
-        }
+        })
     }
 
+    /// Bound callback frames before JSON deserialization.
     #[must_use]
     pub const fn with_message_limit(mut self, max_message_bytes: usize) -> Self {
         self.max_message_bytes = max_message_bytes;
@@ -217,6 +250,7 @@ impl Client {
         };
         let (mut write, mut read) = ws.split();
         tracing::info!("dingtalk: connected");
+        handler.on_connected().await;
 
         // 3. Read loop
         while let Some(msg) = read.next().await {
@@ -247,7 +281,10 @@ impl Client {
                                 data: "{}".into(),
                             })
                             .unwrap();
-                            let _ = write.send(WsMessage::Text(ack.into())).await;
+                            if let Err(error) = write.send(WsMessage::Text(ack.into())).await {
+                                tracing::warn!(%error, "dingtalk: acknowledgement failed");
+                                break;
+                            }
                         }
                         "SYSTEM" => {
                             tracing::debug!(topic = ?frame.headers.topic, "dingtalk: system");
@@ -256,7 +293,10 @@ impl Client {
                     }
                 }
                 Ok(WsMessage::Ping(data)) => {
-                    let _ = write.send(WsMessage::Pong(data)).await;
+                    if let Err(error) = write.send(WsMessage::Pong(data)).await {
+                        tracing::warn!(%error, "dingtalk: pong failed");
+                        break;
+                    }
                 }
                 Ok(WsMessage::Close(_)) => {
                     tracing::info!("dingtalk: closed");
@@ -273,10 +313,13 @@ impl Client {
 
     /// Reply to a conversation with plain text.
     pub async fn reply_text(&self, webhook_url: &str, text: &str) {
-        let token = self.get_access_token().await;
+        let Some(token) = self.get_access_token().await else {
+            tracing::warn!("dingtalk: credential lease or access token unavailable");
+            return;
+        };
         self.send_webhook(
             webhook_url,
-            token.as_deref().unwrap_or(""),
+            &token,
             &WebhookText {
                 msgtype: "text".into(),
                 text: WebhookTextContent {
@@ -289,10 +332,13 @@ impl Client {
 
     /// Reply to a conversation with markdown.
     pub async fn reply_markdown(&self, webhook_url: &str, title: &str, text: &str) {
-        let token = self.get_access_token().await;
+        let Some(token) = self.get_access_token().await else {
+            tracing::warn!("dingtalk: credential lease or access token unavailable");
+            return;
+        };
         self.send_webhook(
             webhook_url,
-            token.as_deref().unwrap_or(""),
+            &token,
             &WebhookMarkdown {
                 msgtype: "markdown".into(),
                 markdown: WebhookMarkdownContent {
@@ -341,38 +387,42 @@ impl Client {
         tracing::warn!("dingtalk: delivery retry budget exhausted");
     }
 
-    async fn get_endpoint(&self) -> Result<GatewayResponse, reqwest::Error> {
+    async fn get_endpoint(&self) -> Result<GatewayResponse, CredentialLeaseError> {
+        let credentials = self.credential_bundle().await?;
         self.http
             .post(GATEWAY_URL)
             .header("Accept", "application/json")
             .json(&GatewayRequest {
-                client_id: &self.app_key,
-                client_secret: &self.app_secret,
+                client_id: credentials.secret("app_key")?,
+                client_secret: credentials.secret("app_secret")?,
                 subscriptions: vec![Subscription {
                     sub_type: "CALLBACK".into(),
                     topic: ROBOT_TOPIC.into(),
                 }],
             })
             .send()
-            .await?
+            .await
+            .map_err(|_| CredentialLeaseError::Unavailable)?
             .json()
             .await
+            .map_err(|_| CredentialLeaseError::Unavailable)
     }
 
     async fn get_access_token(&self) -> Option<String> {
+        let credentials = self.credential_bundle().await.ok()?;
+        let credential_generation = credentials.credential_generation();
+        if let Some(token) = self
+            .cached_access_token(credential_generation, unix_timestamp())
+            .await
         {
-            let cache = self.token_cache.lock().await;
-            if let Some((token, expires)) = &*cache {
-                let now = unix_timestamp();
-                if now < *expires {
-                    return Some(token.clone());
-                }
-            }
+            return Some(token);
         }
 
         let url = format!(
             "{}?appkey={}&appsecret={}",
-            GET_TOKEN_URL, self.app_key, self.app_secret
+            GET_TOKEN_URL,
+            credentials.secret("app_key").ok()?,
+            credentials.secret("app_secret").ok()?
         );
         let resp: JsonValue = reqwest::get(&url).await.ok()?.json().await.ok()?;
         let token = resp.get("access_token")?.as_str()?.to_string();
@@ -381,8 +431,22 @@ impl Client {
         self.token_cache
             .lock()
             .await
-            .replace((token.clone(), expires));
+            .replace((token.clone(), expires, credential_generation));
         Some(token)
+    }
+
+    async fn cached_access_token(&self, credential_generation: u64, now: i64) -> Option<String> {
+        let cache = self.token_cache.lock().await;
+        let (token, expires, cached_generation) = cache.as_ref()?;
+        (now < *expires && *cached_generation == credential_generation).then(|| token.clone())
+    }
+
+    async fn credential_bundle(&self) -> Result<CredentialLeaseBundle, CredentialLeaseError> {
+        let bundle = self.credentials.lease(&self.credential_request).await?;
+        if !bundle.contains_exact_slots(&self.credential_request.slots) {
+            return Err(CredentialLeaseError::InvalidLease);
+        }
+        Ok(bundle)
     }
 }
 
