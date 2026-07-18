@@ -24,8 +24,11 @@ pub struct OutputConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effort {
+    /// Prefer the smallest reasoning budget supported by the selected model.
     Low,
+    /// Use the provider's balanced reasoning budget.
     Medium,
+    /// Prefer a larger reasoning budget for difficult tasks.
     High,
     /// Maximum effort. Newest models only.
     Xhigh,
