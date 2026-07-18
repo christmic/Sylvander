@@ -6,6 +6,10 @@ use std::fmt;
 use sha2::{Digest, Sha256};
 use sylvander_protocol::{ModelSelection, PromptLayerDigest, PromptLayerKind, PromptManifest};
 
+use crate::turn_context::{
+    TurnContextCandidate, TurnContextInputs, TurnContextLayerKind, TurnContextProvenance,
+    TurnContextSource,
+};
 use crate::user_profile_prompt::UserProfilePromptLayer;
 
 pub const MAX_PROMPT_PROFILES: usize = 32;
@@ -307,6 +311,99 @@ impl PromptResolver {
         }
         validate_resolved_prompt(&prompt).map_err(|_| PromptResolveError::Invalid)?;
         Ok(prompt)
+    }
+
+    /// Build the authoritative typed layers for one live turn.
+    ///
+    /// Dynamic relationship and workspace candidates are deliberately absent;
+    /// the authenticated run retrieves and adds them using Runtime-owned
+    /// identity and execution-target state before final composition.
+    pub fn turn_context_inputs(
+        &self,
+        selection: &ModelSelection,
+        requested_profile: Option<&str>,
+        session_prompt: Option<&str>,
+        user_profile: Option<&UserProfilePromptLayer>,
+    ) -> Result<TurnContextInputs, PromptResolveError> {
+        let profile_id = requested_profile
+            .map(str::to_owned)
+            .or_else(|| self.default_profile.clone());
+        let profile = profile_id
+            .as_ref()
+            .map(|id| {
+                self.profiles
+                    .get(id)
+                    .ok_or(PromptResolveError::MissingProfile)
+            })
+            .transpose()?;
+        if profile.is_some_and(|profile| !profile.matches(selection)) {
+            return Err(PromptResolveError::IncompatibleProfile);
+        }
+        if let Some(prompt) = session_prompt {
+            validate_session_prompt(prompt).map_err(|_| PromptResolveError::Invalid)?;
+            if !self.allow_session_prompt {
+                return Err(PromptResolveError::SessionPromptDisabled);
+            }
+        }
+
+        let mut inputs = TurnContextInputs::default();
+        inputs.push_required(
+            TurnContextLayerKind::Safety,
+            TurnContextCandidate::authoritative(
+                SHARED_SAFETY_PROMPT,
+                TurnContextProvenance::new(TurnContextSource::RuntimeSafety, "sylvander-safety:v1"),
+            ),
+        );
+        if let Some(profile) = profile {
+            inputs.push_required(
+                TurnContextLayerKind::Agent,
+                TurnContextCandidate::authoritative(
+                    profile.system_prompt.clone(),
+                    TurnContextProvenance::new(
+                        TurnContextSource::ModelProfile,
+                        format!("prompt-profile:{}", profile.id),
+                    ),
+                ),
+            );
+        }
+        if !self.agent_prompt.is_empty() {
+            inputs.push_required(
+                TurnContextLayerKind::Agent,
+                TurnContextCandidate::authoritative(
+                    self.agent_prompt.clone(),
+                    TurnContextProvenance::new(
+                        TurnContextSource::AgentDefinition,
+                        self.agent_reference.clone(),
+                    ),
+                ),
+            );
+        }
+        if let Some(profile) = user_profile {
+            inputs.push_required(
+                TurnContextLayerKind::UserProfile,
+                TurnContextCandidate::authoritative(
+                    profile.content(),
+                    TurnContextProvenance::new(
+                        TurnContextSource::UserProfile,
+                        profile.provenance.source,
+                    )
+                    .with_revision(profile.provenance.profile_revision),
+                ),
+            );
+        }
+        if let Some(prompt) = session_prompt {
+            inputs.push_required(
+                TurnContextLayerKind::Session,
+                TurnContextCandidate::authoritative(
+                    prompt,
+                    TurnContextProvenance::new(
+                        TurnContextSource::SessionOverride,
+                        "current-session",
+                    ),
+                ),
+            );
+        }
+        Ok(inputs)
     }
 }
 

@@ -50,7 +50,7 @@ use crate::compress::layer::CompressionLayer;
 use crate::error::AgentLoopError;
 use crate::loop_::{self, AgentLoop};
 use crate::plan_gate::PlanGate;
-use crate::prompt::PromptResolver;
+use crate::prompt::{PromptResolver, SHARED_SAFETY_PROMPT};
 use crate::session::{SessionContext, SessionMetadata, now_secs};
 use crate::session_store::{
     MessageRole as StoredMessageRole, ReplacementMessage, SessionLifetime, SessionStore,
@@ -63,6 +63,11 @@ use crate::tool_context::{Cap, NetworkPolicy, ToolContext};
 use crate::tools::MemoryReadTool;
 use crate::tools::memory::{
     MemoryAppend, MemoryEntry, MemoryExecutionContext, MemoryFilter, MemoryStore, MemoryStoreError,
+};
+use crate::turn_context::{
+    TurnContextBudgets, TurnContextCandidate, TurnContextInputs, TurnContextLayerKind,
+    TurnContextManifest, TurnContextProvenance, TurnContextSource, compose_turn_context,
+    retrieve_relationship_context, retrieve_workspace_context,
 };
 use crate::workspace_executor::{
     LocalExecutor, MountedWorkspace, UnavailableExecutor, WorkspaceExecutor, WorkspaceRouter,
@@ -93,6 +98,8 @@ pub(crate) struct AgentRunInner {
     runtime_permissions: RwLock<sylvander_protocol::PermissionProfile>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
+    turn_context_budgets: TurnContextBudgets,
+    turn_context_manifests: RwLock<HashMap<SessionId, TurnContextManifest>>,
     /// Last provider-confirmed prompt usage for each session. This is window
     /// occupancy, unlike the durable cumulative billing counters.
     context_usage: RwLock<HashMap<SessionId, ContextUsage>>,
@@ -887,6 +894,11 @@ impl AgentRun {
             .remove(session_id);
         self.inner.context_usage.write().await.remove(session_id);
         self.inner
+            .turn_context_manifests
+            .write()
+            .await
+            .remove(session_id);
+        self.inner
             .approval_memory
             .lock()
             .await
@@ -901,6 +913,33 @@ impl AgentRun {
     /// Get a session context.
     pub async fn get_session(&self, session_id: &SessionId) -> Option<SessionContext> {
         self.inner.sessions.read().await.get(session_id).cloned()
+    }
+
+    /// Return the latest content-free typed context manifest for this
+    /// authenticated session.
+    pub async fn turn_context_manifest(
+        &self,
+        session: &AuthenticatedSession,
+    ) -> Result<Option<TurnContextManifest>, AgentRunError> {
+        if !Arc::ptr_eq(&self.inner.session_authority, &session.authority)
+            || !self
+                .inner
+                .authenticated_sessions
+                .read()
+                .await
+                .contains(&session.session_id)
+        {
+            return Err(AgentRunError::Authentication(
+                "session is not authenticated".into(),
+            ));
+        }
+        Ok(self
+            .inner
+            .turn_context_manifests
+            .read()
+            .await
+            .get(&session.session_id)
+            .cloned())
     }
 
     // -- message handling --
@@ -988,6 +1027,11 @@ impl AgentRun {
                             .await
                             .remove(session_id);
                         self.inner.context_usage.write().await.remove(session_id);
+                        self.inner
+                            .turn_context_manifests
+                            .write()
+                            .await
+                            .remove(session_id);
                         self.inner
                             .approval_memory
                             .lock()
@@ -2168,61 +2212,129 @@ impl AgentRunInner {
             .load_user_profile(&session_id, &session_metadata)
             .await?;
 
-        if let (Some(stored), Some(effective)) = (&stored_session, &effective_config) {
-            let prompt_policy = self.inner_prompt_resolver()?;
-            let resolved_prompt = prompt_policy
-                .resolve(
-                    &selected_model.selection,
-                    stored.config_overrides.prompt_profile.as_deref(),
-                    stored.config_overrides.system_prompt.as_deref(),
-                )
-                .map_err(|_| prompt_integrity_error())?;
-            if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
-                || effective.prompt_manifest.as_ref() != Some(&resolved_prompt.manifest)
-            {
-                return Err(prompt_integrity_error());
-            }
-            let turn_prompt = prompt_policy
-                .resolve_turn_system_prompt(
-                    &selected_model.selection,
-                    stored.config_overrides.prompt_profile.as_deref(),
-                    stored.config_overrides.system_prompt.as_deref(),
-                    user_profile.as_ref(),
-                )
-                .map_err(|_| prompt_integrity_error())?;
-            loop_config.system_prompt = Some(
-                with_workspace_context(
-                    turn_prompt,
-                    effective.agent_workspace.as_ref(),
-                    effective.user_workspace.as_ref(),
-                    &effective.workspace_mounts,
-                    session_metadata.workspace.as_path(),
-                    &self.workspace_executors,
-                    &self.skill_features,
-                )
-                .await?,
-            );
-        } else if loop_config.system_prompt.is_some() || user_profile.is_some() {
-            let mut prompt = loop_config.system_prompt.take().unwrap_or_default();
-            if let Some(profile) = &user_profile {
-                if !prompt.is_empty() {
-                    prompt.push_str("\n\n");
+        let mut context_inputs =
+            if let (Some(stored), Some(effective)) = (&stored_session, &effective_config) {
+                let prompt_policy = self.inner_prompt_resolver()?;
+                let resolved_prompt = prompt_policy
+                    .resolve(
+                        &selected_model.selection,
+                        stored.config_overrides.prompt_profile.as_deref(),
+                        stored.config_overrides.system_prompt.as_deref(),
+                    )
+                    .map_err(|_| prompt_integrity_error())?;
+                if effective.system_prompt_sha256 != resolved_prompt.system_prompt_sha256
+                    || effective.prompt_manifest.as_ref() != Some(&resolved_prompt.manifest)
+                {
+                    return Err(prompt_integrity_error());
                 }
-                prompt.push_str(profile.content());
-            }
-            loop_config.system_prompt = Some(
-                with_workspace_context(
-                    prompt,
-                    None,
-                    None,
-                    &[],
-                    session_metadata.workspace.as_path(),
-                    &self.workspace_executors,
-                    &self.skill_features,
-                )
-                .await?,
-            );
+                prompt_policy
+                    .turn_context_inputs(
+                        &selected_model.selection,
+                        stored.config_overrides.prompt_profile.as_deref(),
+                        stored.config_overrides.system_prompt.as_deref(),
+                        user_profile.as_ref(),
+                    )
+                    .map_err(|_| prompt_integrity_error())?
+            } else {
+                let mut inputs = TurnContextInputs::default();
+                inputs.push_required(
+                    TurnContextLayerKind::Safety,
+                    TurnContextCandidate::authoritative(
+                        SHARED_SAFETY_PROMPT,
+                        TurnContextProvenance::new(
+                            TurnContextSource::RuntimeSafety,
+                            "sylvander-safety:v1",
+                        ),
+                    ),
+                );
+                if let Some(prompt) = loop_config.system_prompt.take()
+                    && !prompt.is_empty()
+                {
+                    inputs.push_required(
+                        TurnContextLayerKind::Agent,
+                        TurnContextCandidate::authoritative(
+                            prompt,
+                            TurnContextProvenance::new(
+                                TurnContextSource::AgentDefinition,
+                                format!("agent:{}", self.id),
+                            ),
+                        ),
+                    );
+                }
+                if let Some(profile) = &user_profile {
+                    inputs.push_required(
+                        TurnContextLayerKind::UserProfile,
+                        TurnContextCandidate::authoritative(
+                            profile.content(),
+                            TurnContextProvenance::new(
+                                TurnContextSource::UserProfile,
+                                profile.provenance.source,
+                            )
+                            .with_revision(profile.provenance.profile_revision),
+                        ),
+                    );
+                }
+                inputs
+            };
+
+        let (agent_workspace, task_workspace, workspace_mounts) =
+            effective_config
+                .as_ref()
+                .map_or((None, None, &[][..]), |config| {
+                    (
+                        config.agent_workspace.as_ref(),
+                        config.user_workspace.as_ref(),
+                        config.workspace_mounts.as_slice(),
+                    )
+                });
+        let workspace = workspace_turn_context(
+            agent_workspace,
+            task_workspace,
+            workspace_mounts,
+            session_metadata.workspace.as_path(),
+            &self.workspace_executors,
+            &self.skill_features,
+            &msg.payload,
+            self.turn_context_budgets.workspace_knowledge,
+        )
+        .await?;
+        if let Some(authoritative) = workspace.authoritative {
+            context_inputs.push_required(TurnContextLayerKind::WorkspaceKnowledge, authoritative);
         }
+        context_inputs.extend_retrieved(
+            TurnContextLayerKind::WorkspaceKnowledge,
+            workspace.retrieved,
+        );
+
+        if let Some(memory) = self.memory.as_ref()
+            && self
+                .authenticated_sessions
+                .read()
+                .await
+                .contains(&session_id)
+        {
+            let caller = sylvander_protocol::SessionContext::new(
+                session_metadata.user_id.clone(),
+                self.id.clone(),
+                session_id.clone(),
+            );
+            let memory_context = MemoryExecutionContext::application_worker(&caller);
+            let relationship = retrieve_relationship_context(
+                memory.as_ref(),
+                &memory_context,
+                &msg.payload,
+                self.turn_context_budgets.relationship_memory,
+                now_secs(),
+            )
+            .await
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+            context_inputs.extend_retrieved(TurnContextLayerKind::RelationshipMemory, relationship);
+        }
+
+        let composed = compose_turn_context(context_inputs, &self.turn_context_budgets, now_secs())
+            .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
+        loop_config.system_prompt = Some(composed.system_prompt().to_owned());
+        let context_manifest = composed.manifest;
 
         // 1. Persist the immutable turn boundary before provider or tool work.
         let permissions = if let Some(effective) = &effective_config {
@@ -2259,6 +2371,10 @@ impl AgentRunInner {
                 .await
                 .map_err(|error| AgentRunError::Store(error.to_string()))?;
         }
+        self.turn_context_manifests
+            .write()
+            .await
+            .insert(session_id.clone(), context_manifest);
         let history = {
             let mut sessions = self.sessions.write().await;
             let ctx = sessions
@@ -2712,15 +2828,22 @@ impl AgentRunInner {
     }
 }
 
-async fn with_workspace_context(
-    prompt: String,
+struct WorkspaceTurnContext {
+    authoritative: Option<TurnContextCandidate>,
+    retrieved: Vec<TurnContextCandidate>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn workspace_turn_context(
     agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
     task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
     workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
     fallback_task_workspace: &Path,
     workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
     skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
-) -> Result<String, AgentRunError> {
+    query: &str,
+    budget: crate::turn_context::TurnContextBudget,
+) -> Result<WorkspaceTurnContext, AgentRunError> {
     let agent_focus = agent_workspace
         .and_then(|binding| binding.instruction_focus.clone())
         .unwrap_or_default();
@@ -2749,20 +2872,26 @@ async fn with_workspace_context(
         .map(|target| workspace_context_executor(workspace_executors, target))
         .transpose()?;
     let context = workspace_context::discover_with_report(
-        agent_target.zip(agent_executor).map(|(target, executor)| {
-            workspace_context::WorkspaceContextSource::focused(
-                executor.as_ref(),
-                target,
-                agent_focus,
-            )
-        }),
-        task_target.zip(task_executor).map(|(target, executor)| {
-            workspace_context::WorkspaceContextSource::focused(
-                executor.as_ref(),
-                target,
-                task_focus,
-            )
-        }),
+        agent_target
+            .clone()
+            .zip(agent_executor)
+            .map(|(target, executor)| {
+                workspace_context::WorkspaceContextSource::focused(
+                    executor.as_ref(),
+                    target,
+                    agent_focus,
+                )
+            }),
+        task_target
+            .clone()
+            .zip(task_executor)
+            .map(|(target, executor)| {
+                workspace_context::WorkspaceContextSource::focused(
+                    executor.as_ref(),
+                    target,
+                    task_focus,
+                )
+            }),
     )
     .await
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
@@ -2795,9 +2924,7 @@ async fn with_workspace_context(
             reloadable: true,
         })
         .collect();
-    let mut prompt = context
-        .prompt
-        .map_or(prompt.clone(), |context| format!("{prompt}\n\n{context}"));
+    let mut prompt = context.prompt.unwrap_or_default();
     if !workspace_mounts.is_empty() {
         let mounts = workspace_mounts
             .iter()
@@ -2822,14 +2949,67 @@ async fn with_workspace_context(
             })
             .collect::<Vec<_>>()
             .join("\n");
+        if !prompt.is_empty() {
+            prompt.push_str("\n\n");
+        }
         prompt.push_str(
-            "\n\n# Available workspace mounts\n\
+            "# Available workspace mounts\n\
              Unqualified paths use the task workspace. Address another mount \
              as `@reference/path`; Command and Git accept `workspace: \"reference\"`.\n",
         );
         prompt.push_str(&mounts);
     }
-    Ok(prompt)
+    let authoritative = (!prompt.is_empty()).then(|| {
+        TurnContextCandidate::authoritative(
+            prompt,
+            TurnContextProvenance::new(
+                TurnContextSource::WorkspaceInstructions,
+                task_target.as_ref().map_or_else(
+                    || "workspace:unavailable".into(),
+                    |target| format!("workspace:{}:instructions", target.id),
+                ),
+            ),
+        )
+    });
+    let retrieved = match (task_target.as_ref(), task_executor) {
+        (Some(target), Some(executor)) => {
+            retrieve_workspace_context(executor.as_ref(), target, query, budget)
+                .await
+                .map_err(|error| AgentRunError::Configuration(error.to_string()))?
+        }
+        _ => Vec::new(),
+    };
+    Ok(WorkspaceTurnContext {
+        authoritative,
+        retrieved,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn with_workspace_context(
+    prompt: String,
+    agent_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    task_workspace: Option<&sylvander_protocol::SessionWorkspaceBinding>,
+    workspace_mounts: &[sylvander_protocol::SessionWorkspaceMount],
+    fallback_task_workspace: &Path,
+    workspace_executors: &HashMap<String, Arc<dyn WorkspaceExecutor>>,
+    skill_features: &std::sync::RwLock<Vec<sylvander_protocol::PlatformFeature>>,
+) -> Result<String, AgentRunError> {
+    let workspace = workspace_turn_context(
+        agent_workspace,
+        task_workspace,
+        workspace_mounts,
+        fallback_task_workspace,
+        workspace_executors,
+        skill_features,
+        "",
+        TurnContextBudgets::default().workspace_knowledge,
+    )
+    .await?;
+    Ok(workspace.authoritative.map_or(prompt.clone(), |context| {
+        format!("{prompt}\n\n{}", context.content())
+    }))
 }
 
 fn workspace_target(binding: &sylvander_protocol::SessionWorkspaceBinding) -> WorkspaceTarget {
@@ -3039,6 +3219,7 @@ pub struct AgentRunBuilder {
         HashMap<sylvander_protocol::ModelSelection, sylvander_protocol::ModelPricing>,
     prompt_resolver: Option<Arc<PromptResolver>>,
     user_profile_provider: Option<Arc<dyn UserProfileProvider>>,
+    turn_context_budgets: TurnContextBudgets,
     approval_enabled: bool,
     approval_rules: Vec<crate::approval::ApprovalRule>,
     approval_store_path: Option<PathBuf>,
@@ -3107,6 +3288,7 @@ impl AgentRunBuilder {
             qualified_model_pricing: HashMap::new(),
             prompt_resolver: None,
             user_profile_provider: None,
+            turn_context_budgets: TurnContextBudgets::default(),
             approval_enabled: false,
             approval_rules: Vec::new(),
             approval_store_path: None,
@@ -3215,6 +3397,13 @@ impl AgentRunBuilder {
     #[must_use]
     pub fn user_profile_provider(mut self, provider: Arc<dyn UserProfileProvider>) -> Self {
         self.user_profile_provider = Some(provider);
+        self
+    }
+
+    /// Replace the immutable per-layer context limits for every turn.
+    #[must_use]
+    pub fn turn_context_budgets(mut self, budgets: TurnContextBudgets) -> Self {
+        self.turn_context_budgets = budgets;
         self
     }
 
@@ -3455,6 +3644,8 @@ impl AgentRunBuilder {
                 runtime_permissions: RwLock::new(runtime_permissions),
                 prompt_resolver: self.prompt_resolver,
                 user_profile_provider: self.user_profile_provider,
+                turn_context_budgets: self.turn_context_budgets,
+                turn_context_manifests: RwLock::new(HashMap::new()),
                 context_usage: RwLock::new(HashMap::new()),
                 workspace_journal,
                 workspace_executors: self.workspace_executors,

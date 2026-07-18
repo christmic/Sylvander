@@ -116,6 +116,8 @@ pub mod tool;
 pub mod tool_context;
 /// Built-in filesystem, memory, plan, and task tools.
 pub mod tools;
+/// Typed, budgeted, provenance-preserving context for one authenticated turn.
+pub mod turn_context;
 /// Bounded prompt layer generated from a user profile.
 pub mod user_profile_prompt;
 /// Runtime abstraction for retrieving authorized user profiles.
@@ -167,6 +169,9 @@ pub mod prelude {
         MemoryStore, MemoryStoreError, MemoryWriteTool, PresentPlanTool, ReadTool,
         RelationshipMemoryRetentionPolicy, SearchTool, SqliteMemoryAdmin, SqliteMemoryMaintenance,
         SqliteMemoryStore, StartBackgroundTaskTool, SystemMemoryClock, UpdatePlanTool, WriteTool,
+    };
+    pub use crate::turn_context::{
+        TurnContextBudget, TurnContextBudgets, TurnContextLayerKind, TurnContextManifest,
     };
     pub use crate::workspace_executor::{
         LocalExecutor, WorkspaceCommandOutput, WorkspaceCommandProgressSink,
