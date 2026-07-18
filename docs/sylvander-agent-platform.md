@@ -1,8 +1,8 @@
 # Sylvander Server Agent Platform
 
-Status: normative architecture and production backlog
+Status: normative architecture and current implementation audit
 
-Last audited: 2026-07-15
+Last audited: 2026-07-18
 
 Scope: Agent, runtime, public service protocol, execution, workspaces, channels,
 run evidence, and the self-improvement loop
@@ -20,9 +20,10 @@ resume sessions, select allowed models, provide task workspaces, answer
 decisions, and observe execution.
 
 The target is zero known open production defects and zero unchecked items in
-this document. Completion requires implementation, automated tests,
-documentation, migration coverage, and runtime evidence. A type or UI
-placeholder is not implementation.
+the active
+[`production-expansion-checklist.md`](production-expansion-checklist.md).
+Completion requires implementation, automated tests, documentation, and
+runtime evidence. A type or UI placeholder is not implementation.
 
 ## 2. Non-negotiable invariants
 
@@ -231,42 +232,51 @@ Legend: `implemented`, `partial`, `missing`, `defect`.
 
 | ID | Area | Status | Evidence and gap |
 |---|---|---:|---|
-| A01 | Agent specification | partial | The production runtime loads validated configured Agent definitions, including access, model, prompt, workspace, tools, and MCP declarations. The definition surface still needs the P1/P2 prompt, memory, Skill, and MCP runtimes. |
+| A01 | Agent specification | implemented | Immutable, integrity-checked Agent revisions cover identity, access, qualified model defaults and explicit non-empty allowlists, prompt profiles, relationship-memory declarations, Agent home and role-bearing mounts, built-in/MCP tools, hooks, UI commands, behavior, and presentation metadata. The default must be present in the qualified allowlist; Runtime never expands an empty list from a Provider catalog. Runtime precomposition validates the complete active revision and binds its prompt, durable memory, workspace instruction/Skill discovery, MCP, and extension services before activation. |
 | A02 | Agent registry | implemented | SQLite persists immutable, integrity-checked Agent revisions and an optimistic active head. Redacted public administration supports inspect, update, activate, and rollback; the runtime precomposes candidates, hot-loads active revisions, preserves historical execution workers, restores them after restart, and audits mutations. |
 | A03 | Runtime composition | implemented | `sylvander-server` delegates boot, durable storage, Agent/channel startup, readiness, failure reporting, and bounded drain to `sylvander-runtime`. |
-| A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Current wire uses qualified `(provider_id, model_id)` identity; legacy bare ids resolve only when unique. TUI, Unix, and WebSocket require a session ID and use optimistic updates; ambiguous, unavailable, and unscoped requests fail before mutation. |
+| A04 | Session model override | implemented | Model and reasoning overrides are durable session configuration. Wire and storage use qualified `(provider_id, model_id)` identity. TUI, Unix, and WebSocket require a session ID plus expected configuration revision; bare, unavailable, stale, and unscoped requests fail before mutation. |
 | A05 | Session permission override | implemented | Permission profiles are durable session overrides and do not mutate `AgentRun` global state; real-runtime tests cover two-session isolation. |
-| A06 | Model providers | implemented for current adapters | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v3 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. The neutral provider contract optionally enumerates a reliable remote catalog. Runtime reconciliation reports synchronized, drifted, unavailable, or operator-managed state and never mutates Registry metadata or active Agent snapshots. Current Anthropic-compatible adapters intentionally remain operator-managed because their deployment endpoints do not guarantee one authoritative catalog. |
+| A06 | Model providers | implemented for current adapters | Production Agent runs use the provider-neutral request/stream contract, immutable Provider/Model registry snapshots, request-scoped Credential resolution, and provider-backed compaction. Public UI v4 administration provides strict write drafts and typed errors for Provider/Model/Credential lifecycle operations, SQL CAS, full-row canonical/digest integrity checks, Provider adapter preflight, and durable mutation intent plus terminal audit. Registry-declared canonical capabilities, lifecycle, and pricing are published through the exact provider-qualified runtime catalog; adapter and request preflight fail closed before credential resolution or dispatch. The neutral provider contract optionally enumerates a reliable remote catalog. Runtime reconciliation reports synchronized, drifted, unavailable, or operator-managed state and never mutates Registry metadata or active Agent snapshots. Current Anthropic-compatible adapters intentionally remain operator-managed because their deployment endpoints do not guarantee one authoritative catalog. |
 | A07 | Model-specific prompts | implemented | One resolver composes the non-overridable safety floor, exact provider/model profile, Agent prompt, and allowed session input with strict limits and ordered digests. The immutable manifest survives restart and is revalidated before turn persistence, history mutation, tools, compaction, or provider dispatch. Public responses expose digests but keep raw session prompt input write-only. |
-| A08 | Agent workspace | partial | Configured Agent home and a user task workspace resolve into effective session state. Multiple role-bearing mounts and backend-neutral composition remain in P2.1. |
-| A09 | File tools | implemented for local, container, and managed sandbox execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. SSH completion is tracked separately in P3.3. |
-| A10 | Command/Git tools | implemented for local, container, and managed sandbox execution | Command and structured read-only Git share the executor boundary. Local and restricted OCI execution support bounded concurrent stdout/stderr capture, Unicode-safe streaming, deadlines and cancellation, plus host-backed isolated worktree review/accept/discard. Remote process-tree and worktree semantics remain P3.3. |
-| A11 | Worktree isolation | implemented for local/host-backed execution | Writable local and host-backed container Git sessions receive a durable isolated worktree, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state, removes leases for deleted sessions, and recovers worktrees left before manifest commit. Remote SSH worktrees remain deferred with P3.3. |
-| A12 | AGENTS.md | partial | The running Agent discovers hierarchical local AGENTS.md instructions with deterministic precedence. Executor-backed remote discovery and cache invalidation remain. |
+| A08 | Agent workspace | implemented | Effective session state carries Agent home, task, dependency, and artifact mounts as canonical logical references with independent read/write/command/Git policy. The location-neutral mount router applies collision, overlap, capability, and read-only validation across local, SSH, container, and managed-sandbox targets without exposing backend paths to the Agent. |
+| A09 | File tools | implemented for local, SSH, container, and managed sandbox execution | Read/Write/Edit/List/Search use one location-neutral executor and logical mount router with workspace-relative paths, structured bounds, read-only enforcement, and explicit unavailable-target failure. |
+| A10 | Command/Git tools | implemented for local, SSH, container, and managed sandbox execution | Command and structured read-only Git share the executor boundary. Local, OpenSSH, and restricted OCI execution support bounded concurrent stdout/stderr capture, Unicode-safe streaming, deadlines and cancellation, plus isolated worktree review/accept/discard. |
+| A11 | Worktree isolation | implemented for local, host-backed, and SSH execution | Writable Git sessions receive durable isolated worktrees, diff review, accept merge, discard, and restart recovery. Runtime boot validates every active lease against durable session state and reconciles orphaned or missing leases. SSH leases keep local intent manifests while executing Git operations in the configured remote worktree root. |
+| A12 | AGENTS.md | implemented | Every turn discovers bounded `AGENTS.md`, `AGENT.md`, and `agent.md` hierarchies through the selected workspace executor for Agent-home and task mounts. Deterministic alias, root-to-focus, and Agent-before-task precedence is recorded in prompt provenance; per-turn reload supplies cache invalidation for local, SSH, container, and managed-sandbox workspaces. |
 | A13 | Skills | implemented | Agent-home and task-workspace packages are discovered through the selected executor with deterministic precedence. Strict optional manifests provide versioned metadata, activation, and exact resources; invalid or incomplete packages fail atomically. Redacted active/configured/degraded health, trust, source, capabilities, and per-turn reload truth are protocol-visible. |
-| A14 | MCP | implemented for the local stdio scope | Production composition resolves secret references, supervises configured MCP stdio servers, negotiates the exact protocol, discovers collision-safe namespaced tools and resources, enforces request deadlines, emits protocol cancellation on timeout or interrupted futures, probes health, reconnects without replaying uncertain calls, atomically refreshes catalogs, bounds visible output while retaining complete result artifacts, exposes redacted health/capabilities, and drains owned processes. Optional MCP prompts, subscriptions, and non-stdio transports are not advertised. |
+| A14 | MCP | implemented for the local stdio scope | Production composition resolves secret references, supervises configured MCP stdio servers, negotiates the exact protocol, discovers collision-safe namespaced tools and resources, enforces request deadlines, emits protocol cancellation on timeout or interrupted futures, probes health, reconnects without replaying uncertain calls, atomically refreshes catalogs, bounds visible output while routing complete results into the encrypted tenant/user-scoped evidence artifact sink, exposes redacted health/capabilities, and drains owned processes. Optional MCP prompts, subscriptions, and non-stdio transports are not advertised. |
 | A14H | Hooks | partial | Agent definitions and the public administration contract configure bounded before-tool hooks. Hooks execute through the selected location-neutral workspace executor, stream running/stdout/stderr/pass/failure/block decisions into the ordinary typed tool lifecycle, prevent the underlying tool from running when a blocking hook fails, allow advisory failures to remain visible without replacing the real result, redact commands from inspection, and expose configuration through `/hooks`. Turn/session/after-tool hook phases and hot reload remain. |
 | A14X | Extensions | implemented | Agent definitions and the public administration contract contribute ordinary tools, typed prompt commands, and bounded declarative tool-presentation metadata. The TUI interprets presentation kind/label/target fields using trusted local renderers, sanitizes all values, retains a visible fallback, and exposes contribution counts/capabilities through `/extensions`; extensions receive neither UI callbacks nor a path around normal tool execution and approval. |
-| A15 | Agent memory | partial | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`; only a Runtime-issued, run-bound authenticated session can obtain memory authority, while raw bus joins remain untrusted. Revision, immutable provenance, bounded trace digest, policy revision, and effective expiry survive restart. The exact latest schema fails closed and never falls back to InMemory. CAS update/delete, atomic non-dangling supersession, finite default/max TTL, and bounded physical purge are transaction-coupled to content-safe per-record and run audit. A persistent monotonic watermark prevents rollback from reviving expired data; dangerous forward jumps enter durable quarantine until maintenance confirms the clock. Runtime owns startup catch-up, periodic retention, authenticated scheduled backup rotation, checkpoint-authorized bounded evidence compaction, and bounded shutdown. Compacted audit and retention rows form cumulative anchored summary roots while the newest live boundary rows remain. Every production mutation advances a keyed epoch/root anchor: the local file backend closes the restricted database-writer boundary, while the separately administered HTTP strong-CAS backend rejects whole-host historical replay. Offline restore accepts only a signed backup at the currently anchored epoch. |
-| A16 | Public service protocol | complete | UI v3 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, generated as JSON Schema, and compatibility-tested across v1/v2/v3 negotiation and legacy message defaults. External Channels receive subscribe-only bus access; authenticated chat and interactive controls enter through Runtime-owned UI operations. A new chat subscribes before exactly one publish, and any creation, metadata, Engine, subscription, or dispatch failure compensates durable session, Engine attachment, and AgentRun authority without deleting an existing session. |
-| A17 | Session persistence | partial | SQLite persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, and channel ownership metadata. Restart deterministically closes legacy pins and execution revalidates them against the snapshot. General mount sets and worktree leases remain P2/P3. |
+| A15 | Agent memory | implemented | Production boot opens one durable SQLite relationship-memory store and injects the same `Arc` into initial, active, historical, revalidated, activated, and rolled-back Agent revisions. Typed runtime ownership isolates `(user, Agent)`; only a Runtime-issued, run-bound authenticated session can obtain memory authority, while raw bus joins remain untrusted. Revision, immutable provenance, bounded trace digest, policy revision, and effective expiry survive restart. The exact latest schema fails closed and never falls back to InMemory. CAS update/delete, atomic non-dangling supersession, finite default/max TTL, and bounded physical purge are transaction-coupled to content-safe per-record and run audit. A persistent monotonic watermark prevents rollback from reviving expired data; dangerous forward jumps enter durable quarantine until maintenance confirms the clock. Runtime owns startup catch-up, periodic retention, authenticated scheduled backup rotation, checkpoint-authorized bounded evidence compaction, and bounded shutdown. Compacted audit and retention rows form cumulative anchored summary roots while the newest live boundary rows remain. Every production mutation advances a keyed epoch/root anchor: the local file backend closes the restricted database-writer boundary, while the separately administered HTTP strong-CAS backend rejects whole-host historical replay. Offline restore accepts only a signed backup at the currently anchored epoch. Guardian curation uses separate durable outbox, candidate, policy-decision, mutation-delivery, and canonical-memory stores with idempotent restart recovery; semantic classification cannot authorize a mutation. The live `do_not_learn` preference denies direct relationship append, Worker memory candidates, Guardian admission/extraction, and new learned commits while preserving explicit correction/export/delete/forget governance. |
+| A16 | Public service protocol | implemented | The latest UI v4 messages are owned by `sylvander-protocol`, shared by Unix/WebSocket/TUI, and generated as JSON Schema. Unknown/old versions and shapes fail closed. External Channels receive subscribe-only bus access; authenticated chat and interactive controls enter through Runtime-owned UI operations. A new chat subscribes before exactly one publish, and any creation, metadata, Engine, subscription, or dispatch failure compensates durable session, Engine attachment, and AgentRun authority without deleting an existing session. |
+| A17 | Session persistence | implemented | SQLite session schema version 1 persists sessions, messages, usage, archive/fork/compaction, sparse overrides, immutable Agent/Provider/Model revision pins, effective prompt/permissions/workspaces/executor, prompt manifest, and channel ownership metadata. Runtime shares the physical `sessions.db` file with the registry while preserving disjoint ownership: each component exact-validates its SQL and foreign keys and accepts only the companion's complete current object-name allowlist. Fresh boot and restart preserve the exact union; standalone, unknown, partial, obsolete, and damaged layouts fail closed. Execution revalidates durable state before provider or tool work. |
 | A18 | Identity and authorization | implemented | Protocol-owned authenticated transport principals, default-deny Agent access, session ownership, per-operation policy, boundary limits, typed denials, and content-free denial audit are enforced. Runtime owns the latest-only stable `UserId`/`PrincipalBinding` store, external digest key, exact trusted-issuer policy, two-sided single-use link proof, and monotonic unlink/relink CAS. The owner-free identity subprotocol is available through the common UI protocol over Unix and WebSocket; each transport derives the sealed transport/instance/principal envelope from its authenticated connection. Linked principals automatically resolve to the stable user for profiles, sessions, and ordinary ingress, while unlinked principals receive deterministic domain-scoped identities. |
 | A19 | DingTalk instances | implemented | Configuration supports multiple credential-isolated bots; sender/conversation mappings, ownership, authorization, Agent-scoped outbound subscriptions, Runtime supervision, replay protection, interactive approval/answer/interrupt controls, bounded delivery retry, and frame limits are instance-scoped and tested. |
 | A20 | Telegram instances | implemented | Configured bots use the shared durable store, required webhook authentication, instance-scoped principals/chat mappings, authorization, replay protection, Agent-scoped outbound subscriptions, Runtime supervision, interactive approval/answer/interrupt controls, Unicode-safe chunking/truncation, bounded delivery retry, and request limits. |
-| A21 | Other channels | implemented for current adapters | The production server constructs Unix, HTTP, WebSocket, DingTalk, Telegram, and WeChat under the common instance/authentication/supervision contract. Unix and WebSocket expose the complete typed UI protocol; HTTP and WeChat retain their intentionally narrower authenticated ingress surfaces. |
+| A21 | Other channels | implemented for current adapters | The production server constructs Unix, HTTP, WebSocket, DingTalk, Telegram, and WeChat under the common instance/authentication/supervision contract. Unix and WebSocket expose the complete typed UI protocol; HTTP exposes bounded authenticated chat ingress. WeChat decrypts and verifies enterprise callbacks, routes authenticated chat/control operations, and sends bounded completed replies and tool/control status through the active message API with renewable credentials and access-token refresh. |
 | A22 | Channel supervision | implemented | Stable instance registrations carry bounded configuration-driven restart policy and channel workspace defaults. Runtime provides readiness, startup rollback, content-free instance health, exponential restart/backoff, failure isolation, cooperative drain, and terminal instance-ID reporting. Adapter startup and subscription failures return to supervision rather than panicking. |
-| A23 | Run evidence | implemented | The durable run ledger correlates runs, turns, steps, outcomes, usage, tool activity, recovery, retention, queries, feedback, and content-free administration/authorization audit. Raw content is governed separately from structured evidence. |
-| A24 | Feedback | complete | Typed positive/negative feedback records bounded corrections, task result, artifact/validation references, privacy class, and Runtime-derived immutable principal/channel/transport attribution. It is persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
+| A23 | Run evidence | implemented | The durable run ledger correlates runs, turns, steps, outcomes, usage, tool activity, recovery, retention, queries, feedback, and content-free administration/authorization audit. Raw/redacted content and generated artifacts use the separately encrypted governed-record path. |
+| A24 | Feedback | implemented | Typed positive/negative feedback records bounded corrections, task result, artifact/validation references, privacy class, and Runtime-derived immutable principal/channel/transport attribution. It is persisted only when it references a real evidence run and, optionally, a turn belonging to that run. |
 | A25 | Self-improvement | implemented | Privacy-scoped deterministic cohort selection reports a stable digest, failure taxonomy, success/feedback rates, exact token and complete-cost truth, latency distribution, tool/approval/retry/timeout metrics, and explicit bias/completeness warnings. The immutable evaluation registry adds versioned scoring adapters, digest-pinned fixture/held-out datasets, baselines, thresholds, and server-recomputed complete comparison. Evidence-linked proposals require benefit/risk/components/rollback/evaluations and use an attributed optimistic review lifecycle. Local self-change runs in an isolated Git worktree, records HMAC-signed baseline/candidate/observation evidence, commits the exact evaluated candidate before a distinct human merge gate, merges with reversible history, and automatically reverts an observed threshold regression. |
-| A26 | Data governance | missing | Run-data classification, redaction, encryption, retention, deletion, export, and cross-tenant isolation policy are not implemented. |
-| A27 | Secrets | partial | Typed environment/file references, bounded zeroizing values, request-scoped Provider resolution, immutable generations, live rotation, activation preflight, and redacted administration are implemented. External secret backends, lease renewal, and uniform channel-credential rotation remain. |
-| A28 | Schema lifecycle | implemented under latest-only policy | Registry components and relationship memory have explicit component ledgers. Old, future, unmanaged, dual-owned, or damaged layouts fail startup without repair or fallback. Candidate configuration/registry activation is retry-safe and does not move the active head on failure. No compatibility migration is added without an explicitly approved source version and transition. |
-| A29 | Shutdown and recovery | implemented for local deployment | Runtime boot restores durable sessions, exact revision pins, interrupted evidence, maintenance state, and local worktree leases. It removes deleted-session and pre-manifest worktree orphans. Channel startup rollback, bounded restart/backoff, cooperative channel/Agent/evidence/maintenance drain, signed memory backup/restore, reviewed-merge revert, and repeatable recovery drills are documented and tested. |
-| A30 | Observability and operations | implemented for local deployment | Runtime exposes one content-safe operational snapshot with dependency readiness, Agent/session counts, per-instance channel health, evidence counts, and bounded-bus capacity/publish/backpressure counters. The HTTP adapter serves dependency-aware `/health`, `/ready`, and Prometheus `/metrics`; Server tracing supports human or flattened JSON export. Ingress size/rate quotas, bounded queues, restart policy, alert conditions, incident triage, recovery, and shutdown are documented in `operations-runbook.md`. |
+| A26 | Data governance | implemented | One latest-only governed-record path covers content-bearing run events and generated artifacts. It provides structural JSON redaction, explicit classification, database-bound tenant/key identity, exact user scope, AES-256-GCM content encryption, finite startup/maintenance retention, all-or-nothing audited export/delete, physical ciphertext deletion, and non-reusable tombstones. Queryable classification/scope/audit metadata requires encrypted host storage when metadata-at-rest secrecy is also required. |
+| A27 | Secrets | implemented for the current adapters | Typed environment/file references, bounded zeroizing values, immutable registry generations, activation preflight, and redacted administration are implemented. Provider requests use renewable external leases through a Runtime injection boundary; the built-in environment/file source re-resolves rotating values without rebuilding Agents. HTTP, WebSocket, DingTalk, Telegram, and WeChat acquire instance-scoped atomic credential bundles at authentication, connection, token-refresh, or delivery boundaries. Generation changes invalidate caches, expiry/renewal failure fails closed, and no adapter falls back to a previous or foreign instance's credential. |
+| A28 | Schema lifecycle | implemented under latest-only policy | Session schema version 1, the current registry component/V3 snapshot schema, and relationship memory have explicit version contracts. The shared session/registry file permits only their exact current two-owner namespace union while each owner exact-validates its own definitions; standalone, old, future, unmanaged, partial, duplicated, or damaged layouts fail startup without mutation, repair, downgrade, or fallback. Candidate configuration/registry activation is retry-safe and does not move the active head on failure. No compatibility migration is added without an explicitly approved source version and transition. |
+| A29 | Shutdown and recovery | implemented | Runtime boot restores durable sessions, exact revision pins/manifests, interrupted evidence, maintenance state, and local or remote worktree leases. It removes or reconciles deleted-session and pre-manifest worktree orphans. Channel startup rollback, bounded restart/backoff, cooperative channel/Agent/evidence/maintenance drain, signed memory backup/restore, reviewed-merge revert, and repeatable recovery drills are documented and tested. |
+| A30 | Observability and operations | implemented | Runtime exposes one content-safe operational snapshot with dependency readiness, Agent/session counts, per-instance channel health, evidence counts, and bounded-bus capacity/publish/backpressure counters. The HTTP adapter serves dependency-aware `/health`, `/ready`, and Prometheus `/metrics`; Server tracing supports human or flattened JSON export. Ingress size/rate quotas, bounded queues, restart policy, alert conditions, incident triage, recovery, and shutdown are documented in `operations-runbook.md`. |
 | A31 | Concurrency isolation | implemented | Agent turns use per-session locks and active-turn cancellation; real-runtime PTY tests cover multi-client session isolation. This must remain a regression gate. |
 | A32 | Approval authority | implemented | The Agent owns approval decisions and freezes one immutable capability surface per turn. Persistent grants require a Runtime-authenticated stable identity and bind exact `UserId`, `AgentId`, content-addressed policy revision, content-addressed capability revision, operation, and content-safe resource fingerprint. Any dimension change invalidates the grant. The current durable schema is atomic, bounded, fail-closed, and latest-only; transports can relay only Agent-advertised scopes. |
-| A33 | Mutation recovery | partial | The workspace journal supports local Write/Edit rollback. It is not executor-neutral and does not replace worktree isolation for coding. |
-| A34 | Test depth | partial | Agent, protocol, TUI, PTY, and real-runtime coverage is substantial. There is no executor contract suite, multi-instance channel suite, crash/restart ledger suite, config migration suite, or self-improvement evaluation suite. |
+| A33 | Mutation recovery | implemented for supported mutation modes | Local non-Git Write/Edit operations use the conflict-checked workspace journal. Every mutable Git coding session uses a durable local/host-backed or SSH-native worktree transaction with inspect, accept, discard, compensation, and restart reconciliation. A writable remote non-Git workspace is rejected before session creation instead of running without an executor-neutral rollback boundary. |
+| A34 | Test depth | implemented with deployment prerequisites | The checked-in suites cover Agent, protocol, TUI, PTY, real-runtime, executor conformance, multi-instance channels, crash/restart, worktrees, Guardian, governance, and self-improvement. The disposable local-SSH journey covers execution, remote cancellation, restart, review, accept, and discard. Real OCI, native tmux, credentialed Provider/external-channel, and deployment signing/notarization journeys require their host service or private credential and remain explicit deployment gates when those prerequisites are available. |
+
+Audit boundary: approval authority is one typed stage of the unified
+actor-aware invocation path. Runtime freezes the executable catalog, derives
+the Worker owner from `ToolContext`, re-authorizes every built-in, MCP,
+browser, host-control, memory-candidate, control, and extension route, and
+records pre-execution plus terminal content-safe audit. Skills are frozen into
+the same turn revision as prompt-only context and grant no executable
+authority. Large MCP output uses the governed artifact sink rather than
+unbounded audit or transcript content.
 
 ## 5. Prioritized executable backlog
 
@@ -277,10 +287,11 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
 
 - [x] **P0.1 Configuration schema and loader:** versioned server config,
   Agent definitions, model providers, execution targets, channel instances,
-  secret references, validation, redacted inspection, and environment migration.
+  secret references, validation, and redacted inspection.
   Evidence: `sylvander-runtime/src/config`, `config/sylvander.example.toml`, and
   `docs/server-configuration.md`; runtime tests cover validation, secrets,
-  migration, the maintained example, composition, and durable restart.
+  the maintained example, composition, and durable restart. `SYLVANDER_CONFIG`
+  is mandatory; old/unknown schemas fail before boot.
 - [x] **P0.2 Production composition root:** make `sylvander-runtime` the only
   boot path; use the configured durable store; supervise Agents and channels;
   graceful drain and explicit startup failures.
@@ -289,21 +300,22 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   drain, and a real Unix/HTTP server startup-health-shutdown smoke test.
 - [x] **P0.3 Session effective configuration:** persist Agent revision, model,
   reasoning, permissions, prompt profile, workspaces, executor, and override
-  provenance; snapshot atomically per turn; migrate existing sessions.
+  provenance; require immutable component pins plus prompt manifest; snapshot
+  atomically per turn.
   Evidence: protocol-owned sparse/effective/provenance types; dedicated SQLite
   columns and immutable turn snapshots; runtime resolution across Agent,
-  channel, session, and legacy workspace layers; optimistic revision updates;
-  boot migration; and an end-to-end model request proving that the persisted
+  channel, and session layers; optimistic revision updates; current-schema
+  restart validation; and an end-to-end model request proving that the persisted
   model/prompt/permission selection is used before the provider or tools run.
   The configured execution-target identity is durable here; backend-neutral
   filesystem/process execution remains deliberately tracked by P3.1/P3.2.
-- [x] **P0.4 Public protocol v3:** move service messages into
+- [x] **P0.4 Public protocol v4:** move service messages into
   `sylvander-protocol`; add Agent discovery, session create/update/effective
-  state, feedback, and optimistic concurrency; generate and compatibility-test
-  the schema. Evidence: one shared `UiClientMessage`/`UiServerMessage` contract
+  state, feedback, and optimistic concurrency; generate and strictly test the
+  current schema. Evidence: one shared `UiClientMessage`/`UiServerMessage` contract
   across Unix, WebSocket, and TUI; runtime-owned `UiService`; durable configured
-  session creation and optimistic updates; evidence-linked feedback; Schemars
-  v3 generation; and v1/v2/v3 negotiation plus schema compatibility tests.
+  session creation and optimistic updates; evidence-linked feedback; and
+  generated JSON Schema with old/unknown-shape rejection.
 - [x] **P0.5 Boundary authorization:** authenticated principals, Agent/session
   ownership, channel-instance identity, policy checks, safe defaults, rate and
   payload limits, and auditable denials. Evidence: protocol-owned boundary
@@ -339,21 +351,20 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     and capability contracts are independent from public UI protocol types.
   - [x] Anthropic implements the neutral adapter with no internal retry or
     fallback, redacted errors, and exactly one terminal completion.
-  - [x] Public and durable session selection is provider-qualified; legacy ids
-    are accepted only when the visible catalog has one exact match.
-  - [x] Migrate production `AgentLoop` through a compatibility-preserving dual
-    backend; legacy history, events, tools, and builders remain valid, while
-    provider streams are checked for one terminal completion and exact model
-    identity. Manual and automatic compaction use the same pinned provider
-    backend and return typed, redacted failures.
+  - [x] Public and durable session selection is provider-qualified; bare model
+    ids are rejected.
+  - [x] Production `AgentLoop` uses the provider-neutral backend. Provider
+    streams are checked for one terminal completion and exact model identity.
+    Manual and automatic compaction use the same pinned provider backend and
+    return typed, redacted failures.
   - [x] Extend the existing `sessions.db` Agent registry SSOT with component
-    migrations and immutable Provider/Model/Credential revision tables. Do not
+    ledgers and immutable Provider/Model/Credential revision tables. Do not
     create a second registry database.
-    Evidence: the component migration ledger plus integrity-checked registry
+    Evidence: the current component ledger plus integrity-checked registry
     domain loaders in `sylvander-runtime/src/agent_registry.rs` and
     `sylvander-runtime/src/registry_domain.rs`.
   - [x] Add true SQL compare-and-swap across multiple registry connections,
-    integrity validation, restart migration, lifecycle, and pricing metadata.
+    integrity validation, current-schema restart checks, lifecycle, and pricing metadata.
     Provider/Model/Credential heads use optimistic SQL updates and immutable
     digest-checked definitions in the existing `sessions.db` SSOT.
   - [x] Route active Provider/Model revisions dynamically while sessions pin
@@ -361,8 +372,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
     never persist resolved secret values.
     Evidence: immutable Agent registry snapshots, exact production
     `RuntimeRevisionProvider` composition, persisted Provider/Model session
-    pins, deterministic legacy closure, execution-boundary revalidation, and
-    request-scoped credential rotation tests in `sylvander-runtime`.
+    pins, current-schema restart validation, execution-boundary revalidation,
+    and request-scoped credential rotation tests in `sylvander-runtime`.
+    The latest-only registry physically contains the base catalog and V3
+    snapshot tables only. V2 snapshot tables, APIs, loaders, and composition
+    paths do not ship; an external old or mixed database fails the exact schema
+    check without being upgraded or mutated.
   - [x] Expose redacted Provider/Model/Credential revision inspection through
     the public protocol with transport authorization, service authorization,
     immutable exact-version reads, bounded database pagination, and durable
@@ -370,9 +385,9 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Expose Credential create/stage/activate/rollback with strict immutable
     generations, optimistic head concurrency, exact-generation availability
     preflight, typed redacted failures, durable pre-mutation intent and terminal
-    audit, UI protocol v3 negotiation, and Unix/WebSocket round trips.
+    audit, UI protocol v4 negotiation, and Unix/WebSocket round trips.
   - [x] Expose Provider/Model create/stage/activate/rollback through strict UI
-    protocol v3 drafts with typed redacted failures, SQL compare-and-swap,
+    protocol v4 drafts with typed redacted failures, SQL compare-and-swap,
     full-row identity/revision/canonical-JSON/digest verification, Provider
     adapter preflight, and durable pre-mutation intent plus terminal audit.
     Component head mutations are future-only: they do not rewrite existing
@@ -387,8 +402,8 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   - [x] Enable validated cross-provider session overrides and prove same model
     ids across providers, historical sessions, restart, rotation, and failure
     isolation with deterministic local providers. Evidence includes public
-    RegistryAdmin and AgentAdmin adoption, DiscoverAgents metadata, ambiguous
-    legacy selection rejection before mutation, exact session revision pins,
+    RegistryAdmin and AgentAdmin adoption, DiscoverAgents metadata, bare or
+    ambiguous selection rejection before mutation, exact session revision pins,
     restart restoration, live Credential rotation, and one-provider failure
     without fallback or contamination of a healthy Provider.
 - [x] **P1.3 Prompt resolver:** shared safety layers, exact qualified
@@ -497,8 +512,7 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   through `6c6a207f0` (readiness-gated policy activation and cross-store anchor
   writer serialization), and `63d9b6e` plus `d0bfec0` (checkpoint-authorized
   bounded evidence chains and Runtime publication of the final restorable
-  epoch). G0 must not be marked complete until every remaining P1.4 gate
-  above has implementation and acceptance evidence.
+  epoch). The current acceptance suite covers every P1.4 gate above.
 - [x] **P1.5 Stable user identity and account binding:** Runtime owns the
   latest-only stable user/principal store and its external HMAC key. Channel
   ingress derives typed external principals only after platform
@@ -561,8 +575,8 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   clients resolve secret references, supervise and drain child processes,
   publish bounded namespaced tool/resource adapters, send protocol
   cancellation on timeout and dropped requests, reconnect without replay,
-  refresh catalogs atomically, persist complete result artifacts, and expose
-  redacted health counters. See
+  refresh catalogs atomically, send complete results to the Runtime-owned
+  encrypted artifact sink, and expose redacted health counters. See
   [`sylvander-agent/docs/mcp.md`](../sylvander-agent/docs/mcp.md).
 
 ### P3 — Location-transparent execution and coding isolation
@@ -594,7 +608,8 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   group on timeout, interrupt, or future cancellation; tests use a background
   descendant that attempts a delayed filesystem side effect and prove it
   cannot survive. SSH transport processes use kill-on-drop, while remote
-  process-tree cancellation remains explicitly deferred with P3.3.
+  process-group cancellation is implemented by the remote wrapper and covered
+  by the opt-in real-SSH acceptance journey.
   The first container adapter now runs every operation in a disposable,
   network-disabled container with a bounded bind mount, read-only inspection,
   live bounded command output, and daemon-side forced cleanup on cancellation.
@@ -608,8 +623,8 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   OCI-compatible driver plus an immutable image reference. Environments remain
   deliberately disposable: durable coding state belongs in the isolated host
   worktree, while reusing an execution container would leak state across
-  operations. SSH pooling, explicit host-key policy, and remote worktree review
-  remain open.
+  operations. SSH pooling, explicit host-key policy, remote worktree review,
+  restart reconciliation, accept, and discard are implemented.
 
   The local environment contract is now explicit: Command accepts bounded,
   validated per-invocation overrides, Local applies them only to the child
@@ -619,12 +634,13 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   read-only inspection behavior through Local and the logical mount router.
   Detailed invariants are in
   [`sylvander-agent/docs/workspace-execution.md`](../sylvander-agent/docs/workspace-execution.md).
-- [x] **P3.3 Current-release scope decision — SSH deferred:** remote execution
-  is deliberately excluded from the local-first release at the owner's
-  direction. No SSH capability is advertised by this release. Host-key policy,
-  connection pooling, credential references, remote process-tree cancellation,
-  transfer semantics, remote worktrees, and their conformance tests form one
-  future release track rather than an incomplete local feature.
+- [x] **P3.3 OpenSSH execution:** configured SSH targets resolve an identity
+  path through the secret boundary, require a deployment-owned known-hosts
+  file with strict verification, reuse bounded OpenSSH control connections,
+  validate remote workspace paths, bound both output streams, publish live
+  progress, and terminate the owned remote process group on timeout,
+  interruption, or dropped futures. Unit tests use a deterministic fake
+  transport; the credentialed real-SSH journey is an opt-in deployment gate.
 - [x] **P3.4 Container and sandbox executors:** disposable OCI operations have
   bounded mounts, network denial, read-only root filesystems, private temporary
   storage, dropped capabilities, no-new-privileges, validated resource
@@ -632,12 +648,12 @@ parallel. An item becomes `done` only when its acceptance evidence is linked.
   complete host-backed coding-session journey across a Runtime restart.
   Reusable environments are intentionally excluded because durable state lives
   in isolated worktrees and executor reuse would create cross-operation state.
-- [x] **P3.5 Worktree manager (local/host-backed scope):** writable Git coding
-  sessions default to collision-free durable leases; review, merge, abandon,
-  restart, and compensation paths are public and tested. Runtime boot validates
-  active leases against the durable effective workspace, garbage-collects
-  deleted-session leases, and recovers worktrees left by a crash before
-  manifest commit. Remote SSH worktrees remain explicitly deferred with P3.3.
+- [x] **P3.5 Worktree managers:** writable Git coding sessions default to
+  collision-free durable leases. Local/host-backed and SSH managers implement
+  review, merge, abandon, restart, and compensation paths. Runtime boot
+  validates active leases against the durable effective workspace,
+  garbage-collects deleted-session leases, and reconciles remote worktrees
+  through local intent manifests plus the configured SSH executor.
 
 ### P4 — Multi-instance channels
 
@@ -701,7 +717,7 @@ Every implementation batch must include:
 3. persistence/restart tests for durable state;
 4. negative security and cross-session/instance isolation tests;
 5. formatting, clippy with warnings denied, workspace tests, and release build;
-6. documentation and migration notes in the same batch;
+6. documentation and current-schema rollout/rollback notes in the same batch;
 7. a reversible commit that does not mix unrelated subsystems.
 
 Real credentials are never required for the default suite. Provider, SSH,
