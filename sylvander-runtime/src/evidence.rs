@@ -1,10 +1,17 @@
 //! Durable structured evidence for recovery, audit, and evaluation.
+//!
+//! The SQLite file is a latest-only contract: fresh initialization is atomic,
+//! while every reopen validates its application ID, schema version, exact
+//! owned object set, and referential integrity before recovery can mutate it.
 
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::task;
 
@@ -51,7 +58,24 @@ pub use proposal_types::{
     ImprovementProposal, ImprovementProposalStatus, ImprovementRisk, ProposalTransition,
     RequiredEvaluation, StoredImprovementProposal,
 };
-pub use recorder::EvidenceRecorder;
+pub use recorder::{EvidenceRecorder, EvidenceRecorderFailure};
+
+const EVIDENCE_APPLICATION_ID: i64 = 0x5359_4556;
+const EVIDENCE_SCHEMA_VERSION: i64 = 1;
+
+/// Derive the opaque wire handle persisted beside one exact evidence turn.
+///
+/// The digest is an identifier, not an authorization credential. Runtime
+/// still resolves the target through the evidence store and enforces session
+/// ownership before accepting feedback.
+pub(crate) fn feedback_target(run_id: &str, turn_id: &str) -> sylvander_protocol::FeedbackTarget {
+    let mut digest = Sha256::new();
+    digest.update(b"sylvander-feedback-target-v1\0");
+    digest.update(run_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(turn_id.as_bytes());
+    sylvander_protocol::FeedbackTarget(format!("sha256:{:x}", digest.finalize()))
+}
 
 #[derive(Clone)]
 pub struct EvidenceStore {
@@ -215,30 +239,44 @@ pub struct StoredFeedback {
 impl EvidenceStore {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, EvidenceError> {
         let path = path.as_ref().to_path_buf();
-        Self::open_connection(move || Connection::open(path), None).await
+        Self::open_connection(move || open_file_connection(path), None).await
     }
 
     #[cfg(test)]
     async fn open_in_memory() -> Result<Self, EvidenceError> {
-        Self::open_connection(Connection::open_in_memory, None).await
+        Self::open_connection(open_memory_connection, None).await
     }
 
     async fn open_connection(
-        open: impl FnOnce() -> rusqlite::Result<Connection> + Send + 'static,
+        open: impl FnOnce() -> Result<OpenedEvidenceConnection, EvidenceError> + Send + 'static,
         governance: Option<Arc<governance::GovernanceState>>,
     ) -> Result<Self, EvidenceError> {
         task::spawn_blocking(move || {
-            let connection = open().map_err(EvidenceError::sqlite)?;
-            connection
-                .busy_timeout(Duration::from_secs(5))
-                .map_err(EvidenceError::sqlite)?;
-            connection
-                .execute_batch(SCHEMA)
-                .map_err(EvidenceError::sqlite)?;
-            if let Some(state) = governance.as_deref() {
-                governance::initialize_governance(&connection, state)?;
+            let OpenedEvidenceConnection {
+                mut connection,
+                initialize_schema,
+                fresh_path,
+            } = open()?;
+            let setup = (|| {
+                connection
+                    .busy_timeout(Duration::from_secs(5))
+                    .map_err(EvidenceError::sqlite)?;
+                connection
+                    .pragma_update(None, "foreign_keys", true)
+                    .map_err(EvidenceError::sqlite)?;
+                initialize_or_validate_schema(&mut connection, initialize_schema)?;
+                if let Some(state) = governance.as_deref() {
+                    governance::initialize_governance(&connection, state)?;
+                }
+                recover_interrupted(&connection)
+            })();
+            if let Err(error) = setup {
+                drop(connection);
+                if let Some(path) = fresh_path {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(error);
             }
-            recover_interrupted(&connection)?;
             Ok(Self {
                 connection: Arc::new(Mutex::new(connection)),
                 governance,
@@ -298,10 +336,11 @@ impl EvidenceStore {
     }
 
     pub async fn start_turn(&self, turn: TurnStart) -> Result<(), EvidenceError> {
+        let feedback_target = feedback_target(&turn.run_id, &turn.id);
         self.run(move |connection| {
             connection.execute(
-                "INSERT INTO evidence_turns(id, run_id, session_id, agent_id, started_at, status, input_bytes, input_digest) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7)",
-                params![turn.id, turn.run_id, turn.session_id, turn.agent_id, turn.started_at, as_i64(turn.input_bytes)?, turn.input_digest],
+                "INSERT INTO evidence_turns(id, run_id, session_id, agent_id, started_at, status, input_bytes, input_digest, feedback_target) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?8)",
+                params![turn.id, turn.run_id, turn.session_id, turn.agent_id, turn.started_at, as_i64(turn.input_bytes)?, turn.input_digest, feedback_target.0],
             ).map_err(EvidenceError::sqlite)?;
             Ok(())
         }).await
@@ -631,34 +670,20 @@ impl EvidenceStore {
         .await
     }
 
-    /// Resolve the single session to which feedback may be attributed.
-    /// Run-level feedback is accepted only when the run contains one session;
-    /// callers must name a turn when a run spans multiple owners.
+    /// Resolve the owner session for one server-issued opaque turn handle.
     pub async fn feedback_session(
         &self,
-        run_id: String,
-        turn_id: Option<String>,
+        target: sylvander_protocol::FeedbackTarget,
     ) -> Result<Option<String>, EvidenceError> {
         self.run(move |connection| {
-            if let Some(turn_id) = turn_id {
-                return connection
-                    .query_row(
-                        "SELECT session_id FROM evidence_turns WHERE run_id=?1 AND id=?2",
-                        params![run_id, turn_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(EvidenceError::sqlite);
-            }
-            let mut statement = connection
-                .prepare("SELECT DISTINCT session_id FROM evidence_turns WHERE run_id=?1 LIMIT 2")
-                .map_err(EvidenceError::sqlite)?;
-            let sessions = statement
-                .query_map([run_id], |row| row.get::<_, String>(0))
-                .map_err(EvidenceError::sqlite)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(EvidenceError::sqlite)?;
-            Ok((sessions.len() == 1).then(|| sessions[0].clone()))
+            connection
+                .query_row(
+                    "SELECT session_id FROM evidence_turns WHERE feedback_target=?1",
+                    [target.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(EvidenceError::sqlite)
         })
         .await
     }
@@ -731,8 +756,9 @@ impl EvidenceStore {
         .await
     }
 
-    /// Persist explicit user feedback only when it can be traced to a real
-    /// run and, when supplied, a turn belonging to that run.
+    /// Persist explicit user feedback only when its opaque handle resolves to
+    /// one durable turn. The handle identifies a target; caller authorization
+    /// remains the Runtime boundary's responsibility.
     pub async fn record_feedback(
         &self,
         feedback: RunFeedback,
@@ -742,23 +768,15 @@ impl EvidenceStore {
         let id = uuid::Uuid::new_v4().to_string();
         let stored_id = id.clone();
         self.run(move |connection| {
-            let target_exists: bool = connection
+            let target = connection
                 .query_row(
-                    "SELECT EXISTS(
-                       SELECT 1 FROM evidence_runs r
-                       WHERE r.id=?1
-                         AND (?2 IS NULL OR EXISTS(
-                           SELECT 1 FROM evidence_turns t
-                           WHERE t.id=?2 AND t.run_id=r.id
-                         ))
-                     )",
-                    params![feedback.run_id, feedback.turn_id],
-                    |row| row.get(0),
+                    "SELECT run_id,id FROM evidence_turns WHERE feedback_target=?1",
+                    [&feedback.target.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
-                .map_err(EvidenceError::sqlite)?;
-            if !target_exists {
-                return Err(EvidenceError::InvalidFeedbackTarget);
-            }
+                .optional()
+                .map_err(EvidenceError::sqlite)?
+                .ok_or(EvidenceError::InvalidFeedbackTarget)?;
             let rating = match feedback.rating {
                 FeedbackRating::Positive => "positive",
                 FeedbackRating::Negative => "negative",
@@ -775,8 +793,8 @@ impl EvidenceStore {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                     params![
                         stored_id,
-                        feedback.run_id,
-                        feedback.turn_id,
+                        target.0,
+                        target.1,
                         rating,
                         feedback.note,
                         feedback.correction,
@@ -1059,6 +1077,8 @@ fn decode_feedback(row: StoredFeedbackRow) -> Result<StoredFeedback, EvidenceErr
 pub enum EvidenceError {
     #[error("SQLite evidence store failed: {0}")]
     Sqlite(String),
+    #[error("evidence database I/O failed: {0}")]
+    Io(String),
     #[error("evidence blocking task failed: {0}")]
     Task(String),
     #[error("evidence value {0} exceeds SQLite integer range")]
@@ -1123,6 +1143,10 @@ pub enum EvidenceError {
     InvalidRetentionPolicy,
     #[error("plaintext evidence content must use the encrypted governance store")]
     PlaintextEvidenceRejected,
+    #[error("evidence database schema is not the exact current schema")]
+    InvalidSchema,
+    #[error("evidence database integrity check failed")]
+    Integrity,
     #[error("evidence governance schema is not the exact current schema")]
     InvalidGovernanceSchema,
 }
@@ -1133,8 +1157,151 @@ impl EvidenceError {
     }
 }
 
+type EvidenceSchemaObject = (String, String, String, Option<String>);
+
+struct OpenedEvidenceConnection {
+    connection: Connection,
+    initialize_schema: bool,
+    fresh_path: Option<PathBuf>,
+}
+
+fn open_file_connection(path: PathBuf) -> Result<OpenedEvidenceConnection, EvidenceError> {
+    let initialize_schema = match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(file) => {
+            drop(file);
+            true
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
+        Err(error) => return Err(EvidenceError::Io(error.to_string())),
+    };
+    match Connection::open(&path) {
+        Ok(connection) => Ok(OpenedEvidenceConnection {
+            connection,
+            initialize_schema,
+            fresh_path: initialize_schema.then_some(path),
+        }),
+        Err(error) => {
+            if initialize_schema {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(EvidenceError::sqlite(error))
+        }
+    }
+}
+
+#[cfg(test)]
+fn open_memory_connection() -> Result<OpenedEvidenceConnection, EvidenceError> {
+    Connection::open_in_memory()
+        .map(|connection| OpenedEvidenceConnection {
+            connection,
+            initialize_schema: true,
+            fresh_path: None,
+        })
+        .map_err(EvidenceError::sqlite)
+}
+
+fn initialize_or_validate_schema(
+    connection: &mut Connection,
+    initialize_schema: bool,
+) -> Result<(), EvidenceError> {
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(EvidenceError::sqlite)?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(EvidenceError::sqlite)?;
+    let objects = evidence_schema_objects(connection)?;
+
+    if initialize_schema {
+        if application_id != 0 || version != 0 || !objects.is_empty() {
+            return Err(EvidenceError::InvalidSchema);
+        }
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(EvidenceError::sqlite)?;
+        transaction
+            .execute_batch(SCHEMA)
+            .map_err(EvidenceError::sqlite)?;
+        transaction
+            .pragma_update(None, "application_id", EVIDENCE_APPLICATION_ID)
+            .map_err(EvidenceError::sqlite)?;
+        transaction
+            .pragma_update(None, "user_version", EVIDENCE_SCHEMA_VERSION)
+            .map_err(EvidenceError::sqlite)?;
+        validate_evidence_schema(&transaction)?;
+        transaction.commit().map_err(EvidenceError::sqlite)?;
+    } else {
+        validate_evidence_schema(connection)?;
+    }
+
+    validate_evidence_integrity(connection)
+}
+
+fn validate_evidence_schema(connection: &Connection) -> Result<(), EvidenceError> {
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(EvidenceError::sqlite)?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(EvidenceError::sqlite)?;
+    if application_id != EVIDENCE_APPLICATION_ID || version != EVIDENCE_SCHEMA_VERSION {
+        return Err(EvidenceError::InvalidSchema);
+    }
+
+    let expected = Connection::open_in_memory().map_err(EvidenceError::sqlite)?;
+    expected
+        .execute_batch(SCHEMA)
+        .map_err(EvidenceError::sqlite)?;
+    if evidence_schema_objects(connection)? != evidence_schema_objects(&expected)? {
+        return Err(EvidenceError::InvalidSchema);
+    }
+    Ok(())
+}
+
+fn evidence_schema_objects(
+    connection: &Connection,
+) -> Result<Vec<EvidenceSchemaObject>, EvidenceError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT type,name,tbl_name,sql
+             FROM sqlite_schema
+             WHERE name NOT LIKE 'sqlite_%'
+             ORDER BY type,name,tbl_name",
+        )
+        .map_err(EvidenceError::sqlite)?;
+    statement
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .map_err(EvidenceError::sqlite)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(EvidenceError::sqlite)
+}
+
+fn validate_evidence_integrity(connection: &Connection) -> Result<(), EvidenceError> {
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(EvidenceError::sqlite)?;
+    if quick_check != "ok" {
+        return Err(EvidenceError::Integrity);
+    }
+
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(EvidenceError::sqlite)?;
+    if statement
+        .query([])
+        .map_err(EvidenceError::sqlite)?
+        .next()
+        .map_err(EvidenceError::sqlite)?
+        .is_some()
+    {
+        return Err(EvidenceError::Integrity);
+    }
+    Ok(())
+}
+
 const SCHEMA: &str = r"
-PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS evidence_runs (
   id TEXT PRIMARY KEY, server_name TEXT NOT NULL, started_at INTEGER NOT NULL,
   ended_at INTEGER, status TEXT NOT NULL
@@ -1148,7 +1315,8 @@ CREATE TABLE IF NOT EXISTS evidence_turns (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cost_nano_usd INTEGER NOT NULL DEFAULT 0,
   priced_iteration_count INTEGER NOT NULL DEFAULT 0,
-  unpriced_iteration_count INTEGER NOT NULL DEFAULT 0
+  unpriced_iteration_count INTEGER NOT NULL DEFAULT 0,
+  feedback_target TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS evidence_steps (
   id TEXT PRIMARY KEY, turn_id TEXT NOT NULL REFERENCES evidence_turns(id),

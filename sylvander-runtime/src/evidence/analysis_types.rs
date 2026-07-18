@@ -1,10 +1,13 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AnalysisPrivacyScope {
     ShareableOnly,
     IncludePrivate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CohortQuery {
     pub agent_id: Option<String>,
     pub started_at_inclusive: i64,
@@ -13,7 +16,8 @@ pub struct CohortQuery {
     pub limit: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FailureClass {
     None,
     UserReported,
@@ -24,7 +28,8 @@ pub enum FailureClass {
     Incomplete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AnalysisWarning {
     MixedAgents,
     IncompleteOutcomes,
@@ -35,7 +40,7 @@ pub enum AnalysisWarning {
     LimitReached,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CohortTurn {
     pub id: String,
     pub run_id: String,
@@ -60,7 +65,7 @@ pub struct CohortTurn {
     pub negative_feedback_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CohortAnalysis {
     pub cohort_digest_sha256: String,
     pub turns: Vec<CohortTurn>,
@@ -88,7 +93,7 @@ pub struct CohortAnalysis {
     pub warnings: Vec<AnalysisWarning>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureBreakdown {
     pub user_reported: u64,
     pub tool: u64,

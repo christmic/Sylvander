@@ -342,7 +342,7 @@ impl EvidenceStore {
         let path = path.as_ref().to_path_buf();
         let state = Arc::new(GovernanceState::new(governance)?);
         let store =
-            Self::open_connection(move || rusqlite::Connection::open(path), Some(state)).await?;
+            Self::open_connection(move || super::open_file_connection(path), Some(state)).await?;
         store
             .sweep_governed_retention(unix_timestamp(), 1_000)
             .await?;
@@ -354,7 +354,7 @@ impl EvidenceStore {
         governance: EvidenceGovernance,
     ) -> Result<Self, EvidenceError> {
         let state = Arc::new(GovernanceState::new(governance)?);
-        Self::open_connection(rusqlite::Connection::open_in_memory, Some(state)).await
+        Self::open_connection(super::open_memory_connection, Some(state)).await
     }
 
     pub fn governed_scope(

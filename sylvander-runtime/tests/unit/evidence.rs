@@ -8,6 +8,160 @@ fn feedback_attribution() -> FeedbackAttribution {
     }
 }
 
+fn evidence_database_contract(path: &std::path::Path) -> (i64, i64, Vec<EvidenceSchemaObject>) {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    let application_id = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .unwrap();
+    let version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    (
+        application_id,
+        version,
+        evidence_schema_objects(&connection).unwrap(),
+    )
+}
+
+async fn assert_schema_rejected_without_repair(path: &std::path::Path) {
+    let before_contract = evidence_database_contract(path);
+    let before_bytes = std::fs::read(path).unwrap();
+    assert!(matches!(
+        EvidenceStore::open(path).await,
+        Err(EvidenceError::InvalidSchema)
+    ));
+    assert_eq!(std::fs::read(path).unwrap(), before_bytes);
+    assert_eq!(evidence_database_contract(path), before_contract);
+}
+
+async fn assert_integrity_rejected_without_repair(path: &std::path::Path) {
+    let before_contract = evidence_database_contract(path);
+    let before_bytes = std::fs::read(path).unwrap();
+    assert!(matches!(
+        EvidenceStore::open(path).await,
+        Err(EvidenceError::Integrity)
+    ));
+    assert_eq!(std::fs::read(path).unwrap(), before_bytes);
+    assert_eq!(evidence_database_contract(path), before_contract);
+}
+
+#[tokio::test]
+async fn evidence_schema_is_atomic_exact_and_latest_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let current = directory.path().join("current.db");
+    drop(EvidenceStore::open(&current).await.unwrap());
+    assert_eq!(
+        evidence_database_contract(&current).0,
+        EVIDENCE_APPLICATION_ID
+    );
+    assert_eq!(
+        evidence_database_contract(&current).1,
+        EVIDENCE_SCHEMA_VERSION
+    );
+    drop(EvidenceStore::open(&current).await.unwrap());
+
+    let existing_empty = directory.path().join("existing-empty.db");
+    std::fs::File::create(&existing_empty).unwrap();
+    assert_schema_rejected_without_repair(&existing_empty).await;
+
+    let unknown_database = directory.path().join("unknown-database.db");
+    rusqlite::Connection::open(&unknown_database)
+        .unwrap()
+        .execute("CREATE TABLE unrelated_data(id INTEGER PRIMARY KEY)", [])
+        .unwrap();
+    assert_schema_rejected_without_repair(&unknown_database).await;
+
+    let old = directory.path().join("old.db");
+    std::fs::copy(&current, &old).unwrap();
+    rusqlite::Connection::open(&old)
+        .unwrap()
+        .pragma_update(None, "user_version", EVIDENCE_SCHEMA_VERSION - 1)
+        .unwrap();
+    assert_schema_rejected_without_repair(&old).await;
+
+    let future = directory.path().join("future.db");
+    std::fs::copy(&current, &future).unwrap();
+    rusqlite::Connection::open(&future)
+        .unwrap()
+        .pragma_update(None, "user_version", EVIDENCE_SCHEMA_VERSION + 1)
+        .unwrap();
+    assert_schema_rejected_without_repair(&future).await;
+
+    let foreign = directory.path().join("foreign.db");
+    std::fs::copy(&current, &foreign).unwrap();
+    rusqlite::Connection::open(&foreign)
+        .unwrap()
+        .pragma_update(None, "application_id", EVIDENCE_APPLICATION_ID + 1)
+        .unwrap();
+    assert_schema_rejected_without_repair(&foreign).await;
+
+    let unversioned = directory.path().join("unversioned.db");
+    std::fs::copy(&current, &unversioned).unwrap();
+    let connection = rusqlite::Connection::open(&unversioned).unwrap();
+    connection.pragma_update(None, "application_id", 0).unwrap();
+    connection.pragma_update(None, "user_version", 0).unwrap();
+    drop(connection);
+    assert_schema_rejected_without_repair(&unversioned).await;
+
+    let partial = directory.path().join("partial.db");
+    let connection = rusqlite::Connection::open(&partial).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE evidence_runs(
+                id TEXT PRIMARY KEY,
+                server_name TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                status TEXT NOT NULL
+             )",
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "application_id", EVIDENCE_APPLICATION_ID)
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", EVIDENCE_SCHEMA_VERSION)
+        .unwrap();
+    drop(connection);
+    assert_schema_rejected_without_repair(&partial).await;
+
+    let unknown = directory.path().join("unknown-object.db");
+    std::fs::copy(&current, &unknown).unwrap();
+    rusqlite::Connection::open(&unknown)
+        .unwrap()
+        .execute("CREATE TABLE unknown_evidence_object(id INTEGER)", [])
+        .unwrap();
+    assert_schema_rejected_without_repair(&unknown).await;
+
+    let invalid_reference = directory.path().join("invalid-reference.db");
+    std::fs::copy(&current, &invalid_reference).unwrap();
+    let connection = rusqlite::Connection::open(&invalid_reference).unwrap();
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO evidence_turns(
+               id,run_id,session_id,started_at,status,input_bytes,feedback_target
+             ) VALUES ('orphan-turn','missing-run','session-1',1,'running',0,'target-1')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    assert_integrity_rejected_without_repair(&invalid_reference).await;
+    let connection = rusqlite::Connection::open(&invalid_reference).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM evidence_turns WHERE id='orphan-turn'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn stores_structured_run_turn_step_outcome_and_event() {
     let store = EvidenceStore::open_in_memory().await.unwrap();
@@ -100,6 +254,38 @@ async fn stores_structured_run_turn_step_outcome_and_event() {
     assert_eq!(turns[0].step_count, 1);
     assert_eq!(turns[0].failed_step_count, 0);
     assert_eq!(turns[0].successful_outcome, Some(true));
+}
+
+#[tokio::test]
+async fn feedback_target_is_opaque_stable_and_resolves_only_through_evidence() {
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    store
+        .start_run("run-visible-only-to-runtime".into(), "test".into(), 1)
+        .await
+        .unwrap();
+    store
+        .start_turn(TurnStart {
+            id: "turn-visible-only-to-runtime".into(),
+            run_id: "run-visible-only-to-runtime".into(),
+            session_id: "session-1".into(),
+            agent_id: Some("agent-1".into()),
+            started_at: 2,
+            input_bytes: 0,
+            input_digest: None,
+        })
+        .await
+        .unwrap();
+    let target = feedback_target(
+        "run-visible-only-to-runtime",
+        "turn-visible-only-to-runtime",
+    );
+    assert!(target.0.starts_with("sha256:"));
+    assert!(!target.0.contains("run-visible"));
+    assert!(!target.0.contains("turn-visible"));
+    assert_eq!(
+        store.feedback_session(target).await.unwrap().as_deref(),
+        Some("session-1")
+    );
 }
 
 #[tokio::test]
@@ -336,21 +522,16 @@ async fn feedback_requires_traceable_run_and_turn_evidence() {
         .unwrap();
     assert_eq!(
         store
-            .feedback_session("run-1".into(), Some("turn-1".into()))
+            .feedback_session(feedback_target("run-1", "turn-1"))
             .await
             .unwrap(),
-        Some("session-1".into())
-    );
-    assert_eq!(
-        store.feedback_session("run-1".into(), None).await.unwrap(),
         Some("session-1".into())
     );
 
     let feedback_id = store
         .record_feedback(
             RunFeedback {
-                run_id: "run-1".into(),
-                turn_id: Some("turn-1".into()),
+                target: feedback_target("run-1", "turn-1"),
                 rating: FeedbackRating::Positive,
                 note: Some("useful".into()),
                 correction: Some("keep the smaller patch".into()),
@@ -382,8 +563,7 @@ async fn feedback_requires_traceable_run_and_turn_evidence() {
     let error = store
         .record_feedback(
             RunFeedback {
-                run_id: "run-1".into(),
-                turn_id: Some("unknown-turn".into()),
+                target: feedback_target("run-1", "unknown-turn"),
                 rating: FeedbackRating::Negative,
                 note: None,
                 correction: None,

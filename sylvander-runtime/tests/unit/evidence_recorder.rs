@@ -1,5 +1,5 @@
 use super::*;
-use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceScope};
+use crate::evidence::{EvidenceEncryption, EvidenceGovernance, EvidenceScope, TurnQuery};
 use sylvander_agent::bus::{InProcessMessageBus, MessageId};
 use sylvander_agent::spec::{AgentId, SessionId};
 
@@ -108,6 +108,49 @@ async fn normalizes_tool_steps_and_terminal_outcome() {
 }
 
 #[tokio::test]
+async fn terminal_error_closes_the_turn_as_failed() {
+    let bus = Arc::new(InProcessMessageBus::new());
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    let recorder = EvidenceRecorder::start(
+        bus.clone(),
+        store.clone(),
+        "test".into(),
+        EvidenceContentPolicy::MetadataOnly,
+        30,
+    )
+    .await
+    .unwrap();
+    let user_message =
+        BusMessage::user_chat(SessionId::new("session-1"), "user", "trigger failure");
+    let user_message_id = user_message.id.0;
+    bus.publish(user_message).await.unwrap();
+    bus.publish(stream_message(StreamEvent::Error {
+        message: "provider unavailable".into(),
+    }))
+    .await
+    .unwrap();
+    recorder.shutdown().await.unwrap();
+
+    let turn_id = format!("turn:{user_message_id}");
+    assert_eq!(
+        store.turn_status(turn_id.clone()).await.unwrap().as_deref(),
+        Some("failed")
+    );
+    let turns = store
+        .query_turns(TurnQuery {
+            session_id: Some("session-1".into()),
+            status: Some("failed".into()),
+            started_after: None,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].id, turn_id);
+    assert_eq!(turns[0].successful_outcome, Some(false));
+}
+
+#[tokio::test]
 async fn redacted_capture_uses_the_encrypted_user_scoped_store() {
     let bus = Arc::new(InProcessMessageBus::new());
     let governance = EvidenceGovernance::new(
@@ -156,4 +199,62 @@ async fn content_capture_fails_closed_without_encryption() {
         EvidenceRecorder::start(bus, store, "test".into(), EvidenceContentPolicy::Full, 30).await;
 
     assert!(matches!(result, Err(EvidenceError::EncryptionRequired)));
+}
+
+#[tokio::test]
+async fn background_failure_is_content_safe_visible_and_sticky() {
+    let bus = Arc::new(InProcessMessageBus::new());
+    let store = EvidenceStore::open_in_memory().await.unwrap();
+    let recorder = EvidenceRecorder::start(
+        bus.clone(),
+        store.clone(),
+        "test".into(),
+        EvidenceContentPolicy::MetadataOnly,
+        30,
+    )
+    .await
+    .unwrap();
+    recorder.fail_next_record_for_test();
+    bus.publish(BusMessage::user_chat(
+        "session-1".into(),
+        "user",
+        "private failure sentinel",
+    ))
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if recorder.last_error().await == Some(EvidenceRecorderFailure::PersistEvent) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("injected failure must become visible");
+
+    bus.publish(BusMessage::user_chat(
+        "session-2".into(),
+        "user",
+        "recovery event",
+    ))
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if store.counts().await.unwrap().events == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("later event must still be recorded");
+    assert_eq!(
+        recorder.last_error().await,
+        Some(EvidenceRecorderFailure::PersistEvent),
+        "a later success cannot repair the missing event"
+    );
+
+    recorder.shutdown().await.unwrap();
 }

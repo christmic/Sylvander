@@ -1,13 +1,16 @@
+use serde::{Deserialize, Serialize};
 use sylvander_protocol::EvidenceReference;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImprovementRisk {
     Low,
     Medium,
     High,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImprovementProposalStatus {
     Draft,
     ReadyForReview,
@@ -18,14 +21,16 @@ pub enum ImprovementProposalStatus {
     RolledBack,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequiredEvaluation {
     pub dataset_id: String,
     pub dataset_revision: u64,
     pub baseline_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImprovementProposal {
     pub id: String,
     pub cohort_digest_sha256: String,
@@ -40,7 +45,7 @@ pub struct ImprovementProposal {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredImprovementProposal {
     pub definition: ImprovementProposal,
     pub digest_sha256: String,

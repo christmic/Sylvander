@@ -11,7 +11,8 @@ pub enum ExperimentPhase {
     Observation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SelfChangeExperimentStatus {
     Prepared,
     CandidateEvaluated,
@@ -24,7 +25,7 @@ pub enum SelfChangeExperimentStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfChangeExperiment {
     pub id: String,
     pub proposal_id: String,
@@ -36,7 +37,7 @@ pub struct SelfChangeExperiment {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredSelfChangeExperiment {
     pub definition: SelfChangeExperiment,
     pub status: SelfChangeExperimentStatus,
@@ -61,7 +62,7 @@ pub struct UnsignedExperimentEvidence {
     pub recorded_at: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedExperimentEvidence {
     pub id: String,
     pub evidence: UnsignedExperimentEvidence,
