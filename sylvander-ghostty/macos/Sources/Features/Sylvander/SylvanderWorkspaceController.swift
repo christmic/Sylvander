@@ -283,13 +283,18 @@ struct SylvanderTUILaunchConfiguration {
     }
 
     private func executablePath() throws -> String {
-        let environment = ProcessInfo.processInfo.environment
-        let candidates = [
-            environment["SYLVANDER_TUI_PATH"],
-            Bundle.main.resourceURL?
-                .appendingPathComponent("bin/sylvander-tui", isDirectory: false)
-                .path,
-        ].compactMap { $0 }
+        var candidates: [String] = []
+#if DEBUG
+        if let override = ProcessInfo.processInfo.environment["SYLVANDER_TUI_PATH"] {
+            candidates.append(override)
+        }
+#endif
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/sylvander-tui", isDirectory: false)
+            .path
+        {
+            candidates.append(bundled)
+        }
 
         guard let path = candidates.first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
@@ -303,7 +308,11 @@ struct SylvanderTUILaunchConfiguration {
         case executableNotFound
 
         var errorDescription: String? {
+#if DEBUG
             "sylvander-tui is not bundled; set SYLVANDER_TUI_PATH for a development build"
+#else
+            "sylvander-tui is missing or not executable; reinstall Sylvander"
+#endif
         }
     }
 }
