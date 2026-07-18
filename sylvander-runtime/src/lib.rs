@@ -4268,6 +4268,7 @@ mod tests {
                     },
                     known_hosts: PathBuf::from("/tmp/sylvander-known-hosts"),
                     control_path: PathBuf::from("/tmp/sylvander-ssh-control"),
+                    worktree_root: PathBuf::from("/tmp/sylvander-worktrees"),
                 },
             ),
         ]);
