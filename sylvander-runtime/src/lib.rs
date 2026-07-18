@@ -36,6 +36,8 @@ mod agent_registry_snapshot_v3;
 #[cfg(test)]
 mod agent_registry_snapshot_v3_tests;
 mod boundary;
+/// Target-aware local and remote coding-session isolation.
+pub mod coding_worktree;
 /// Builds configured Agent revisions, prompt layers, providers, and tools.
 pub mod composition;
 /// Latest-version server configuration and secret-reference contracts.
@@ -87,6 +89,8 @@ mod registry_composition_v3_tests;
 mod registry_domain;
 #[cfg(test)]
 mod registry_domain_tests;
+/// Durable executor-backed Git worktree leases for remote coding sessions.
+pub mod remote_git_worktree;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
 /// Evidence-backed, human-gated self-change experiments.
