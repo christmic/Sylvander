@@ -89,8 +89,10 @@ fn agent_discovery_crosses_the_protocol_adapter() {
 #[test]
 fn runtime_wire_event_preserves_server_capabilities() {
     let event = parse_server_msg(ServerMsg::RuntimeInfo {
-        model: "claude-test".into(),
-        model_selection: None,
+        model: sylvander_protocol::ModelSelection {
+            provider_id: "test".into(),
+            model_id: "claude-test".into(),
+        },
         reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
         models: vec![sylvander_protocol::ModelDescriptor {
             id: "claude-test".into(),
@@ -144,12 +146,10 @@ fn legacy_usage_event_defaults_to_unknown_cost() {
 fn model_selection_uses_typed_reasoning_effort_on_wire() {
     let value = serde_json::to_value(ClientMsg::SelectModel {
         session_id: Some("session-1".into()),
-        model: sylvander_protocol::ModelSelectionInput::Qualified(
-            sylvander_protocol::ModelSelection {
-                provider_id: "provider-a".into(),
-                model_id: "thinking".into(),
-            },
-        ),
+        model: sylvander_protocol::ModelSelection {
+            provider_id: "provider-a".into(),
+            model_id: "thinking".into(),
+        },
         reasoning_effort: sylvander_protocol::ReasoningEffort::High,
     })
     .unwrap();

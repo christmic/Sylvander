@@ -203,3 +203,17 @@ source of truth first.
 
 If a feature starts by importing the socket client into a Panel, or Ratatui into
 `model.rs`, the design is wrong.
+
+## Verification
+
+Unit tests live under `tests/unit/`; public service journeys, compiled-terminal
+PTY cases, and visual snapshots live directly under `tests/`. Each interaction
+change needs reducer/input coverage plus a canonical snapshot at the affected
+responsive breakpoint. Snapshot updates are review artifacts, never an
+automatic side effect.
+
+```bash
+INSTA_UPDATE=no cargo test -p sylvander-tui --all-targets --locked
+cargo clippy -p sylvander-tui --all-targets --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc -p sylvander-tui --no-deps --locked
+```

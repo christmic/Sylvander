@@ -1,3 +1,9 @@
+//! File-scoped workspace rollback confirmation.
+//!
+//! The decision dock renders the server-provided preview and emits a typed
+//! rollback action only after explicit confirmation; it never edits files
+//! during rendering.
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,

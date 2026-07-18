@@ -152,8 +152,9 @@ completed backend feature.
 - [x] The current supported-terminal scope does not claim native tmux
       integration. PTY reflow is verified for tmux's `screen-256color` surface;
       real-process verification moves into a future tmux integration track.
-- [x] SSH terminal behavior is excluded with the explicitly deferred remote
-      execution track; no SSH terminal capability is advertised by this release.
+- [x] OpenSSH workspace execution remains server-owned and location-transparent
+      to the TUI. The client does not advertise a native interactive SSH
+      terminal; configured SSH workspaces use the ordinary session and tool UI.
 
 ## Production gates
 
@@ -198,7 +199,7 @@ transcript through `Ctrl+P` in a fresh TUI process. A two-client adversarial
 scenario forces identical AskUser call IDs, proves answers and interrupts remain
 session-scoped, restores a disconnected live turn from buffered events, and
 audits SQLite transcripts for cross-client contamination.
-Approval intent is backward compatible and transport-neutral across Unix and
+The current typed approval intent is transport-neutral across Unix and
 WebSocket adapters. Agent tests cover scoped interrupt, concurrent tool batches,
 approval cleanup, durable sessions, and runtime restore. Capacity tests cover
 socket frames/events, terminal input floods, transcript retention, composer

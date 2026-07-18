@@ -1,3 +1,9 @@
+//! Workspace-scoped permission-profile picker.
+//!
+//! Users choose among server-supported filesystem, network, and approval
+//! policies. The result is a typed next-turn request; Runtime remains the
+//! authority that validates and applies it.
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,

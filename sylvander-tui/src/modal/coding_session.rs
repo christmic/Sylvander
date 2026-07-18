@@ -1,3 +1,8 @@
+//! Confirmation dock for accepting or discarding an isolated coding session.
+//!
+//! The modal emits a typed action after explicit confirmation. Worktree merge
+//! or deletion is performed by the service/Runtime boundary, never by the UI.
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
