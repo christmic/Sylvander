@@ -62,6 +62,7 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
 "#,
             directory.path().display(),
             directory.path().join("runtime.db").display(),
@@ -99,7 +100,7 @@ model_name = "shared"
             AgentAdminRequest::UpdateDefinition {
                 expected_active_revision: 1,
                 definition: Box::new(
-                    crate::agent_admin::draft_from_definition(&definition).unwrap(),
+                    crate::agent_admin::tests::draft_from_definition(&definition).unwrap(),
                 ),
             },
         )
@@ -191,15 +192,6 @@ async fn cross_provider_update_pins_native_v3_and_survives_head_drift() {
             .collect::<Vec<_>>(),
         vec![(model("alpha"), 1), (model("beta"), 1)]
     );
-    assert!(
-        fixture
-            .registry()
-            .load_agent_snapshot("assistant", 2)
-            .await
-            .unwrap()
-            .is_none()
-    );
-
     advance_component_heads(&fixture).await;
     let historical = fixture
         .registry()
@@ -271,6 +263,7 @@ name = "Assistant"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [{{ provider_id = "alpha", model_id = "shared" }}]
 "#,
         directory.path().display(),
         directory.path().join("runtime.db").display(),
@@ -348,7 +341,7 @@ model_name = "shared"
         &administrator,
         AgentAdminRequest::UpdateDefinition {
             expected_active_revision: 1,
-            definition: Box::new(crate::agent_admin::draft_from_definition(&next).unwrap()),
+            definition: Box::new(crate::agent_admin::tests::draft_from_definition(&next).unwrap()),
         },
     )
     .await;

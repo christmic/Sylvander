@@ -45,6 +45,7 @@ name = "Sylvander"
 [agents.spec.model]
 provider = "alpha"
 model_name = "shared"
+allowed_models = [{ provider_id = "alpha", model_id = "shared" }]
 "#,
     )
     .unwrap()

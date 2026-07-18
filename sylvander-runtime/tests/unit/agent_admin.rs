@@ -1,5 +1,163 @@
 use super::*;
-use sylvander_protocol::{AgentAccessDraft, AgentId, AuthenticationMethod, ModelSelection};
+use sylvander_protocol::{
+    AgentAccessDraft, AgentHookDraft, AgentId, AgentPromptProfileDraft, AgentUiCommandDraft,
+    AuthenticationMethod, ModelSelection, SessionWorkspaceBinding,
+};
+
+pub(crate) fn draft_from_definition(
+    definition: &AgentDefinitionConfig,
+) -> Result<AgentDefinitionDraft, AgentAdminError> {
+    let tools = definition
+        .spec
+        .tools
+        .iter()
+        .map(tool_to_draft)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AgentDefinitionDraft {
+        agent_id: definition.spec.id.clone(),
+        revision: definition.revision,
+        name: definition.spec.name.clone(),
+        description: definition.spec.persona.description.clone(),
+        provider_id: definition.spec.model.provider.clone(),
+        default_model_id: definition.spec.model.model_name.clone(),
+        allowed_models: definition.spec.model.allowed_models.clone(),
+        temperature: definition.spec.model.temperature,
+        max_tokens: definition.spec.model.max_tokens,
+        system_prompt: definition.spec.persona.system_prompt.clone(),
+        tools,
+        memory_stores: definition
+            .spec
+            .memory_stores
+            .iter()
+            .map(|store| {
+                Ok(sylvander_protocol::AgentMemoryStoreDraft {
+                    store_type: store.store_type.clone(),
+                    path: store
+                        .path
+                        .to_str()
+                        .ok_or_else(|| invalid_definition("memory store path must be valid UTF-8"))?
+                        .to_owned(),
+                })
+            })
+            .collect::<Result<_, AgentAdminError>>()?,
+        ui_commands: definition
+            .spec
+            .ui_commands
+            .iter()
+            .map(command_to_draft)
+            .collect(),
+        hooks: definition
+            .spec
+            .hooks
+            .iter()
+            .map(|hook| AgentHookDraft {
+                name: hook.name.clone(),
+                phase: hook.phase,
+                command: hook.command.clone(),
+                timeout_secs: hook.timeout_secs,
+                blocking: hook.blocking,
+            })
+            .collect(),
+        tool_presentations: definition
+            .spec
+            .tool_presentations
+            .iter()
+            .map(|presentation| AgentToolPresentationDraft {
+                tool_name: presentation.tool_name.clone(),
+                label: presentation.label.clone(),
+                kind: presentation.kind,
+                target_field: presentation.target_field.clone(),
+            })
+            .collect(),
+        behavior: AgentBehaviorDraft {
+            max_iterations: definition.spec.behavior.max_iterations,
+            max_retries: definition.spec.behavior.max_retries,
+        },
+        agent_workspace: definition.agent_workspace.as_ref().map(|workspace| {
+            SessionWorkspaceBinding {
+                execution_target: workspace.execution_target.clone(),
+                path: PathBuf::from(&workspace.path),
+                read_only: workspace.read_only,
+                instruction_focus: workspace.instruction_focus.clone().map(Into::into),
+            }
+        }),
+        workspace_mounts: definition
+            .workspace_mounts
+            .iter()
+            .map(|mount| sylvander_protocol::SessionWorkspaceMount {
+                reference: mount.reference.clone(),
+                role: mount.role,
+                binding: SessionWorkspaceBinding {
+                    execution_target: mount.binding.execution_target.clone(),
+                    path: PathBuf::from(&mount.binding.path),
+                    read_only: mount.binding.read_only,
+                    instruction_focus: mount.binding.instruction_focus.clone().map(Into::into),
+                },
+                capabilities: mount.capabilities,
+            })
+            .collect(),
+        prompt_profiles: definition
+            .prompt_profiles
+            .iter()
+            .map(profile_to_draft)
+            .collect(),
+        default_prompt_profile: definition.default_prompt_profile.clone(),
+        allow_session_prompt: definition.allow_session_prompt,
+        access: sylvander_protocol::AgentAccessDraft {
+            allow_authenticated: definition.access.allow_authenticated,
+            allowed_principals: definition.access.allowed_principals.clone(),
+            allowed_roles: definition.access.allowed_roles.clone(),
+        },
+    })
+}
+
+fn decode_secret_reference(value: &str) -> Result<AgentSecretReference, AgentAdminError> {
+    let encoded = value
+        .strip_prefix(SECRET_REF_PREFIX)
+        .ok_or_else(|| invalid_definition("legacy MCP environment values cannot be exported"))?;
+    serde_json::from_str(encoded)
+        .map_err(|_| invalid_definition("stored MCP secret reference is invalid"))
+}
+
+fn tool_to_draft(tool: &ToolRef) -> Result<AgentToolDraft, AgentAdminError> {
+    match tool {
+        ToolRef::Builtin { name } => Ok(AgentToolDraft::Builtin { name: name.clone() }),
+        ToolRef::McpServer(server) => mcp_to_draft(server),
+    }
+}
+
+fn mcp_to_draft(server: &McpServerConfig) -> Result<AgentToolDraft, AgentAdminError> {
+    let environment = server
+        .envs
+        .iter()
+        .map(|(name, value)| Ok((name.clone(), decode_secret_reference(value)?)))
+        .collect::<Result<_, AgentAdminError>>()?;
+    Ok(AgentToolDraft::McpServer {
+        name: server.name.clone(),
+        command: server.command.clone(),
+        args: server.args.clone(),
+        environment,
+    })
+}
+
+fn command_to_draft(command: &UiCommandConfig) -> AgentUiCommandDraft {
+    AgentUiCommandDraft {
+        id: command.id.clone(),
+        name: command.name.clone(),
+        usage: command.usage.clone(),
+        description: command.description.clone(),
+        hint: command.hint.clone(),
+        prompt: command.prompt.clone(),
+    }
+}
+
+fn profile_to_draft(profile: &PromptProfileConfig) -> AgentPromptProfileDraft {
+    AgentPromptProfileDraft {
+        id: profile.id.clone(),
+        qualified_models: profile.qualified_models.clone(),
+        system_prompt: profile.system_prompt.clone(),
+    }
+}
 
 fn model(provider_id: &str, model_id: &str) -> ModelSelection {
     ModelSelection {
@@ -63,6 +221,7 @@ fn draft() -> AgentDefinitionDraft {
         ui_commands: Vec::new(),
         hooks: vec![AgentHookDraft {
             name: "lint".into(),
+            phase: sylvander_protocol::AgentHookPhase::BeforeTool,
             command: "cargo check --quiet".into(),
             timeout_secs: 20,
             blocking: true,
@@ -134,12 +293,27 @@ fn redaction_returns_hashes_and_counts_not_sensitive_values() {
     assert!(!json.contains("mcp-search"));
     assert!(!json.contains("cargo check"));
     assert_eq!(view.definition.hooks[0].name, "lint");
+    assert_eq!(
+        view.definition.hooks[0].phase,
+        sylvander_protocol::AgentHookPhase::BeforeTool
+    );
     assert!(view.definition.hooks[0].blocking);
     assert_eq!(
         view.definition.system_prompt_sha256,
         digest("never reveal me")
     );
     assert_eq!(view.definition.allowed_models, draft().allowed_models);
+}
+
+#[test]
+fn hook_identity_rejects_terminal_control_sequences() {
+    let mut candidate = draft();
+    candidate.hooks[0].name = "lint\u{1b}[31m".into();
+
+    let error = definition_from_draft(candidate).unwrap_err();
+
+    assert_eq!(error.code, AgentAdminErrorCode::InvalidDefinition);
+    assert!(!error.message.contains('\u{1b}'));
 }
 
 #[test]
@@ -158,8 +332,6 @@ fn qualified_prompt_profiles_round_trip_without_exposing_content() {
     candidate.prompt_profiles = vec![AgentPromptProfileDraft {
         id: "secondary-shared".into(),
         qualified_models: vec![model("secondary", "sonnet")],
-        providers: Vec::new(),
-        models: Vec::new(),
         system_prompt: "secondary private prompt".into(),
     }];
     let definition = definition_from_draft(candidate).unwrap();
@@ -187,18 +359,14 @@ fn qualified_prompt_profiles_round_trip_without_exposing_content() {
         1
     );
 
-    let mut ambiguous = draft();
-    ambiguous.prompt_profiles = vec![AgentPromptProfileDraft {
-        id: "legacy-cross-product".into(),
-        qualified_models: Vec::new(),
-        providers: vec!["primary".into(), "secondary".into()],
-        models: vec!["sonnet".into()],
-        system_prompt: "private".into(),
-    }];
-    assert_eq!(
-        definition_from_draft(ambiguous).unwrap_err().code,
-        AgentAdminErrorCode::InvalidDefinition
-    );
+    let legacy = serde_json::json!({
+        "id": "legacy-cross-product",
+        "qualified_models": [],
+        "providers": ["primary", "secondary"],
+        "models": ["sonnet"],
+        "system_prompt": "private"
+    });
+    assert!(serde_json::from_value::<AgentPromptProfileDraft>(legacy).is_err());
 }
 
 #[test]
@@ -278,6 +446,7 @@ name = "Oraculo"
 [agents.spec.model]
 provider = "primary"
 model_name = "sonnet"
+allowed_models = [{ provider_id = "primary", model_id = "sonnet" }]
 "#,
     )
     .unwrap();
