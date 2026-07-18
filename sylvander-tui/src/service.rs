@@ -181,6 +181,27 @@ impl AgentService {
             Action::RestoreSession { session_id } => ClientMsg::RestoreSession { session_id },
             Action::DeleteSession { session_id } => ClientMsg::DeleteSession { session_id },
             Action::UserProfile { request } => ClientMsg::UserProfile { request },
+            Action::SubmitFeedback { feedback } => ClientMsg::SubmitFeedback { feedback },
+            Action::RequestMemoryConfirmations { session_id } => ClientMsg::MemoryConfirmation {
+                request: sylvander_protocol::MemoryConfirmationRequest::List {
+                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                    session_id,
+                },
+            },
+            Action::ResolveMemoryConfirmation {
+                session_id,
+                candidate_id,
+                expected_revision,
+                decision,
+            } => ClientMsg::MemoryConfirmation {
+                request: sylvander_protocol::MemoryConfirmationRequest::Decide {
+                    version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+                    session_id,
+                    candidate_id,
+                    expected_revision,
+                    decision,
+                },
+            },
             Action::CopyText { .. }
             | Action::EditDraft
             | Action::InspectWorkspaceDiff { .. }

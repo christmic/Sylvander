@@ -263,6 +263,8 @@ fn tui_protocol_capabilities() -> Vec<String> {
         "approval_scopes",
         "compaction",
         "diagnostics",
+        sylvander_protocol::FEEDBACK_CAPABILITY,
+        sylvander_protocol::MEMORY_CONFIRMATION_CAPABILITY,
         "model_selection",
         "plans",
         "session_replay",
@@ -315,6 +317,43 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         }
         ServerMsg::AgentsDiscovered { agents } => DomainEvent::AgentsDiscovered { agents },
         ServerMsg::SessionConfig { state } => DomainEvent::SessionConfigLoaded { state },
+        ServerMsg::MemoryConfirmation { response } => {
+            let version = match &response {
+                sylvander_protocol::MemoryConfirmationResponse::Pending { version, .. }
+                | sylvander_protocol::MemoryConfirmationResponse::Recorded { version, .. }
+                | sylvander_protocol::MemoryConfirmationResponse::Error { version, .. } => *version,
+            };
+            if version == sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION {
+                match response {
+                    sylvander_protocol::MemoryConfirmationResponse::Pending {
+                        session_id,
+                        confirmations,
+                        ..
+                    } => DomainEvent::MemoryConfirmationsLoaded {
+                        session_id,
+                        confirmations,
+                    },
+                    sylvander_protocol::MemoryConfirmationResponse::Recorded {
+                        candidate_id,
+                        decision,
+                        ..
+                    } => DomainEvent::MemoryConfirmationRecorded {
+                        candidate_id,
+                        decision,
+                    },
+                    sylvander_protocol::MemoryConfirmationResponse::Error { message, .. } => {
+                        DomainEvent::MemoryConfirmationFailed { message }
+                    }
+                }
+            } else {
+                DomainEvent::ProtocolDiagnostic {
+                    message: format!(
+                        "memory confirmation protocol v{version} rejected; expected v{}",
+                        sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION
+                    ),
+                }
+            }
+        }
         ServerMsg::RuntimeInfo {
             model,
             reasoning_effort,
@@ -427,9 +466,30 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             output,
             is_error,
         },
-        ServerMsg::Done { text, .. } => DomainEvent::AgentDone { final_text: text },
-        ServerMsg::Error { message, .. } => DomainEvent::AgentError { message },
-        ServerMsg::TurnInterrupted { reason, .. } => DomainEvent::TurnInterrupted { reason },
+        ServerMsg::Done {
+            text,
+            feedback_target,
+            ..
+        } => DomainEvent::AgentDone {
+            final_text: text,
+            feedback_target,
+        },
+        ServerMsg::Error {
+            message,
+            feedback_target,
+            ..
+        } => DomainEvent::AgentError {
+            message,
+            feedback_target,
+        },
+        ServerMsg::TurnInterrupted {
+            reason,
+            feedback_target,
+            ..
+        } => DomainEvent::TurnInterrupted {
+            reason,
+            feedback_target,
+        },
         ServerMsg::PlanProposed {
             plan_id,
             steps,
@@ -555,6 +615,9 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         ServerMsg::SessionDeleted { session_id } => DomainEvent::SessionDeleted { session_id },
         ServerMsg::UserProfile { response } => DomainEvent::UserProfileReceived { response },
+        ServerMsg::FeedbackRecorded { feedback_id } => {
+            DomainEvent::FeedbackRecorded { feedback_id }
+        }
         ServerMsg::OperationError { operation, message } => {
             DomainEvent::OperationFailed { operation, message }
         }
@@ -579,7 +642,6 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
         },
         // Currently unused by the UI but harmless to receive.
         ServerMsg::IterationStart { .. }
-        | ServerMsg::FeedbackRecorded { .. }
         | ServerMsg::AgentAdmin { .. }
         | ServerMsg::RegistryAdmin { .. }
         | ServerMsg::IdentityBinding { .. }

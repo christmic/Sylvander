@@ -143,6 +143,20 @@ pub enum DomainEvent {
     UserProfileReceived {
         response: sylvander_protocol::UserProfileResponse,
     },
+    FeedbackRecorded {
+        feedback_id: String,
+    },
+    MemoryConfirmationsLoaded {
+        session_id: String,
+        confirmations: Vec<sylvander_protocol::PendingMemoryConfirmation>,
+    },
+    MemoryConfirmationRecorded {
+        candidate_id: String,
+        decision: sylvander_protocol::MemoryConfirmationDecision,
+    },
+    MemoryConfirmationFailed {
+        message: String,
+    },
 
     /// Streaming text chunk from the model.
     TextChunk {
@@ -192,14 +206,17 @@ pub enum DomainEvent {
     /// The agent loop has emitted its final answer.
     AgentDone {
         final_text: String,
+        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     },
     /// The agent loop failed.
     AgentError {
         message: String,
+        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     },
     /// The server confirmed that the active turn ended by user interrupt.
     TurnInterrupted {
         reason: String,
+        feedback_target: Option<sylvander_protocol::FeedbackTarget>,
     },
 
     /// Server wants permission to run one or more tools.
@@ -319,6 +336,10 @@ impl DomainEvent {
             | Self::SessionDeleted { .. }
             | Self::OperationFailed { .. }
             | Self::UserProfileReceived { .. }
+            | Self::FeedbackRecorded { .. }
+            | Self::MemoryConfirmationsLoaded { .. }
+            | Self::MemoryConfirmationRecorded { .. }
+            | Self::MemoryConfirmationFailed { .. }
             | Self::TextChunk { .. }
             | Self::ThinkingChunk { .. }
             | Self::ModelRetry { .. }
@@ -449,6 +470,18 @@ pub enum Action {
     },
     UserProfile {
         request: sylvander_protocol::UserProfileRequest,
+    },
+    SubmitFeedback {
+        feedback: sylvander_protocol::RunFeedback,
+    },
+    RequestMemoryConfirmations {
+        session_id: String,
+    },
+    ResolveMemoryConfirmation {
+        session_id: String,
+        candidate_id: String,
+        expected_revision: u64,
+        decision: sylvander_protocol::MemoryConfirmationDecision,
     },
     CopyText {
         text: String,

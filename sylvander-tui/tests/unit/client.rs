@@ -87,6 +87,65 @@ fn agent_discovery_crosses_the_protocol_adapter() {
 }
 
 #[test]
+fn memory_confirmation_wire_response_preserves_typed_prompt() {
+    let event = parse_server_msg(ServerMsg::MemoryConfirmation {
+        response: sylvander_protocol::MemoryConfirmationResponse::Pending {
+            version: sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION,
+            session_id: "session-1".into(),
+            confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+                candidate_id: "candidate-1".into(),
+                expected_revision: 7,
+                scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+                summary: "prefers concise answers".into(),
+            }],
+        },
+    });
+    assert!(matches!(
+        event,
+        Some(DomainEvent::MemoryConfirmationsLoaded {
+            session_id,
+            confirmations,
+        }) if session_id == "session-1"
+            && confirmations.len() == 1
+            && confirmations[0].expected_revision == 7
+    ));
+}
+
+#[test]
+fn memory_confirmation_wire_rejects_non_current_versions_without_decision_state() {
+    for version in [
+        0,
+        sylvander_protocol::MEMORY_CONFIRMATION_PROTOCOL_VERSION + 1,
+    ] {
+        let event = parse_server_msg(ServerMsg::MemoryConfirmation {
+            response: sylvander_protocol::MemoryConfirmationResponse::Pending {
+                version,
+                session_id: "session-1".into(),
+                confirmations: vec![sylvander_protocol::PendingMemoryConfirmation {
+                    candidate_id: "candidate-1".into(),
+                    expected_revision: 7,
+                    scope: sylvander_protocol::MemoryConfirmationScope::UserProfile,
+                    summary: "must not be shown".into(),
+                }],
+            },
+        });
+        assert!(matches!(
+            event.as_ref(),
+            Some(DomainEvent::ProtocolDiagnostic { message })
+                if message.contains(&format!("v{version} rejected"))
+                    && message.contains("expected v1")
+        ));
+        let mut state = crate::app::AppState::new();
+        state.session_id = Some("session-1".into());
+        state.apply(event.expect("protocol diagnostic"));
+        assert_eq!(state.session_id.as_deref(), Some("session-1"));
+        assert_eq!(state.mode, crate::model::AppMode::Normal);
+        assert!(state.modals.is_empty());
+        assert!(state.pending_actions.is_empty());
+    }
+}
+
+#[test]
 fn runtime_wire_event_preserves_server_capabilities() {
     let event = parse_server_msg(ServerMsg::RuntimeInfo {
         model: sylvander_protocol::ModelSelection {
@@ -397,11 +456,39 @@ fn interrupted_wire_event_has_a_terminal_domain_state() {
     let event = parse_server_msg(ServerMsg::TurnInterrupted {
         session_id: "session-7".into(),
         reason: "interrupted by user".into(),
+        feedback_target: None,
     });
     assert!(matches!(
         event,
-        Some(DomainEvent::TurnInterrupted { reason })
+        Some(DomainEvent::TurnInterrupted { reason, .. })
             if reason == "interrupted by user"
+    ));
+}
+
+#[test]
+fn terminal_wire_event_preserves_the_opaque_feedback_target() {
+    let event = parse_server_msg(ServerMsg::Done {
+        session_id: "session-7".into(),
+        text: "done".into(),
+        feedback_target: Some(sylvander_protocol::FeedbackTarget("sha256:opaque".into())),
+    });
+    assert!(matches!(
+        event,
+        Some(DomainEvent::AgentDone {
+            feedback_target: Some(sylvander_protocol::FeedbackTarget(target)),
+            ..
+        }) if target == "sha256:opaque"
+    ));
+}
+
+#[test]
+fn feedback_recorded_is_not_discarded_by_the_client_adapter() {
+    assert!(matches!(
+        parse_server_msg(ServerMsg::FeedbackRecorded {
+            feedback_id: "feedback-7".into(),
+        }),
+        Some(DomainEvent::FeedbackRecorded { feedback_id })
+            if feedback_id == "feedback-7"
     ));
 }
 

@@ -480,15 +480,7 @@ fn finish(modal: &mut ApprovalModal, state: &mut AppState) -> Consumed {
     let decisions = std::mem::take(&mut modal.decisions);
     let tools = std::mem::take(&mut modal.tools);
     modal.feedback.clear();
-    state.mode = if state
-        .modals
-        .iter()
-        .any(|modal| modal.title() == "Tool Approval")
-    {
-        AppMode::ApprovalPending
-    } else {
-        AppMode::Normal
-    };
+    state.sync_decision_dock_mode();
     let approved_count = decisions
         .iter()
         .filter(|decision| matches!(decision, Decision::Approve(_)))
