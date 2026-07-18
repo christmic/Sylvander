@@ -1,7 +1,9 @@
 # Sylvander operations runbook
 
-This runbook covers the current single-server, local-first deployment. Remote
-SSH execution remains a separately tracked deferred scope.
+This runbook covers the current single-server deployment, including configured
+local, SSH, container, and managed-sandbox execution targets. Native interactive
+SSH terminals are not part of the TUI contract; Agent tools access remote
+workspaces through the location-transparent executor.
 
 ## Health and readiness
 
@@ -88,10 +90,20 @@ use their own durable, content-governed stores.
    recorded merge commit, and rollback commit. Automatic revert is allowed
    only while the reviewed merge is still the current source commit.
 
+For an SSH target failure, verify the deployment-owned `known_hosts` file,
+identity-path secret, private control-socket parent, remote workspace, and
+remote worktree root. Never replace strict host-key checking with interactive
+learning. Before enabling the target for users, run the ignored
+`real_ssh_executor_worktree_restart_review_accept_and_cancel` acceptance test
+against a disposable SSH daemon and repository. It verifies bounded execution,
+remote descendant cancellation, durable worktree restart reconciliation,
+review, and acceptance.
+
 ## Shutdown
 
 Send SIGINT once. Runtime stops accepting channel work, cooperatively drains
-channel tasks, stops Agent workers, closes active evidence turns, publishes the
-final maintenance state, and returns an error if any owned component failed to
-drain. Do not send a second signal unless the configured external supervisor
-has exceeded its termination deadline.
+channel tasks, stops Agent workers, completes the active Guardian curation
+pass, closes active evidence turns, publishes the final maintenance state, and
+returns an error if any owned component failed to drain. Do not send a second
+signal unless the configured external supervisor has exceeded its termination
+deadline.

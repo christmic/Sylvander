@@ -46,10 +46,14 @@ is locally controllable.
 Detailed TUI scheduling is specified in
 [`../sylvander-tui/docs/INPUT-RENDERING.md`](../sylvander-tui/docs/INPUT-RENDERING.md).
 
-## Deferred measurements
+## Deployment-specific measurements
 
-SSH latency, remote process trees, network transfer throughput, and remote
-worktrees are excluded because SSH execution is explicitly deferred from this
-local release. Provider round-trip time and platform webhook delivery are
-external-service SLOs; local channel burst queues, replay bounds, and Agent
-scheduling are covered here and in their adapter tests.
+The default deterministic gate does not claim an SSH latency or transfer SLO
+because those values belong to the selected host and network. Executor unit
+tests cover bounded dual-stream capture and cancellation; the opt-in real-SSH
+journey covers remote process-group cancellation and durable worktree restart,
+review, and acceptance. A deployment must record its own latency and transfer
+budgets when enabling an SSH target. Provider round-trip time and platform
+webhook delivery are likewise external-service SLOs; local channel burst
+queues, replay bounds, and Agent scheduling remain covered here and in their
+adapter tests.

@@ -25,6 +25,20 @@ cargo test -p sylvander-runtime registry_composition
 cargo test -p sylvander-runtime agent_admin_runtime_v3
 ```
 
+The shared `sessions.db` drill additionally proves that a fresh boot and a
+restart preserve both current namespaces, standalone opens remain strict, and
+unknown, partial, damaged-session, or damaged-registry objects fail closed
+without mutating the rejected database:
+
+```sh
+cargo test -p sylvander-agent --lib 'session_store::sqlite::tests'
+cargo test -p sylvander-runtime --lib agent_registry
+```
+
+Do not copy, delete, or reconstruct only one namespace. Session and registry
+state are one physical recovery unit even though each component owns and
+validates a disjoint object set.
+
 ## Session and run recovery
 
 Runtime startup reloads persistent sessions before accepting channels.
@@ -82,6 +96,27 @@ cargo test -p sylvander-runtime production_memory_catch_up_is_bounded_restart_sa
 Never delete the database, anchor, or lease directory to make a failed drill
 pass. Preserve the failed artifact, restore the prior verified pair, and record
 the content-safe error and exact commit used for the drill.
+
+## Guardian curation recovery
+
+Guardian uses independent exact-schema curation and canonical-memory
+databases. Restart waits for expired run/mutation leases, reclaims with the
+same curator and policy revisions, and reuses the original mutation
+idempotency key. Credential rotation may issue a new service credential
+revision but must retain the stable service identity digest and durable run
+identity. An active User Profile `do_not_learn` marker must stop both new and
+already-queued learning before candidate or canonical writes.
+
+```sh
+cargo test -p sylvander-runtime capability_runtime
+cargo test -p sylvander-runtime guardian_curation
+cargo test -p sylvander-runtime guardian_runtime
+```
+
+The drill fails if an unknown/forged route reveals a hidden schema, a
+cross-owner candidate is visible, a pre-audit failure executes a handler, an
+idempotency replay applies twice, or an opted-out event reaches the canonical
+store. See [`../sylvander-runtime/GUARDIAN.md`](../sylvander-runtime/GUARDIAN.md).
 
 ## Release recovery gate
 
