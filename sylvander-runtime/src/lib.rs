@@ -4209,6 +4209,8 @@ mod tests {
                     credential: config::SecretRef::Env {
                         name: "SSH_KEY".into(),
                     },
+                    known_hosts: PathBuf::from("/tmp/sylvander-known-hosts"),
+                    control_path: PathBuf::from("/tmp/sylvander-ssh-control"),
                 },
             ),
         ]);
