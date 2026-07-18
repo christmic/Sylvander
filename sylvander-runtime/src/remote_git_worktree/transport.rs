@@ -17,21 +17,14 @@ pub(super) struct RemoteGitTransport {
 }
 
 impl RemoteGitTransport {
-    pub(super) fn new(
-        target_id: String,
-        executor: Arc<dyn WorkspaceExecutor>,
-    ) -> Self {
+    pub(super) fn new(target_id: String, executor: Arc<dyn WorkspaceExecutor>) -> Self {
         Self {
             target_id,
             executor,
         }
     }
 
-    pub(super) async fn text(
-        &self,
-        workspace: &Path,
-        args: &[&str],
-    ) -> Result<String, String> {
+    pub(super) async fn text(&self, workspace: &Path, args: &[&str]) -> Result<String, String> {
         let bytes = self.bytes(workspace, args, &[0]).await?;
         String::from_utf8(bytes)
             .map(|text| text.trim_end().to_owned())
@@ -58,11 +51,7 @@ impl RemoteGitTransport {
         output_bytes(output, allowed)
     }
 
-    pub(super) async fn status(
-        &self,
-        workspace: &Path,
-        args: &[&str],
-    ) -> Result<i32, String> {
+    pub(super) async fn status(&self, workspace: &Path, args: &[&str]) -> Result<i32, String> {
         let output = self.command(workspace, &git_command(args), false).await?;
         if output.stdout_truncated || output.stderr_truncated {
             return Err("remote Git output exceeded the execution limit".into());

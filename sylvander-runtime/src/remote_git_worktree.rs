@@ -97,6 +97,14 @@ impl RemoteGitWorktreeManager {
                 .await?,
         );
         validate_remote_absolute(&source_root)?;
+        let source_prefix = self
+            .git
+            .text(requested, &["rev-parse", "--show-prefix"])
+            .await?;
+        let source_prefix = source_prefix.trim_end_matches('/');
+        if !source_prefix.is_empty() {
+            validate_relative(source_prefix)?;
+        }
         if !self
             .git
             .text(&source_root, &["status", "--porcelain"])
@@ -108,36 +116,42 @@ impl RemoteGitWorktreeManager {
                     .into(),
             );
         }
-        let relative = requested
-            .strip_prefix(&source_root)
-            .map_err(|_| "workspace is outside its Git repository")?;
         let worktree_root = self.remote_root.join(session_id);
         let mut lease = RemoteWorkspaceLease {
             session_id: session_id.into(),
             target_id: self.target_id.clone(),
             source_root,
-            effective_workspace: worktree_root.join(relative),
+            effective_workspace: worktree_root.join(source_prefix),
             worktree_root,
             branch: format!("sylvander/{session_id}"),
             state: RemoteLeaseState::Creating,
         };
         self.manifests.save(&lease)?;
 
-        let creation = self
-            .git
-            .ok(
-                &lease.source_root,
-                &[
-                    "worktree",
-                    "add",
-                    "-b",
-                    &lease.branch,
-                    path_text(&lease.worktree_root)?,
-                    "HEAD",
-                ],
-                true,
-            )
-            .await;
+        let creation = async {
+            self.git
+                .command_ok(
+                    &lease.source_root,
+                    &format!("mkdir -p -- {}", shell_quote(path_text(&self.remote_root)?)),
+                    true,
+                )
+                .await?;
+            self.git
+                .ok(
+                    &lease.source_root,
+                    &[
+                        "worktree",
+                        "add",
+                        "-b",
+                        &lease.branch,
+                        path_text(&lease.worktree_root)?,
+                        "HEAD",
+                    ],
+                    true,
+                )
+                .await
+        }
+        .await;
         if let Err(error) = creation {
             let _ = self.cleanup_remote(&lease).await;
             let _ = self.manifests.remove(session_id);
@@ -192,12 +206,19 @@ impl RemoteGitWorktreeManager {
                 .git
                 .bytes(
                     &lease.worktree_root,
-                    &["diff", "--no-index", "--binary", "--", "/dev/null", relative],
+                    &[
+                        "diff",
+                        "--no-index",
+                        "--binary",
+                        "--",
+                        "/dev/null",
+                        relative,
+                    ],
                     &[0, 1],
                 )
                 .await?;
-            let addition = String::from_utf8(output)
-                .map_err(|_| "remote worktree diff is not valid UTF-8")?;
+            let addition =
+                String::from_utf8(output).map_err(|_| "remote worktree diff is not valid UTF-8")?;
             if !patch.is_empty() {
                 patch.push('\n');
             }
@@ -356,7 +377,6 @@ impl RemoteGitWorktreeManager {
             .command_ok(&lease.source_root, &command, true)
             .await
     }
-
 }
 
 fn path_text(path: &Path) -> Result<&str, String> {
@@ -367,3 +387,7 @@ fn path_text(path: &Path) -> Result<&str, String> {
 fn display_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/remote_git_worktree.rs"]
+mod tests;
