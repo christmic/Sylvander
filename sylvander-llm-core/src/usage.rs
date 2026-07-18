@@ -2,9 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Token accounting dimensions reported for one or more invocations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
+    /// Non-cache input tokens.
     pub input_tokens: u64,
+    /// Generated output tokens.
     pub output_tokens: u64,
     /// Cache-write tokens reported by the provider. `None` means the
     /// provider did not report this dimension; it is distinct from zero.
@@ -15,6 +18,7 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    /// Add another usage record without integer overflow.
     pub fn saturating_add_assign(&mut self, other: Self) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
@@ -23,6 +27,7 @@ impl TokenUsage {
     }
 
     #[must_use]
+    /// Return all input-side dimensions, treating unreported caches as zero.
     pub fn total_input_tokens(self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_write_tokens.unwrap_or(0))

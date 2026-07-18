@@ -1,11 +1,24 @@
+//! Deterministic pre-dispatch capability validation.
+//!
+//! The scanner derives required capabilities from both the requested options
+//! and prior message content. It reports only the missing capability and
+//! triggering feature, never prompt or tool-result content.
+
 use crate::{ContentBlock, ModelCapabilities, ModelRequest, ToolResultContent};
+/// Provider-neutral capability required by a request feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RequiredModelCapability {
+    /// Tool definition or tool-history support.
     ToolUse,
+    /// Explicit reasoning request or reasoning-history support.
     Reasoning,
+    /// Schema-constrained output support.
     StructuredOutput,
+    /// Prompt/tool cache-hint support.
     PromptCaching,
+    /// Image input support.
     Vision,
+    /// Document input support.
     DocumentInput,
 }
 impl RequiredModelCapability {
@@ -34,18 +47,30 @@ impl std::fmt::Display for RequiredModelCapability {
     }
 }
 
+/// Concrete request feature that triggered a capability requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ModelRequestFeature {
+    /// Non-empty tool definition list.
     ToolDefinitions,
+    /// Tool call or result in message history.
     ToolHistory,
+    /// Explicit reasoning budget.
     ReasoningRequest,
+    /// Reasoning block in message history.
     ReasoningHistory,
+    /// Requested output JSON Schema.
     OutputSchema,
+    /// Cache hint on a system instruction.
     SystemCacheHint,
+    /// Cache hint on a tool definition.
     ToolCacheHint,
+    /// Image supplied as a top-level message block.
     DirectImage,
+    /// Image supplied inside a tool result.
     ToolResultImage,
+    /// Document supplied as a top-level message block.
     DirectDocument,
+    /// Document supplied inside a tool result.
     ToolResultDocument,
 }
 
@@ -67,10 +92,13 @@ impl std::fmt::Display for ModelRequestFeature {
     }
 }
 
+/// First missing capability and the request feature that requires it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("model lacks `{capability}` required by `{feature}`")]
 pub struct ModelRequestCapabilityError {
+    /// Missing model capability.
     pub capability: RequiredModelCapability,
+    /// Feature that introduced the requirement.
     pub feature: ModelRequestFeature,
 }
 
@@ -160,6 +188,7 @@ fn requirements(request: &ModelRequest) -> Vec<(RequiredModelCapability, ModelRe
     .collect()
 }
 
+/// Derive the union of capabilities required by a normalized request.
 pub fn required_model_capabilities(request: &ModelRequest) -> ModelCapabilities {
     requirements(request)
         .into_iter()
@@ -168,6 +197,7 @@ pub fn required_model_capabilities(request: &ModelRequest) -> ModelCapabilities 
         })
 }
 
+/// Reject the first request feature not supported by `available`.
 pub fn validate_model_request_capabilities(
     request: &ModelRequest,
     available: ModelCapabilities,

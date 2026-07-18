@@ -189,7 +189,19 @@ their own configuration (typically via `sylvander-runtime::config`):
   inside `ContentBlock::Reasoning` for re-feeding on subsequent
   turns. Core persists but never interprets these payloads.
 
-## 6. Tests
+## 6. Extension rules
+
+- A new provider-neutral feature starts as a core request/content/capability
+  type and a validator case; vendor adapters must not smuggle it through
+  untyped JSON.
+- A new stream event needs one unambiguous terminal/non-terminal meaning.
+  Providers may normalize vendor events but cannot fabricate completion.
+- Error variants remain content-safe and provider-neutral. Raw response bodies,
+  credentials, prompts, and tool results never enter `ProviderError`.
+- Provider implementations own transport conversion only. Retry, session,
+  policy, and UI behavior remain above this crate.
+
+## 7. Tests
 
 | Submodule | Test file | Coverage |
 |-----------|-----------|----------|
@@ -200,7 +212,7 @@ their own configuration (typically via `sylvander-runtime::config`):
 | `usage` | `sylvander-llm-core/tests/core_contracts.rs` | Saturating add, optional cache dims, total-input accounting |
 | `validation` | `sylvander-llm-core/tests/core_contracts.rs` | Six-capability scan, history/nested-media stacking, tool-cache hint gating |
 
-## 7. Related docs
+## 8. Related docs
 
 - [`sylvander-llm-anthropic/README.md`](../sylvander-llm-anthropic/README.md) — canonical provider implementation example.
 - [`docs/sylvander-agent-platform.md`](sylvander-agent-platform.md) — Agent loop that calls this crate.
