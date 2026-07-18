@@ -25,6 +25,7 @@
 mod agent_admin;
 #[cfg(test)]
 mod agent_admin_runtime_v3_tests;
+/// Versioned Agent definitions and active-revision lookup.
 pub mod agent_registry;
 #[allow(dead_code)] // immutable runtime bindings consumed by registry composition
 mod agent_registry_snapshot;
@@ -35,14 +36,19 @@ mod agent_registry_snapshot_v3;
 #[cfg(test)]
 mod agent_registry_snapshot_v3_tests;
 mod boundary;
+/// Builds configured Agent revisions, prompt layers, providers, and tools.
 pub mod composition;
+/// Latest-version server configuration and secret-reference contracts.
 pub mod config;
 #[allow(dead_code)] // internal API consumed by credential administration batches
 mod credential_registry;
 #[cfg(test)]
 mod credential_registry_tests;
+/// Content-safe runtime evidence, feedback, and authorization records.
 pub mod evidence;
+/// Workspace target selection and execution policy composition.
 pub mod execution;
+/// Isolated local Git worktree lease lifecycle for coding sessions.
 pub mod git_worktree;
 #[allow(dead_code)] // runtime ownership/config wiring follows this isolated policy adapter
 mod identity_binding_service;
@@ -53,9 +59,11 @@ mod memory_maintenance;
 mod model_registry;
 #[cfg(test)]
 mod model_registry_tests;
+/// Stable user mapping for authenticated transport principals.
 pub mod principal_binding;
 #[cfg(test)]
 mod principal_binding_tests;
+/// Controlled synchronization of provider model catalogs into the registry.
 pub mod provider_catalog_sync;
 #[allow(dead_code)] // internal API consumed by provider routing/admin batches
 mod provider_registry;
@@ -81,6 +89,7 @@ mod registry_domain;
 mod registry_domain_tests;
 #[allow(dead_code)] // wired by registry-backed composition after snapshot resolution
 mod request_scoped_provider;
+/// Evidence-backed, human-gated self-change experiments.
 pub mod self_change;
 #[allow(dead_code)] // Runtime-owned profile dispatch is integrated in the next bounded batch
 mod user_profile_store;
