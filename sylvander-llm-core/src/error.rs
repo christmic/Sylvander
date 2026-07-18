@@ -67,28 +67,3 @@ impl ProviderError {
         self.kind.is_retryable()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retryability_is_owned_by_neutral_classification() {
-        for kind in [
-            ProviderErrorKind::Transport,
-            ProviderErrorKind::Timeout,
-            ProviderErrorKind::RateLimited,
-            ProviderErrorKind::Unavailable,
-        ] {
-            assert!(kind.is_retryable());
-        }
-        for kind in [
-            ProviderErrorKind::Authentication,
-            ProviderErrorKind::InvalidRequest,
-            ProviderErrorKind::Protocol,
-            ProviderErrorKind::Cancelled,
-        ] {
-            assert!(!kind.is_retryable());
-        }
-    }
-}

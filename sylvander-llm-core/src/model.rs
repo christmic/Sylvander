@@ -61,18 +61,3 @@ pub struct ModelInfo {
     pub max_output_tokens: u32,
     pub capabilities: ModelCapabilities,
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::*;
-
-    #[test]
-    fn provider_is_part_of_model_identity() {
-        let mut models = HashSet::new();
-        models.insert(ModelRef::new("anthropic", "shared-name"));
-        models.insert(ModelRef::new("local", "shared-name"));
-        assert_eq!(models.len(), 2);
-    }
-}

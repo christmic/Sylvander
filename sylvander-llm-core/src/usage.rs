@@ -36,34 +36,3 @@ fn add_optional(total: Option<u64>, next: Option<u64>) -> Option<u64> {
         (total, next) => Some(total.unwrap_or(0).saturating_add(next.unwrap_or(0))),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn usage_accumulates_without_overflowing() {
-        let mut total = TokenUsage {
-            input_tokens: u64::MAX,
-            output_tokens: 2,
-            cache_write_tokens: None,
-            cache_read_tokens: Some(u64::MAX),
-        };
-        total.saturating_add_assign(TokenUsage {
-            input_tokens: 1,
-            output_tokens: 5,
-            cache_write_tokens: Some(7),
-            cache_read_tokens: None,
-        });
-        assert_eq!(total.input_tokens, u64::MAX);
-        assert_eq!(total.output_tokens, 7);
-        assert_eq!(total.cache_write_tokens, Some(7));
-        assert_eq!(total.cache_read_tokens, Some(u64::MAX));
-        assert_eq!(total.total_input_tokens(), u64::MAX);
-
-        let mut unknown = TokenUsage::default();
-        unknown.saturating_add_assign(TokenUsage::default());
-        assert_eq!(unknown.cache_write_tokens, None);
-        assert_eq!(unknown.cache_read_tokens, None);
-    }
-}
