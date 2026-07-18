@@ -1,7 +1,6 @@
 use super::*;
 use crate::test_support::MockTool;
 use serde_json::json;
-use sylvander_llm_anthropic::api::client::AnthropicClient;
 use sylvander_llm_anthropic::api::model::ModelCapabilities;
 use sylvander_llm_core::{
     CacheHint, ChatMessage, ChatRole, ContentBlock as ProviderBlock, DocumentContent, ImageContent,
@@ -101,17 +100,6 @@ async fn tool_deadline_is_a_typed_outcome() {
     assert!(outcome.output.contains("timed out"));
 }
 
-fn test_client() -> AnthropicClient {
-    AnthropicClient::builder()
-        .api_key("test-key")
-        .build()
-        .expect("client build")
-}
-
-fn test_model() -> ModelInfo {
-    shadow_model("test-model")
-}
-
 fn shadow_model(model_id: &str) -> ModelInfo {
     ModelInfo::builder()
         .id(model_id)
@@ -135,29 +123,35 @@ fn provider_model_for(provider_id: &str, model_id: &str) -> ProviderModelInfo {
     }
 }
 
+fn loop_builder() -> AgentLoopBuilder {
+    AgentLoop::builder().tool_context(crate::tool_context::defaults::system_tool_context())
+}
+
 #[test]
-fn builder_requires_client() {
-    let result = AgentLoop::builder().model(test_model()).build();
+fn builder_requires_qualified_router() {
+    let result = loop_builder().provider_model(provider_model()).build();
     match result {
-        Err(AgentLoopError::Builder(msg)) => assert!(msg.contains("client")),
+        Err(AgentLoopError::Builder(msg)) => assert!(msg.contains("qualified router")),
         other => panic!("expected Builder error, got {other:?}"),
     }
 }
 
 #[test]
 fn builder_requires_model() {
-    let result = AgentLoop::builder().client(test_client()).build();
+    let result = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .build();
     match result {
-        Err(AgentLoopError::Builder(msg)) => assert!(msg.contains("model")),
+        Err(AgentLoopError::Builder(msg)) => assert!(msg.contains("provider model")),
         other => panic!("expected Builder error, got {other:?}"),
     }
 }
 
 #[test]
 fn builder_succeeds_with_required_fields() {
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(test_model())
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
         .build()
         .expect("build should succeed");
     assert_eq!(loop_.model().id.as_str(), "test-model");
@@ -166,23 +160,62 @@ fn builder_succeeds_with_required_fields() {
 }
 
 #[test]
+fn builder_requires_an_explicit_tool_context() {
+    let result = AgentLoop::builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
+        .build();
+    assert!(
+        matches!(result, Err(AgentLoopError::Builder(message)) if message.contains("tool context"))
+    );
+}
+
+#[tokio::test]
+async fn inert_agent_run_template_stops_before_model_or_tool_dispatch() {
+    let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
+    let loop_ = AgentLoop::builder()
+        .qualified_router(provider.clone())
+        .provider_model(provider_model())
+        .tool_context(crate::tool_context::ToolContext::inert_agent_run_template())
+        .tool(MockTool::new(
+            "must_not_run",
+            "would prove an invalid construction context escaped",
+            crate::tool::ToolOutput::ok("unexpected"),
+        ))
+        .build()
+        .unwrap();
+
+    let events = run_stream(&loop_, vec![MessageParam::user("go")])
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(
+        matches!(
+            events.as_slice(),
+            [AgentEvent::Error(AgentLoopError::Tool(message))]
+                if message.contains("not initialized")
+        ),
+        "{events:?}"
+    );
+    assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[test]
 fn provider_builder_preserves_qualified_identity_and_safe_debug() {
     let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider {
         _secret: "secret-provider-state",
     });
-    let builder = AgentLoop::builder()
-        .provider(provider)
+    let builder = loop_builder()
+        .qualified_router(provider)
         .provider_model(provider_model());
     let debug = format!("{builder:?}");
     assert!(!debug.contains("secret-provider-state"));
     let loop_ = builder.build().unwrap();
     assert_eq!(loop_.model.id, "test-model");
-    assert!(matches!(
-        &loop_.backend,
-        ModelBackend::Provider { model, routing, .. }
-            if model.reference == ModelRef::new("local", "test-model")
-                && *routing == ProviderRouting::Single
-    ));
+    assert_eq!(
+        loop_.provider_model.reference,
+        ModelRef::new("local", "test-model")
+    );
 }
 
 #[test]
@@ -199,8 +232,8 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
             max_output_tokens: 4096,
             capabilities,
         };
-        let loop_ = AgentLoop::builder()
-            .provider(Arc::new(FakeProvider {
+        let loop_ = loop_builder()
+            .qualified_router(Arc::new(FakeProvider {
                 _secret: "not-resolved",
             }))
             .provider_model(model)
@@ -213,107 +246,40 @@ fn prompt_cache_hints_follow_the_selected_model_capability() {
             .build()
             .unwrap();
 
-        let legacy =
-            serde_json::to_value(loop_.build_request(&[MessageParam::user("go")])).unwrap();
-        assert_eq!(legacy.pointer("/tools/0/cache_control").is_some(), enabled);
-        assert_eq!(legacy.pointer("/system/0/cache_control").is_some(), enabled);
         let neutral = loop_
             .build_provider_request(&[MessageParam::user("go")])
-            .unwrap()
             .unwrap();
         assert_eq!(neutral.system[0].cache_hint.is_some(), enabled);
         assert_eq!(neutral.tools[0].cache_hint.is_some(), enabled);
     }
 }
 
-#[tokio::test]
-async fn legacy_history_media_and_cache_fail_before_dispatch() {
-    use sylvander_llm_anthropic::api::types::{
-        CacheControl, ImageBlock, SystemBlock, SystemPrompt, SystemTextBlock, ThinkingBlock,
-        UserContentBlock,
-    };
-    use wiremock::MockServer;
+#[test]
+fn lossy_message_cache_metadata_fails_before_dispatch() {
+    use sylvander_llm_anthropic::api::types::{CacheControl, TextBlock, UserContentBlock};
 
-    let server = MockServer::start().await;
-    let client = AnthropicClient::builder()
-        .api_key("test-key")
-        .base_url(server.uri())
-        .build()
-        .unwrap();
-    let model = ModelInfo::builder()
-        .id("legacy-model")
-        .context_window(100_000)
-        .max_output_tokens(4096)
-        .build()
-        .unwrap();
-    let loop_ = AgentLoop::builder()
-        .client(client)
-        .model(model)
+    let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
+    let loop_ = loop_builder()
+        .qualified_router(provider.clone())
+        .provider_model(provider_model())
         .max_retries(0)
         .build()
         .unwrap();
-    let tool_call =
-        loop_.build_request(&[MessageParam::assistant_blocks(vec![ContentBlock::ToolUse(
-            ToolUseBlock::new("secret-call", "secret-tool", json!({"secret": true})),
-        )])]);
-    let tool_result = loop_.build_request(&[MessageParam::user_blocks(vec![
-        UserContentBlock::ToolResult(ToolResultBlock::new("secret-call", "secret-result")),
-    ])]);
-    let thinking = loop_.build_request(&[MessageParam::assistant_blocks(vec![
-        ContentBlock::Thinking(ThinkingBlock::new("secret-thinking", "secret-signature")),
-    ])]);
-    let image = loop_.build_request(&[MessageParam::user_blocks(vec![UserContentBlock::Image(
-        ImageBlock::png("secret-image"),
-    )])]);
-    let mut cache = loop_.build_request(&[MessageParam::user("hello")]);
-    cache.system = Some(SystemPrompt::Blocks(vec![SystemBlock::Text(
-        SystemTextBlock::new("secret-system").with_cache_control(CacheControl::ephemeral()),
-    )]));
-
-    for request in [tool_call, tool_result, thinking, image, cache] {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let Err(error) = loop_.call_model_with_retry(&request, None, tx).await else {
-            panic!("unsupported legacy request reached dispatch");
-        };
-        assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
-        assert!(!error.is_retryable());
-        assert!(!error.to_string().contains("secret"));
-    }
-    assert!(server.received_requests().await.unwrap().is_empty());
-}
-
-#[test]
-fn single_provider_rejects_cross_provider_runtime_model() {
-    let provider: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
-    let mut loop_ = AgentLoop::builder()
-        .provider(provider)
-        .provider_model(provider_model())
-        .build()
-        .unwrap();
-    let selection = ModelSelection {
-        provider_id: "remote".into(),
-        model_id: "model-b".into(),
-    };
+    let messages = [MessageParam::user_blocks(vec![UserContentBlock::Text(
+        TextBlock::new("secret-text").with_cache_control(CacheControl::ephemeral()),
+    )])];
     let error = loop_
-        .apply_runtime_model(
-            &selection,
-            &shadow_model("model-b"),
-            Some(&provider_model_for("remote", "model-b")),
-        )
-        .unwrap_err();
-    assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
-    assert!(matches!(
-        &loop_.backend,
-        ModelBackend::Provider { model, routing, .. }
-            if model.reference == ModelRef::new("local", "test-model")
-                && *routing == ProviderRouting::Single
-    ));
+        .build_provider_request(&messages)
+        .expect_err("lossy cache metadata must fail before provider dispatch");
+    assert!(matches!(error, AgentLoopError::Validation(_)));
+    assert!(!error.to_string().contains("secret-text"));
+    assert!(provider.requests.lock().unwrap().is_empty());
 }
 
 #[test]
 fn qualified_router_accepts_cross_provider_runtime_model() {
     let router: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
-    let mut loop_ = AgentLoop::builder()
+    let mut loop_ = loop_builder()
         .qualified_router(router)
         .provider_model(provider_model())
         .build()
@@ -330,18 +296,16 @@ fn qualified_router_accepts_cross_provider_runtime_model() {
         )
         .unwrap();
     assert_eq!(loop_.model.id, "model-b");
-    assert!(matches!(
-        &loop_.backend,
-        ModelBackend::Provider { model, routing, .. }
-            if model.reference == ModelRef::new("remote", "model-b")
-                && *routing == ProviderRouting::Qualified
-    ));
+    assert_eq!(
+        loop_.provider_model.reference,
+        ModelRef::new("remote", "model-b")
+    );
 }
 
 #[test]
 fn qualified_router_rejects_any_runtime_identity_mismatch() {
     let router: Arc<dyn ModelProvider> = Arc::new(FakeProvider { _secret: "secret" });
-    let mut loop_ = AgentLoop::builder()
+    let mut loop_ = loop_builder()
         .qualified_router(router)
         .provider_model(provider_model())
         .build()
@@ -370,11 +334,10 @@ fn qualified_router_rejects_any_runtime_identity_mismatch() {
             Err(AgentLoopError::IncompatibleModel(_))
         ));
     }
-    assert!(matches!(
-        &loop_.backend,
-        ModelBackend::Provider { model, .. }
-            if model.reference == ModelRef::new("local", "test-model")
-    ));
+    assert_eq!(
+        loop_.provider_model.reference,
+        ModelRef::new("local", "test-model")
+    );
 }
 
 fn completed_events(
@@ -425,8 +388,8 @@ fn provider_loop_with_capabilities(
     provider: Arc<ScriptedProvider>,
     capabilities: ProviderCapabilities,
 ) -> AgentLoop {
-    AgentLoop::builder()
-        .provider(provider)
+    loop_builder()
+        .qualified_router(provider)
         .provider_model(ProviderModelInfo {
             reference: ModelRef::new("local", "test-model"),
             context_window: 100_000,
@@ -491,7 +454,6 @@ async fn provider_capability_preflight_rejects_before_dispatch() {
 
     let provider = Arc::new(ScriptedProvider::new(Vec::<ProviderOpen>::new()));
     let loop_ = provider_loop_with_capabilities(provider.clone(), ProviderCapabilities::empty());
-    let legacy = loop_.build_request(&[MessageParam::user("legacy-placeholder")]);
     for request in [
         tool_call,
         tool_result,
@@ -502,10 +464,7 @@ async fn provider_capability_preflight_rejects_before_dispatch() {
         cache,
     ] {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let Err(error) = loop_
-            .call_model_with_retry(&legacy, Some(request), tx)
-            .await
-        else {
+        let Err(error) = loop_.call_model_with_retry(request, tx).await else {
             panic!("unsupported request reached provider dispatch");
         };
         assert!(matches!(error, AgentLoopError::IncompatibleModel(_)));
@@ -528,7 +487,6 @@ async fn provider_capability_preflight_dispatches_once_when_fully_supported() {
         | ProviderCapabilities::VISION
         | ProviderCapabilities::DOCUMENT_INPUT;
     let loop_ = provider_loop_with_capabilities(provider.clone(), all);
-    let legacy = loop_.build_request(&[MessageParam::user("legacy-placeholder")]);
     let mut request = neutral_request();
     request.output_schema = Some(json!({"type": "object"}));
     request.system.push(SystemInstruction {
@@ -566,10 +524,7 @@ async fn provider_capability_preflight_dispatches_once_when_fully_supported() {
         }],
     });
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    loop_
-        .call_model_with_retry(&legacy, Some(request), tx)
-        .await
-        .unwrap();
+    loop_.call_model_with_retry(request, tx).await.unwrap();
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
 }
 
@@ -592,8 +547,8 @@ async fn provider_backend_runs_tool_then_text_with_qualified_requests() {
         )),
     ]));
     let tool = MockTool::new("echo", "echo input", crate::tool::ToolOutput::ok("7"));
-    let loop_ = AgentLoop::builder()
-        .provider(provider.clone())
+    let loop_ = loop_builder()
+        .qualified_router(provider.clone())
         .provider_model(provider_model())
         .tool(tool.clone())
         .build()
@@ -631,8 +586,8 @@ async fn provider_open_retry_and_stream_protocol_are_typed() {
             ProviderStopReason::EndTurn,
         )),
     ]));
-    let loop_ = AgentLoop::builder()
-        .provider(provider.clone())
+    let loop_ = loop_builder()
+        .qualified_router(provider.clone())
         .provider_model(provider_model())
         .max_retries(1)
         .build()
@@ -666,32 +621,23 @@ async fn provider_open_retry_and_stream_protocol_are_typed() {
 }
 
 #[test]
-fn provider_builder_rejects_missing_and_mixed_backends() {
+fn qualified_builder_rejects_an_incomplete_route() {
     let provider = || Arc::new(FakeProvider { _secret: "secret" }) as Arc<dyn ModelProvider>;
     assert!(matches!(
-        AgentLoop::builder().provider(provider()).build(),
+        loop_builder().qualified_router(provider()).build(),
         Err(AgentLoopError::Builder(message)) if message.contains("provider model")
     ));
     assert!(matches!(
-        AgentLoop::builder().provider_model(provider_model()).build(),
-        Err(AgentLoopError::Builder(message)) if message.contains("provider is required")
-    ));
-    assert!(matches!(
-        AgentLoop::builder()
-            .client(test_client())
-            .model(test_model())
-            .provider(provider())
-            .provider_model(provider_model())
-            .build(),
-        Err(AgentLoopError::Builder(message)) if message.contains("cannot be mixed")
+        loop_builder().provider_model(provider_model()).build(),
+        Err(AgentLoopError::Builder(message)) if message.contains("qualified router")
     ));
 }
 
 #[test]
 fn builder_sets_max_iterations() {
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(test_model())
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
         .max_iterations(10)
         .build()
         .expect("build");
@@ -700,9 +646,9 @@ fn builder_sets_max_iterations() {
 
 #[test]
 fn builder_sets_max_retries() {
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(test_model())
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
         .max_retries(0)
         .build()
         .expect("build");
@@ -711,21 +657,22 @@ fn builder_sets_max_retries() {
 
 #[test]
 fn reasoning_effort_builds_a_capability_checked_budget() {
-    let model = ModelInfo::builder()
-        .id("thinking-model")
-        .context_window(200_000)
-        .max_output_tokens(8_192)
-        .capability(ModelCapabilities::EXTENDED_THINKING)
-        .build()
-        .expect("model");
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(model)
+    let model = ProviderModelInfo {
+        reference: ModelRef::new("local", "thinking-model"),
+        context_window: 200_000,
+        max_output_tokens: 8_192,
+        capabilities: ProviderCapabilities::REASONING,
+    };
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(model)
         .reasoning_effort(sylvander_protocol::ReasoningEffort::High)
         .build()
         .expect("loop");
-    let request = loop_.build_request(&[MessageParam::user("think")]);
-    assert_eq!(request.thinking.unwrap().budget_tokens, 8_192);
+    let request = loop_
+        .build_provider_request(&[MessageParam::user("think")])
+        .expect("provider request");
+    assert_eq!(request.reasoning.unwrap().budget_tokens, 8_192);
     assert_eq!(
         loop_.reasoning_effort(),
         sylvander_protocol::ReasoningEffort::High
@@ -734,25 +681,26 @@ fn reasoning_effort_builds_a_capability_checked_budget() {
 
 #[test]
 fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
-    let api = |status| AnthropicError::Api {
-        status,
-        error_type: "test".into(),
-        error_message: "failed".into(),
-        request_id: None,
-    };
+    let provider_error = |kind, phase| ProviderError::new(kind, phase, "failed");
     assert_eq!(
-        retry_cause(&api(429)),
+        provider_retry_cause(&provider_error(
+            ProviderErrorKind::RateLimited,
+            ProviderErrorPhase::Open,
+        )),
         sylvander_protocol::RetryCause::RateLimit
     );
     assert_eq!(
-        retry_cause(&api(503)),
+        provider_retry_cause(&provider_error(
+            ProviderErrorKind::Unavailable,
+            ProviderErrorPhase::Open,
+        )),
         sylvander_protocol::RetryCause::Server
     );
     assert_eq!(
-        retry_cause(&AnthropicError::SseParse {
-            message: "truncated".into(),
-            position: 10,
-        }),
+        provider_retry_cause(&provider_error(
+            ProviderErrorKind::Protocol,
+            ProviderErrorPhase::Stream,
+        )),
         sylvander_protocol::RetryCause::Stream
     );
 }
@@ -760,9 +708,9 @@ fn retry_cause_distinguishes_rate_limit_server_and_stream_failures() {
 #[test]
 fn builder_registers_tool() {
     let tool = MockTool::new("echo", "echoes", super::super::tool::ToolOutput::ok("hi"));
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(test_model())
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
         .tool(tool)
         .build()
         .expect("build");
@@ -772,9 +720,9 @@ fn builder_registers_tool() {
 
 #[test]
 fn default_max_iterations_is_50() {
-    let loop_ = AgentLoop::builder()
-        .client(test_client())
-        .model(test_model())
+    let loop_ = loop_builder()
+        .qualified_router(Arc::new(FakeProvider { _secret: "secret" }))
+        .provider_model(provider_model())
         .build()
         .expect("build");
     assert_eq!(loop_.max_iterations(), 50);

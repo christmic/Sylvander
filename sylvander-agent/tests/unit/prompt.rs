@@ -50,8 +50,6 @@ fn resolver_composes_non_overridable_layers_and_exact_manifest() {
         vec![PromptProfile {
             id: "alpha-coding".into(),
             qualified_models: vec![selection("alpha", "shared")],
-            providers: Vec::new(),
-            models: Vec::new(),
             system_prompt: "profile instructions".into(),
         }],
         Some("alpha-coding".into()),
@@ -109,8 +107,6 @@ fn resolver_rejects_incompatible_disabled_and_oversized_compositions() {
         vec![PromptProfile {
             id: "alpha".into(),
             qualified_models: vec![selection("alpha", "model-a")],
-            providers: Vec::new(),
-            models: Vec::new(),
             system_prompt: "p".repeat(MAX_PROMPT_BYTES),
         }],
         Some("alpha".into()),
@@ -140,15 +136,11 @@ fn qualified_profiles_do_not_cross_same_named_models() {
             PromptProfile {
                 id: "alpha".into(),
                 qualified_models: vec![selection("alpha", "shared")],
-                providers: Vec::new(),
-                models: Vec::new(),
                 system_prompt: "alpha profile".into(),
             },
             PromptProfile {
                 id: "beta".into(),
                 qualified_models: vec![selection("beta", "shared")],
-                providers: Vec::new(),
-                models: Vec::new(),
                 system_prompt: "beta profile".into(),
             },
         ],
@@ -165,8 +157,5 @@ fn qualified_profiles_do_not_cross_same_named_models() {
         prompt_policy.resolve(&selection("beta", "shared"), Some("alpha"), None),
         Err(PromptResolveError::IncompatibleProfile)
     );
-    assert!(
-        validate_profile_selectors(&[], &["alpha".into(), "beta".into()], &["shared".into()])
-            .is_err()
-    );
+    assert!(validate_profile_selectors(&[selection("alpha", "shared")]).is_ok());
 }

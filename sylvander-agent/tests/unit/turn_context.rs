@@ -19,8 +19,6 @@ fn prompt_resolver_maps_model_profile_and_agent_definition_into_one_typed_layer(
         vec![crate::prompt::PromptProfile {
             id: "coding".into(),
             qualified_models: vec![selection.clone()],
-            providers: Vec::new(),
-            models: Vec::new(),
             system_prompt: "model-specific instructions".into(),
         }],
         Some("coding".into()),
