@@ -68,9 +68,19 @@ enabled = true
 [server.evidence]
 enabled = true
 # path = "/var/lib/sylvander/evidence.db"
+tenant_id = "local"
 retention_days = 30
 # metadata_only avoids persisting raw prompts, tool payloads, and responses.
 content = "metadata_only"
+
+[server.evidence.encryption]
+key_id = "evidence-key-2026-07"
+
+# Exactly 32 raw bytes or 64 hexadecimal characters. Production requires this
+# even for metadata-only capture because generated artifacts share the store.
+[server.evidence.encryption.key]
+source = "env"
+name = "SYLVANDER_EVIDENCE_ENCRYPTION_KEY"
 
 [server.boundary]
 max_request_bytes = 1048576
