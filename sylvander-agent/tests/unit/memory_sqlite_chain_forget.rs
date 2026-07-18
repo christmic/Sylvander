@@ -180,7 +180,7 @@ async fn malformed_cross_owner_inbound_link_fails_closed() {
 
 #[test]
 fn model_facing_memory_contract_has_no_chain_forget_operation() {
-    let source = include_str!("memory.rs");
+    let source = include_str!("../../src/tools/memory.rs");
     let trait_body = source
         .split("pub trait MemoryStore")
         .nth(1)
