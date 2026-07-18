@@ -2,7 +2,7 @@
 
 Status: active user documentation
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 Scope: how to install, configure, run, and use a Sylvander server from an
 operator or end-user perspective.
@@ -113,22 +113,26 @@ self-use mode skips the integrity anchor.
 
 ### 4.1 macOS application bundle
 
-A signed `.app` bundle is the recommended distribution for end users on
-macOS. Drop it into `/Applications` and launch `Sylvander.app`. The first
-launch opens a setup wizard that writes a default `server.toml` into
-`~/Library/Application Support/Sylvander` and offers to import an existing
-Anthropic API key from the system keychain.
+`Sylvander.app` is the macOS desktop-host distribution target. The repository
+can build a local Release bundle with its embedded universal
+`sylvander-tui` helper, but a public bundle is installable release evidence
+only after Developer ID signing, notarization, and stapling pass. See
+[`ghostty-release-verification.md`](ghostty-release-verification.md).
 
-Updates are delivered through the standard macOS update channel once a
-stable release is announced.
+The application does not currently provision the server, write
+`server.toml`, or import Provider credentials. Configure and start the
+server separately, then launch the app against its Unix socket (the default is
+`/tmp/sylvander.sock`; `SYLVANDER_SOCKET` overrides it for the desktop host).
+Sparkle code is present in the upstream host, but no public Sylvander update
+channel should be assumed until a signed release feed is published.
 
 ### 4.2 Standalone daemon from source
 
 Build the server with the workspace's pinned toolchain:
 
 ```sh
-git clone https://github.com/example/sylvander.git
-cd sylvander
+git clone https://github.com/christmic/Sylvander.git
+cd Sylvander
 cargo install --path sylvander-server --locked
 ```
 
@@ -138,8 +142,10 @@ cargo install --path sylvander-server --locked
 dependencies.
 
 A development build (faster compile, slower runtime) is available with
-`cargo build --release -p sylvander-server` from the workspace root; the
-artifact lives at `target/release/sylvander`.
+`cargo build -p sylvander-server` from the workspace root; its artifact lives
+at `target/debug/sylvander`. A release build uses
+`cargo build --release -p sylvander-server --locked` and produces
+`target/release/sylvander`.
 
 ### 4.3 First-run layout
 
@@ -159,18 +165,23 @@ the anchor parent is missing or writable by the database writer.
 The shortest path from a clean checkout to a working session:
 
 ```sh
-# 1. Configure (start from the maintained example)
-cp config/sylvander.example.toml /etc/sylvander/server.toml
-$EDITOR /etc/sylvander/server.toml
+# 1. Build the server and TUI from the locked workspace
+cargo build --release --locked -p sylvander-server -p sylvander-tui
 
-# 2. Provide every secret referenced by that document
+# 2. Configure (start from the maintained example, then select self_use or
+#    provision every production path and integrity prerequisite it names)
+mkdir -p "$HOME/.config/sylvander"
+cp config/sylvander.example.toml "$HOME/.config/sylvander/server.toml"
+$EDITOR "$HOME/.config/sylvander/server.toml"
+
+# 3. Provide every secret referenced by that document
 export ANTHROPIC_API_KEY=sk-ant-...
 # Production example also references memory/evidence keys:
 export SYLVANDER_MEMORY_INTEGRITY_KEY=...
 export SYLVANDER_EVIDENCE_ENCRYPTION_KEY=...
 
-# 3. Run
-export SYLVANDER_CONFIG=/etc/sylvander/server.toml
+# 4. Run
+export SYLVANDER_CONFIG="$HOME/.config/sylvander/server.toml"
 ./target/release/sylvander
 ```
 
@@ -222,9 +233,10 @@ format, integrity-anchor options, and agent/workspace semantics, see
 
 ### 6.1 Top-level shape
 
-The schema version is mandatory and must equal `1`. The example contains
-six top-level tables:
+The schema version is mandatory and must equal `1`. The current top-level
+shape is that scalar plus five configured objects/collections:
 
+- `schema_version` — exact public configuration version;
 - `[server]` — name, mode, data directory, session/evidence/memory/
   profile databases, boundary quotas, and optional sub-sections for
   memory maintenance, approval, evidence, and stable identity.
@@ -394,8 +406,10 @@ cargo build --release -p sylvander-tui
 ./target/release/sylvander-tui --socket /tmp/sylvander.sock
 ```
 
-Protocol: one JSON object per line (NDJSON). Client → server messages
-include `{"type":"chat","text":"hi"}`,
+Protocol: one JSON object per line (NDJSON). The first client frame must be a
+current `hello` version/capability negotiation; business messages sent before
+the matching server `welcome` are rejected. After negotiation, client → server
+messages include `{"type":"chat","text":"hi"}`,
 `{"type":"approve","call_id":"...","approved":true}`,
 `{"type":"list_sessions"}`, and `{"type":"ping"}`. Server → client
 pushed events include `text_delta`, `tool_call`, `tool_result`,
@@ -429,11 +443,12 @@ curl -N -X POST http://127.0.0.1:8080/chat \
   -d '{"session_id":"demo","message":"hello"}'
 ```
 
-`session_id` may be omitted; the server returns a `session_created`
-event with the assigned id. The HTTP surface is intentionally narrower
-than Unix/WebSocket — it accepts authenticated chat and decision
-answers, exposes `/health`, `/ready`, `/metrics`, but does **not**
-expose Agent administration or profile editing.
+`session_id` is a required client-owned alias on the HTTP adapter. Its first
+use creates and binds a durable Sylvander session; later requests with the same
+alias resume that binding. The HTTP surface is intentionally narrower than
+Unix/WebSocket — it accepts authenticated chat and exposes `/health`, `/ready`,
+and `/metrics`, but does **not** expose the full typed decision, Agent
+administration, or profile-editing protocol.
 
 ## 12. WebSocket quickstart
 
@@ -460,11 +475,27 @@ name = "SYLVANDER_WS_TOKEN"
 Minimal client:
 
 ```js
+import WebSocket from "ws";
+
 const ws = new WebSocket("ws://127.0.0.1:8081", {
   headers: { Authorization: `Bearer ${token}` }
 });
-ws.onmessage = (event) => { /* text_delta, tool_call, done, ... */ };
-ws.onopen = () => ws.send(JSON.stringify({ type: "chat", text: "hi" }));
+ws.on("open", () => ws.send(JSON.stringify({
+  type: "hello",
+  protocol: {
+    client_name: "example",
+    min_version: 5,
+    max_version: 5,
+    capabilities: []
+  }
+})));
+ws.on("message", (data) => {
+  const message = JSON.parse(data.toString());
+  if (message.type === "welcome") {
+    ws.send(JSON.stringify({ type: "chat", text: "hi" }));
+  }
+  // Handle text_delta, tool_call, done, and other negotiated events here.
+});
 ```
 
 ## 13. Telegram setup

@@ -39,7 +39,7 @@ pub type OperationalHealthProvider =
     Arc<dyn Fn() -> OperationalHealthFuture + Send + Sync + 'static>;
 pub struct OperationalHealth {
     pub ready: bool, pub agents: usize,
-    pub persistent_sessions: usize, pub ephemeral_sessions: usize,
+    pub persistent_sessions: usize,
     pub ready_channels: usize, pub total_channels: usize,
     pub bus_subscribers: usize, pub bus_capacity: usize,
     pub published_messages: u64, pub backpressure_rejections: u64,

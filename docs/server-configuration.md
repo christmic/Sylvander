@@ -315,6 +315,21 @@ external channel being linked. Resolve and CAS unlink always apply to the
 authenticated ingress-derived external identity. See
 [`identity-binding-protocol.md`](identity-binding-protocol.md).
 
+## Durable database paths
+
+`server.session_db`, `server.memory_db`, `server.user_profile_db`, and
+`server.evidence.path` always name filesystem-backed SQLite files. When omitted,
+they resolve beneath `server.data_dir`; a relative configured path also resolves
+beneath that directory. An absolute file path remains absolute.
+
+The latest configuration contract rejects empty or whitespace-only paths,
+SQLite's `:memory:` sentinel, every `file:` URI (including
+`mode=memory&cache=shared`), and a path that resolves to an existing directory.
+Runtime reports the invalid field and stops before opening any store. It never
+reinterprets one of these values, creates a temporary database, or falls back to
+memory. Tests that need SQLite memory use explicit test-only constructors
+instead of production configuration.
+
 ## Global User Profile
 
 Runtime always opens one owner-scoped User Profile SQLite database. Configure
@@ -401,6 +416,30 @@ Raw transcript text, profile values, capability input/output, and service
 credentials do not belong in the curation database. Recovery and audit
 requirements are in
 [`../sylvander-runtime/GUARDIAN.md`](../sylvander-runtime/GUARDIAN.md).
+
+## Credential-operation ledger
+
+Configured boot also opens
+`<server.data_dir>/credential-operations.db`. This latest-schema database is
+separate from sessions, registries, evidence, and Guardian curation. The live
+Provider request credential source, registry mutation service, and every
+server-composed Channel credential source append their create, acquire, renew,
+rotate, revoke, and failure operations to it.
+
+Rows contain stable Provider or channel-instance identity, an optional
+SHA-256 credential-binding digest, a positive credential revision when one
+exists, fixed operation/result codes, and time. Secret bytes, secret
+references, renewal tokens, and arbitrary error strings are not accepted by
+the ledger API. Successful lease delivery fails closed when the corresponding
+success audit cannot be written; a failure path preserves its original
+content-safe error when the best-effort failure audit also fails.
+
+The ledger retains events for 90 days and removes expired rows in bounded
+batches during append. Include the database in quiesced, access-controlled
+Runtime backups when credential-operation history is part of the deployment's
+audit requirements. Its exact schema and query isolation contract are
+module-owned in
+[`../sylvander-runtime/CREDENTIAL_AUDIT.md`](../sylvander-runtime/CREDENTIAL_AUDIT.md).
 
 ## Secret references
 
@@ -510,16 +549,16 @@ relationship-memory, and User Profile databases and the workspace journal live
 below that directory. Explicit paths remain useful for containers, backups,
 and restore drills.
 
-`server.evidence` controls the structured run ledger. It is enabled by default
-with tenant `local`, a 30-day finite retention declaration, and
-`metadata_only` content policy. The other policies are `redacted` and `full`.
-Both require encryption. Production requires encryption even when event
-capture is metadata-only because generated artifacts use the same governed
-store.
+`server.evidence` controls the always-on structured run ledger. Configured
+Runtime records metadata facts for every run; the latest schema deliberately
+has no `enabled` field. Tenant `local`, a 30-day finite retention declaration,
+and `metadata_only` content policy are the defaults. The other policies are
+`redacted` and `full`. Both require encryption. Production requires encryption
+even when event capture is metadata-only because generated artifacts use the
+same governed store.
 
 ```toml
 [server.evidence]
-enabled = true
 tenant_id = "tenant-a"
 retention_days = 30
 content = "redacted"
@@ -531,6 +570,11 @@ key_id = "evidence-key-2026-07"
 source = "file"
 path = "/run/secrets/sylvander-evidence-key"
 ```
+
+An old `enabled = false` entry is rejected as an unknown field instead of
+silently dropping the run record. Use content classification, the
+`metadata_only` policy, and the durable User Profile `do_not_learn` preference
+to control privacy and learning behavior.
 
 The resolved key must be exactly 32 raw bytes or 64 hexadecimal characters.
 The database is permanently bound to the configured tenant, key ID, and key

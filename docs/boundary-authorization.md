@@ -98,11 +98,13 @@ and the Runtime re-authorizes it before accessing its private binding store.
 
 ## Audit and data minimization
 
-Authorization denials are persisted even when optional run-content evidence is
-disabled. Each record contains time, request ID, channel instance, transport,
+Authorization denials and runtime facts are persisted through the always-on
+evidence recorder. There is no configuration switch that disables this audit
+boundary. Each denial contains time, request ID, channel instance, transport,
 operation, code, and SHA-256 digests for principal/resource identifiers. It
 does not contain bearer tokens, raw messages, session IDs, prompts, tool input,
-or tool output. Retention and export use the runtime evidence controls.
+or tool output. Retention and export use the runtime evidence controls;
+`server.evidence.content` changes payload capture, not whether the event exists.
 
 ## Configuration
 

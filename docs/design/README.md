@@ -17,7 +17,14 @@ When an SVG differs from the Markdown specification, the Markdown specification
 wins. When implementation differs from both, it is a bug until the specification
 is deliberately revised.
 
-## Editable UI boards
+## Editable UI layout boards
+
+These SVGs remain editable geometry and hierarchy references. Some boards still
+contain the earlier transcript glyphs `›` and `◆`; those glyphs are historical
+and non-normative. Current conversation rows use `❯` for the user and `⏺` for
+the Agent. Selection cursors may still use `›`, and decision titles may still
+use `◆`. The Markdown specification and implementation own that distinction
+until the boards are redrawn.
 
 - [`tui-01-welcome.svg`](tui-01-welcome.svg) — session entry and persistent
   transcript prelude.
@@ -49,20 +56,21 @@ compact Agent-turn marker is a presence mark, not a fallback logo.
 
 ## Current non-negotiable rules
 
-- Canvas is pure black (`#000000`).
+- The default `sylvander` theme canvas is pure black (`#000000`). Alternate
+  configured themes may substitute their validated semantic canvas.
 - Ordinary transcript content has no filled card or gray container.
-- Main content is anchored two terminal cells from the left; fullscreen width
+- Main content is anchored at the first terminal column; fullscreen width
   adds space on the right and never recenters the transcript.
 - Welcome is the first transcript block. Sending a message appends below it;
   it disappears only through normal scrolling.
 - The compact half-area Seed-Crab appears once at session entry. Its linear
   dimensions remain near 70% so the complete character does not collapse into
   a triangular shell mark.
-- User turns begin with `›`. Agent turns begin with one violet `◆` presence
+- User turns begin with `❯`. Agent turns begin with one violet `⏺` presence
   mark. The former three-line `/\\ (••) <__>` reply marker is prohibited.
 - Agent prose wraps on word boundaries. Markdown control characters are not
   shown as raw decoration.
-- Composer rules span the terminal width. The `>` prompt touches the same left
+- Composer rules span the terminal width. The `❯` prompt touches the same left
   edge as those rules and grows upward from one row.
 - Session/model/branch/tool state lives in the bottom status row.
 - The standalone TUI owns one active session. `/resume` is a temporary picker;

@@ -35,7 +35,7 @@ Provider logs may contain Provider ID, credential generation, lease
 generation, and expiry. They must never contain a binding locator, secret
 reference, renewal token, or secret bytes.
 
-## Channel credential audit
+## Channel credential boundary and audit
 
 The channel implementations expose these credential boundaries:
 
@@ -65,11 +65,23 @@ The common channel contract has the same rules as the Provider path:
 5. The built-in source emits content-safe operational diagnostics for a
    successful lease: instance ID, slot count, credential generation, lease
    generation, and expiry. Adapter failures use generic lease/authentication
-   errors. This path does not currently claim a separate durable channel-lease
-   audit ledger.
-6. Tests rotate every slot while the channel remains running, verify the old
+   errors.
+6. Runtime also appends every create, acquire, renew, rotate, revoke, and
+   failure operation to the dedicated `credential-operations.db` ledger.
+   Provider subjects use the stable Provider ID; Channel subjects use the
+   stable channel-instance ID. The ledger stores only a SHA-256 binding digest,
+   fixed operation/result codes, revision, and timestamp. It does not store a
+   secret value, secret reference, renewal token, or caller-authored error.
+   A successful lease is withheld if its required success audit cannot be
+   committed.
+7. Tests rotate every slot while the channel remains running, verify the old
    value is rejected, verify the new value is accepted, and exercise
-   renewal-failure and post-expiry paths.
+   renewal-failure, post-expiry, subject-isolation, retention, and restart
+   paths.
 
 Until a transport consumes this contract at its operation boundary, it must
 not be described as supporting live credential rotation.
+
+The exact audit schema, 90-day bounded retention, and query contract are
+module-owned in
+[`../sylvander-runtime/CREDENTIAL_AUDIT.md`](../sylvander-runtime/CREDENTIAL_AUDIT.md).

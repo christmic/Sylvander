@@ -101,6 +101,13 @@ merge or deploy code.
 
 ## Capture policy
 
+Configured Runtime always starts the durable recorder. The latest schema has no
+`server.evidence.enabled` switch: self-improvement, recovery, and operational
+diagnosis require complete runtime facts. Privacy is enforced by classification
+and content policy. A user's durable `do_not_learn` preference prevents those
+facts from becoming learned or curated memory; it does not erase the
+operational/audit record.
+
 `server.evidence.content` selects one of three policies:
 
 - `metadata_only` stores event types, timestamps, byte sizes, attachment
@@ -118,6 +125,14 @@ configured. Production mode requires evidence encryption even for
 `metadata_only`, because generated artifacts may still use the governed store.
 Normalized event rows reject `payload_json`; sensitive bytes cannot
 accidentally fall back to the queryable metadata table.
+
+A background recorder write failure is retained as a content-safe operational
+health issue. It is sticky for the process lifetime: later writes continue,
+but cannot reconstruct the missing event or restore readiness. Recovery
+requires restart after the underlying store is repaired (or a future explicit
+repair workflow). The health surface exposes only the fixed subsystem
+category, never the failed payload, database path, or underlying SQLite
+message.
 
 ## Encryption and tenancy
 
@@ -197,6 +212,36 @@ Runtime evidence is input to this process, not an instruction channel. User
 content cannot become a system prompt, skill, memory, source-code change, or
 deployment merely because it appears in the ledger.
 
+### Local administrator entry
+
+`sylvander-improve` is the executable administrator surface for the local,
+human-gated flow. Run `cargo run -p sylvander-server --bin
+sylvander-improve -- help` for the current-schema command contract. Its
+operations are deliberately explicit:
+
+- `analyze` reads a bounded metadata cohort;
+- `proposal-create` and `proposal-transition` register and review a proposal;
+- `experiment-start` creates a Git worktree outside the source checkout;
+- `experiment-evaluate` executes the administrator-supplied evaluation
+  command in that worktree and validates its complete JSON measurement set;
+- `experiment-accept` records human approval before performing the reviewed
+  merge;
+- `experiment-observe` evaluates the merged result against its thresholds;
+- `experiment-rollback` records an explicit human rollback and reverts the
+  reviewed merge.
+
+Experiment operations require a signing key **file**, a worktree root, and an
+evaluation command. The command receives
+`SYLVANDER_REQUIRED_EVALUATIONS` as JSON and must print one
+`EvaluationMeasurements` object for every required baseline, with no missing,
+extra, or duplicate baselines. Its stdout is capped at 1 MiB. The signing key
+is never accepted as a command-line value.
+
+This entry is local Git administration, not autonomous code generation or
+deployment. It does not infer a proposal from analysis, select a change, or
+bypass the proposal/evaluation/human gates. Remote SSH worktrees and automatic
+production rollout remain outside this command.
+
 ## Current boundary
 
 The durable store, bus recorder, crash recovery, structured redaction,
@@ -207,5 +252,21 @@ authenticated Runtime boundary rather than accepted from the client, and
 references are bounded and digest-validated. Deterministic privacy-aware
 cohort analysis, the versioned evaluation registry, governed improvement
 proposals, isolated worktree experiments, signed result bundles, merge
-approval, and deployment observation are implemented. Evidence remains input
-to a human-gated improvement workflow; it is never an instruction channel.
+approval, local post-merge observation, and reversible Git rollback are
+implemented. Evidence remains input to a human-gated improvement workflow; it
+is never an instruction channel.
+
+The administrator binary has a real subprocess acceptance journey:
+
+```sh
+cargo test -p sylvander-server --test self_improve_cli --locked
+```
+
+The test seeds an immutable evaluation registry, then invokes
+`sylvander-improve` as a new process for proposal create/review/approval,
+experiment start/evaluate/accept, successful observation, and explicit
+rollback. It uses two temporary Git worktrees, verifies that accepted changes
+reach the source repository, verifies that rollback creates a clean revert,
+and reopens the durable evidence database to require `completed` and
+`rolled_back` terminal states. This is local lifecycle evidence, not a remote
+deployment or autonomous rollout claim.

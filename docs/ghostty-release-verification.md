@@ -171,6 +171,8 @@ remains blocked until the deployment provides the Apple certificate, signing
 identity, team/account credentials, and notary password required by the
 release workflow.
 
-Record the Release commit, Xcode/macOS version, `lipo` output, `codesign`
-result, Unix socket used, and visual capture paths before changing the
-remaining boxes to complete.
+For each future distribution candidate, record the exact Release commit,
+Xcode/macOS version, `lipo` output, `codesign` result, Unix socket used, and
+visual capture paths before claiming that the credentialed deployment
+prerequisite passed. The deterministic local acceptance boxes above are
+complete.

@@ -3,7 +3,9 @@
 This is the hand-curated table of contents for the Sylvander `docs/` tree.
 Each entry is one stable doc with a one-line description. Relative links
 resolve from this file's location (`docs/INDEX.md`); verify with `ls docs/`
-before adding new entries.
+before adding new entries. `./scripts/verify-docs.sh` checks every first-party
+Cargo package's boundary entry and all relative links in the maintained
+documentation set.
 
 ## Server
 
@@ -43,12 +45,15 @@ Day-2 operator docs for keeping Sylvander production-ready.
   memory, and release-recovery drills to run before each release.
 - [release-closure.md](release-closure.md) — current release scope,
   reproducible gates, residual-risk non-claims.
+- [ghostty-release-verification.md](ghostty-release-verification.md) — macOS
+  Release bundle, real Unix lifecycle, transparency/TrueColor, and visual
+  operator checklist.
 - [performance-verification.md](performance-verification.md) —
   performance verification methodology and budget table.
 - [security-verification.md](security-verification.md) — security
   verification methodology and tracked-secret scans.
 - [production-expansion-checklist.md](production-expansion-checklist.md) —
-  ordered execution SSOT for the remaining production capabilities.
+  ordered production completion ledger and same-commit closure evidence.
 
 ## Architecture
 
@@ -91,6 +96,9 @@ and this index in the same change.
   typed prompt-layer precedence, relevance selection, provenance, and budgets.
 - [sylvander-runtime/GUARDIAN.md](../sylvander-runtime/GUARDIAN.md) —
   Worker/Guardian capability separation, curation state machine, and recovery.
+- [sylvander-runtime/CREDENTIAL_AUDIT.md](../sylvander-runtime/CREDENTIAL_AUDIT.md) —
+  content-safe Provider/Channel credential-operation audit, retention, and
+  subject isolation.
 - [sylvander-channel/docs/ARCHITECTURE.md](../sylvander-channel/docs/ARCHITECTURE.md) —
   transport-neutral ingress, channel ownership, and adapter rules.
 - [sylvander-llm-anthropic/docs/ARCHITECTURE.md](../sylvander-llm-anthropic/docs/ARCHITECTURE.md) —
@@ -126,6 +134,11 @@ and this index in the same change.
 - [module-sylvander-channel-wechat.md](module-sylvander-channel-wechat.md) —
   WeChat Work callback encryption/replay, renewable credentials, controls, and
   active-API delivery.
+- [token9-contracts/docs/ARCHITECTURE.md](../sylvander-token9/token9-contracts/docs/ARCHITECTURE.md) —
+  token9 management/read DTO ownership and generated-client ABI boundary.
+- [token9-server/docs/ARCHITECTURE.md](../sylvander-token9/token9-server/docs/ARCHITECTURE.md) —
+  separately built local LLM gateway, routing, persistence, and deployment
+  trust boundary.
 
 ## User manual
 

@@ -63,10 +63,11 @@ Sylvander/
 └── sylvander-channel-wechat/   # WeChat Work bot
 ```
 
-The Rust crates form a strict, downward dependency graph (see
-[AGENTS.md §"Project Layout"](../AGENTS.md) for the ASCII diagram). The
-ghostty subtree is a fork with rebrand patches; do not edit files listed
-in `sylvander-ghostty/SYNCUP.md §7.1`.
+The Rust crates follow the composition and ownership boundaries documented in
+[AGENTS.md §"Project Layout"](../AGENTS.md). That map is an ownership guide,
+not a claim that every Cargo edge forms one strict linear stack. The ghostty
+subtree is a fork with rebrand patches; do not edit files listed in
+`sylvander-ghostty/SYNCUP.md §7.1`.
 
 ## 3. Toolchain
 
@@ -74,30 +75,32 @@ The pinned versions for this repo:
 
 | Tool       | Version              | Source                                   |
 | ---------- | -------------------- | ---------------------------------------- |
-| Rust       | 1.96 (MSRV)          | `[workspace.package].rust-version`       |
-| Zig        | 0.15.2               | `ci.yml` env, `nix.yml`, `release-tag.yml`|
-| Xcode      | 26 (beta runner)     | `zig-full` job, `release-tag` job        |
-| macOS SDK  | 26                   | `macos-26-xlarge` runner                 |
+| Rust       | 1.96 (MSRV and CI)   | workspace `rust-version`, active CI jobs |
+| Zig        | 0.15.2               | Ghostty local/release build inputs       |
+| Xcode      | 26                   | local/release Ghostty application matrix |
+| macOS SDK  | 26                   | local/release Ghostty application matrix |
 | OpenSSL    | libssl-dev (Linux)   | `rust-linux` job apt-get line            |
 | SQLite     | libsqlite3-dev       | `rust-linux`, `tui-snapshots` jobs       |
 | protoc     | protobuf-compiler    | same jobs as above                       |
 
-CI installs Zig with `mlugg/setup-zig@v2` and pins Xcode with
-`ls -d /Applications/Xcode_26*.app | head -n 1` plus
-`sudo xcode-select -s`. The Rust toolchain uses
-`dtolnay/rust-toolchain@stable` plus rustfmt/clippy components; the
-MSRV is enforced through `rust-version` in `[workspace.package]`.
+Active CI installs Rust with `dtolnay/rust-toolchain@1.96`; the workspace
+`rust-version` independently enforces the same MSRV. The workflow still
+records Zig 0.15.2 setup and Xcode 26 selection for the disabled
+`zig-checked` / `zig-full` jobs, but those jobs are not current verification
+evidence. Local and release Ghostty verification must therefore execute the
+matrix in [`release-closure.md`](release-closure.md).
 
 ## 4. `rust-toolchain.toml` and toolchain pinning
 
 The master `Cargo.toml` declares `rust-version = "1.96"` under
-`[workspace.package]`. The actual toolchain used by every developer is
-`stable` (matching the CI's `dtolnay/rust-toolchain@stable`).
+`[workspace.package]`. Active CI requests Rust `1.96` explicitly. Developers
+may use a newer stable compiler for exploratory work, but closure evidence
+must include the pinned 1.96 toolchain or a deliberate workspace-wide update.
 
 The recommended local pin is a per-directory `rust-toolchain.toml`
-containing `channel = "stable"` so `rustup` always picks the same
-compiler CI uses. **Do not** write `channel = "1.96"` — CI never
-requests that channel and the stable channel is what catches drift.
+containing `channel = "1.96"` so `rustup` picks the same compiler as CI.
+Do not silently replace that pin with `stable`; a toolchain bump must update
+the workspace declaration, CI, release workflow, docs, and lockfile together.
 
 If you need to temporarily try a different toolchain, use
 `rustup override set <toolchain>` in your shell, never in committed
@@ -116,9 +119,11 @@ cargo build --workspace --release --locked
 ```
 
 `--locked` is mandatory in CI and recommended locally; it stops the
-build if `Cargo.lock` would otherwise change. The Zig
-`sylvander-ghostty/` subtree is built and tested separately through CI;
-see `sylvander-ghostty/AGENTS.md` for its matrix.
+build if `Cargo.lock` would otherwise change. The
+`sylvander-ghostty/` subtree has a separate Zig/Xcode release matrix;
+run the active commands in `sylvander-ghostty/AGENTS.md` and
+[`ghostty-release-verification.md`](ghostty-release-verification.md). Disabled
+workflow jobs are not release evidence.
 
 To produce a daemon binary that matches clean-room verification:
 
@@ -131,21 +136,14 @@ cargo install --path sylvander-tui    --locked --offline --force
 
 ## 6. Test commands
 
-CI runs tests with most streaming-event contract tests opted out
-because their mock-response shape drifts. The same `cargo test` flags
-reproduce CI exactly:
+The Rust CI and release gate run the same complete workspace suite without
+name-based exclusions:
 
 ```sh
-INSTA_UPDATE=no cargo test --workspace --locked -- \
-  --skip real_use_case \
-  --skip single_iteration_end_turn_returns_final_message \
-  --skip event_order_iteration_start_chunks_end \
-  --skip max_iterations_limit_enforced \
-  --skip stream_wrong_content_type_errors
+INSTA_UPDATE=no cargo test --workspace --locked -- --test-threads=1
 ```
 
-To run the full suite including the skipped contract tests, drop the
-`--skip` filters. **Do not** set `INSTA_UPDATE=anything` — it silently
+**Do not** set `INSTA_UPDATE=anything` — it silently
 regenerates TUI visual layout snapshots. `INSTA_UPDATE=no` makes drift
 fail instead.
 
@@ -172,6 +170,9 @@ cargo fmt --all
 
 # Clippy with -D warnings (CI: rust-clippy job)
 cargo clippy --workspace --all-targets --locked -- -D warnings
+
+# First-party crate-boundary index and maintained relative links
+./scripts/verify-docs.sh
 ```
 
 Workspace lints are declared in `[workspace.lints.rust]` and
@@ -180,36 +181,54 @@ Workspace lints are declared in `[workspace.lints.rust]` and
 set with module-repetition and over-bool exceptions deliberately
 relaxed.
 
+`sylvander-token9/` is a separate first-party Cargo workspace. Its two crates
+are included in the documentation-boundary audit but must be formatted,
+tested, linted, and documented from that directory:
+
+```sh
+(
+  cd sylvander-token9
+  cargo fmt --all -- --check
+  cargo test --workspace --locked -- --test-threads=1
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+)
+```
+
 ## 8. CI workflow tour
 
-The repo uses five workflows under `.github/workflows/`.
+The repository keeps several workflows under `.github/workflows/`. A workflow
+file or job that exists with `if: false` documents future verification intent
+but does not count as passing release evidence.
 
 ### ci.yml (`CI`, multi-job)
 
 Triggers on push to master, pull_request, and `workflow_dispatch`. Jobs:
 
-- **zig-module** — `macos-latest`. Runs `zig build test --summary all`
-  inside `sylvander-ghostty/src/sylvander/`; smoke test of the Sylvander
-  Zig module.
-- **zig-checked** — `macos-latest`. `zig build -Dapp-runtime=none
-  -Demit-xcframework=false -Demit-macos-app=false`. Catches rebrand
-  breakage, syntax errors, and API drift without requiring the macOS 26
-  SDK.
-- **zig-full** — `macos-26-xlarge`. `zig build -Dapp-runtime=none test`.
-  Requires Xcode 26. Pin selected via `xcode-select -s` after locating
-  `/Applications/Xcode_26*.app`.
+- **zig-module** — removed. The module it exercised disappeared when the
+  Ghostty subtree returned to upstream `main`.
+- **zig-checked** and **zig-full** — retained as disabled jobs (`if: false`).
+  They document the intended Zig 0.15.2 checked/full commands, but current
+  GitHub macOS image linker drift prevents them from acting as gates. The
+  full job additionally requires an enabled `macos-26-xlarge` runner.
 - **rust** — `macos-latest`. Runs `cargo build --workspace --locked`,
   the macOS app helper contract via `build-sylvander-tui-universal.sh`
-  and `embed-sylvander-tui.sh`, plus `cargo test --workspace --locked`
-  with the skip list above. Uploads universal-helper lipo / codesign
-  checks; secrets: none directly.
+  and `embed-sylvander-tui.sh`, compiles all tests with `--no-run`, then
+  runs the full workspace test suite serially with no skip list. It also
+  verifies universal-helper lipo and ad-hoc codesign contracts, then exports
+  that exact `HEAD` for the clean-room install/startup/shutdown gate.
 - **macos-swift** — `macos-latest`. Verifies `Sylvander-Info.plist`,
   `Sylvander.sdef`, and `Sylvander.xcodeproj/project.pbxproj` exist and
   have no `Ghostty-Info.plist` / `Ghostty.sdef` references.
-- **rust-fmt** — `macos-latest`. `cargo fmt --all -- --check`.
+- **rust-fmt** — `macos-latest`. Runs both maintained Rust test-layout
+  guards, then `cargo fmt --all -- --check`.
 - **rust-clippy** — `macos-latest`. `cargo clippy --workspace
   --all-targets --locked -- -D warnings`. Catches dead code and unused
   imports before they leak to a release tag.
+- **rust-doc** — `macos-latest`. Builds workspace rustdoc with warnings
+  denied and runs `scripts/verify-docs.sh`.
+- **token9** — `macos-latest`. Independently runs format, serial tests,
+  clippy, and rustdoc for the nested Token9 workspace.
 - **rust-linux** — `ubuntu-latest`. `cargo build --workspace --locked`
   after `apt-get install libssl-dev libsqlite3-dev
   protobuf-compiler`. Catches macOS-only assumptions (Hardcoded
@@ -218,9 +237,8 @@ Triggers on push to master, pull_request, and `workflow_dispatch`. Jobs:
   -p sylvander-tui --test snapshots --locked`; uploads any
   `.snap.new` artifacts on failure.
 
-Zig version is controlled by an `env: ZIG_VERSION: "0.15.2"` block at
-the workflow top; cache is `cache: false` so network drift can't be
-masked.
+Zig version is recorded by `env: ZIG_VERSION: "0.15.2"` and the disabled
+jobs use `cache: false`. Neither fact makes a disabled job release evidence.
 
 ### clean-artifacts.yml (`Clean old artifacts`)
 
@@ -238,11 +256,11 @@ lowest number; assigns each linked issue to that milestone.
 
 ### nix.yml (`Nix shell build`)
 
-Triggers on push to master and PR. Runs inside `nix develop` on
-`macos-26-xlarge`. Installs `nixpkgs#zig_0_15` and runs the minimal zig
-build. Catches the case where a contributor's local Zig (brew zig
-0.15.2, system sqlite) silently diverges from the project deps. We do
-**not** use a CACHIX account; the Cachix step is intentionally empty.
+The workflow file triggers on push, PR, and manual dispatch, but its only job
+is currently disabled with `if: false`. It records the intended
+`macos-26-xlarge` + `nixpkgs#zig_0_15` checked/test matrix and an unauthenticated
+Cachix setup. Until the Zig/macOS runner drift and runner availability are
+resolved and the job is re-enabled, Nix is not closure evidence.
 
 ### release-tag.yml (`Release tag`)
 
@@ -266,8 +284,9 @@ release in progress.
 
 ## 9. Local verification scripts
 
-Three scripts live in `scripts/`. Each is a shell entry point that
-gates one aspect of the release claim.
+The maintained verification scripts under `scripts/` each gate one bounded
+part of the repository contract. The release closure document defines which
+ones are required together for a release claim.
 
 ### clean-room-verify.sh
 
@@ -323,6 +342,23 @@ Security claim coverage:
    (`sylvander-tui`).
 
 Pass = "security verification passed".
+
+### verify-docs.sh
+
+Checks that every first-party Cargo package has exactly one indexed boundary
+document and that maintained Markdown relative links resolve. This includes
+the root workspace and the separately built Token9 workspace.
+
+Pass = a count of verified crate boundaries and maintained Markdown files.
+
+### verify-rust-test-layout.sh
+
+Rejects Rust test bodies, inline `mod tests { ... }` blocks, and test files
+under any crate's `src/` tree. `scripts/tests/verify-rust-test-layout.sh`
+exercises the guard itself against a nested-crate fixture so a traversal
+regression cannot make the policy silently pass.
+
+Pass = both the repository layout guard and its regression fixture complete.
 
 ## 10. Adding a new channel crate
 
@@ -394,36 +430,47 @@ context is `ToolContext` (see
 ### Skeleton
 
 ```rust
-use std::sync::Arc;
 use async_trait::async_trait;
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
 use sylvander_llm_anthropic::api::types::InputSchema;
-use sylvander_agent::tool::{Tool, ToolOutput};
+use sylvander_agent::tool::{Tool, ToolError, ToolOutput};
 use sylvander_agent::tool_context::ToolContext;
+use sylvander_agent::tool_invocation::ToolInvocationClass;
 
 pub struct MyTool;
 
 #[async_trait]
 impl Tool for MyTool {
-    fn name(&self) -> &'static str { "my_tool" }
+    fn name(&self) -> &str { "my_tool" }
 
-    fn schema(&self) -> InputSchema {
-        // JSON Schema describing call input.
-        todo!()
+    fn description(&self) -> &str {
+        "Return one bounded project summary"
+    }
+
+    fn input_schema(&self) -> InputSchema {
+        InputSchema::new_with_properties(json!({}), &[])
+    }
+
+    fn invocation_class(&self) -> ToolInvocationClass {
+        ToolInvocationClass::Read
     }
 
     async fn execute(
         &self,
-        ctx: Arc<ToolContext>,
-        input: JsonValue,
-        sink: ToolProgressSink,
+        ctx: &ToolContext,
+        _input: JsonValue,
     ) -> Result<ToolOutput, ToolError> {
-        // Consult ctx.session.identity, ctx.surface, ctx.budget.
-        // Use ctx.executor for any workspace operation.
-        todo!()
+        if !ctx.has_cap(sylvander_agent::tool_context::Cap::Read) {
+            return Ok(ToolOutput::err("read capability not granted"));
+        }
+        Ok(ToolOutput::ok("bounded summary"))
     }
 }
 ```
+
+Tools that produce incremental output override `execute_streaming` and emit
+through its `ToolProgressSink`; the ordinary `execute` contract has no progress
+parameter.
 
 ### Context hygiene
 
@@ -539,8 +586,8 @@ the latest contract in the same bounded change.
 - Old, unknown, or damaged schemas fail closed with a stable content-safe
   error. Never guess which current representation an old payload intended.
 - Production state uses the durable Runtime-selected backend. In-memory
-  implementations are for tests, fixtures, or an explicitly selected
-  ephemeral development mode, never a production fallback.
+  implementations are test fixtures only; they are not a server mode, a
+  production configuration value, or a fallback.
 - A compatibility exception must state the exact source version, supported
   transition, removal gate, and acceptance tests before implementation.
 - Git history and small reversible commits are the rollback path before the
@@ -614,17 +661,18 @@ CI gotchas worth restating:
 - `INSTA_UPDATE=no` is required for the snapshot job — setting
   `INSTA_UPDATE=anything` silently regenerates visual layout, and
   next month's PR will get random layout shifts.
-- The streaming-event skip filters in `cargo test` (see [§6](#6-test-commands))
-  exist because mock response shapes drift; do not delete them when
-  the failure feels stale. Fix the mock or the contract.
+- The workspace test gate has no name-based skip list. If a provider fixture
+  drifts, update the fixture or the current provider contract in the same
+  bounded change; do not hide the failure behind `--skip`.
 - The CI `rust-linux` job is intentionally build-only — the wiremock
   tests need a running server. Do not add Linux-only test runs in PR
   without confirming the server is reachable from the job.
 - Rust test bodies belong under each crate's `tests/` tree. Production modules
   may expose a test-only `#[path = "../tests/unit/…"]` bridge for white-box
   access; never put test bodies back under `src/`.
-- Don't try to cache Nix in `nix.yml` — we deliberately do not have a
-  CACHIX account.
+- The Nix job is disabled and cannot be cited as verification evidence. If it
+  is re-enabled, preserve the explicit unauthenticated cache posture unless a
+  maintained Cachix account is deliberately introduced.
 
 ## 21. Release drill
 

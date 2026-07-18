@@ -48,22 +48,24 @@ Sylvander/
 ```
 
 `Sylvander/` is **not** a monorepo of independent projects — it is
-one product (the Sylvander agent). The Rust crates are layered:
+one product (the Sylvander agent). The diagram below shows ownership and
+composition, not a complete Cargo dependency graph:
 
 ```
-                sylvander-server (binary)
-                       │
-                       ▼
-                sylvander-runtime
-                       │
-                       ▼
-                sylvander-agent ◀──── sylvander-llm-anthropic
-                       │           ◀──── sylvander-protocol
-                       ▼
-                sylvander-channel-*
-                       │
-                       ▼
-                  (bus / bus users)
+                 sylvander-server (composition root)
+                    ├── sylvander-runtime
+                    │     ├── sylvander-agent
+                    │     │     └── sylvander-llm-core
+                    │     │            ▲
+                    │     │            └── sylvander-llm-anthropic
+                    │     └── sylvander-channel (lifecycle contract)
+                    └── sylvander-channel-* (transport adapters)
+
+                 sylvander-tui
+                    └── Unix UI protocol client (one active session)
+
+                 sylvander-protocol
+                    └── shared IDs and public wire contracts
 ```
 
 `sylvander-ghostty/` is a **git subtree** of
@@ -79,11 +81,8 @@ business logic.
 
 - **Build:** `cargo build --workspace --locked`
 - **Test (lib):** `cargo test --workspace --locked --lib`
-  - Some integration tests in `sylvander-agent/tests/real_use_case.rs`
-    assert on the streaming-event contract and currently fail when
-    the mock response shape drifts. CI opts them out with
-    `--skip real_use_case --skip …`. Run them locally to validate.
-- **Test (all targets, including integration):** `cargo test --workspace`
+- **Test (all targets, including integration):**
+  `cargo test --workspace --locked -- --test-threads=1`
   - CI for `cargo test` lives at `.github/workflows/ci.yml::rust`.
 - **Lint:** `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - **Format check:** `cargo fmt --all -- --check`
@@ -139,7 +138,8 @@ For a working understanding of the agent side, see `docs/` and
 the `sylvander-agent/` crate. The relevant pieces:
 
 - `AgentLoop` (`sylvander-agent/src/loop_.rs`) is the async driver
-  that calls the Anthropic API, executes tools, re-feeds results,
+  that calls one exact provider-qualified route through the
+  provider-neutral model contract, executes tools, re-feeds results,
   and emits `AgentEvent`s.
 - `ToolContext` (`sylvander-agent/src/tool_context.rs`) is passed
   to every `Tool::execute` and carries a `SessionContext` (identity,
@@ -148,8 +148,9 @@ the `sylvander-agent/` crate. The relevant pieces:
   (filesystem root, capability set, network policy). New tools
   should consult `ctx.has_cap(...)` before doing anything.
 - `SessionStore` (`sylvander-agent/src/session_store/`) persists
-  session metadata + per-message history. The SQLite backend is
-  the only one; the in-memory backend was removed. A new
+  session metadata + per-message history. Production uses one
+  filesystem-backed SQLite store; explicit in-memory constructors are
+  test fixtures and are never a production fallback. A new
   `SessionContext` is stored on every `append_message` and used to
   scope `read_history` / `list` / `search`.
 

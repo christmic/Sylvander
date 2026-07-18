@@ -118,6 +118,25 @@ cross-owner candidate is visible, a pre-audit failure executes a handler, an
 idempotency replay applies twice, or an opted-out event reaches the canonical
 store. See [`../sylvander-runtime/GUARDIAN.md`](../sylvander-runtime/GUARDIAN.md).
 
+## Credential-operation audit recovery
+
+`credential-operations.db` is independent from registry and secret storage.
+Restart must preserve exact Provider/Channel subject history while continuing
+the bounded 90-day expiry sweep. Do not reconstruct the ledger from secret
+configuration: it deliberately contains only stable subject identity, a
+binding digest, fixed operation/result codes, revision, and time.
+
+```sh
+cargo test -p sylvander-runtime credential_audit
+cargo test -p sylvander-server credential
+```
+
+The drill fails if an old, partial, future, or foreign schema opens; a subject
+can query another subject's rows; a secret/reference appears in storage or
+Debug output; restart loses unexpired rows; or one append deletes an unbounded
+backlog. See
+[`../sylvander-runtime/CREDENTIAL_AUDIT.md`](../sylvander-runtime/CREDENTIAL_AUDIT.md).
+
 ## Release recovery gate
 
 The recovery gate is:
