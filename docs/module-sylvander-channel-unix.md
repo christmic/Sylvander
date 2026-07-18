@@ -43,11 +43,14 @@ impl UnixChannel {
 
 ## 4. Auth model
 
-Authentication is delegated to the operating system via the
-filesystem permissions on the socket file. The runtime enforces
-ownership through the supervisor; there is no bearer token. The
-socket is the boundary; the `BoundaryContext` it produces carries
-the configured `instance_id` and the `unix` transport.
+Authentication uses two operating-system guarantees: the socket is created
+owner-only (`0o600`), and every accepted connection must yield peer credentials.
+The peer UID becomes a transport-scoped principal using
+`AuthenticationMethod::UnixPeer`. A peer-credential lookup failure is reported
+through Runtime's authentication-denial path and the connection is discarded;
+there is no bearer token or anonymous local fallback. The resulting
+`BoundaryContext` carries the configured `instance_id`, `unix` transport, and
+authenticated principal.
 
 ## 5. Lifecycle
 
@@ -57,14 +60,18 @@ the configured `instance_id` and the `unix` transport.
    composition root supplies a fully-populated `RuntimeInfo`).
 3. **Start** — the channel creates the socket, applies mode `0o600`,
    and begins accepting line-delimited clients.
-4. **Replay** — disconnected clients can request `LoadSession` and
+4. **Handshake** — the first frame must negotiate the current UI protocol
+   range; business messages sent before `Hello` are rejected.
+5. **Replay** — disconnected clients can request `LoadSession` and
    receive a buffered `session_history` (with optional truncation).
-5. **Shutdown** — runtime removes the socket path on stop.
+6. **Shutdown** — runtime removes the socket path on stop.
 
 ## 6. Tests
 
 Unit tests live in `sylvander-channel-unix/tests/unit/lib.rs`,
-covering replay buffer, line framing, and request-size enforcement.
+covering framing bounds, protocol negotiation, peer/session isolation,
+Runtime-owned administration and identity dispatch, redaction, session
+lifecycle, replay, attachments, approvals, tasks, and socket permissions.
 
 ## 7. Common pitfalls
 

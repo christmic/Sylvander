@@ -53,6 +53,7 @@ struct EmptyUiService {
     compaction: Option<sylvander_protocol::CompactionReport>,
     rollback_preview: Option<sylvander_protocol::WorkspaceRollbackPreview>,
     rollback_report: Option<sylvander_protocol::WorkspaceRollbackReport>,
+    allow_delete: bool,
 }
 
 #[tokio::test]
@@ -191,6 +192,21 @@ impl sylvander_channel::UiService for EmptyUiService {
         })
         .await
         .map_err(|_| sylvander_protocol::BoundaryError::forbidden(boundary, "submit_control"))
+    }
+
+    async fn delete_session(
+        &self,
+        boundary: &sylvander_protocol::BoundaryContext,
+        _: &SessionId,
+    ) -> Result<(), sylvander_protocol::BoundaryError> {
+        if self.allow_delete {
+            Ok(())
+        } else {
+            Err(sylvander_protocol::BoundaryError::forbidden(
+                boundary,
+                "delete_session",
+            ))
+        }
     }
 
     async fn discover_agents(
@@ -363,7 +379,10 @@ fn socket_path() -> PathBuf {
 
 fn runtime_info() -> RuntimeInfo {
     RuntimeInfo {
-        model: "test-model".into(),
+        model: sylvander_protocol::ModelSelection {
+            provider_id: "test".into(),
+            model_id: "test-model".into(),
+        },
         reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
         models: vec![sylvander_protocol::ModelDescriptor {
             id: "test-model".into(),
@@ -407,14 +426,14 @@ fn private_session_config(
             agent_id: AgentId::new("agent-1"),
             agent_revision: 1,
             provider_id: "test".into(),
-            provider_revision: Some(1),
+            provider_revision: 1,
             model_id: "test-model".into(),
-            model_revision: Some(1),
+            model_revision: 1,
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             permissions: sylvander_protocol::PermissionProfile::default(),
             prompt_profile: None,
             system_prompt_sha256: digest.into(),
-            prompt_manifest: Some(PromptManifest {
+            prompt_manifest: PromptManifest {
                 layers: vec![PromptLayerDigest {
                     kind: PromptLayerKind::SessionInput,
                     reference: Some("session".into()),
@@ -423,7 +442,7 @@ fn private_session_config(
                 }],
                 aggregate_sha256: "aggregate-digest".into(),
                 total_bytes: prompt.len() as u64,
-            }),
+            },
             agent_workspace: None,
             user_workspace: None,
             workspace_mounts: Vec::new(),
@@ -488,15 +507,18 @@ async fn negotiate(
             "type":"hello",
             "protocol": {
                 "client_name":"channel-test",
-                "min_version":1,
-                "max_version":1,
+                "min_version":sylvander_protocol::UI_PROTOCOL_VERSION,
+                "max_version":sylvander_protocol::UI_PROTOCOL_VERSION,
                 "capabilities":[]
             }
         }),
     )
     .await;
     assert_eq!(welcome["type"], "welcome");
-    assert_eq!(welcome["protocol"]["version"], 1);
+    assert_eq!(
+        welcome["protocol"]["version"],
+        sylvander_protocol::UI_PROTOCOL_VERSION
+    );
 }
 
 #[tokio::test]
@@ -523,7 +545,6 @@ async fn runtime_info_reports_server_truth() {
         response,
         ServerMsg::RuntimeInfo {
             model,
-            model_selection: Some(selection),
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             models,
             permissions: sylvander_protocol::PermissionProfile {
@@ -535,9 +556,8 @@ async fn runtime_info_reports_server_truth() {
             approval_enabled: true,
             max_attachment_bytes: 1024,
             ..
-        } if model == "test-model"
-            && selection.provider_id == "test"
-            && selection.model_id == "test-model"
+        } if model.provider_id == "test"
+            && model.model_id == "test-model"
             && models.len() == 1
     ));
 }
@@ -868,43 +888,41 @@ async fn registry_admin_non_administrator_is_rejected_before_dispatch() {
 
 #[test]
 fn server_advertises_administration_capabilities() {
-    let v1 = ui_protocol_capabilities(1);
-    let v2 = ui_protocol_capabilities(2);
-    let v3 = ui_protocol_capabilities(3);
+    let capabilities = ui_protocol_capabilities();
     assert!(
-        v1.iter()
+        capabilities
+            .iter()
             .any(|item| item == sylvander_protocol::IDENTITY_BINDING_CAPABILITY)
     );
-    assert!(!v1.iter().any(|item| item.contains("administration")));
     assert!(
-        !v1.iter()
-            .any(|item| item == "credential_registry_lifecycle")
-    );
-    assert!(v2.iter().any(|item| item == "agent_administration"));
-    assert!(v2.iter().any(|item| item == "registry_administration"));
-    for capabilities in [&v1, &v2] {
-        assert!(
-            !capabilities
-                .iter()
-                .any(|item| item == "provider_model_registry_lifecycle")
-        );
-    }
-    assert!(
-        !v2.iter()
+        capabilities
+            .iter()
             .any(|item| item == "credential_registry_lifecycle")
     );
     assert!(
-        v3.iter()
-            .any(|item| item == "credential_registry_lifecycle")
+        capabilities
+            .iter()
+            .any(|item| item == "agent_administration")
     );
     assert!(
-        v3.iter()
+        capabilities
+            .iter()
+            .any(|item| item == "registry_administration")
+    );
+    assert!(
+        capabilities
+            .iter()
             .any(|item| item == "provider_model_registry_lifecycle")
+    );
+    assert!(
+        capabilities
+            .iter()
+            .any(|item| item == "credential_registry_lifecycle")
     );
 }
 
 #[tokio::test]
-async fn negotiated_version_gates_registry_mutations_before_dispatch() {
+async fn current_protocol_is_required_before_registry_mutation_dispatch() {
     let path = socket_path();
     let service = Arc::new(EmptyUiService {
         allow_registry: true,
@@ -937,33 +955,17 @@ async fn negotiated_version_gates_registry_mutations_before_dispatch() {
     let stream = connect(&path).await;
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    let hello_v2 = serde_json::json!({
+    let old_hello = serde_json::json!({
         "type": "hello",
         "protocol": {
-            "client_name": "v2-client", "min_version": 2, "max_version": 2,
+            "client_name": "old-client",
+            "min_version": sylvander_protocol::UI_PROTOCOL_VERSION - 1,
+            "max_version": sylvander_protocol::UI_PROTOCOL_VERSION - 1,
             "capabilities": []
         }
     });
-    let welcome = send_and_read(&mut write, &mut lines, hello_v2.clone()).await;
-    assert_eq!(welcome["protocol"]["version"], 2);
-    assert!(
-        welcome["protocol"]["capabilities"]
-            .as_array()
-            .is_some_and(|values| values
-                .iter()
-                .any(|value| value == "registry_administration"))
-    );
-    assert!(
-        !welcome["protocol"]["capabilities"]
-            .as_array()
-            .is_some_and(|values| values
-                .iter()
-                .any(|value| value == "credential_registry_lifecycle"))
-    );
-    let duplicate = send_and_read(&mut write, &mut lines, hello_v2).await;
-    assert_eq!(duplicate["error"]["code"], "duplicate_handshake");
-    let rejected = send_and_read(&mut write, &mut lines, mutation.clone()).await;
-    assert_eq!(rejected["error"]["code"], "unsupported_message_version");
+    let rejected = send_and_read(&mut write, &mut lines, old_hello).await;
+    assert_eq!(rejected["error"]["code"], "incompatible_protocol");
     let rejected_wire = rejected.to_string();
     assert!(!rejected_wire.contains("credential/private-binding"));
     assert!(!rejected_wire.contains("PRIVATE_API_KEY"));
@@ -979,13 +981,33 @@ async fn negotiated_version_gates_registry_mutations_before_dispatch() {
         serde_json::json!({
             "type": "hello",
             "protocol": {
-                "client_name": "v3-client", "min_version": 3, "max_version": 3,
+                "client_name": "current-client",
+                "min_version": sylvander_protocol::UI_PROTOCOL_VERSION,
+                "max_version": sylvander_protocol::UI_PROTOCOL_VERSION,
                 "capabilities": []
             }
         }),
     )
     .await;
-    assert_eq!(welcome["protocol"]["version"], 3);
+    assert_eq!(
+        welcome["protocol"]["version"],
+        sylvander_protocol::UI_PROTOCOL_VERSION
+    );
+    let duplicate = send_and_read(
+        &mut write,
+        &mut lines,
+        serde_json::json!({
+            "type": "hello",
+            "protocol": {
+                "client_name": "current-client",
+                "min_version": sylvander_protocol::UI_PROTOCOL_VERSION,
+                "max_version": sylvander_protocol::UI_PROTOCOL_VERSION,
+                "capabilities": []
+            }
+        }),
+    )
+    .await;
+    assert_eq!(duplicate["error"]["code"], "duplicate_handshake");
     let accepted = send_and_read(&mut write, &mut lines, mutation).await;
     assert_eq!(accepted["type"], "registry_admin");
     assert_eq!(accepted["response"]["status"], "success");
@@ -1100,7 +1122,10 @@ async fn model_selection_without_session_fails_closed() {
     handle_client_msg(
         ClientMsg::SelectModel {
             session_id: None,
-            model: sylvander_protocol::ModelSelectionInput::Legacy("thinking-model".into()),
+            model: sylvander_protocol::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "thinking-model".into(),
+            },
             reasoning_effort: sylvander_protocol::ReasoningEffort::Medium,
         },
         &context,
@@ -1288,7 +1313,10 @@ async fn persisted_session_load_rename_fork_and_archive_round_trip() {
     let context = ChannelContext::with_services(
         Arc::new(InProcessMessageBus::new()),
         store.clone(),
-        Some(Arc::new(EmptyUiService::default())),
+        Some(Arc::new(EmptyUiService {
+            allow_delete: true,
+            ..EmptyUiService::default()
+        })),
         None,
     );
     let task = tokio::spawn(channel.run(context));
