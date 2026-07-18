@@ -75,29 +75,53 @@
 
 #![doc(html_root_url = "https://docs.rs/sylvander-agent/0.1.0")]
 
+/// Approval request persistence, policy evaluation, and user decisions.
 pub mod approval;
+/// One-shot AskUser prompt/answer gate for an Agent run.
 pub mod ask_user_gate;
+/// In-process message bus, stream events, and subscription filtering.
 pub mod bus;
+/// Context-window compaction contracts and pipeline implementations.
 pub mod compress;
+/// Per-session Agent run scheduling and lifecycle ownership.
 pub mod engine;
+/// Agent-loop error taxonomy.
 pub mod error;
+/// Fine-grained loop events for observers and tests.
 pub mod event;
+/// Provider-compatible iterative model/tool execution loop.
 pub mod loop_;
+/// Managed MCP stdio client, discovery, and tool adapter.
 pub mod mcp_stdio;
+/// Plan proposal and acknowledgement gate.
 pub mod plan_gate;
+/// Deterministic system-prompt composition.
 pub mod prompt;
+/// Compatibility translation between legacy Anthropic and core provider types.
 pub mod provider_compat;
+/// Authenticated single-turn execution and durable transcript handling.
 pub mod run;
+/// Session context and runtime metadata carried by an Agent run.
 pub mod session;
+/// Durable session/transcript persistence contracts and SQLite implementation.
 pub mod session_store;
+/// Declarative Agent identity, model, tool, and workspace specification.
 pub mod spec;
+/// Restricted background-task lifecycle and result gate.
 pub mod task_gate;
+/// Tool registration, schemas, invocation, and normalized output.
 pub mod tool;
+/// Runtime-derived capability, identity, workspace, and execution budget context.
 pub mod tool_context;
+/// Built-in filesystem, memory, plan, and task tools.
 pub mod tools;
+/// Bounded prompt layer generated from a user profile.
 pub mod user_profile_prompt;
+/// Runtime abstraction for retrieving authorized user profiles.
 pub mod user_profile_provider;
+/// Location-neutral filesystem and command execution contract.
 pub mod workspace_executor;
+/// Durable workspace-change journal used for review and recovery.
 pub mod workspace_journal;
 
 /// Convenient re-exports for the most commonly used types.
