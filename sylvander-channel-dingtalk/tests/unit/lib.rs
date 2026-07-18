@@ -2,11 +2,59 @@ use super::*;
 use sylvander_agent::session::SessionMetadata;
 use sylvander_agent::session_store::SqliteSessionStore;
 use sylvander_agent::session_store::{SessionLifetime, StoredSession};
+use sylvander_channel::credential::{
+    CredentialLeaseBundle, CredentialLeaseError, CredentialLeaseRequest, CredentialLeaseSource,
+};
+
+struct StaticCredentials;
+
+#[async_trait]
+impl CredentialLeaseSource for StaticCredentials {
+    async fn lease(
+        &self,
+        request: &CredentialLeaseRequest,
+    ) -> Result<CredentialLeaseBundle, CredentialLeaseError> {
+        CredentialLeaseBundle::new(
+            1,
+            1,
+            1,
+            31,
+            request
+                .slots
+                .iter()
+                .map(|slot| (slot.clone(), format!("{slot}-value").into_bytes())),
+        )
+    }
+}
 
 #[test]
 fn request_limit_is_configurable() {
-    let channel = DingTalkChannel::new("key", "secret").with_request_limit(4096);
+    let channel = DingTalkChannel::new("bot-a", "agent", Arc::new(StaticCredentials))
+        .unwrap()
+        .with_request_limit(4096);
     assert_eq!(channel.client.max_message_bytes, 4096);
+}
+
+#[tokio::test]
+async fn readiness_is_reported_only_by_the_connected_callback() {
+    let readiness = sylvander_channel::ChannelReadiness::new();
+    let context = Arc::new(ChannelContext::with_services(
+        Arc::new(sylvander_agent::bus::InProcessMessageBus::new()),
+        Arc::new(SqliteSessionStore::open_in_memory().await.unwrap()),
+        None,
+        Some(readiness.clone()),
+    ));
+    let handler = ChannelMessageHandler {
+        ctx: context,
+        instance_id: "bot-a".into(),
+        agent_id: AgentId::new("agent"),
+        replay: Arc::new(ReplayCache::default()),
+        client: Client::new("bot-a", Arc::new(StaticCredentials)).unwrap(),
+    };
+
+    assert!(!readiness.is_ready());
+    handler.on_connected().await;
+    assert!(readiness.is_ready());
 }
 
 #[tokio::test]
