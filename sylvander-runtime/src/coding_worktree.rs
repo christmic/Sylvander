@@ -69,10 +69,19 @@ impl CodingWorktreeService {
         Ok(())
     }
 
+    /// Return whether mutations for this target require an executor-backed
+    /// worktree transaction rather than the server-local mutation journal.
+    pub(crate) fn is_remote_target(&self, target_id: &str) -> bool {
+        self.remote.contains_key(target_id)
+    }
+
     /// Create an isolated branch when the selected workspace is a Git checkout.
     ///
-    /// A non-Git workspace is valid and returns `None`; transport or Git
-    /// failures return an error rather than silently falling back to the server.
+    /// A local non-Git workspace is valid and returns `None`, where the local
+    /// mutation journal remains available. A writable remote workspace must be
+    /// a Git checkout: its worktree lease is the executor-neutral mutation
+    /// transaction and review boundary. Transport or Git failures never fall
+    /// back to the server filesystem.
     pub async fn create(
         &self,
         session_id: &str,
@@ -81,7 +90,7 @@ impl CodingWorktreeService {
     ) -> Result<Option<CodingWorkspaceLease>, String> {
         if let Some(manager) = self.remote.get(target_id) {
             if !manager.is_git_workspace(requested).await {
-                return Ok(None);
+                return Err("writable remote workspace requires a Git worktree transaction".into());
             }
             let lease = manager.create(session_id, requested).await?;
             return Ok(Some(CodingWorkspaceLease {
