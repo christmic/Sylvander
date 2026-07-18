@@ -5,16 +5,18 @@
 
 ## 1. Purpose
 
-`sylvander-protocol` defines the **language-neutral contract** between Sylvander's
-agents, channels, and bus. Every type derives `serde::Serialize`, `serde::Deserialize`,
-and `schemars::JsonSchema`. The JSON Schema output is the basis for TypeScript,
-Python, Swift, and other client code generation.
+`sylvander-protocol` owns Sylvander's **public, UI-facing language-neutral
+contract**. Current wire DTOs derive `serde::Serialize`,
+`serde::Deserialize`, and `schemars::JsonSchema`; their JSON Schema output is
+the basis for TypeScript, Python, Swift, and other client code generation.
+The crate also contains Rust-only in-process bus primitives, which are not
+part of the generated client contract.
 
 The crate is split into two layers:
 
 - **Cross-language data definitions** (`types`, `boundary`, `identity_binding`,
-  `user_profile`, `ui`, `schema`, `agent_admin`, `registry_admin`) — wire-stable
-  DTOs with `JsonSchema` derives.
+  `user_profile`, `ui`, `schema`, `agent_admin`, `registry_admin`) — strict
+  current-contract DTOs with `JsonSchema` derives.
 - **Rust-only runtime types** (`bus_trait`, `in_process`, `session_context`) —
   the in-process bus and the umbrella request context.
 
@@ -53,8 +55,9 @@ Selected verbatim signatures:
 
 ```rust
 // types.rs
-pub const UI_PROTOCOL_MIN_VERSION: u16 = 1;
-pub const UI_PROTOCOL_MAX_VERSION: u16 = 3;
+pub const UI_PROTOCOL_VERSION: u16 = 4;
+pub const UI_PROTOCOL_MIN_VERSION: u16 = UI_PROTOCOL_VERSION;
+pub const UI_PROTOCOL_MAX_VERSION: u16 = UI_PROTOCOL_VERSION;
 
 pub enum StreamEvent { TextDelta{delta}, ThinkingDelta{delta}, ModelRetry{...},
     ToolCall{call_id, tool_name, input}, ToolOutputDelta{...}, ToolResult{...},
@@ -111,10 +114,14 @@ A typical request crosses these layers in order:
    `BoundaryContext` containing the `AuthenticatedPrincipal` (or
    `None` for unauthenticated requests), `channel_instance_id`,
    `transport`, and `request_id`.
-2. **Envelope construction.** The transport wraps the user input in a
-   `UiClientMessage` (see `ui.rs`) and submits it through the
-   `Channel` trait into the bus.
-3. **Bus routing.** `InProcessMessageBus` matches each `BusMessage`
+2. **UI dispatch.** The transport parses one current-shape
+   `UiClientMessage` (see `ui.rs`) and submits it with the sealed boundary to
+   Runtime-owned `UiService`. Old versions, unknown fields, and unnegotiated
+   operations fail before mutation.
+3. **Authorized bus routing.** Runtime resolves the stable user, Agent,
+   session ownership, operation policy, and optimistic revision. Only then
+   does it publish the corresponding chat/control message.
+   `InProcessMessageBus` matches each `BusMessage`
    against subscriber `SubscriptionFilter`s (session / recipient /
    kind) and fans out via `tokio::mpsc` channels. Backpressure is
    enforced: `publish` returns `BusError::Backpressure` if any
