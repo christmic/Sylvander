@@ -9,7 +9,6 @@ and Panels receive resolved values and must not query environment variables.
 |---|---:|---|---|
 | `SYLVANDER_SOCKET` | `/tmp/sylvander.sock` | path | Unix Agent service socket; positional argument wins |
 | `SYLVANDER_HISTORY_PATH` | `$XDG_CACHE_HOME/sylvander-tui/history.json` | path or empty | Composer history; empty disables persistence |
-| `SYLVANDER_MODEL` | `—` | model label | Pre-connection fallback only; server runtime truth replaces it |
 | `SYLVANDER_TUI_THEME` | `sylvander` | `sylvander`, `midnight`, `high-contrast` | Semantic color palette |
 | `SYLVANDER_TUI_FOREGROUND` | theme value | six-digit RGB, for example `#ECE7DE` | Override primary message text |
 | `SYLVANDER_TUI_ACCENT` | theme value | six-digit RGB, for example `#9B72FF` | Override identity, active, and Agent accent |
@@ -40,6 +39,20 @@ steal Composer input. Enter and Ctrl+C/Ctrl+X/Ctrl+Z are reserved. Text editing,
 approval/question decisions, and `Esc`/`Ctrl+C` interruption remain fixed safety
 contracts. `/help` and `/config` show the resolved bindings, not hard-coded
 defaults.
+
+## Ghostty desktop host contract
+
+The macOS Ghostty host removes inherited `NO_COLOR`, launches each session with
+`SYLVANDER_TUI_COLOR=truecolor`, and asks the terminal surface to publish
+`TERM=xterm-ghostty` plus `COLORTERM=truecolor`. This prevents a monochrome
+parent environment from stripping the TUI palette. An explicit user override
+still wins when the TUI is launched outside the desktop host.
+
+Transparency is owned by the host window, not by Ratatui. The workspace
+`NSWindow` is non-opaque with a clear background and a behind-window material;
+the terminal TUI continues to render semantic foreground/background roles
+inside its PTY. See
+[`../../docs/sylvander-ghostty-architecture.md`](../../docs/sylvander-ghostty-architecture.md#7-transparency-and-terminal-color-contract).
 
 `/config` opens the resolved configuration in the searchable, copyable
 inspector. It reports the values captured at startup plus current server model,

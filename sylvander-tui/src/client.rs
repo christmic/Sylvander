@@ -326,7 +326,7 @@ pub fn parse_server_msg(msg: ServerMsg) -> Option<DomainEvent> {
             platform,
             ..
         } => DomainEvent::RuntimeInfo {
-            model,
+            model: model.model_id,
             reasoning_effort,
             models,
             permissions,

@@ -1,3 +1,9 @@
+//! Server-advertised model and reasoning-effort picker.
+//!
+//! The picker reads the current model catalog from application state and emits
+//! a next-turn selection; it does not invent capabilities or mutate Runtime
+//! configuration while rendering.
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,

@@ -59,7 +59,7 @@ async fn connect_with_retry(path: &std::path::Path) -> UnixStream {
     unreachable!()
 }
 
-/// Stub server: negotiates protocol v1, then replies with a canned stream.
+/// Stub server: negotiates the current protocol, then replies with a canned stream.
 fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
     let path = path.to_path_buf();
     std::thread::spawn(move || {
@@ -88,7 +88,10 @@ fn spawn_stub_server(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         }
         let hello: serde_json::Value = serde_json::from_str(&buf).expect("hello json");
         assert_eq!(hello["type"], "hello");
-        let welcome = r#"{"type":"welcome","protocol":{"server_name":"stub","version":1,"capabilities":["diagnostics"]}}"#;
+        let welcome = format!(
+            r#"{{"type":"welcome","protocol":{{"server_name":"stub","version":{},"capabilities":["diagnostics"]}}}}"#,
+            sylvander_protocol::UI_PROTOCOL_VERSION
+        );
         let _ = stream.write_all(welcome.as_bytes());
         let _ = stream.write_all(b"\n");
         let _ = stream.flush();

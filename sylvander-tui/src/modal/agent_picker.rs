@@ -1,3 +1,8 @@
+//! Single-session Agent selection focus picker.
+//!
+//! Selecting a different Agent resets the local session presentation so the
+//! next prompt creates a session under the newly selected server definition.
+
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,

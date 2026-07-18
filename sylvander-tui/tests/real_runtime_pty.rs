@@ -210,15 +210,14 @@ impl HarnessUiService {
         };
         SessionEffectiveConfig {
             agent_id: request.agent_id.clone(),
-            agent_revision: 0,
+            agent_revision: 1,
             provider_id: self.provider_id.clone(),
-            provider_revision: None,
-            model_id: request
-                .overrides
-                .model_id
-                .clone()
-                .unwrap_or_else(|| "sylvander-test-model".into()),
-            model_revision: None,
+            provider_revision: 1,
+            model_id: request.overrides.model.as_ref().map_or_else(
+                || "sylvander-test-model".into(),
+                |model| model.model_id.clone(),
+            ),
+            model_revision: 1,
             reasoning_effort: request
                 .overrides
                 .reasoning_effort
@@ -238,7 +237,7 @@ impl HarnessUiService {
                 }),
             prompt_profile: request.overrides.prompt_profile.clone(),
             system_prompt_sha256: self.prompt_sha256.clone(),
-            prompt_manifest: Some(self.prompt_manifest.clone()),
+            prompt_manifest: self.prompt_manifest.clone(),
             agent_workspace: None,
             user_workspace: request.overrides.user_workspace.clone(),
             workspace_mounts: Vec::new(),
@@ -674,7 +673,10 @@ async fn start_runtime(
     };
     let channel = Arc::new(
         UnixChannel::new(socket_path, agent_id.clone()).with_runtime_info(RuntimeInfo {
-            model: "sylvander-test-model".into(),
+            model: sylvander_protocol::ModelSelection {
+                provider_id: "test".into(),
+                model_id: "sylvander-test-model".into(),
+            },
             reasoning_effort: sylvander_protocol::ReasoningEffort::Off,
             models: Vec::new(),
             permissions: sylvander_protocol::PermissionProfile {
