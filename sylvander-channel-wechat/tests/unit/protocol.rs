@@ -29,6 +29,24 @@ fn aes_cbc_round_trips_multiple_blocks() {
 }
 
 #[test]
+fn decrypt_rejects_ciphertext_for_another_enterprise() {
+    let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let sender = WechatCrypto::new("token".into(), key, "corp-a".into()).unwrap();
+    let receiver = WechatCrypto::new("token".into(), key, "corp-b".into()).unwrap();
+    let envelope = sender.encrypt("<xml/>", "1", "nonce").unwrap();
+    let encrypted = envelope
+        .split("<Encrypt><![CDATA[")
+        .nth(1)
+        .and_then(|value| value.split("]]></Encrypt>").next())
+        .unwrap();
+
+    assert!(matches!(
+        receiver.decrypt(encrypted),
+        Err(CryptoError::CorpIdMismatch)
+    ));
+}
+
+#[test]
 fn parse_xml_unescapes_text_entities() {
     let xml = r"<xml><Content>one &amp; two &#x1F980;</Content></xml>";
     assert_eq!(parse_message_xml(xml).unwrap().content, "one & two 🦀");
