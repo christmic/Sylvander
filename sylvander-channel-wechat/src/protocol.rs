@@ -7,12 +7,18 @@ use sha1::{Digest, Sha1};
 
 type Block = aes::cipher::Block<Aes256>;
 
+/// Failures while decoding, decrypting, or binding a `WeChat` envelope.
 #[derive(Debug)]
 pub enum CryptoError {
+    /// The encrypted payload was not valid base64.
     Base64(base64::DecodeError),
+    /// AES-CBC decryption or padding validation failed.
     Aes,
+    /// The decrypted envelope was not valid UTF-8.
     InvalidUtf8,
+    /// A key or plaintext framing length was invalid.
     InvalidLength,
+    /// The encrypted recipient did not match the configured enterprise.
     CorpIdMismatch,
 }
 
@@ -30,13 +36,20 @@ impl std::fmt::Display for CryptoError {
 
 impl std::error::Error for CryptoError {}
 
+/// `WeChat` signature and AES-256-CBC envelope codec for one enterprise.
 pub struct WechatCrypto {
-    pub token: String,
-    pub aes_key: [u8; 32],
+    /// Signature token supplied by the `WeChat` application configuration.
+    ///
+    /// Bytes are cleared when the short-lived codec is dropped.
+    token: Vec<u8>,
+    /// Decoded 256-bit callback encryption key, cleared on drop.
+    aes_key: [u8; 32],
+    /// Enterprise recipient required in every decrypted envelope.
     pub corp_id: String,
 }
 
 impl WechatCrypto {
+    /// Validate and decode the application callback cryptography settings.
     pub fn new(
         token: String,
         encoding_aes_key: &str,
@@ -51,12 +64,13 @@ impl WechatCrypto {
         let mut aes_key = [0u8; 32];
         aes_key.copy_from_slice(&aes_key_vec);
         Ok(Self {
-            token,
+            token: token.into_bytes(),
             aes_key,
             corp_id,
         })
     }
 
+    /// Verify `WeChat`'s sorted SHA-1 signature construction.
     pub fn verify_signature(
         &self,
         signature: &str,
@@ -64,7 +78,9 @@ impl WechatCrypto {
         nonce: &str,
         encrypted: &str,
     ) -> bool {
-        let mut parts = [self.token.as_str(), timestamp, nonce, encrypted];
+        let token =
+            std::str::from_utf8(&self.token).expect("token originated from a valid Rust String");
+        let mut parts = [token, timestamp, nonce, encrypted];
         parts.sort_unstable();
         let joined = parts.join("");
         let mut hasher = Sha1::new();
@@ -105,6 +121,7 @@ impl WechatCrypto {
         Ok(msg)
     }
 
+    /// Encrypt and sign an XML reply envelope.
     pub fn encrypt(
         &self,
         reply: &str,
@@ -127,12 +144,9 @@ impl WechatCrypto {
         let ciphertext = encrypt_cbc(&self.aes_key, &plaintext)?;
         let encrypted_b64 = B64.encode(&ciphertext);
 
-        let mut parts = [
-            self.token.as_str(),
-            timestamp,
-            nonce,
-            encrypted_b64.as_str(),
-        ];
+        let token =
+            std::str::from_utf8(&self.token).expect("token originated from a valid Rust String");
+        let mut parts = [token, timestamp, nonce, encrypted_b64.as_str()];
         parts.sort_unstable();
         let joined = parts.join("");
         let mut hasher = Sha1::new();
@@ -142,6 +156,13 @@ impl WechatCrypto {
         Ok(format!(
             r"<xml><Encrypt><![CDATA[{encrypted_b64}]]></Encrypt><MsgSignature><![CDATA[{signature}]]></MsgSignature><TimeStamp>{timestamp}</TimeStamp><Nonce><![CDATA[{nonce}]]></Nonce></xml>"
         ))
+    }
+}
+
+impl Drop for WechatCrypto {
+    fn drop(&mut self) {
+        self.token.fill(0);
+        self.aes_key.fill(0);
     }
 }
 
@@ -231,15 +252,22 @@ fn hex_digest(bytes: &[u8]) -> String {
 // XML parsing
 // ===========================================================================
 
+/// Parsed text fields consumed from a decrypted `WeChat` callback.
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
+    /// Stable enterprise user identifier.
     pub from_user_name: String,
+    /// Sender-provided Unix timestamp.
     pub create_time: i64,
+    /// Text content forwarded as the Agent prompt.
     pub content: String,
+    /// Stable message identifier used for replay suppression.
     pub msg_id: String,
+    /// `WeChat` callback message kind.
     pub msg_type: String,
 }
 
+/// Parse the supported message fields from decrypted callback XML.
 pub fn parse_message_xml(xml: &str) -> Result<IncomingMessage, String> {
     use quick_xml::Reader;
     use quick_xml::events::Event;

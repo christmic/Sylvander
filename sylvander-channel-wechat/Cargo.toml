@@ -12,7 +12,7 @@ sylvander-protocol = { path = "../sylvander-protocol" }
 sylvander-agent = { path = "../sylvander-agent" }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["json"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 quick-xml = { version = "0.41", features = ["serialize"] }
@@ -24,8 +24,8 @@ base64 = "0.22"
 rand = "0.10"
 tokio = { workspace = true }
 tracing = { workspace = true }
+thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
-chrono = "0.4"
 
 [lints]
 workspace = true

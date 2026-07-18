@@ -1,10 +1,21 @@
 use super::*;
 
 #[test]
-#[ignore = "requires a real 44-char WeChat EncodingAESKey (real keys end with '=' padding)"]
 fn signature_verify() {
-    // Real WeChat keys are 43 chars base64 with implicit padding → 32 bytes raw.
-    // Test code below would need a valid one.
+    let crypto = WechatCrypto::new(
+        "callback-token".into(),
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "corp".into(),
+    )
+    .unwrap();
+    let mut parts = ["callback-token", "1700000000", "nonce", "ciphertext"];
+    parts.sort_unstable();
+    let mut hasher = Sha1::new();
+    hasher.update(parts.join("").as_bytes());
+    let signature = hex_digest(&hasher.finalize());
+
+    assert!(crypto.verify_signature(&signature, "1700000000", "nonce", "ciphertext"));
+    assert!(!crypto.verify_signature(&signature, "1700000001", "nonce", "ciphertext"));
 }
 
 #[test]
