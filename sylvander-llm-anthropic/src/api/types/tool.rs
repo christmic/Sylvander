@@ -32,6 +32,7 @@ pub struct Tool {
     pub description: String,
     /// JSON Schema describing the tool's input parameters.
     pub input_schema: InputSchema,
+    /// Optional prompt-cache breakpoint applied to this tool declaration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
 }

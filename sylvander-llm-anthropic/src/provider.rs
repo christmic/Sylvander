@@ -14,6 +14,7 @@ use crate::api::message_stream::MessageStream;
 use crate::api::types::{ContentDelta, RawStreamEvent};
 use crate::convert;
 
+/// Provider-neutral streaming adapter for one Anthropic API client.
 #[derive(Clone, Debug)]
 pub struct AnthropicProvider {
     id: String,
@@ -21,6 +22,7 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    /// Construct an adapter whose identifier must match request model selectors.
     #[must_use]
     pub fn new(id: impl Into<String>, client: AnthropicClient) -> Self {
         Self {
@@ -29,6 +31,7 @@ impl AnthropicProvider {
         }
     }
 
+    /// Return the provider identifier used during request validation.
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id

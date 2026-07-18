@@ -48,6 +48,17 @@ adapter must reject any additional vendor-only unsupported combination with a
 content-safe error and must not silently remove requested tools, reasoning,
 media, caching, or structured-output constraints.
 
+## Extension points
+
+- Add a Messages wire type in `api/types/`, re-export it deliberately from the
+  relevant API module, and cover serde behavior in `tests/unit/`.
+- Translate a provider-neutral feature only in `convert.rs`; do not expose an
+  Anthropic wire type through `sylvander-llm-core`.
+- Add a new endpoint beside `messages`/`batches` only when it has bounded
+  request/response handling and an explicit credential-safe error mapping.
+- Update `AnthropicProvider` catalog/capability reporting together with
+  conversion so Runtime never advertises behavior the adapter drops.
+
 ## Verification
 
 The crate's unit tests cover typed request construction, SSE parsing, response

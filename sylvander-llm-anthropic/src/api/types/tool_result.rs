@@ -117,7 +117,9 @@ pub enum ToolResultContent {
 pub enum RichToolResultBlock {
     /// Text content.
     Text {
+        /// Text returned by the tool.
         text: String,
+        /// Optional prompt-cache breakpoint applied to this result block.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
