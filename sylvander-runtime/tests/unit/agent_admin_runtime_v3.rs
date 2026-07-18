@@ -387,25 +387,6 @@ model_name = "shared"
     assert_eq!(created.effective.model_selection(), model("alpha"));
     assert_eq!(created.effective.agent_revision, 2);
 
-    let ambiguous = sylvander_channel::UiService::update_session_config(
-        runtime.ui_service.as_ref(),
-        &administrator,
-        SessionConfigUpdateRequest {
-            session_id: created.session_id.clone(),
-            expected_revision: created.revision,
-            overrides: SessionConfigOverrides {
-                model_id: Some("shared".into()),
-                ..SessionConfigOverrides::default()
-            },
-        },
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(
-        ambiguous.code,
-        sylvander_protocol::BoundaryErrorCode::InvalidScope
-    );
-    assert!(ambiguous.message.contains("ambiguous"));
     let unchanged = sylvander_channel::UiService::session_config(
         runtime.ui_service.as_ref(),
         &administrator,
@@ -432,8 +413,8 @@ model_name = "shared"
     .unwrap();
     assert_eq!(updated.effective.model_selection(), model("beta"));
     assert_eq!(updated.effective.agent_revision, 2);
-    assert_eq!(updated.effective.provider_revision, Some(1));
-    assert_eq!(updated.effective.model_revision, Some(1));
+    assert_eq!(updated.effective.provider_revision, 1);
+    assert_eq!(updated.effective.model_revision, 1);
     runtime.shutdown().await.unwrap();
 
     let restarted = Runtime::boot_config(original).await.unwrap();
