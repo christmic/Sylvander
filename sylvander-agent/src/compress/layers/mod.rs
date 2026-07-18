@@ -6,10 +6,10 @@
 //! | Layer | Module | Status |
 //! |---|---|---|
 //! | L0 | [`tool_result_budget`] | shipped |
-//! | L1 | [`orphan_snip`] | pending |
-//! | L2 | [`micro_compact`] | pending |
-//! | L3 | [`context_collapse`] | pending (M4+) |
-//! | L4 | [`auto_compact`] | pending |
+//! | L1 | [`orphan_snip`] | shipped |
+//! | L2 | [`micro_compact`] | shipped |
+//! | L3 | [`context_collapse`] | shipped |
+//! | L4 | [`auto_compact`] | shipped |
 
 pub mod auto_compact;
 pub mod context_collapse;
