@@ -8,9 +8,12 @@ black-canvas, Seed-Crab direction.
 
 1. [`../sylvander-tui-ux-design.md`](../sylvander-tui-ux-design.md) — normative
    TUI layout, transcript, composer, responsive, and visual rules.
-2. [`../sylvander-brand-system.md`](../sylvander-brand-system.md) — normative
+2. [`../sylvander-desktop-ux-design.md`](../sylvander-desktop-ux-design.md) —
+   normative Ghostty desktop shell, multi-session rail, Inspector, and native
+   visual rules.
+3. [`../sylvander-brand-system.md`](../sylvander-brand-system.md) — normative
    product character and brand behavior.
-3. [`sylvander-design-tokens.json`](sylvander-design-tokens.json) — machine-readable
+4. [`sylvander-design-tokens.json`](sylvander-design-tokens.json) — machine-readable
    colors and terminal-cell measurements.
 
 When an SVG differs from the Markdown specification, the Markdown specification

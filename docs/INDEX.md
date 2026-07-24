@@ -63,6 +63,8 @@ Design notes for the platform, terminal substrate, and brand.
   loop, tool/skill/MCP surface, supervisor layout.
 - [sylvander-ghostty-architecture.md](sylvander-ghostty-architecture.md) —
   Zig/GTK/macOS terminal substrate fork and how Sylvander embeds it.
+- [sylvander-desktop-ux-design.md](sylvander-desktop-ux-design.md) — native
+  macOS session rail, terminal host, Inspector, commands, and visual system.
 - [sylvander-tui-ux-design.md](sylvander-tui-ux-design.md) — terminal
   UI composition, focus, responsive dock, decision surfaces.
 - [sylvander-brand-system.md](sylvander-brand-system.md) — brand
