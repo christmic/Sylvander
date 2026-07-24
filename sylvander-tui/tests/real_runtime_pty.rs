@@ -894,8 +894,8 @@ fn run_tui_with_exit(
     if disconnect {
         child.kill().expect("disconnect TUI child");
     } else {
-        writer.write_all(b"\x1b").expect("send idle escape");
-        writer.flush().expect("flush idle escape");
+        writer.write_all(b"\x03").expect("send explicit quit");
+        writer.flush().expect("flush explicit quit");
     }
 
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -905,7 +905,7 @@ fn run_tui_with_exit(
         }
         if Instant::now() >= deadline {
             child.kill().expect("kill stuck TUI child");
-            panic!("TUI did not exit after idle Escape");
+            panic!("TUI did not exit after Ctrl+C on an empty Composer");
         }
         std::thread::sleep(Duration::from_millis(20));
     }

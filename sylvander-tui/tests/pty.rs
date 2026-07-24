@@ -309,8 +309,8 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
         })
         .expect("resize pseudo-terminal");
     std::thread::sleep(Duration::from_millis(250));
-    writer.write_all(b"\x1b").expect("send idle escape");
-    writer.flush().expect("flush escape");
+    writer.write_all(b"\x03").expect("send explicit quit");
+    writer.flush().expect("flush quit");
 
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -319,7 +319,7 @@ fn binary_completes_chat_decisions_interrupt_and_resize() {
         }
         if Instant::now() >= deadline {
             child.kill().expect("kill stuck TUI child");
-            panic!("TUI did not exit after idle Escape");
+            panic!("TUI did not exit after Ctrl+C on an empty Composer");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -426,7 +426,7 @@ fn binary_renders_across_compact_tmux_and_ghostty_term_surfaces() {
             pair.master.resize(size).expect("resize surface PTY");
             std::thread::sleep(Duration::from_millis(50));
         }
-        writer.write_all(b"\x1b").expect("exit surface TUI");
+        writer.write_all(b"\x03").expect("exit surface TUI");
         writer.flush().expect("flush surface exit");
         let deadline = Instant::now() + Duration::from_secs(3);
         while child.try_wait().expect("poll surface TUI").is_none() {
