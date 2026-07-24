@@ -162,51 +162,14 @@ the anchor parent is missing or writable by the database writer.
 
 ## 5. Quickstart
 
-The shortest path from a clean checkout to a working session:
+Follow [`getting-started.md`](getting-started.md). It is the canonical,
+tested path for choosing a product surface, copying the self-use profile,
+providing its one configured Provider secret, starting the server, and
+connecting either the standalone TUI or `Sylvander.app`.
 
-```sh
-# 1. Build the server and TUI from the locked workspace
-cargo build --release --locked -p sylvander-server -p sylvander-tui
-
-# 2. Configure (start from the maintained example, then select self_use or
-#    provision every production path and integrity prerequisite it names)
-mkdir -p "$HOME/.config/sylvander"
-cp config/sylvander.example.toml "$HOME/.config/sylvander/server.toml"
-$EDITOR "$HOME/.config/sylvander/server.toml"
-
-# 3. Provide every secret referenced by that document
-export ANTHROPIC_API_KEY=sk-ant-...
-# Production example also references memory/evidence keys:
-export SYLVANDER_MEMORY_INTEGRITY_KEY=...
-export SYLVANDER_EVIDENCE_ENCRYPTION_KEY=...
-
-# 4. Run
-export SYLVANDER_CONFIG="$HOME/.config/sylvander/server.toml"
-./target/release/sylvander
-```
-
-The server prints a structured startup line such as:
-
-```
-INFO sylvander_server: server configuration loaded path=/etc/sylvander/server.toml
-INFO sylvander_server: channel configured instance=terminal kind=unix
-INFO sylvander_server: sylvander server running server="sylvander" agents=1 channels=1
-```
-
-Connect the TUI:
-
-```sh
-# Build the TUI client once
-cargo build --release -p sylvander-tui
-
-# Connect using the default Unix socket
-./target/release/sylvander-tui --socket /tmp/sylvander.sock
-```
-
-The first chat creates a new session; subsequent chats reuse it or open
-a new one depending on the chosen session binding. Type `/help` in the
-TUI to see the available slash commands; the most useful are `/sessions`,
-`/model`, `/permissions`, and `/extensions`.
+This manual does not repeat those commands so onboarding has one source of
+truth. Return here after the first session for daily Agent, workspace,
+approval, channel, and operations behavior.
 
 ## 6. Configuration
 

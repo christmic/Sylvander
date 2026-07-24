@@ -144,6 +144,8 @@ and this index in the same change.
 
 ## User manual
 
+- [getting-started.md](getting-started.md) — canonical product-family map,
+  local self-use path, configuration ownership, and first diagnosis.
 - [user-manual.md](user-manual.md) — install, first run, daily Agent
   usage, terminal UI tour, configuration, workspaces, and operational limits.
 
