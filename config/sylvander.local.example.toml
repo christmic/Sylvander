@@ -1,0 +1,95 @@
+# Sylvander local self-use configuration, schema v1.
+#
+# Required edits:
+#   1. Set the Provider URL and Model id to values your account supports.
+#   2. Export the API key named by model_providers.api_key.
+#   3. Optionally change the Agent workspace from /tmp/sylvander-agent.
+schema_version = 1
+
+[server]
+mode = "self_use"
+name = "sylvander"
+
+[server.approval]
+enabled = true
+
+# Metadata-only evidence remains durable without storing prompt/response bodies.
+[server.evidence]
+tenant_id = "local"
+retention_days = 30
+content = "metadata_only"
+
+[server.boundary]
+max_request_bytes = 1048576
+requests_per_minute = 240
+
+[[model_providers]]
+id = "primary"
+kind = "anthropic_compatible"
+base_url = "https://api.anthropic.com"
+
+[model_providers.api_key]
+source = "env"
+name = "ANTHROPIC_API_KEY"
+
+[[model_providers.models]]
+id = "claude-sonnet"
+context_window = 200000
+max_output_tokens = 32000
+capabilities = ["tool_use", "vision", "prompt_caching"]
+
+[[execution_targets]]
+id = "local"
+
+[execution_targets.transport]
+kind = "local"
+root = "/"
+
+[[agents]]
+revision = 1
+default_prompt_profile = "claude"
+
+[agents.access]
+allow_authenticated = true
+
+[agents.spec]
+id = "sylvander"
+name = "Sylvander"
+
+[agents.spec.persona]
+system_prompt = "You are Sylvander, a careful and capable coding Agent."
+description = "Primary local coding Agent"
+
+[agents.spec.model]
+provider = "primary"
+model_name = "claude-sonnet"
+allowed_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
+max_tokens = 32000
+
+[agents.spec.behavior]
+max_iterations = 50
+max_retries = 3
+
+[agents.agent_workspace]
+execution_target = "local"
+path = "/tmp/sylvander-agent"
+read_only = false
+
+[[agents.prompt_profiles]]
+id = "claude"
+qualified_models = [{ provider_id = "primary", model_id = "claude-sonnet" }]
+system_prompt = "You are Sylvander, a careful and capable coding Agent."
+
+[[channels]]
+id = "terminal"
+enabled = true
+default_agent = "sylvander"
+
+[channels.supervision]
+max_restart_attempts = 5
+initial_backoff_ms = 250
+max_backoff_ms = 5000
+
+[channels.transport]
+kind = "unix"
+path = "/tmp/sylvander.sock"

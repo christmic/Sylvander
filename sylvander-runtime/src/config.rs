@@ -1542,3 +1542,7 @@ mod qualified_model_tests;
 #[cfg(test)]
 #[path = "../tests/unit/config_evidence_governance.rs"]
 mod evidence_governance_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/config_local_example.rs"]
+mod local_example_tests;
