@@ -22,8 +22,29 @@ mod credential;
 
 use credential::SystemChannelCredentialSource;
 
+const HELP: &str = "\
+Sylvander Agent server
+
+Usage: sylvander
+
+Options:
+  -h, --help       Print help
+  -V, --version    Print version
+
+Environment:
+  SYLVANDER_CONFIG      Required path to the current server TOML
+  RUST_LOG              Tracing filter [default: info]
+  SYLVANDER_LOG_FORMAT  Set to json for structured logs
+
+See docs/getting-started.md for the supported first-run path.
+";
+
 #[tokio::main]
 async fn main() -> Result<(), ServerError> {
+    if let Some(output) = informational_output(std::env::args().skip(1))? {
+        print!("{output}");
+        return Ok(());
+    }
     init_tracing();
 
     let config = load_config()?;
@@ -59,6 +80,26 @@ async fn main() -> Result<(), ServerError> {
     }
     shutdown?;
     Ok(())
+}
+
+fn informational_output(
+    args: impl IntoIterator<Item = String>,
+) -> Result<Option<String>, ServerError> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    match args.as_slice() {
+        [] => Ok(None),
+        [flag] if flag == "-h" || flag == "--help" => Ok(Some(HELP.into())),
+        [flag] if flag == "-V" || flag == "--version" => {
+            Ok(Some(format!("sylvander {}\n", env!("CARGO_PKG_VERSION"))))
+        }
+        _ => Err(ServerError::Cli(format!(
+            "unknown arguments {}; use --help",
+            args.iter()
+                .map(|argument| format!("{argument:?}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ))),
+    }
 }
 
 fn init_tracing() {
@@ -387,6 +428,8 @@ fn parse_addr(value: &str) -> Result<SocketAddr, ServerError> {
 
 #[derive(Debug, thiserror::Error)]
 enum ServerError {
+    #[error("{0}")]
+    Cli(String),
     #[error("SYLVANDER_CONFIG must name the latest-version server configuration")]
     MissingConfig,
     #[error(transparent)]

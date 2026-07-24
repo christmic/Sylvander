@@ -5,8 +5,28 @@
 
 use sylvander_tui::config::TuiConfig;
 
+const HELP: &str = "\
+Sylvander terminal client
+
+Usage: sylvander-tui [OPTIONS]
+
+Options:
+  --socket <PATH>       Sylvander Unix socket [default: /tmp/sylvander.sock]
+  --session <ID>        Attach to one existing session
+  --workspace <PATH>    Task workspace shown to the Agent
+  -h, --help            Print help
+  -V, --version         Print version
+
+Appearance, editing, and key bindings are configured with SYLVANDER_TUI_*.
+See sylvander-tui/docs/CONFIGURATION.md for the complete reference.
+";
+
 #[tokio::main]
 async fn main() {
+    if let Some(output) = informational_output(std::env::args().skip(1)) {
+        print!("{output}");
+        return;
+    }
     let config = TuiConfig::from_env_and_args().unwrap_or_else(|error| {
         eprintln!("sylvander-tui configuration error: {error}");
         std::process::exit(2);
@@ -21,3 +41,18 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+fn informational_output(args: impl IntoIterator<Item = String>) -> Option<String> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    match args.as_slice() {
+        [flag] if flag == "-h" || flag == "--help" => Some(HELP.into()),
+        [flag] if flag == "-V" || flag == "--version" => {
+            Some(format!("sylvander-tui {}\n", env!("CARGO_PKG_VERSION")))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/tui_main.rs"]
+mod tests;
